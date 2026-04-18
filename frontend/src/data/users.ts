@@ -1,7 +1,25 @@
-// Mock users — simulates a MySQL users table
-// Roles: super_admin | it_staff | viewer
+export type Role = "super_admin" | "it_staff" | "viewer";
 
-export const mockUsers = [
+export interface User {
+  id: number;
+  name: string;
+  username: string;
+  password: string;
+  role: Role;
+  avatar: string;
+  email: string;
+}
+
+export interface RoleConfig {
+  label: string;
+  color: string;
+  bg: string;
+  border: string;
+  pages: string[];
+}
+
+// Mock users — simulates a MySQL users table
+export const mockUsers: User[] = [
   {
     id: 1,
     name: "Super Admin",
@@ -32,20 +50,36 @@ export const mockUsers = [
 ];
 
 // Role definitions — what each role can access
-export const roleConfig = {
+export const roleConfig: Record<Role, RoleConfig> = {
   super_admin: {
     label: "Super Admin",
     color: "text-yellow-400",
     bg: "bg-yellow-500/10",
     border: "border-yellow-500/30",
-    pages: ["dashboard", "server-metrics", "environment", "air-control", "history", "reports", "settings", "user-management"],
+    pages: [
+      "dashboard",
+      "server-metrics",
+      "environment",
+      "air-control",
+      "history",
+      "reports",
+      "settings",
+      "user-management",
+    ],
   },
   it_staff: {
     label: "IT Staff",
     color: "text-blue-400",
     bg: "bg-blue-500/10",
     border: "border-blue-500/30",
-    pages: ["dashboard", "server-metrics", "environment", "air-control", "history", "reports"],
+    pages: [
+      "dashboard",
+      "server-metrics",
+      "environment",
+      "air-control",
+      "history",
+      "reports",
+    ],
   },
   viewer: {
     label: "Viewer",

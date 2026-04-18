@@ -1,4 +1,8 @@
-export default function Unauthorized({ onBack }) {
+interface UnauthorizedProps {
+  onBack? : () => void;
+}
+
+export default function Unauthorized({ onBack }: UnauthorizedProps) {
   return (
     <div className="flex flex-col items-center justify-center flex-1 p-8 text-center">
       <div className="text-6xl mb-4">🔒</div>

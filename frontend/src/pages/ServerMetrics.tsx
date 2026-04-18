@@ -1,9 +1,24 @@
-import { useState, useEffect, useRef } from "react";
-import StatusBadge from "../components/ui/StatusBadge";
-import { api } from "../api/api";
-import { socket } from "../socket/socket";
+import { useState, useEffect } from "react";
+import StatusBadge from "../components/ui/StatusBadge.js";
+import { api } from "../api/api.js";
+import { socket } from "../socket/socket.js";
 
-function MiniBar({ value, color }) {
+interface Server {
+  id: string;
+  name: string;
+  ip: string;
+  status: string;
+  cpu: number;
+  memory: number;
+  uptime: string;
+}
+
+interface MiniBarProps {
+  value: number;
+  color: string;
+}
+
+function MiniBar({ value, color }: MiniBarProps) {
   return (
     <div className="w-16 h-1.5 bg-white/10 rounded-full overflow-hidden">
       <div className="h-full rounded-full transition-all" style={{ width: `${value}%`, background: color }} />
@@ -12,13 +27,12 @@ function MiniBar({ value, color }) {
 }
 
 export default function ServerMetrics() {
-  const [servers, setServers] = useState([]);
-  const socketRef = useRef(null);
+  const [servers, setServers] = useState<Server[]>([]);
 
   useEffect(() => {
-    api.getServers().then(d => setServers(d.servers)).catch(() => { });
-    socket.on("serverMetrics", (data) => setServers(data.servers));
-    return () => socketRef.current?.disconnect();
+    api.getServers().then((d: { servers: Server[] }) => setServers(d.servers)).catch(() => { });
+    socket.on("serverMetrics", (data: { servers: Server[] }) => setServers(data.servers));
+    return () => { socket.off("serverMetrics"); }
   }, []);
 
   const cpuAvg = servers.length ? Math.round(servers.reduce((a, s) => a + s.cpu, 0) / servers.length) : 0;
