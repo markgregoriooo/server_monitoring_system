@@ -1,8 +1,13 @@
 import axios from "axios";
+import type {
+  AxiosInstance,
+  AxiosResponse,
+  InternalAxiosRequestConfig,
+} from "axios";
 
 const baseURL = "http://192.168.100.9:3000/api";
 
-function getToken() {
+function getToken(): string | null {
   try {
     return JSON.parse(sessionStorage.getItem("cspc_token") || "null");
   } catch {
@@ -10,28 +15,30 @@ function getToken() {
   }
 }
 
-const apiClient = axios.create({
-  baseURL: baseURL,
+const apiClient: AxiosInstance = axios.create({
+  baseURL,
   headers: {
     "Content-Type": "application/json",
   },
 });
 
 // Attach token automatically
-apiClient.interceptors.request.use((config) => {
-  const token = getToken();
+apiClient.interceptors.request.use(
+  (config: InternalAxiosRequestConfig) => {
+    const token = getToken();
 
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+    if (token) {
+      config.headers.set("Authorization", `Bearer ${token}`);
+    }
+
+    return config;
   }
-
-  return config;
-});
+);
 
 // Global error handler
 apiClient.interceptors.response.use(
-  (response) => response,
-  (error) => {
+  (response: AxiosResponse) => response,
+  (error: any) => {
     const message =
       error.response?.data?.error ||
       error.response?.data?.message ||

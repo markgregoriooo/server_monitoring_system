@@ -4,26 +4,26 @@ import {
   Routes,
   Route,
   Navigate,
-  useLocation
+  useLocation,
 } from "react-router-dom";
 
-import { AuthProvider, useAuth } from "./context/AuthContext";
-import { roleConfig } from "./data/users";
+import { AuthProvider, useAuth } from "./context/AuthContext.js";
+import { roleConfig } from "./data/users.js";
 
-import Login from "./pages/auth/Login";
-import Unauthorized from "./pages/auth/Unauthorized";
-import Sidebar from "./components/layout/Sidebar";
-import Header from "./components/layout/Header";
-import Dashboard from "./pages/Dashboard";
-import ServerMetrics from "./pages/ServerMetrics";
-import Environment from "./pages/Environment";
-import AirControl from "./pages/AirControl";
-import History from "./pages/History";
-import Reports from "./pages/Reports";
-import Settings from "./pages/Settings";
-import UserManagement from "./pages/UserManagement";
+import Login from "./pages/auth/Login.js";
+import Unauthorized from "./pages/auth/Unauthorized.js";
+import Sidebar from "./components/layout/Sidebar.js";
+import Header from "./components/layout/Header.js";
+import Dashboard from "./pages/Dashboard.js";
+import ServerMetrics from "./pages/ServerMetrics.js";
+import Environment from "./pages/Environment.js";
+import AirControl from "./pages/AirControl.js";
+import History from "./pages/History.js";
+import Reports from "./pages/Reports.js";
+import Settings from "./pages/Settings.js";
+import UserManagement from "./pages/UserManagement.js";
 
-const pageTitles = {
+const pageTitles: Record<string, string> = {
   "/": "Server Environment Monitoring & Control System",
   "/server-metrics": "Server Metrics",
   "/environment": "Environment Monitoring",
@@ -34,11 +34,15 @@ const pageTitles = {
   "/user-management": "User Management",
 };
 
-function ProtectedRoute({ children }) {
+interface ProtectedRouteProps {
+  children: React.ReactNode;
+}
+
+function ProtectedRoute({ children }: ProtectedRouteProps) {
   const { user } = useAuth();
   const location = useLocation();
 
-  const allowed = roleConfig[user?.role]?.pages || [];
+  const allowed: string[] = roleConfig[user?.role as keyof typeof roleConfig]?.pages || [];
   const currentPage =
     location.pathname === "/" ? "dashboard" : location.pathname.replace("/", "");
 
@@ -51,7 +55,7 @@ function ProtectedRoute({ children }) {
 
 function AppShell() {
   const { user } = useAuth();
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState<boolean>(false);
   const location = useLocation();
   const isLoginPage = location.pathname === "/login";
 
@@ -71,7 +75,6 @@ function AppShell() {
     <div className="flex h-screen overflow-hidden bg-[#080f1e] font-sans">
 
       <Sidebar
-        currentPath={location.pathname}
         mobileOpen={mobileOpen}
         onClose={() => setMobileOpen(false)}
       />

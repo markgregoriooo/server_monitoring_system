@@ -1,10 +1,29 @@
 import { useState, useEffect } from "react";
-import "../chart/ChartConfig";
+import "../chart/ChartConfig.js";
 import { Line } from "react-chartjs-2";
-import { socket } from "../socket/socket";
+import { socket } from "../socket/socket.js";
+import type { ChartOptions, ChartData } from "chart.js";
 
+type RangeType = "-30m" | "-1h" | "-24h";
 
-const chartOptions = (color, min, max, unit) => ({
+interface SensorData {
+  temperature: number;
+  humidity: number;
+  timestamp: string;
+}
+
+interface HistoryData {
+  time: string;
+  temperature: number;
+  humidity: number;
+}
+
+const chartOptions = (
+  color: string,
+  min: number,
+  max: number,
+  unit: string
+): ChartOptions<"line"> => ({
   responsive: true,
   animation: false,
   interaction: {
@@ -21,18 +40,27 @@ const chartOptions = (color, min, max, unit) => ({
       bodyColor: "#fff",
       padding: 8,
       callbacks: {
-        label: ctx => ` ${ctx.parsed.y} ${unit}`
+        label: (ctx) => ` ${ctx.parsed.y} ${unit}`
       }
     }
   },
   scales: {
     x: {
-      grid: { color: "rgba(255,255,255,0.04)", drawBorder: false },
-      ticks: { color: "rgba(180,200,240,0.35)", font: { size: 8, family: "monospace" }, maxTicksLimit: 7 }
+      grid: { color: "rgba(255,255,255,0.04)" },
+      border: { display: false },
+      ticks: {
+        color: "rgba(180,200,240,0.35)",
+        font: { size: 8, family: "monospace" },
+        maxTicksLimit: 7
+      }
     },
     y: {
-      grid: { color: "rgba(255,255,255,0.04)", drawBorder: false },
-      ticks: { color: "rgba(180,200,240,0.35)", font: { size: 8, family: "monospace" } },
+      grid: { color: "rgba(255,255,255,0.04)" },
+      border: { display: false },
+      ticks: {
+        color: "rgba(180,200,240,0.35)",
+        font: { size: 8, family: "monospace" }
+      },
       min,
       max
     }
@@ -49,53 +77,57 @@ function LiveBadge() {
 }
 
 export default function Environment() {
-  const [labels, setLabels] = useState([]);
-  const [temps, setTemps] = useState([]);
-  const [hums, setHums] = useState([]);
-  const [liveTemp, setLiveTemp] = useState("--");
-  const [liveHum, setLiveHum] = useState("--");
-  const [range, setRange] = useState("-1h");
+  const [labels, setLabels] = useState<string[]>([]);
+  const [temps, setTemps] = useState<number[]>([]);
+  const [hums, setHums] = useState<number[]>([]);
+  const [liveTemp, setLiveTemp] = useState<number | string>("--");
+  const [liveHum, setLiveHum] = useState<number | string>("--");
+  const [range, setRange] = useState<RangeType>("-1h");
 
   useEffect(() => {
-
-    const handleHistory = (history) => {
+    const handleHistory = (history: HistoryData[]) => {
       if (!history || history.length === 0) return;
 
       const lbls = history.map(r =>
-        new Date(r.time).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })
+        new Date(r.time).toLocaleTimeString("en-PH", {
+          hour: "2-digit",
+          minute: "2-digit"
+        })
       );
 
-      const temps = history.map(r => r.temperature);
-      const hums = history.map(r => r.humidity);
+      const tempsArr = history.map(r => r.temperature);
+      const humsArr = history.map(r => r.humidity);
 
-      // Dynamic limit depending on selected range
       let limit = 50;
-
       if (range === "-30m") limit = 300;
       if (range === "-1h") limit = 600;
       if (range === "-24h") limit = 1000;
 
       setLabels(lbls.slice(-limit));
-      setTemps(temps.slice(-limit));
-      setHums(hums.slice(-limit));
+      setTemps(tempsArr.slice(-limit));
+      setHums(humsArr.slice(-limit));
 
-      // get the last indexx
       const last = history[history.length - 1];
 
-      setLiveTemp(last.temperature ?? "--");
-      setLiveHum(last.humidity ?? "--");
+      setLiveTemp(last?.temperature ?? "--");
+      setLiveHum(last?.humidity ?? "--");
     };
 
-    const handleLive = (data) => {
+    const handleLive = (data: SensorData) => {
       if (!data) return;
-      const time = new Date(data.timestamp).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
+
+      const time = new Date(data.timestamp).toLocaleTimeString("en-PH", {
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+
       setLiveTemp(data.temperature);
       setLiveHum(data.humidity);
+
       setLabels(p => [...p.slice(-999), time]);
       setTemps(p => [...p.slice(-999), data.temperature]);
       setHums(p => [...p.slice(-999), data.humidity]);
     };
-
 
     socket.on("sensorHistory", handleHistory);
     socket.on("sensorData", handleLive);
@@ -106,21 +138,41 @@ export default function Environment() {
       socket.off("sensorHistory", handleHistory);
       socket.off("sensorData", handleLive);
     };
-  }, [range]); // when range changes, run again
+  }, [range]);
 
-  const changeRange = (r) => {
+  const changeRange = (r: RangeType) => {
     setRange(r);
     socket.emit("changeRange", r);
   };
 
-  const tempData = {
+  const tempData: ChartData<"line"> = {
     labels,
-    datasets: [{ data: temps, borderColor: "#4a90e2", backgroundColor: "rgba(0,212,255,0.07)", borderWidth: 2, pointRadius: 2, fill: true, tension: 0.4 }]
+    datasets: [
+      {
+        data: temps,
+        borderColor: "#4a90e2",
+        backgroundColor: "rgba(0,212,255,0.07)",
+        borderWidth: 2,
+        pointRadius: 2,
+        fill: true,
+        tension: 0.4
+      }
+    ]
   };
 
-  const humData = {
+  const humData: ChartData<"line"> = {
     labels,
-    datasets: [{ data: hums, borderColor: "#4a90e2", backgroundColor: "rgba(74,144,226,0.07)", borderWidth: 2, pointRadius: 2, fill: true, tension: 0.4 }]
+    datasets: [
+      {
+        data: hums,
+        borderColor: "#4a90e2",
+        backgroundColor: "rgba(74,144,226,0.07)",
+        borderWidth: 2,
+        pointRadius: 2,
+        fill: true,
+        tension: 0.4
+      }
+    ]
   };
 
   const peakTemp = temps.length ? Math.max(...temps).toFixed(1) : "--";
@@ -133,11 +185,8 @@ export default function Environment() {
     { label: "Min Temp", value: `${minTemp} °C`, color: "text-green-400", accent: "from-green-400 to-green-700" }
   ];
 
-
-  // Dynamic max values for chart
   const maxTemp = temps.length ? Math.max(...temps) + 2 : 35;
   const maxHum = hums.length ? Math.max(...hums) + 2 : 100;
-
 
   return (
     <div className="p-4 lg:p-6 flex flex-col gap-4">
@@ -158,7 +207,7 @@ export default function Environment() {
           <button
             key={r}
             className={`px-3 py-1 text-xs font-mono rounded ${range === r ? "bg-green-500 text-white" : "bg-white/5 text-slate-300"}`}
-            onClick={() => changeRange(r)}
+            onClick={() => changeRange(r as RangeType)}
           >
             {r}
           </button>

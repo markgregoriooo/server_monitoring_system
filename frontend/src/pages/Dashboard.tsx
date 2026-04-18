@@ -1,14 +1,38 @@
 import { useState, useEffect } from "react";
-import "../chart/ChartConfig";
+import type { ChartOptions } from "chart.js";
+import "../chart/ChartConfig.js";
 import { Line } from "react-chartjs-2";
-import StatusBadge from "../components/ui/StatusBadge";
-import { api } from "../api/api";
-import { socket } from "../socket/socket";
+import StatusBadge from "../components/ui/StatusBadge.js";
+import { api } from "../api/api.js";
+import { socket } from "../socket/socket.js";
 
-function Gauge({ value, color }) {
+interface Server {
+  id: number;
+  name: string;
+  status: string;
+  cpu: number;
+  memory: number;
+  uptime: string;
+}
+
+interface Alert {
+  id: number;
+  type: string;
+  title: string;
+  desc: string;
+  time: string;
+}
+
+interface SensorData {
+  temperature: number;
+  timestamp: string;
+}
+
+function Gauge({ value, color }: { value: number; color: string }) {
   const r = 26, cx = 36, cy = 36, circ = 2 * Math.PI * r;
   const dash = (value / 100) * circ * 0.75;
   const offset = -(circ * 0.125);
+
   return (
     <svg width="72" height="72" viewBox="0 0 72 72" className="flex-shrink-0">
       <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="5" strokeDasharray={`${circ * 0.75} ${circ * 0.25}`} strokeDashoffset={offset} strokeLinecap="round" />
@@ -18,7 +42,7 @@ function Gauge({ value, color }) {
   );
 }
 
-function MiniBar({ value, color }) {
+function MiniBar({ value, color }: { value: number; color: string }) {
   return (
     <div className="w-12 sm:w-16 h-1.5 bg-white/10 rounded-full overflow-hidden">
       <div className="h-full rounded-full transition-all" style={{ width: `${value}%`, background: color }} />
@@ -28,23 +52,26 @@ function MiniBar({ value, color }) {
 
 export default function Dashboard() {
 
-  const [servers, setServers] = useState([]);
-  const [alerts, setAlerts] = useState([]);
-  const [liveTemp, setLiveTemp] = useState("--");
-  const [chartTemps, setChartTemps] = useState([]);
-  const [chartLabels, setChartLabels] = useState([]);
-  const [acOn, setAcOn] = useState(true);
-  const [acMode, setAcMode] = useState("Auto");
-  const [acTemp, setAcTemp] = useState(24);
-  // const socketRef = useRef(null);
+  const [servers, setServers] = useState<Server[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [liveTemp, setLiveTemp] = useState<number | string>("--");
+  const [chartTemps, setChartTemps] = useState<number[]>([]);
+  const [chartLabels, setChartLabels] = useState<string[]>([]);
+  const [acOn, setAcOn] = useState<boolean>(true);
+  const [acMode, setAcMode] = useState<string>("Auto");
+  const [acTemp, setAcTemp] = useState<number>(24);
 
   useEffect(() => {
 
-    api.getServers().then(d => setServers(d.servers)).catch(() => { });
-    api.getAlerts().then(d => setAlerts(d.alerts)).catch(() => { });
-    api.getAircon().then(d => { setAcOn(d.aircon.enabled); setAcMode(d.aircon.mode); setAcTemp(d.aircon.setTemp); }).catch(() => { });
+    api.getServers().then((d: any) => setServers(d.servers)).catch(() => { });
+    api.getAlerts().then((d: any) => setAlerts(d.alerts)).catch(() => { });
+    api.getAircon().then((d: any) => {
+      setAcOn(d.aircon.enabled);
+      setAcMode(d.aircon.mode);
+      setAcTemp(d.aircon.setTemp);
+    }).catch(() => { });
 
-    const handleSensor = (data) => {
+    const handleSensor = (data: SensorData) => {
       setLiveTemp(data.temperature);
 
       const time = new Date(data.timestamp).toLocaleTimeString("en-PH", {
@@ -56,7 +83,9 @@ export default function Dashboard() {
       setChartTemps(p => [...p.slice(-300), data.temperature]);
     };
 
-    const handleMetrics = (data) => setServers(data.servers);
+    const handleMetrics = (data: { servers: Server[] }) => {
+      setServers(data.servers);
+    };
 
     socket.on("sensorData", handleSensor);
     socket.on("serverMetrics", handleMetrics);
@@ -67,31 +96,46 @@ export default function Dashboard() {
     };
   }, []);
 
-  const cpuAvg = servers.length ? Math.round(servers.reduce((a, s) => a + s.cpu, 0) / servers.length) : 0;
-  const memAvg = servers.length ? Math.round(servers.reduce((a, s) => a + s.memory, 0) / servers.length) : 0;
+  const cpuAvg = servers.length
+    ? Math.round(servers.reduce((a, s) => a + s.cpu, 0) / servers.length)
+    : 0;
+
+  const memAvg = servers.length
+    ? Math.round(servers.reduce((a, s) => a + s.memory, 0) / servers.length)
+    : 0;
+
   const maxTemp = chartTemps.length ? Math.max(...chartTemps) + 2 : 35;
 
   const tempChartData = {
     labels: chartLabels,
     datasets: [{
-      data: chartTemps, borderColor: "#00d4ff", backgroundColor: "rgba(0,212,255,0.08)", pointBackgroundColor: "#00d4ff",
-      borderWidth: 2, pointRadius: 2, fill: true, tension: 0.4
+      data: chartTemps,
+      borderColor: "#00d4ff",
+      backgroundColor: "rgba(0,212,255,0.08)",
+      pointBackgroundColor: "#00d4ff",
+      borderWidth: 2,
+      pointRadius: 2,
+      fill: true,
+      tension: 0.4
     }],
   };
-  const chartOptions = {
+
+  const chartOptions: ChartOptions<"line"> = {
     responsive: true,
     animation: false,
     interaction: {
-      mode: "nearest",
+      mode: "nearest" as const,
       intersect: false
     },
     plugins: {
       legend: { display: false },
       tooltip: {
         backgroundColor: "rgba(7,14,28,0.95)",
-        borderColor: "rgba(0,212,255,0.3)", borderWidth: 1,
+        borderColor: "rgba(0,212,255,0.3)",
+        borderWidth: 1,
         titleColor: "rgba(180,200,240,0.6)",
-        bodyColor: "#fff", padding: 8
+        bodyColor: "#fff",
+        padding: 8
       }
     },
     elements: {
@@ -100,14 +144,53 @@ export default function Dashboard() {
       }
     },
     scales: {
-      x: { grid: { color: "rgba(255,255,255,0.04)", drawBorder: false }, ticks: { color: "rgba(180,200,240,0.35)", font: { size: 8, family: "monospace" }, maxTicksLimit: 5 } },
-      y: { grid: { color: "rgba(255,255,255,0.04)", drawBorder: false }, ticks: { color: "rgba(180,200,240,0.35)", font: { size: 8, family: "monospace" } }, min: 15, max: maxTemp },
-    },
+      x: {
+        grid: { color: "rgba(255,255,255,0.04)" },
+        border: {
+          display: false
+        },
+        ticks: {
+          color: "rgba(180,200,240,0.35)",
+          font: { size: 8, family: "monospace" },
+          maxTicksLimit: 5
+        }
+      },
+      y: {
+        grid: { color: "rgba(255,255,255,0.04)" },
+        border: {
+          display: false
+        },
+        ticks: {
+          color: "rgba(180,200,240,0.35)",
+          font: { size: 8, family: "monospace" }
+        },
+        min: 15,
+        max: maxTemp
+      }
+    }
   };
 
-  const handleAcToggle = async () => { try { const d = await api.toggleAircon(); setAcOn(d.aircon.enabled); } catch { } };
-  const handleAcMode = async (m) => { try { const d = await api.setAirconMode(m); setAcMode(d.aircon.mode); } catch { } };
-  const handleAcTemp = async (t) => { try { const d = await api.setAirconTemp(t); setAcTemp(d.aircon.setTemp); } catch { } };
+  const handleAcToggle = async () => {
+    try {
+      const d: any = await api.toggleAircon();
+      setAcOn(d.aircon.enabled);
+    } catch { }
+  };
+
+  const handleAcMode = async (m: string) => {
+    try {
+      const d: any = await api.setAirconMode(m);
+      setAcMode(d.aircon.mode);
+    } catch { }
+  };
+
+  const handleAcTemp = async (t: number) => {
+    try {
+      const d: any = await api.setAirconTemp(t);
+      setAcTemp(d.aircon.setTemp);
+    } catch { }
+  };
+
 
   return (
     <div className="p-4 lg:p-6 flex flex-col gap-4">
