@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
-import StatusBadge from "../components/ui/StatusBadge.js";
-import { api } from "../api/api.js";
-import { socket } from "../socket/socket.js";
+import StatusBadge from "../components/ui/StatusBadge";
+import { api } from "../api/api";
+import { socket } from "../socket/socket";
 
 interface Server {
   id: string;
