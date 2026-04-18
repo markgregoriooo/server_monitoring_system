@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import type { ChartOptions } from "chart.js";
-import "../chart/ChartConfig.js";
+import "../chart/ChartConfig";
 import { Line } from "react-chartjs-2";
-import StatusBadge from "../components/ui/StatusBadge.js";
-import { api } from "../api/api.js";
-import { socket } from "../socket/socket.js";
+import StatusBadge from "../components/ui/StatusBadge";
+import { api } from "../api/api";
+import { socket } from "../socket/socket";
 
 interface Server {
   id: number;

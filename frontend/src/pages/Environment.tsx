@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
-import "../chart/ChartConfig.js";
+import "../chart/ChartConfig";
 import { Line } from "react-chartjs-2";
-import { socket } from "../socket/socket.js";
+import { socket } from "../socket/socket";
 import type { ChartOptions, ChartData } from "chart.js";
 
 type RangeType = "-30m" | "-1h" | "-24h";

@@ -7,21 +7,21 @@ import {
   useLocation,
 } from "react-router-dom";
 
-import { AuthProvider, useAuth } from "./context/AuthContext.js";
-import { roleConfig } from "./data/users.js";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import { roleConfig } from "./data/users";
 
-import Login from "./pages/auth/Login.js";
-import Unauthorized from "./pages/auth/Unauthorized.js";
-import Sidebar from "./components/layout/Sidebar.js";
-import Header from "./components/layout/Header.js";
-import Dashboard from "./pages/Dashboard.js";
-import ServerMetrics from "./pages/ServerMetrics.js";
-import Environment from "./pages/Environment.js";
-import AirControl from "./pages/AirControl.js";
-import History from "./pages/History.js";
-import Reports from "./pages/Reports.js";
-import Settings from "./pages/Settings.js";
-import UserManagement from "./pages/UserManagement.js";
+import Login from "./pages/auth/Login";
+import Unauthorized from "./pages/auth/Unauthorized";
+import Sidebar from "./components/layout/Sidebar";
+import Header from "./components/layout/Header";
+import Dashboard from "./pages/Dashboard";
+import ServerMetrics from "./pages/ServerMetrics";
+import Environment from "./pages/Environment";
+import AirControl from "./pages/AirControl";
+import History from "./pages/History";
+import Reports from "./pages/Reports";
+import Settings from "./pages/Settings";
+import UserManagement from "./pages/UserManagement";
 
 const pageTitles: Record<string, string> = {
   "/": "Server Environment Monitoring & Control System",
