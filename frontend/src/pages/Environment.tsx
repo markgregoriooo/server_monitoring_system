@@ -18,12 +18,7 @@ interface HistoryData {
   humidity: number;
 }
 
-const chartOptions = (
-  color: string,
-  min: number,
-  max: number,
-  unit: string
-): ChartOptions<"line"> => ({
+const chartOptions = (color: string, min: number, max: number, unit: string): ChartOptions<"line"> => ({
   responsive: true,
   animation: false,
   interaction: {

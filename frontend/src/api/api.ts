@@ -1,8 +1,12 @@
 import apiClient from "./client.js";
 
+interface User {
+  [key: string]: number | string;
+}
+
 interface LoginResponse {
   token: string;
-  user: any;
+  user: User;
 }
 
 interface ApiResponse<T = any> {
@@ -25,10 +29,6 @@ export const api = {
   // Servers
   getServers: () =>
     apiClient.get("/servers").then((res: ApiResponse<any>) => res.data),
-
-  // Environment
-  getLive: () =>
-    apiClient.get("/environment/live").then((res: ApiResponse<any>) => res.data),
 
   getEnvHistory: (count: number = 20) =>
     apiClient

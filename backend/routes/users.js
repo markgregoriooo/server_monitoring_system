@@ -12,13 +12,13 @@ const sanitize = (u) => {
   return safe;
 };
 
-// GET /api/users — list all users (super_admin only)
-router.get("/", authMiddleware, requireRole("super_admin"), (req, res) => {
+// GET /api/users — list all users (admin only)
+router.get("/", authMiddleware, requireRole("admin"), (req, res) => {
   res.json({ users: users.map(sanitize) });
 });
 
-// POST /api/users — create new user (super_admin only)
-router.post("/", authMiddleware, requireRole("super_admin"), async (req, res) => {
+// POST /api/users — create new user (admin only)
+router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
   const { name, username, password, role, email } = req.body;
 
   if (!name || !username || !password || !role) {
@@ -27,7 +27,7 @@ router.post("/", authMiddleware, requireRole("super_admin"), async (req, res) =>
     });
   }
 
-  if (!["super_admin", "it_staff", "viewer"].includes(role)) {
+  if (!["admin", "staff", "viewer"].includes(role)) {
     return res.status(400).json({
       error: "Invalid role."
     });
@@ -63,7 +63,7 @@ router.post("/", authMiddleware, requireRole("super_admin"), async (req, res) =>
 });
 
 // DELETE /api/users/:id — delete user
-router.delete("/:id", authMiddleware, requireRole("super_admin"), (req, res) => {
+router.delete("/:id", authMiddleware, requireRole("admin"), (req, res) => {
   const id = parseInt(req.params.id);
 
   if (id === 1) {

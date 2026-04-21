@@ -2,6 +2,8 @@ import { NavLink } from "react-router";
 import { useAuth } from "../../context/AuthContext";
 import { roleConfig } from "../../data/users";
 
+type RoleKey = keyof typeof roleConfig;
+
 interface NavItem {
   id: string;
   label: string;
@@ -18,6 +20,8 @@ interface SidebarProps {
   onClose: () => void;
 }
 
+
+
 const allNavItems: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: "⊞", path: "/dashboard" },
   { id: "server-metrics", label: "Server Metrics", icon: "▤", path: "/server-metrics" },
@@ -30,7 +34,7 @@ const allNavItems: NavItem[] = [
 ];
 
 function RoleBadge({ role }: RoleBadgeProps) {
-  const cfg = (roleConfig as any)[role] || {};
+  const cfg = roleConfig[role as RoleKey] || {};
 
   return (
     <span
@@ -43,9 +47,9 @@ function RoleBadge({ role }: RoleBadgeProps) {
 
 export default function Sidebar({ mobileOpen, onClose }: SidebarProps) {
   const { user, logout } = useAuth();
-
-  const allowed = user ? ((roleConfig as any)[user.role]?.pages || []) : [];
-  const navItems = allNavItems.filter((item) => allowed.includes(item.id));
+  // allowed pages
+  const allowed = user ? roleConfig[user.role as RoleKey]?.pages || [] : [];
+  const navItems = allNavItems.filter((item) => allowed.includes(item.id)); //keep all true item
 
   return (
     <>
@@ -120,7 +124,7 @@ export default function Sidebar({ mobileOpen, onClose }: SidebarProps) {
                 <div className="text-white text-xs font-semibold leading-tight truncate">
                   {user.name}
                 </div>
-                <RoleBadge role={user.role} />
+                <RoleBadge role={user.role as RoleKey} />
               </div>
             </div>
             <button

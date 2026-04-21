@@ -13,16 +13,10 @@ router.get("/", authMiddleware, (req, res) => {
 });
 
 // POST /api/aircon/toggle — turn aircon ON or OFF
-router.post(
-  "/toggle",
-  authMiddleware,
-  requireRole("super_admin", "it_staff"),
-  (req, res) => {
+router.post("/toggle", authMiddleware, requireRole("admin", "staff"), (req, res) => {
     airconState.enabled = !airconState.enabled;
 
-    const action = airconState.enabled
-      ? "Manually turned ON"
-      : "Manually turned OFF";
+    const action = airconState.enabled ? "Manually turned ON" : "Manually turned OFF";
 
     const entry = {
       time: new Date().toLocaleTimeString("en-PH"),
@@ -40,11 +34,7 @@ router.post(
 );
 
 // POST /api/aircon/mode — change aircon mode
-router.post(
-  "/mode",
-  authMiddleware,
-  requireRole("super_admin", "it_staff"),
-  (req, res) => {
+router.post( "/mode", authMiddleware, requireRole("admin", "staff"), (req, res) => {
     const { mode } = req.body;
 
     if (!["Cool", "Auto", "Fan"].includes(mode)) {
@@ -71,11 +61,7 @@ router.post(
 );
 
 // POST /api/aircon/temp — set target temperature
-router.post(
-  "/temp",
-  authMiddleware,
-  requireRole("super_admin", "it_staff"),
-  (req, res) => {
+router.post( "/temp", authMiddleware, requireRole("admin", "staff"), (req, res) => {
     const { temp } = req.body;
 
     if (typeof temp !== "number" || temp < 16 || temp > 30) {
