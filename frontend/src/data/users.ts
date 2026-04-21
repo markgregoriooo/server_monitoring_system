@@ -1,13 +1,14 @@
-export type Role = "super_admin" | "it_staff" | "viewer";
+export type Role = "admin" | "staff" | "viewer";
 
 export interface User {
-  id: number;
-  name: string;
-  username: string;
-  password: string;
-  role: Role;
-  avatar: string;
-  email: string;
+  [key: string]: number | string;
+  // id: number;
+  // name: string;
+  // username: string;
+  // password: string;
+  // role: Role;
+  // avatar: string;
+  // email: string;
 }
 
 export interface RoleConfig {
@@ -22,21 +23,21 @@ export interface RoleConfig {
 export const mockUsers: User[] = [
   {
     id: 1,
-    name: "Super Admin",
-    username: "superadmin",
+    name: "Admin",
+    username: "admin",
     password: "admin123",
-    role: "super_admin",
+    role: "admin",
     avatar: "SA",
-    email: "superadmin@cspc.edu.ph",
+    email: "admin@cspc.edu.ph",
   },
   {
     id: 2,
-    name: "IT Staff",
-    username: "itstaff",
+    name: "Staff",
+    username: "staff",
     password: "staff123",
-    role: "it_staff",
+    role: "staff",
     avatar: "IS",
-    email: "itstaff@cspc.edu.ph",
+    email: "staff@cspc.edu.ph",
   },
   {
     id: 3,
@@ -51,7 +52,7 @@ export const mockUsers: User[] = [
 
 // Role definitions — what each role can access
 export const roleConfig: Record<Role, RoleConfig> = {
-  super_admin: {
+  admin: {
     label: "Super Admin",
     color: "text-yellow-400",
     bg: "bg-yellow-500/10",
@@ -67,7 +68,7 @@ export const roleConfig: Record<Role, RoleConfig> = {
       "user-management",
     ],
   },
-  it_staff: {
+  staff: {
     label: "IT Staff",
     color: "text-blue-400",
     bg: "bg-blue-500/10",

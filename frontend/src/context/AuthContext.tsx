@@ -1,15 +1,9 @@
-import {
-  createContext,
-  useContext,
-  useMemo,
-  useState,
-  useCallback
-} from "react";
+import { createContext, useContext, useMemo, useState, useCallback } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api/api.js";
 
 interface User {
-  [key: string]: any; // keep flexible since we don't know your exact user shape
+  [key: string]: number | string; 
 }
 
 interface AuthContextType {
@@ -83,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       {children}
     </AuthContext.Provider>
   );
+
 }
 
 // access auth anywhere

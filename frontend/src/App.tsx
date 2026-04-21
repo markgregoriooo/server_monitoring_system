@@ -43,8 +43,7 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
   const location = useLocation();
 
   const allowed: string[] = roleConfig[user?.role as keyof typeof roleConfig]?.pages || [];
-  const currentPage =
-    location.pathname === "/" ? "dashboard" : location.pathname.replace("/", "");
+  const currentPage = location.pathname === "/" ? "dashboard" : location.pathname.replace("/", "");
 
   if (!allowed.includes(currentPage)) {
     return <Unauthorized />;
@@ -65,7 +64,7 @@ function AppShell() {
 
   if (isLoginPage) {
     return (
-      <Routes>
+      <Routes> 
         <Route path="/login" element={<Login />} />
       </Routes>
     );
