@@ -9,69 +9,196 @@ interface LoginResponse {
   user: User;
 }
 
-interface ApiResponse<T = any> {
-  data: T;
+export interface ApiResult<T = any> {
+  success: boolean;
+  data?: T;
+  status?: number;
+  error?: string;
 }
+
+// error handler
+const handleError = (err: any): ApiResult<never> => {
+  const status = err?.response?.status;
+  const serverMessage = err?.response?.data?.error;
+
+  const fallback =
+    status === 429 ? "Too many requests. Please wait." :
+      status === 401 ? "Unauthorized. Please log in again." :
+        status === 403 ? "You don't have permission to do that." :
+          status === 404 ? "Resource not found." :
+            status === 500 ? "Server error. Please try again later." :
+              "Cannot connect to server.";
+
+  return {
+    success: false,
+    status,
+    error: serverMessage || fallback,
+  };
+};
 
 export const api = {
   // Auth
-  login: (username: string, password: string) =>
-    apiClient
-      .post("/auth/login", { username, password })
-      .then((res: ApiResponse<LoginResponse>) => res.data),
+  login: async (username: string, password: string): Promise<ApiResult<LoginResponse>> => {
+    try {
+      const res = await apiClient.post<LoginResponse>("/auth/login", { username, password });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      const status = err?.response?.status;
+      return {
+        success: false,
+        status,
+        error:
+          err?.response?.data?.error
+      };
+    }
+  },
 
-  me: () =>
-    apiClient.get("/auth/me").then((res: ApiResponse<any>) => res.data),
+  me: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/auth/me");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  logout: () =>
-    apiClient.post("/auth/logout").then((res: ApiResponse<any>) => res.data),
+  logout: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/auth/logout");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
   // Servers
-  getServers: () =>
-    apiClient.get("/servers").then((res: ApiResponse<any>) => res.data),
+  getServers: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/servers");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  getEnvHistory: (count: number = 20) =>
-    apiClient
-      .get(`/environment/history?count=${count}`)
-      .then((res: ApiResponse<any>) => res.data),
+  getEnvHistory: async (count: number = 20): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/environment/history?count=${count}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  getHistoryLogs: () =>
-    apiClient.get("/environment/logs").then((res: ApiResponse<any>) => res.data),
+  getHistoryLogs: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/environment/logs");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
   // Aircon
-  getAircon: () =>
-    apiClient.get("/aircon").then((res: ApiResponse<any>) => res.data),
+  getAircon: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/aircon");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  toggleAircon: () =>
-    apiClient.post("/aircon/toggle").then((res: ApiResponse<any>) => res.data),
+  toggleAircon: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/aircon/toggle");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  setAirconMode: (mode: string) =>
-    apiClient.post("/aircon/mode", { mode }).then((res: ApiResponse<any>) => res.data),
+  setAirconMode: async (mode: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/aircon/mode", { mode });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  setAirconTemp: (temp: number) =>
-    apiClient.post("/aircon/temp", { temp }).then((res: ApiResponse<any>) => res.data),
+  setAirconTemp: async (temp: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/aircon/temp", { temp });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
   // Alerts
-  getAlerts: () =>
-    apiClient.get("/alerts").then((res: ApiResponse<any>) => res.data),
+  getAlerts: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/alerts");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  getAuditLog: () =>
-    apiClient.get("/alerts/audit").then((res: ApiResponse<any>) => res.data),
+  getAuditLog: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/alerts/audit");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
   // Reports
-  getReports: () =>
-    apiClient.get("/reports").then((res: ApiResponse<any>) => res.data),
+  getReports: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/reports");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  generateReport: (title: string, type: string) =>
-    apiClient.post("/reports", { title, type }).then((res: ApiResponse<any>) => res.data),
+  generateReport: async (title: string, type: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/reports", { title, type });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
   // Users (super_admin only)
-  getUsers: () =>
-    apiClient.get("/users").then((res: ApiResponse<any>) => res.data),
+  getUsers: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/users");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  createUser: (data: any) =>
-    apiClient.post("/users", data).then((res: ApiResponse<any>) => res.data),
+  createUser: async (data: any): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/users", data);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
-  deleteUser: (id: number) =>
-    apiClient.delete(`/users/${id}`).then((res: ApiResponse<any>) => res.data),
+  deleteUser: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/users/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 };

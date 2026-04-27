@@ -1,13 +1,30 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import {users, auditLog} from "../data/db.js";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import { users, auditLog } from "../data/db.js";
 import { authMiddleware, JWT_SECRET } from "../middleware/auth.js";
 
 const router = express.Router();
 
+const loginLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 5,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => {
+    const forwarded = req.headers["x-forwarded-for"];
+    const ip = forwarded ? forwarded.split(",")[0].trim() : req.ip;
+    return ipKeyGenerator(ip); // handles IPv6 normalization
+  },
+  handler: (req, res) => {
+    res.status(429).json({ error: "Too many login attempts. Try again in 5 minutes." });
+  },
+});
+
 // POST /api/auth/login
-router.post("/login", async (req, res) => {
+router.post("/login", loginLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {

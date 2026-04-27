@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { api } from "../api/api.js";
 
 interface User {
-  [key: string]: number | string; 
+  [key: string]: number | string;
 }
 
 interface AuthContextType {
@@ -16,12 +16,9 @@ interface AuthContextType {
   logout: () => Promise<void>;
 }
 
-// create context / create global auth storage
 const AuthContext = createContext<AuthContextType | null>(null);
 
-// provider (gives auth to the whole app)
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // user
   const [user, setUser] = useState<User | null>(() => {
     try {
       const saved = sessionStorage.getItem("cspc_user");
@@ -31,30 +28,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   });
 
-  // login
-  const login = useCallback(
-    async (username: string, password: string) => {
-      try {
-        const data = await api.login(username, password);
+  const login = useCallback(async (username: string, password: string) => {
+    const result = await api.login(username, password);
 
-        sessionStorage.setItem("cspc_token", JSON.stringify(data.token));
-        sessionStorage.setItem("cspc_user", JSON.stringify(data.user));
+    // api.login never throws — check success flag instead
+    if (!result.success || !result.data) {
+      return {
+        success: false,
+        error: result.error ?? "Login failed.",
+      };
+    }
 
-        setUser(data.user);
+    const { token, user } = result.data; // ✅ data is LoginResponse here
 
-        return { success: true, user: data.user };
-      } catch {
-        return {
-          success: false,
-          error:
-            "Cannot connect to server. Make sure the backend is running.",
-        };
-      }
-    },
-    []
-  );
+    sessionStorage.setItem("cspc_token", JSON.stringify(token));
+    sessionStorage.setItem("cspc_user", JSON.stringify(user));
+    setUser(user as User);
 
-  // logout
+    return { success: true, user: user as User };
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await api.logout();
@@ -67,26 +60,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.removeItem("cspc_token");
   }, []);
 
-  // remove unnecessary re-renders
-  const value = useMemo(() => {
-    return { user, login, logout };
-  }, [user, login, logout]);
+  const value = useMemo(() => ({ user, login, logout }), [user, login, logout]);
 
   return (
     <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );
-
 }
 
-// access auth anywhere
 export function useAuth() {
   const context = useContext(AuthContext);
-
-  if (!context) {
-    throw new Error("useAuth must be used within AuthProvider");
-  }
-
+  if (!context) throw new Error("useAuth must be used within AuthProvider");
   return context;
 }

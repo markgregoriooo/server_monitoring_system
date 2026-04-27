@@ -18,12 +18,12 @@ export default function History() {
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
-    api.getHistoryLogs()
-      .then((d: { logs: HistoryLog[] }) => {
-        setLogs(d.logs);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+    api.getHistoryLogs().then((result) => {
+      if (result.success && result.data) {
+        setLogs(result.data.logs);
+      }
+      setLoading(false);
+    });
   }, []);
 
   return (
@@ -40,10 +40,9 @@ export default function History() {
               key={f.key}
               onClick={() => setFilter(f.key as FilterType)}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-all
-                ${
-                  filter === f.key
-                    ? "bg-blue-500/20 border-blue-500/40 text-blue-400"
-                    : "bg-white/[0.04] border-white/[0.07] text-slate-400 hover:text-white"
+                ${filter === f.key
+                  ? "bg-blue-500/20 border-blue-500/40 text-blue-400"
+                  : "bg-white/[0.04] border-white/[0.07] text-slate-400 hover:text-white"
                 }`}
             >
               {f.label}
@@ -104,11 +103,10 @@ export default function History() {
                     <td className="px-3 py-3">
                       <span
                         className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border
-                        ${
-                          row.events > 0
+                        ${row.events > 0
                             ? "bg-amber-500/10 border-amber-500/25 text-amber-400"
                             : "bg-green-500/10 border-green-500/25 text-green-400"
-                        }`}
+                          }`}
                       >
                         {row.events} event{row.events !== 1 ? "s" : ""}
                       </span>

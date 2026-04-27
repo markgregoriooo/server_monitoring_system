@@ -30,7 +30,9 @@ export default function ServerMetrics() {
   const [servers, setServers] = useState<Server[]>([]);
 
   useEffect(() => {
-    api.getServers().then((d: { servers: Server[] }) => setServers(d.servers)).catch(() => { });
+    api.getServers().then((result) => {
+      if (result.success && result.data) setServers(result.data.servers);
+    });
     socket.on("serverMetrics", (data: { servers: Server[] }) => setServers(data.servers));
     return () => { socket.off("serverMetrics"); }
   }, []);
