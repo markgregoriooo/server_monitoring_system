@@ -32,8 +32,8 @@ interface RoleBadgeProps {
 
 function RoleBadge({ role }: RoleBadgeProps) {
 
-    const cfg: RoleConfig = roleConfig[role as keyof typeof roleConfig] || {};
-    
+  const cfg: RoleConfig = roleConfig[role as keyof typeof roleConfig] || {};
+
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${cfg.bg} ${cfg.border} ${cfg.color}`}>
       {cfg.label}
@@ -42,18 +42,20 @@ function RoleBadge({ role }: RoleBadgeProps) {
 }
 
 export default function UserManagement() {
-  const [users, setUsers]           = useState<User[]>([]);
-  const [loading, setLoading]       = useState<boolean>(true);
-  const [showAdd, setShowAdd]       = useState<boolean>(false);
-  const [form, setForm]             = useState<UserForm>({ name: "", username: "", email: "", role: "viewer", password: "" });
-  const [formError, setFormError]   = useState<string>("");
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [showAdd, setShowAdd] = useState<boolean>(false);
+  const [form, setForm] = useState<UserForm>({ name: "", username: "", email: "", role: "viewer", password: "" });
+  const [formError, setFormError] = useState<string>("");
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   useEffect(() => {
-    api
-      .getUsers()
-      .then((d: { users: User[] }) => { setUsers(d.users); setLoading(false); })
-      .catch(() => setLoading(false));
+    api.getUsers().then((result) => {
+      if (result.success && result.data) {
+        setUsers(result.data.users);
+        setLoading(false);
+      }
+    });
   }, []);
 
   const handleAdd = async () => {
@@ -63,15 +65,16 @@ export default function UserManagement() {
     }
 
     setSubmitting(true);
+    
+    const result = await api.createUser(form);
 
-    try {
-      const d: { user: User } = await api.createUser(form);
-      setUsers(p => [...p, d.user]);
+    if (result.success && result.data) {
+      setUsers(p => [...p, result.data.user]);
       setForm({ name: "", username: "", email: "", role: "viewer", password: "" });
       setFormError("");
       setShowAdd(false);
-    } catch (err: unknown) {
-      setFormError(err instanceof Error ? err.message : "Failed to create user.");
+    } else {
+      setFormError(result.error ?? "Failed to create user.");
     }
 
     setSubmitting(false);
@@ -202,11 +205,11 @@ export default function UserManagement() {
                       {u.id === 1
                         ? <span className="text-xs text-slate-600 font-mono">Protected</span>
                         : <button
-                            onClick={() => handleDelete(u.id)}
-                            className="px-2.5 py-1 rounded-md border border-red-500/25 bg-red-500/10 text-red-400 text-xs cursor-pointer hover:bg-red-500/20 transition"
-                          >
-                            Delete
-                          </button>
+                          onClick={() => handleDelete(u.id)}
+                          className="px-2.5 py-1 rounded-md border border-red-500/25 bg-red-500/10 text-red-400 text-xs cursor-pointer hover:bg-red-500/20 transition"
+                        >
+                          Delete
+                        </button>
                       }
                     </td>
                   </tr>

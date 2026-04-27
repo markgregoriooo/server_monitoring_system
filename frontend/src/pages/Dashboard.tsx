@@ -63,13 +63,21 @@ export default function Dashboard() {
 
   useEffect(() => {
 
-    api.getServers().then((d: any) => setServers(d.servers)).catch(() => { });
-    api.getAlerts().then((d: any) => setAlerts(d.alerts)).catch(() => { });
-    api.getAircon().then((d: any) => {
-      setAcOn(d.aircon.enabled);
-      setAcMode(d.aircon.mode);
-      setAcTemp(d.aircon.setTemp);
-    }).catch(() => { });
+    api.getServers().then((result) => {
+      if (result.success && result.data) setServers(result.data.servers);
+    });
+
+    api.getAlerts().then((result) => {
+      if (result.success && result.data) setAlerts(result.data.alerts);
+    });
+
+    api.getAircon().then((result) => {
+      if (result.success && result.data) {
+        setAcOn(result.data.aircon.enabled);
+        setAcMode(result.data.aircon.mode);
+        setAcTemp(result.data.aircon.setTemp);
+      }
+    });
 
     const handleSensor = (data: SensorData) => {
       setLiveTemp(data.temperature);

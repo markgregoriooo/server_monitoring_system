@@ -35,17 +35,4 @@ apiClient.interceptors.request.use(
   }
 );
 
-// Global error handler
-apiClient.interceptors.response.use(
-  (response: AxiosResponse) => response,
-  (error: any) => {
-    const message =
-      error.response?.data?.error ||
-      error.response?.data?.message ||
-      "Request failed";
-
-    return Promise.reject(new Error(message));
-  }
-);
-
 export default apiClient;

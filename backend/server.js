@@ -2,7 +2,7 @@ import express from "express";
 import http from "http";
 import cors from "cors";
 import { Server } from "socket.io";
-
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 // import socket cn
 import { handleConnection } from "./sockets/connectionHandler.js";
 
@@ -18,6 +18,21 @@ import reportRoutes from "./routes/reports.js";
 //mock data(for static only, just ignore)
 import { servers } from "./data/db.js";
 
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const forwarded = req.headers["x-forwarded-for"];
+    const ip = forwarded ? forwarded.split(",")[0].trim() : req.ip;
+    return ipKeyGenerator(ip);
+  },
+  handler: (req, res) => {
+    res.status(429).json({ error: "Too many requests. Please try again later." });
+  },
+});
+
 const app = express();
 const server = http.createServer(app);
 
@@ -29,9 +44,9 @@ const io = new Server(server, {
   allowEIO3: true, //bcz ESP32 uses Engine.IO v3 
 });
 
-
 app.use(cors({ origin: "*" }));
 app.use(express.json());
+app.use(globalLimiter);
 
 // socket connections
 io.on("connection", (socket) => {
