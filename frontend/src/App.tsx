@@ -5,6 +5,7 @@ import {
   Route,
   Navigate,
   useLocation,
+  useNavigate,
 } from "react-router-dom";
 
 import { AuthProvider, useAuth } from "./context/AuthContext";
@@ -41,12 +42,13 @@ interface ProtectedRouteProps {
 function ProtectedRoute({ children }: ProtectedRouteProps) {
   const { user } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
 
   const allowed: string[] = roleConfig[user?.role as keyof typeof roleConfig]?.pages || [];
   const currentPage = location.pathname === "/" ? "dashboard" : location.pathname.replace("/", "");
 
   if (!allowed.includes(currentPage)) {
-    return <Unauthorized />;
+    return <Unauthorized onBack={ () => navigate("/") } />;
   }
 
   return children;

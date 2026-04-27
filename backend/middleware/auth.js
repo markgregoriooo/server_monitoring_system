@@ -1,5 +1,6 @@
-import jwt from "jsonwebtoken"
-const JWT_SECRET = process.env.JWT_SECRET || "cspc_ictu_secret_2025";
+import "../config/env.js";
+import jwt from "jsonwebtoken";
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // Verify JWT token from Authorization header
 function authMiddleware(req, res, next) {
