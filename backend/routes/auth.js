@@ -1,64 +1,71 @@
 import express from "express";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
-import { users, auditLog } from "../data/db.js";
-import { authMiddleware, JWT_SECRET } from "../middleware/auth.js";
+import authService from "../services/authService.js";
+import { authMiddleware } from "../middleware/auth.js";
 
 const router = express.Router();
 
+// login rate limiter
 const loginLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 5,
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 5, // 5 attempts per ip
   standardHeaders: "draft-7",
   legacyHeaders: false,
   skipSuccessfulRequests: true,
   keyGenerator: (req) => {
     const forwarded = req.headers["x-forwarded-for"];
     const ip = forwarded ? forwarded.split(",")[0].trim() : req.ip;
-    return ipKeyGenerator(ip); // handles IPv6 normalization
+    return ipKeyGenerator(ip);
   },
   handler: (req, res) => {
-    res.status(429).json({ error: "Too many login attempts. Try again in 5 minutes." });
+    res.status(429).json({
+      error: "Too many login attempts. Try again in 5 minutes.",
+    });
   },
 });
 
 // POST /api/auth/login
 router.post("/login", loginLimiter, async (req, res) => {
-  const { username, password } = req.body;
+  try {
+    const result = await authService.login(req.body);
 
-  if (!username || !password) {
-    return res.status(400).json({ error: "Username and password are required." });
+    res.json({
+      token: result.token,
+      user: result.user,
+    });
+  } catch (error) {
+    res.status(401).json({
+      error: error.message,
+    });
   }
-
-  const user = users.find(u => u.username === username);
-  if (!user) {
-    return res.status(401).json({ error: "Invalid username or password." });
-  }
-
-  const valid = await bcrypt.compare(password, user.password);
-  if (!valid) {
-    return res.status(401).json({ error: "Invalid username or password." });
-  }
-
-  const payload = { id: user.id, name: user.name, username: user.username, role: user.role, avatar: user.avatar, email: user.email };
-  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "1h" });
-
-  // Audit log
-  auditLog.unshift({ time: new Date().toLocaleTimeString("en-PH"), action: `User "${username}" logged in`, user: user.name });
-
-  res.json({ token, user: payload });
 });
 
-// GET /api/auth/me  (verify current token)
+// GET /api/auth/me  
 router.get("/me", authMiddleware, (req, res) => {
-  res.json({ user: req.user });
+  res.json({
+    user: req.user,
+  });
 });
 
-// POST /api/auth/logout  (client just discards token, but we log it)
-router.post("/logout", authMiddleware, (req, res) => {
-  auditLog.unshift({ time: new Date().toLocaleTimeString("en-PH"), action: `User "${req.user.username}" logged out`, user: req.user.name });
-  res.json({ message: "Logged out." });
+// POST /api/auth/logout
+router.post("/logout", authMiddleware, async (req, res) => {
+  try {
+    // req.user comes from authMiddleware
+    await db.query(
+      "UPDATE users SET status = ? WHERE id = ?",
+      ["inactive", req.user.id]
+    );
+
+    res.json({
+      success: true,
+      message: "Logged out successfully",
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: "Logout failed",
+    });
+  }
 });
 
 export default router;

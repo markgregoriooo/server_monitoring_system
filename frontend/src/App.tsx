@@ -18,7 +18,7 @@ import Header from "./components/layout/Header";
 import Dashboard from "./pages/Dashboard";
 import ServerMetrics from "./pages/ServerMetrics";
 import Environment from "./pages/Environment";
-import AirControl from "./pages/AirControl";
+import AirConditioner from "./pages/AirConditioner";
 import History from "./pages/History";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
@@ -28,7 +28,7 @@ const pageTitles: Record<string, string> = {
   "/": "Server Environment Monitoring & Control System",
   "/server-metrics": "Server Metrics",
   "/environment": "Environment Monitoring",
-  "/air-control": "Air Conditioner Control",
+  "/air-conditioner": "Air Conditioner Control",
   "/history": "History Logs",
   "/reports": "Reports",
   "/settings": "Settings",
@@ -48,7 +48,7 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
   const currentPage = location.pathname === "/" ? "dashboard" : location.pathname.replace("/", "");
 
   if (!allowed.includes(currentPage)) {
-    return <Unauthorized onBack={ () => navigate("/") } />;
+    return <Unauthorized onBack={() => navigate("/")} />;
   }
 
   return children;
@@ -66,14 +66,14 @@ function AppShell() {
 
   if (isLoginPage) {
     return (
-      <Routes> 
+      <Routes>
         <Route path="/login" element={<Login />} />
       </Routes>
     );
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#080f1e] font-sans">
+    <div className="flex h-screen overflow-hidden font-sans" style={{ backgroundColor: 'var(--bg)' }}>
 
       <Sidebar
         mobileOpen={mobileOpen}
@@ -108,9 +108,9 @@ function AppShell() {
               </ProtectedRoute>
             } />
 
-            <Route path="/air-control" element={
+            <Route path="/air-conditioner" element={
               <ProtectedRoute>
-                <AirControl />
+                <AirConditioner />
               </ProtectedRoute>
             } />
 

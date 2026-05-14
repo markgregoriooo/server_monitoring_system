@@ -14,12 +14,8 @@ export default function StatusBadge({ status }: StatusBadgeProps) {
           : "bg-red-500/10 border-red-500/30 text-red-400"
       }`}
     >
-      <span
-        className={`w-1.5 h-1.5 rounded-full ${
-          online ? "bg-green-400 shadow-[0_0_5px_#4ade80]" : "bg-red-400"
-        }`}
-      />
-      ↓ {status}
+      
+       {status}
     </span>
   );
 }

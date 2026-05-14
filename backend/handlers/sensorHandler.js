@@ -4,7 +4,7 @@ export async function sensorHandler(socket, data) {
 
   const now = Date.now();
 
-  // initialize if not exists
+  
   if (!socket.lastEmitTime) {
     socket.lastEmitTime = 0;
   }

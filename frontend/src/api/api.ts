@@ -1,12 +1,23 @@
 import apiClient from "./client.js";
 
-interface User {
-  [key: string]: number | string;
+// api.ts
+interface LoginUser {
+  id: number;
+  name: string;
+  username: string;
+  email: string;
+  role: string;
+  status?: string;
+  avatar?: string;
+  profile_image?: string;
+  permissions: string[];
+  created_at?: string;
+  last_login?: string;
 }
 
 interface LoginResponse {
   token: string;
-  user: User;
+  user: LoginUser;
 }
 
 export interface ApiResult<T = any> {
@@ -44,12 +55,7 @@ export const api = {
       return { success: true, data: res.data };
     } catch (err: any) {
       const status = err?.response?.status;
-      return {
-        success: false,
-        status,
-        error:
-          err?.response?.data?.error
-      };
+      return handleError(err);
     }
   },
 
@@ -193,6 +199,69 @@ export const api = {
     }
   },
 
+  updateUser: async (id: number, data: any): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch(`/users/${id}`, data);
+
+      return {
+        success: true,
+        data: res.data,
+      };
+
+    } catch (err: any) {
+
+      return handleError(err);
+
+    }
+  },
+
+    // update own name, username, email
+  updateMe: async (data: FormData): Promise<ApiResult<LoginUser>> => {
+    try {
+      const res = await apiClient.patch("/users/me", data);
+      return {
+      success: true,
+      data: res.data.data,
+    };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  resetPassword: async (id: number, password: string): Promise<ApiResult> => {
+    try {
+
+      const res = await apiClient.patch(`/users/${id}/reset-password`, { password });
+
+      return {
+        success: true,
+        data: res.data,
+      };
+
+    } catch (err: any) {
+
+      return handleError(err);
+
+    }
+  },
+
+  updateUserStatus: async (id: number, status: string): Promise<ApiResult> => {
+
+    try {
+      const res = await apiClient.patch(`/users/${id}/status`, { status });
+
+      return {
+        success: true,
+        data: res.data,
+      };
+
+    } catch (err: any) {
+
+      return handleError(err);
+
+    }
+  },
+
   deleteUser: async (id: number): Promise<ApiResult> => {
     try {
       const res = await apiClient.delete(`/users/${id}`);
@@ -201,4 +270,17 @@ export const api = {
       return handleError(err);
     }
   },
+
+
+  // PATCH /api/users/me/password — change own password (requires current password)
+  changePassword: async (currentPassword: string, newPassword: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch("/users/me/password", {currentPassword,newPassword,});
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+
 };

@@ -41,12 +41,6 @@ export default function Login() {
     setLoading(false);
   };
 
-  const demoAccounts = [
-    { username: "superadmin", password: "admin123", role: "Super Admin", color: "text-yellow-400", icon: "👑" },
-    { username: "itstaff", password: "staff123", role: "IT Staff", color: "text-blue-400", icon: "🖥️" },
-    { username: "viewer", password: "viewer123", role: "Viewer", color: "text-slate-300", icon: "👁️" },
-  ];
-
   return (
     <div
       className="min-h-screen bg-[#080f1e] flex flex-col items-center justify-center p-4"
@@ -66,13 +60,13 @@ export default function Login() {
 
       <div className="w-full max-w-md relative z-10">
         <div className="flex flex-col items-center mb-8">
-          <div
+          {/* <div
             className="w-20 h-20 rounded-full bg-gradient-to-br from-[#f5c400] to-[#d4a800]
             flex items-center justify-center font-black text-base text-[#080f1e]
             shadow-[0_0_40px_rgba(245,196,0,0.4)] mb-5 border-2 border-[#f5c400]/30"
           >
             CSPC
-          </div>
+          </div> */}
 
           <h1 className="text-2xl font-bold text-white tracking-tight">CSPC-ICTU</h1>
 
@@ -169,43 +163,6 @@ export default function Login() {
               {loading ? "Signing in..." : "Sign In →"}
             </button>
           </form>
-        </div>
-
-        <div
-          className="mt-4 rounded-xl border border-white/[0.06] p-4"
-          style={{ background: "rgba(255,255,255,0.02)" }}
-        >
-          <div className="text-[9px] text-slate-500 font-mono tracking-[0.2em] uppercase mb-3">
-            Demo Accounts — Click to fill
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            {demoAccounts.map((acc) => (
-              <button
-                key={acc.username}
-                type="button"
-                onClick={() => {
-                  setUsername(acc.username);
-                  setPassword(acc.password);
-                  setError("");
-                }}
-                className="flex items-center justify-between px-3 py-2.5 rounded-lg
-                  bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.07]
-                  cursor-pointer transition-all group text-left"
-              >
-                <div className="flex items-center gap-2.5">
-                  <span className="text-sm">{acc.icon}</span>
-                  <span className={`text-xs font-bold ${acc.color}`}>{acc.role}</span>
-                  <span className="text-slate-600 text-xs">·</span>
-                  <span className="text-slate-400 text-xs font-mono">{acc.username}</span>
-                </div>
-
-                <span className="text-[10px] text-slate-600 group-hover:text-slate-400 transition font-mono">
-                  {acc.password}
-                </span>
-              </button>
-            ))}
-          </div>
         </div>
 
         <p className="text-center text-[10px] text-slate-600 mt-5 font-mono">
