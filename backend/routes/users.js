@@ -1,96 +1,157 @@
 import express from "express";
-import bcrypt from "bcryptjs";
-import { users } from "../data/db.js";
+import asyncHandler from "../utils/asyncHandler.js";
+import userService from "../services/userService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
-import db from "../config/mysql.js";
+import upload from "../middleware/upload.js";
 
 const router = express.Router();
 
-// Remove password before sending user data
-const sanitize = (u) => {
-  const { password, ...safe } = u;
-  return safe;
-};
+// Get all users
+router.get(
+  "/",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    const users = await userService.getAllUsers();
 
-// GET /api/users — list all users (admin only)
-router.get("/", authMiddleware, requireRole("admin"), (req, res) => {
-  res.json({ users: users.map(sanitize) });
-});
+    res.json({ users });
+  }),
+);
 
-// POST /api/users — create new user (admin only)
-router.post("/", authMiddleware, requireRole("admin"), async (req, res) => {
-  const { name, username, password, role, email } = req.body;
-
-  if (!name || !username || !password || !role) {
-    return res.status(400).json({
-      error: "Name, username, password, and role are required."
+// Logged-in user updates own profile
+router.patch("/me", authMiddleware, upload.single("profile_image"), asyncHandler(async (req, res) => {
+  
+    const updatedUser = await userService.updateOwnProfile(req.user.id, {
+      ...req.body,
+      profile_image: req.file ? `/uploads/${req.file.filename}` : undefined,
     });
-  }
 
-  if (!["admin", "staff", "viewer"].includes(role)) {
-    return res.status(400).json({
-      error: "Invalid role."
+    res.json({
+      success: true,
+      message: "Profile updated successfully",
+      data: updatedUser,
     });
-  }
+  }),
+);
 
-  if (users.find((u) => u.username === username)) {
-    return res.status(409).json({
-      error: "Username already exists."
+// Logged-in user changes own password
+router.patch(
+  "/me/password",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+
+    await userService.changeOwnPassword(
+      req.user.id,
+      currentPassword,
+      newPassword,
+    );
+
+    res.json({
+      success: true,
+      message: "Password updated successfully",
     });
-  }
+  }),
+);
 
-  const newUser = {
-    id: users.length + 1,
-    name,
-    username,
-    password: await bcrypt.hash(password, 10),
-    role,
-    avatar: name
-      .split(" ")
-      .map((w) => w[0])
-      .join("")
-      .toUpperCase()
-      .slice(0, 2),
-    email: email || "",
-    created_at: new Date().toISOString().split("T")[0]
-  };
+// GET single user
+router.get(
+  "/:id",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    const user = await userService.getUserById(parseInt(req.params.id));
 
-  users.push(newUser);
+    if (!user) {
+      return res.status(404).json({
+        error: "User not found",
+      });
+    }
 
-  res.status(201).json({
-    user: sanitize(newUser)
-  });
-});
+    res.json({ user });
+  }),
+);
 
-// DELETE /api/users/:id — delete user
-router.delete("/:id", authMiddleware, requireRole("admin"), (req, res) => {
-  const id = parseInt(req.params.id);
+// Create user
+router.post(
+  "/",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    const result = await userService.createUser(req.body);
 
-  if (id === 1) {
-    return res.status(403).json({
-      error: "Cannot delete the primary super admin."
+    res.status(201).json({
+      message: "User created successfully",
+      user: result.user,
     });
-  }
+  }),
+);
 
-  if (id === req.user.id) {
-    return res.status(403).json({
-      error: "Cannot delete your own account."
+// Update user
+router.patch(
+  "/:id",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    // console.log(req.body);
+    const updatedUser = await userService.updateUser(
+      parseInt(req.params.id),
+      req.body,
+    );
+
+    res.json({
+      message: "User updated successfully",
+      user: updatedUser,
     });
-  }
+  }),
+);
 
-  const idx = users.findIndex((u) => u.id === id);
+// Reset Password
+router.patch(
+  "/:id/reset-password",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    await userService.resetPassword(Number(req.params.id), req.body.password);
 
-  if (idx === -1) {
-    return res.status(404).json({
-      error: "User not found."
+    res.json({
+      success: true,
+      message: "Password reset successfully",
     });
-  }
+  }),
+);
 
-  users.splice(idx, 1);
+// Disable user
+router.patch(
+  "/:id/status",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    const updatedUser = await userService.updateUserStatus(
+      Number(req.params.id),
+      req.body.status,
+    );
 
-  res.json({
-    message: "User deleted."
-  });
-});
+    res.json({
+      success: true,
+      user: updatedUser,
+    });
+  }),
+);
+
+// Delete user
+router.delete(
+  "/:id",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    await userService.deleteUser(parseInt(req.params.id), req.user.id);
+
+    res.json({
+      success: true,
+      message: "User deleted successfully",
+    });
+  }),
+);
 
 export default router;

@@ -1,7 +1,6 @@
 import axios from "axios";
 import type {
   AxiosInstance,
-  AxiosResponse,
   InternalAxiosRequestConfig,
 } from "axios";
 
@@ -17,9 +16,6 @@ function getToken(): string | null {
 
 const apiClient: AxiosInstance = axios.create({
   baseURL,
-  headers: {
-    "Content-Type": "application/json",
-  },
 });
 
 // Attach token automatically

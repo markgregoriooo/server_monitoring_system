@@ -1,145 +1,111 @@
 import { useState, useEffect } from "react";
-import StatusBadge from "../components/ui/StatusBadge";
 import { api } from "../api/api";
-import { socket } from "../socket/socket";
+import { useAuth } from "../context/AuthContext";
 
-interface Server {
-  id: string;
-  name: string;
-  ip: string;
+interface Report {
+  id: number | string;
+  title: string;
+  type: string;
+  date: string;
   status: string;
-  cpu: number;
-  memory: number;
-  uptime: string;
 }
 
-interface MiniBarProps {
-  value: number;
-  color: string;
-}
+export default function Reports() {
+  const { user } = useAuth();
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [generating, setGenerating] = useState<boolean>(false);
+  const canGenerate = ["super_admin", "it_staff"].includes(String(user?.role ?? ""));
 
-function MiniBar({ value, color }: MiniBarProps) {
-  return (
-    <div className="w-16 h-1.5 bg-white/10 rounded-full overflow-hidden">
-      <div
-        className="h-full rounded-full transition-all"
-        style={{ width: `${value}%`, background: color }}
-      />
-    </div>
-  );
-}
+ useEffect(() => {
+  api.getReports().then((result) => {
+     console.log("API result:", result);
+    if (result.success && result.data) {
+      setReports(result.data.reports ?? []);
+    }
+    setLoading(false);
+  });
+}, []);
 
-export default function ServerMetrics() {
-  const [servers, setServers] = useState<Server[]>([]);
-
-  useEffect(() => {
-    api.getServers().then((result) => {
-      if (result.success && result.data) setServers(result.data.servers);
-    });
-    socket.on("serverMetrics", (data: { servers: Server[] }) =>
-      setServers(data.servers)
-    );
-
-    return () => {
-      socket.off("serverMetrics");
-    };
-  }, []);
-
-  const cpuAvg = servers.length
-    ? Math.round(servers.reduce((a, s) => a + s.cpu, 0) / servers.length)
-    : 0;
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const result = await api.generateReport("On-Demand Report", "Environment");
+      if (result.success && result.data?.report) {
+        setReports((p) => [result.data.report as Report, ...p]);
+      }
+    } catch { }
+    setGenerating(false);
+  };
 
   return (
     <div className="p-4 lg:p-6 flex flex-col gap-4">
-      <div className="text-base font-bold text-white">
-        Server Metrics Overview
-      </div>
-
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {[
-          { label: "Total Servers", value: servers.length, color: "text-blue-400" },
-          { label: "Online", value: servers.filter(s => s.status === "Online").length, color: "text-green-400" },
-          { label: "Avg CPU Load", value: `${cpuAvg}%`, color: "text-yellow-400" },
-        ].map(item => (
-          <div
-            key={item.label}
-            className="rounded-xl bg-white/[0.03] border border-white/[0.08] p-4"
+      <div className="flex items-center justify-between">
+        <div className="text-base font-bold text-white">Reports</div>
+        {canGenerate && (
+          <button
+            onClick={handleGenerate}
+            disabled={generating}
+            className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-700 to-blue-500 text-white font-semibold text-sm
+              border-none cursor-pointer hover:opacity-90 transition disabled:opacity-60"
           >
-            <div className="text-xs text-slate-400 font-semibold mb-2">
-              {item.label}
-            </div>
-            <div className={`text-3xl font-bold font-mono ${item.color}`}>
-              {item.value}
-            </div>
-          </div>
-        ))}
+            {generating ? "Generating..." : "+ Generate Report"}
+          </button>
+        )}
       </div>
 
       <div className="rounded-xl bg-white/[0.03] border border-white/[0.08] p-4">
-        <div className="text-sm font-bold text-white mb-3">Live Server List</div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr>
-                {["Server", "IP Address", "Status", "CPU", "Memory", "Uptime"].map(h => (
-                  <th
-                    key={h}
-                    className="text-left px-3 py-2 text-[10px] text-slate-500 font-semibold tracking-widest border-b border-white/[0.07] whitespace-nowrap"
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-
-            <tbody>
-              {servers.map((s, i) => (
-                <tr key={s.id} className={i % 2 === 0 ? "bg-white/[0.015]" : ""}>
-                  <td className="px-3 py-3 text-white font-semibold text-xs">
-                    {s.name}
-                  </td>
-
-                  <td className="px-3 py-3 font-mono text-slate-400 text-xs">
-                    {s.ip}
-                  </td>
-
-                  <td className="px-3 py-3">
-                    <StatusBadge status={s.status} />
-                  </td>
-
-                  <td className="px-3 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-white text-xs w-8">
-                        {s.cpu}%
-                      </span>
-                      <MiniBar
-                        value={s.cpu}
-                        color={s.cpu > 70 ? "#ef4444" : s.cpu > 50 ? "#f5c400" : "#4ade80"}
-                      />
-                    </div>
-                  </td>
-
-                  <td className="px-3 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-white text-xs w-8">
-                        {s.memory}%
-                      </span>
-                      <MiniBar
-                        value={s.memory}
-                        color={s.memory > 80 ? "#ef4444" : s.memory > 60 ? "#f5c400" : "#4ade80"}
-                      />
-                    </div>
-                  </td>
-
-                  <td className="px-3 py-3 text-slate-400 text-xs whitespace-nowrap">
-                    {s.uptime}
-                  </td>
+        {loading ? (
+          <div className="text-center py-8 text-slate-500 text-sm">Loading...</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr>
+                  {["#", "Title", "Type", "Date", "Status", "Action"].map((h) => (
+                    <th
+                      key={h}
+                      className="text-left px-3 py-2 text-[10px] text-slate-500 font-semibold tracking-widest border-b border-white/[0.07] whitespace-nowrap"
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {reports.map((r, i) => (
+                  <tr key={r.id} className={i % 2 === 0 ? "bg-white/[0.015]" : ""}>
+                    <td className="px-3 py-3 font-mono text-slate-500 text-xs">
+                      {String(r.id).padStart(2, "0")}
+                    </td>
+                    <td className="px-3 py-3 text-white font-semibold text-xs">{r.title}</td>
+                    <td className="px-3 py-3">
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 border border-blue-500/25 text-blue-400">
+                        {r.type}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 font-mono text-slate-400 text-xs whitespace-nowrap">{r.date}</td>
+                    <td className="px-3 py-3">
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${r.status === "Generated"
+                          ? "bg-green-500/10 border-green-500/25 text-green-400"
+                          : "bg-amber-500/10 border-amber-500/25 text-amber-400"
+                          }`}
+                      >
+                        {r.status}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <button className="px-3 py-1 rounded-md border border-white/10 bg-white/[0.05] text-slate-400 text-xs cursor-pointer hover:text-white transition">
+                        ↓ Download
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

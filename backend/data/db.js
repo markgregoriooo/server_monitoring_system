@@ -3,39 +3,7 @@
 
 import bcrypt from "bcryptjs";
 
-// ── USERS (simulates MySQL users table) ──────────────────────────────────────
-const users = [
-  {
-    id: 1,
-    name: "Admin",
-    username: "superadmin",
-    password: bcrypt.hashSync("admin123", 10),
-    role: "admin",
-    avatar: "SA",
-    email: "superadmin@cspc.edu.ph",
-    created_at: "2025-01-01",
-  },
-  {
-    id: 2,
-    name: "Staff",
-    username: "itstaff",
-    password: bcrypt.hashSync("staff123", 10),
-    role: "staff",
-    avatar: "IS",
-    email: "itstaff@cspc.edu.ph",
-    created_at: "2025-01-02",
-  },
-  {
-    id: 3,
-    name: "Viewer",
-    username: "viewer",
-    password: bcrypt.hashSync("viewer123", 10),
-    role: "viewer",
-    avatar: "VW",
-    email: "viewer@cspc.edu.ph",
-    created_at: "2025-01-03",
-  },
-];
+
 
 // ── SERVERS (simulates MySQL servers table) ───────────────────────────────────
 const servers = [
@@ -94,7 +62,6 @@ let airconLog = [
 const auditLog = [];
 
 export {
-  users,
   servers,
   generateSensorHistory,
   historyLogs,

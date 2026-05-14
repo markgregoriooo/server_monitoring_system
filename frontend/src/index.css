@@ -2,13 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── CSS Variables ─────────────────────────────── */
+:root.dark {
+  --bg:         #080f1e;
+  --surface:    rgba(255,255,255,0.03);
+  --border:     rgba(255,255,255,0.08);
+  --text:       #e2eaf6;
+  --text-muted: #64748b;
+  --sidebar-bg: linear-gradient(to bottom, #060c18, #091221);
+  --header-bg:  rgba(7,14,28,0.75);
+  --scrollbar:  rgba(255,255,255,0.1);
+}
+
+:root.light {
+  --bg:         #f0f4f8;
+  --surface:    #ffffff;
+  --border:     #d1dbe8;
+  --text:       #1a2535;
+  --text-muted: #64748b;
+  --sidebar-bg: linear-gradient(to bottom, #ffffff, #f0f4f8);
+  --header-bg:  rgba(255,255,255,0.85);
+  --scrollbar:  rgba(0,0,0,0.15);
+}
+
 @layer base {
   html, body, #root {
     height: 100%;
-    background-color: #080f1e;
-    color: #e2eaf6;
+    background-color: var(--bg);
+    color: var(--text);
     font-family: 'Barlow', sans-serif;
     -webkit-font-smoothing: antialiased;
+    transition: background-color 0.3s ease, color 0.3s ease;
   }
 
   * {
@@ -19,13 +43,16 @@
 
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar);
+    border-radius: 99px;
+  }
 }
 
 @layer utilities {
   .card {
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.08);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: 0.75rem;
   }
   .accent-top-blue::before {
