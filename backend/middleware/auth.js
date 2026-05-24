@@ -16,11 +16,7 @@ function authMiddleware(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    // IMPORTANT: always ensure permissions exist
-    req.user = {
-      ...decoded,
-      permissions: decoded.permissions || [],
-    };
+    req.user = decoded;
 
     next();
   } catch (err) {
@@ -43,26 +39,8 @@ function requireRole(...roles) {
   };
 }
 
-// permission - fine access
-function requirePermission(permission) {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    const userPermissions = req.user.permissions || [];
-
-    if (!userPermissions.includes(permission)) {
-      return res.status(403).json({ error: "Forbidden: missing permission" });
-    }
-
-    next();
-  };
-}
-
 export {
   authMiddleware,
   requireRole,
-  requirePermission,
   JWT_SECRET,
 };
