@@ -8,11 +8,11 @@ const bucket = process.env.INFLUX_BUCKET;
 
 const client = new InfluxDB({ url, token });
 
-const writeClient = client.getWriteApi(org, bucket);
+const writeClient = client.getWriteApi(org, bucket, "ms");
 const queryClient = client.getQueryApi(org);
 
-// Export 
-export { writeClient, queryClient, Point };
+// Export
+export { writeClient, queryClient, Point, bucket };
 
 
 
