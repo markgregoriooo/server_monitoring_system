@@ -1,12 +1,14 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useMemo,
   useState,
   useCallback,
 } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api/api.js";
+import { socket } from "../socket/socket.js";
 
 interface User {
   id: number;
@@ -27,7 +29,7 @@ interface User {
 interface AuthContextType {
   user: User | null;
   login: (
-    username: string,
+    email: string,
     password: string,
   ) => Promise<{
     success: boolean;
@@ -50,8 +52,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   });
 
-  const login = useCallback(async (username: string, password: string) => {
-    const result = await api.login(username, password);
+  // Keep the socket connection in sync with auth state. This also runs on mount,
+  // so a session restored from sessionStorage after a page refresh reconnects the
+  // socket (and resumes live sensor data) without needing to log out and back in.
+  useEffect(() => {
+    if (user) {
+      if (!socket.connected) socket.connect();
+    } else if (socket.connected) {
+      socket.disconnect();
+    }
+  }, [user]);
+
+  const login = useCallback(async (email: string, password: string) => {
+    const result = await api.login(email, password);
 
     // success flag instead
     if (!result.success || !result.data) {
@@ -84,6 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.setItem("cspc_user", JSON.stringify(safeUser));
 
     setUser(safeUser);
+    socket.connect();
 
     return { success: true, user: safeUser };
   }, []);
@@ -95,6 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
 
+    socket.disconnect();
     setUser(null);
     sessionStorage.removeItem("cspc_user");
     sessionStorage.removeItem("cspc_token");
