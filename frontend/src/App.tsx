@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import "./index.css";
 import {
   Routes,
@@ -57,7 +57,29 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
 function AppShell() {
   const { user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState<boolean>(false);
+  const [collapsed, setCollapsed] = useState<boolean>(
+    () => localStorage.getItem("cspc_sidebar_collapsed") === "1",
+  );
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((c) => {
+      const next = !c;
+      localStorage.setItem("cspc_sidebar_collapsed", next ? "1" : "0");
+      return next;
+    });
+  }, []);
   const location = useLocation();
+
+  // Ctrl/Cmd + B toggles the sidebar (like a code editor)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleCollapsed();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggleCollapsed]);
   const isLoginPage = location.pathname === "/login";
 
   if (!user && !isLoginPage) {
@@ -73,11 +95,13 @@ function AppShell() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden font-sans" style={{ backgroundColor: 'var(--bg)' }}>
+    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: 'var(--gf-bg)', fontFamily: "'JetBrains Mono', monospace" }}>
 
       <Sidebar
         mobileOpen={mobileOpen}
         onClose={() => setMobileOpen(false)}
+        collapsed={collapsed}
+        onToggleCollapse={toggleCollapsed}
       />
 
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
@@ -86,6 +110,8 @@ function AppShell() {
           title={pageTitles[location.pathname] || "Dashboard"}
           alertCount={2}
           onMenuToggle={() => setMobileOpen(p => !p)}
+          collapsed={collapsed}
+          onToggleCollapse={toggleCollapsed}
         />
 
         <main className="flex-1 overflow-y-auto">

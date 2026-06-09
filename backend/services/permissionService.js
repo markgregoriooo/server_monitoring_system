@@ -1,17 +1,19 @@
-import db from "../config/mysql.js";
+const ROLE_PERMISSIONS = {
+  admin: [
+    "view:dashboard", "view:server-metrics", "view:environment",
+    "view:air-conditioner", "view:history", "view:reports",
+    "view:settings", "view:user-management",
+    "manage:users", "manage:settings", "manage:aircon",
+  ],
+  it_staff: [
+    "view:dashboard", "view:server-metrics", "view:environment",
+    "view:air-conditioner", "view:history", "view:reports",
+  ],
+};
 
 const permissionService = {
-    
   async getPermissionsByRole(role) {
-    const [rows] = await db.query(
-      `SELECT p.name
-       FROM permissions p
-       JOIN role_permissions rp ON rp.permission_id = p.id
-       WHERE rp.role = ?`,
-      [role]
-    );
-
-    return rows.map(r => r.name);
+    return ROLE_PERMISSIONS[role] ?? [];
   }
 };
 

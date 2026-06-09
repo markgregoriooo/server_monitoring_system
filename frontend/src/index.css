@@ -1,63 +1,93 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ── CSS Variables ─────────────────────────────── */
-:root.dark {
-  --bg:         #080f1e;
-  --surface:    rgba(255,255,255,0.03);
-  --border:     rgba(255,255,255,0.08);
-  --text:       #e2eaf6;
-  --text-muted: #64748b;
-  --sidebar-bg: linear-gradient(to bottom, #060c18, #091221);
-  --header-bg:  rgba(7,14,28,0.75);
-  --scrollbar:  rgba(255,255,255,0.1);
+/* ── Grafana-style design tokens ──────────────────────────────────────────── */
+:root {
+  /* dark (default — Grafana is always dark-first) */
+  --gf-bg:            #111217;
+  --gf-panel:         #181B1F;
+  --gf-panel-border:  rgba(255,255,255,0.07);
+  --gf-header:        #1a1d23;
+  --gf-sidebar:       #111217;
+  --gf-divider:       rgba(255,255,255,0.07);
+  --gf-text-primary:  #D9D9D9;
+  --gf-text-muted:    #6B7280;
+  --gf-text-dim:      #4B5563;
+  --gf-hover:         rgba(255,255,255,0.05);
+  --gf-hover-strong:  rgba(255,255,255,0.10);
+  --gf-accent:        #5794F2;
+  --gf-accent-dim:    rgba(87,148,242,0.12);
+  --gf-seg-empty:     rgba(255,255,255,0.06);
+  --gf-scroll-bg:     rgba(0,0,0,0.25);
+  --gf-scrollbar:     rgba(255,255,255,0.10);
+
+  /* legacy aliases kept for pages that still reference --bg etc. */
+  --bg:         var(--gf-bg);
+  --surface:    var(--gf-panel);
+  --border:     var(--gf-panel-border);
+  --text:       var(--gf-text-primary);
+  --text-muted: var(--gf-text-muted);
 }
 
+/* light override */
 :root.light {
-  --bg:         #f0f4f8;
-  --surface:    #ffffff;
-  --border:     #d1dbe8;
-  --text:       #1a2535;
-  --text-muted: #64748b;
-  --sidebar-bg: linear-gradient(to bottom, #ffffff, #f0f4f8);
-  --header-bg:  rgba(255,255,255,0.85);
-  --scrollbar:  rgba(0,0,0,0.15);
+  --gf-bg:            #F4F5F5;
+  --gf-panel:         #FFFFFF;
+  --gf-panel-border:  rgba(0,0,0,0.09);
+  --gf-header:        #F4F5F5;
+  --gf-sidebar:       #FFFFFF;
+  --gf-divider:       rgba(0,0,0,0.08);
+  --gf-text-primary:  #1F2937;
+  --gf-text-muted:    #6B7280;
+  --gf-text-dim:      #9CA3AF;
+  --gf-hover:         rgba(0,0,0,0.04);
+  --gf-hover-strong:  rgba(0,0,0,0.08);
+  --gf-seg-empty:     rgba(0,0,0,0.08);
+  --gf-scroll-bg:     rgba(0,0,0,0.04);
+  --gf-scrollbar:     rgba(0,0,0,0.15);
+
+  --bg:         var(--gf-bg);
+  --surface:    var(--gf-panel);
+  --border:     var(--gf-panel-border);
+  --text:       var(--gf-text-primary);
+  --text-muted: var(--gf-text-muted);
 }
 
 @layer base {
   html, body, #root {
     height: 100%;
-    background-color: var(--bg);
-    color: var(--text);
-    font-family: 'Barlow', sans-serif;
+    background-color: var(--gf-bg);
+    color: var(--gf-text-primary);
+    font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
     -webkit-font-smoothing: antialiased;
-    transition: background-color 0.3s ease, color 0.3s ease;
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
 
-  * {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
 
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
-    background: var(--scrollbar);
+    background: var(--gf-scrollbar);
     border-radius: 99px;
   }
 }
 
 @layer utilities {
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 0.75rem;
+  /* Grafana panel — use on any card/container */
+  .gf-panel {
+    background: var(--gf-panel);
+    border: 1px solid var(--gf-panel-border);
+    border-radius: 2px;
   }
-  .accent-top-blue::before {
-    content: '';
-    position: absolute; top: 0; left: 0; right: 0; height: 2px;
-    background: linear-gradient(90deg, #4a90e2, #1a56c4, transparent);
+
+  /* legacy .card kept for backward compat */
+  .card {
+    background: var(--gf-panel);
+    border: 1px solid var(--gf-panel-border);
+    border-radius: 2px;
   }
 }

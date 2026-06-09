@@ -51,13 +51,6 @@ const reports = [
   { id: 4, title: "Alert History Report",     date: "2025-03-12", status: "Pending",   type: "Alerts"      },
 ];
 
-// ── AIRCON STATE ──────────────────────────────────────────────────────────────
-let airconState = { enabled: true, mode: "Auto", setTemp: 24 };
-let airconLog = [
-  { time: "10:32 AM", action: "Auto-triggered ON",  reason: "Temp exceeded 28°C" },
-  { time: "08:00 AM", action: "Scheduled ON",        reason: "Morning schedule"   },
-];
-
 // ── AUDIT LOG ─────────────────────────────────────────────────────────────────
 const auditLog = [];
 
@@ -67,7 +60,5 @@ export {
   historyLogs,
   alerts,
   reports,
-  airconState,
-  airconLog,
   auditLog,
 };

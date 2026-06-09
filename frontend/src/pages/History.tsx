@@ -225,11 +225,8 @@ export default function History() {
 
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <div className="text-base font-bold text-slate-900 dark:text-white">History &amp; Logs</div>
-          <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 mt-0.5 tracking-widest uppercase">
-            Environment · Alerts · Aircon — {logs.length} days recorded
-          </div>
+        <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 tracking-widest uppercase">
+          Environment · Alerts · Aircon — {logs.length} days recorded
         </div>
         <div className="flex items-center gap-2">
           <button

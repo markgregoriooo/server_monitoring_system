@@ -40,8 +40,7 @@ export default function Reports() {
 
   return (
     <div className="p-4 lg:p-6 flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <div className="text-base font-bold text-white">Reports</div>
+      <div className="flex items-center justify-end">
         {canGenerate && (
           <button
             onClick={handleGenerate}
