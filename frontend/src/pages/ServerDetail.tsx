@@ -1,6 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import "../chart/ChartConfig";
 import Chart from "../chart/ChartConfig";
+import { api } from "../api/api";
+import { socket } from "../socket/socket";
+import { useTheme } from "../context/ThemeContext";
 
 interface Server {
   id: string;
@@ -34,15 +37,53 @@ function barColor(v: number) {
   return "#73BF69";
 }
 
-function genHistory(base: number, variance: number, count = 60) {
-  return Array.from({ length: count }, (_, i) => {
-    const noise = (Math.random() - 0.5) * variance * 2;
-    const trend = Math.sin(i / 6) * (variance * 0.4);
-    return Math.min(100, Math.max(0, Math.round(base + noise + trend)));
+interface HistoryPoint {
+  time: string;            // ISO timestamp
+  cpu: number | null;
+  mem: number | null;
+  disk: number | null;
+  netSent: number | null;  // cumulative bytes
+  netRecv: number | null;  // cumulative bytes
+}
+
+const RANGES = [
+  { key: "-1h",  label: "1h" },
+  { key: "-6h",  label: "6h" },
+  { key: "-24h", label: "24h" },
+];
+
+function fmtTime(iso: string) {
+  return new Date(iso).toLocaleTimeString("en-PH", {
+    timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false,
   });
 }
 
-const hours = Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, "0")}:00`);
+// Throughput in MB/s between two cumulative byte counters (clamps counter resets).
+function rateMBs(curr: number | null, prev: number | null, currT: string, prevT: string) {
+  if (curr == null || prev == null) return 0;
+  const dt = (new Date(currT).getTime() - new Date(prevT).getTime()) / 1000;
+  if (dt <= 0) return 0;
+  return +(Math.max(0, curr - prev) / dt / 1024 / 1024).toFixed(2);
+}
+
+interface DeviceLog {
+  log_level: "info" | "warning" | "critical" | "error";
+  message: string;
+  recorded_at: string;
+}
+
+function logColor(level: string) {
+  if (level === "critical" || level === "error") return "#E24B4A";
+  if (level === "warning") return "#EF9F27";
+  return "#5794F2"; // info
+}
+
+function fmtDateTime(iso: string) {
+  return new Date(iso).toLocaleString("en-PH", {
+    timeZone: "Asia/Manila", month: "short", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
 
 function useChart(
   ref: React.RefObject<HTMLCanvasElement | null>,
@@ -58,11 +99,12 @@ function useChart(
 
 // ─── GaugePanel (like Grafana Memory / Google hits panels) ───────────────────
 function GaugePanel({
-  title, value, unit, pct, color,
+  title, value, unit, pct, color, theme,
 }: {
-  title: string; value: string; unit: string; pct: number; color: string;
+  title: string; value: string; unit: string; pct: number; color: string; theme: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const isLight = theme === "light";
 
   useEffect(() => {
     const c = canvasRef.current;
@@ -80,7 +122,7 @@ function GaugePanel({
     // Track bg
     ctx.beginPath();
     ctx.arc(cx, cy, r, startA, endA);
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.strokeStyle = isLight ? "rgba(15,23,42,0.10)" : "rgba(255,255,255,0.08)";
     ctx.lineWidth = 10;
     ctx.lineCap = "round";
     ctx.stroke();
@@ -119,23 +161,15 @@ function GaugePanel({
     ctx.fillText(value, cx, cy - r * 0.08);
 
     // Unit text
-    ctx.fillStyle = "rgba(200,210,220,0.55)";
+    ctx.fillStyle = isLight ? "rgba(71,85,105,0.75)" : "rgba(200,210,220,0.55)";
     ctx.font = `${Math.round(r * 0.22)}px monospace`;
     ctx.fillText(unit, cx, cy + r * 0.28);
-
-    // Min / Max labels
-    ctx.fillStyle = "rgba(180,190,200,0.4)";
-    ctx.font = `${Math.round(r * 0.18)}px monospace`;
-    ctx.textAlign = "left";
-    ctx.fillText("0", cx - r * 0.92, cy + r * 0.22);
-    ctx.textAlign = "right";
-    ctx.fillText("100", cx + r * 0.92, cy + r * 0.22);
-  }, [pct, color, value, unit]);
+  }, [pct, color, value, unit, isLight]);
 
   return (
-    <div className="bg-[#111217] dark:bg-[#111217] bg-slate-100 border border-white/[0.07] dark:border-white/[0.07] border-slate-200 rounded-lg overflow-hidden flex flex-col">
-      <div className="px-3 pt-2.5 pb-1 border-b border-white/[0.06] dark:border-white/[0.06] border-slate-200">
-        <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 text-slate-500">{title}</span>
+    <div className="bg-slate-100 dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden flex flex-col">
+      <div className="px-3 pt-2.5 pb-1 border-b border-slate-200 dark:border-white/[0.06]">
+        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
       </div>
       <div className="flex-1 flex items-center justify-center py-1">
         <canvas ref={canvasRef} width={180} height={110} style={{ width: "100%", maxWidth: 180, height: "auto" }} />
@@ -183,9 +217,9 @@ function SparkStatPanel({
   }, [data, color]);
 
   return (
-    <div className="bg-[#111217] dark:bg-[#111217] bg-slate-100 border border-white/[0.07] dark:border-white/[0.07] border-slate-200 rounded-lg overflow-hidden flex flex-col">
-      <div className="px-3 pt-2.5 pb-1 border-b border-white/[0.06] dark:border-white/[0.06] border-slate-200">
-        <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 text-slate-500">{title}</span>
+    <div className="bg-slate-100 dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden flex flex-col">
+      <div className="px-3 pt-2.5 pb-1 border-b border-slate-200 dark:border-white/[0.06]">
+        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
       </div>
       <div className="relative flex-1" style={{ minHeight: 80 }}>
         {/* Spark chart fills the whole panel */}
@@ -195,7 +229,7 @@ function SparkStatPanel({
         {/* Value overlaid bottom-left like Grafana */}
         <div className="absolute bottom-2 left-3 flex items-baseline gap-1">
           <span className="text-[22px] font-bold font-mono leading-none" style={{ color }}>{value}</span>
-          <span className="text-[11px] font-mono text-slate-400 dark:text-slate-400">{unit}</span>
+          <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{unit}</span>
         </div>
       </div>
     </div>
@@ -205,12 +239,12 @@ function SparkStatPanel({
 // ─── InfoCard ─────────────────────────────────────────────────────────────────
 function InfoCard({ title, rows }: { title: string; rows: [string, string][] }) {
   return (
-    <div className="bg-[#111217] dark:bg-[#111217] bg-white border border-white/[0.07] dark:border-white/[0.07] border-slate-200 rounded-lg p-4">
-      <div className="text-[11px] font-medium text-slate-400 dark:text-slate-400 text-slate-500 mb-3">{title}</div>
+    <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
+      <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-3">{title}</div>
       {rows.map(([k, v]) => (
-        <div key={k} className="flex justify-between items-center py-1.5 border-b border-white/[0.05] dark:border-white/[0.05] border-slate-100 last:border-none text-xs">
-          <span className="text-slate-400 dark:text-slate-400 text-slate-500">{k}</span>
-          <span className="font-mono font-medium text-white dark:text-white text-slate-900">{v}</span>
+        <div key={k} className="flex justify-between items-start gap-3 py-1.5 border-b border-slate-100 dark:border-white/[0.05] last:border-none text-xs">
+          <span className="text-slate-500 dark:text-slate-400 flex-shrink-0 whitespace-nowrap">{k}</span>
+          <span className="font-mono font-medium text-slate-900 dark:text-white text-right break-words min-w-0">{v}</span>
         </div>
       ))}
     </div>
@@ -227,12 +261,12 @@ function ChartCard({
   height?: number;
 }) {
   return (
-    <div className="bg-[#111217] dark:bg-[#111217] bg-white border border-white/[0.07] dark:border-white/[0.07] border-slate-200 rounded-lg overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.06] dark:border-white/[0.06] border-slate-100">
-        <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 text-slate-500">{title}</span>
+    <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-white/[0.06]">
+        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
         <div className="flex gap-3">
           {legend.map(l => (
-            <span key={l.label} className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-400 text-slate-500">
+            <span key={l.label} className="flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400">
               <span className="w-5 h-[2px] rounded-full inline-block" style={{ background: l.color }} />
               {l.label}
             </span>
@@ -248,57 +282,113 @@ function ChartCard({
 
 // ─── ServerDetail ─────────────────────────────────────────────────────────────
 export default function ServerDetail({ server: s, onBack }: Props) {
+  const { theme } = useTheme();
   const cpuRef  = useRef<HTMLCanvasElement>(null);
   const memRef  = useRef<HTMLCanvasElement>(null);
   const diskRef = useRef<HTMLCanvasElement>(null);
   const netRef  = useRef<HTMLCanvasElement>(null);
 
+  const [range, setRange]     = useState("-1h");
+  const [history, setHistory] = useState<HistoryPoint[]>([]);
+  const [logs, setLogs]       = useState<DeviceLog[]>([]);
+
   const memUsedGB  = +((s.memory  / 100) * s.memoryTotalGB).toFixed(1);
   const diskUsedGB = Math.round((s.diskUsed / 100) * s.diskTotalGB);
   const diskFreeGB = s.diskTotalGB - diskUsedGB;
 
-  const cpuHistory  = genHistory(s.cpu,      15);
-  const memHistory  = genHistory(s.memory,   10);
-  const diskHistory = genHistory(s.diskUsed, 8);
-  const netHistory  = genHistory(35,         20);
+  // Real history from InfluxDB for this server + range, then keep it live by
+  // appending each incoming serverMetrics point for this server.
+  useEffect(() => {
+    let alive = true;
+    api.getServerHistory(Number(s.id), range).then((r) => {
+      if (!alive || !r.success || !r.data) return;
+      setHistory(
+        (r.data.history ?? []).map((p: any) => ({
+          time: p.time,
+          cpu: p.cpu_percent ?? null,
+          mem: p.mem_percent ?? null,
+          disk: p.disk_percent ?? null,
+          netSent: p.net_bytes_sent ?? null,
+          netRecv: p.net_bytes_recv ?? null,
+        })),
+      );
+    });
 
-  const lineChartOpts = (color: string, data: number[], yLabel = "%") => ({
+    const onMetrics = (data: { server: any }) => {
+      if (String(data?.server?.id) !== s.id) return;
+      setHistory((prev) => [
+        ...prev.slice(-720),
+        {
+          time: data.server.timestamp ?? new Date().toISOString(),
+          cpu: data.server.cpuPercent ?? null,
+          mem: data.server.memPercent ?? null,
+          disk: data.server.diskPercent ?? null,
+          netSent: data.server.netBytesSent ?? null,
+          netRecv: data.server.netBytesRecv ?? null,
+        },
+      ]);
+    };
+    socket.on("serverMetrics", onMetrics);
+    return () => { alive = false; socket.off("serverMetrics", onMetrics); };
+  }, [s.id, range]);
+
+  // Device event log (device_logs) for this server, kept live via deviceLog events.
+  useEffect(() => {
+    let alive = true;
+    api.getServerLogs(Number(s.id)).then((r) => {
+      if (alive && r.success && r.data) setLogs(r.data.logs ?? []);
+    });
+    const onLog = (e: any) => {
+      if (String(e?.device_id) !== s.id) return;
+      setLogs((prev) => [
+        { log_level: e.log_level, message: e.message, recorded_at: e.recorded_at },
+        ...prev,
+      ].slice(0, 100));
+    };
+    socket.on("deviceLog", onLog);
+    return () => { alive = false; socket.off("deviceLog", onLog); };
+  }, [s.id]);
+
+  const labels   = history.map((p) => fmtTime(p.time));
+  const cpuData  = history.map((p) => p.cpu ?? 0);
+  const memData  = history.map((p) => p.mem ?? 0);
+  const diskData = history.map((p) => p.disk ?? 0);
+  const netIn    = history.map((p, i) => {
+    const prev = history[i - 1];
+    return prev ? rateMBs(p.netRecv, prev.netRecv, p.time, prev.time) : 0;
+  });
+  const netOut   = history.map((p, i) => {
+    const prev = history[i - 1];
+    return prev ? rateMBs(p.netSent, prev.netSent, p.time, prev.time) : 0;
+  });
+  const netTotal = netIn.map((v, i) => +(v + (netOut[i] ?? 0)).toFixed(2));
+  const lastNet  = netTotal.at(-1) ?? 0;
+
+  const isLight = theme === "light";
+  const AX = isLight ? "rgba(71,85,105,0.85)" : "rgba(160,170,190,0.5)";
+  const GRID = isLight ? "rgba(15,23,42,0.08)" : "rgba(255,255,255,0.04)";
+
+  const lineChartOpts = (color: string, data: number[]) => ({
     type: "line" as const,
     data: {
-      labels: hours,
+      labels,
       datasets: [{
-        data,
-        borderColor: color,
-        borderWidth: 1.5,
-        tension: 0.4,
-        pointRadius: 0,
-        fill: true,
-        backgroundColor: color + "1a",
+        data, borderColor: color, borderWidth: 1.5, tension: 0.4,
+        pointRadius: 0, fill: true, backgroundColor: color + "1a",
       }],
     },
     options: {
-      responsive: true, maintainAspectRatio: false,
-      animation: {
-        duration: 0,
-      },
+      responsive: true, maintainAspectRatio: false, animation: { duration: 0 },
       plugins: { legend: { display: false } },
       scales: {
-        x: {
-          ticks: { color: "rgba(160,170,190,0.5)", font: { size: 9 }, maxTicksLimit: 6, autoSkip: true },
-          grid: { color: "rgba(255,255,255,0.04)" },
-          border: { display: false },
-        },
-        y: {
-          ticks: { color: "rgba(160,170,190,0.5)", font: { size: 9 }, maxTicksLimit: 4 },
-          grid: { color: "rgba(255,255,255,0.04)" },
-          border: { display: false },
-        },
+        x: { ticks: { color: AX, font: { size: 9 }, maxTicksLimit: 6, autoSkip: true }, grid: { color: GRID }, border: { display: false } },
+        y: { ticks: { color: AX, font: { size: 9 }, maxTicksLimit: 4 }, grid: { color: GRID }, border: { display: false } },
       },
     },
   });
 
-  useChart(cpuRef,  () => lineChartOpts("#378ADD", cpuHistory),  [s.id]);
-  useChart(memRef,  () => lineChartOpts("#7F77DD", memHistory),  [s.id]);
+  useChart(cpuRef, () => lineChartOpts("#378ADD", cpuData), [history, theme]);
+  useChart(memRef, () => lineChartOpts("#7F77DD", memData), [history, theme]);
 
   useChart(diskRef, () => ({
     type: "bar" as const,
@@ -314,19 +404,19 @@ export default function ServerDetail({ server: s, onBack }: Props) {
       animation: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { stacked: true, ticks: { color: "rgba(160,170,190,0.5)", font: { size: 9 } }, grid: { color: "rgba(255,255,255,0.04)" }, border: { display: false } },
+        x: { stacked: true, ticks: { color: AX, font: { size: 9 } }, grid: { color: GRID }, border: { display: false } },
         y: { stacked: true, ticks: { display: false }, grid: { display: false }, border: { display: false } },
       },
     },
-  }), [s.id]);
+  }), [s.id, diskUsedGB, diskFreeGB, theme]);
 
   useChart(netRef, () => ({
     type: "line" as const,
     data: {
-      labels: hours,
+      labels,
       datasets: [
-        { label: "In",  data: genHistory(12, 8), borderColor: "#5DCAA5", borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: true, backgroundColor: "#5DCAA51a" },
-        { label: "Out", data: genHistory(7, 6),  borderColor: "#D85A30", borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: true, backgroundColor: "#D85A301a" },
+        { label: "In",  data: netIn,  borderColor: "#5DCAA5", borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: true, backgroundColor: "#5DCAA51a" },
+        { label: "Out", data: netOut, borderColor: "#D85A30", borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: true, backgroundColor: "#D85A301a" },
       ],
     },
     options: {
@@ -334,20 +424,20 @@ export default function ServerDetail({ server: s, onBack }: Props) {
       animation: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: "rgba(160,170,190,0.5)", font: { size: 9 }, maxTicksLimit: 6, autoSkip: true }, grid: { color: "rgba(255,255,255,0.04)" }, border: { display: false } },
-        y: { ticks: { color: "rgba(160,170,190,0.5)", font: { size: 9 }, maxTicksLimit: 4 }, grid: { color: "rgba(255,255,255,0.04)" }, border: { display: false } },
+        x: { ticks: { color: AX, font: { size: 9 }, maxTicksLimit: 6, autoSkip: true }, grid: { color: GRID }, border: { display: false } },
+        y: { ticks: { color: AX, font: { size: 9 }, maxTicksLimit: 4 }, grid: { color: GRID }, border: { display: false } },
       },
     },
-  }), [s.id]);
+  }), [history, theme]);
 
   return (
-    <div className="p-4 lg:p-6 flex flex-col gap-4 bg-[#0b0e14] dark:bg-[#0b0e14] bg-slate-50 min-h-full">
+    <div className="p-3 sm:p-4 lg:p-6 flex flex-col gap-4 bg-slate-50 dark:bg-[#0b0e14] min-h-full">
 
       {/* Header */}
       <div className="flex items-center gap-3 pb-3 border-b border-white/[0.07] dark:border-white/[0.07] border-slate-200">
         <button
           onClick={onBack}
-          className="flex items-center gap-1.5 text-sm text-slate-400 dark:text-slate-400 text-slate-500 hover:text-white dark:hover:text-white hover:text-slate-900 transition-colors"
+          className="flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -355,7 +445,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           All servers
         </button>
         <div className="flex-1" />
-        <span className="text-[10px] font-mono text-slate-400 dark:text-slate-400 text-slate-500">{s.ip} · {s.region} · {s.role}</span>
+        <span className="hidden sm:block truncate max-w-[45%] text-[10px] font-mono text-slate-500 dark:text-slate-400">{s.ip} · {s.region} · {s.role}</span>
         <span className={`text-xs font-medium px-2.5 py-1 rounded-sm ${
           s.status === "Online"
             ? "bg-green-900/40 text-green-400 border border-green-700/40"
@@ -368,24 +458,25 @@ export default function ServerDetail({ server: s, onBack }: Props) {
       {/* Server name */}
       <div className="flex items-center gap-3">
         <div className="w-1 h-5 rounded-full" style={{ background: barColor(s.cpu) }} />
-        <div>
-          <div className="text-base font-semibold text-white dark:text-white text-slate-900 font-mono">{s.name}</div>
-          <div className="text-[10px] text-slate-500 font-mono mt-0.5">{s.os} · {s.kernel} · {s.cores} cores</div>
+        <div className="min-w-0">
+          <div className="text-base font-semibold text-slate-900 dark:text-white font-mono truncate">{s.name}</div>
+          <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">{s.os} · {s.kernel} · {s.cores} cores</div>
         </div>
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
           <span className="text-[10px] text-slate-500 font-mono">uptime</span>
           <span className="text-[11px] font-mono font-medium text-green-400">{s.uptime}</span>
         </div>
       </div>
 
       {/* Top row — 2 gauge panels + 2 spark-stat panels (like Grafana top row) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" style={{ height: 160 }}>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:h-40">
         <GaugePanel
           title="CPU load"
           value={`${s.cpu}`}
           unit="%"
           pct={s.cpu / 100}
           color={barColor(s.cpu)}
+          theme={theme}
         />
         <GaugePanel
           title="Memory"
@@ -393,33 +484,56 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           unit={`of ${s.memoryTotalGB} GB`}
           pct={s.memory / 100}
           color={barColor(s.memory)}
+          theme={theme}
         />
         <SparkStatPanel
           title="Disk used"
           value={`${s.diskUsed}`}
           unit="%"
-          data={diskHistory}
+          data={diskData.length ? diskData : [0]}
           color={barColor(s.diskUsed)}
         />
         <SparkStatPanel
-          title="Network activity"
-          value={`${netHistory[netHistory.length - 1]}`}
+          title="Network I/O"
+          value={`${lastNet}`}
           unit="MB/s"
-          data={netHistory}
+          data={netTotal.length ? netTotal : [0]}
           color="#5DCAA5"
         />
+      </div>
+
+      {/* Range selector */}
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+          Performance {history.length === 0 ? "· no data for this range" : `· last ${RANGES.find((r) => r.key === range)?.label}`}
+        </span>
+        <div className="flex gap-1 bg-slate-100 dark:bg-white/[0.05] rounded-md p-0.5">
+          {RANGES.map((r) => (
+            <button
+              key={r.key}
+              onClick={() => setRange(r.key)}
+              className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                range === r.key
+                  ? "bg-white dark:bg-white/[0.12] text-slate-900 dark:text-white shadow-sm"
+                  : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Chart panels — 2 columns like Grafana */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <ChartCard
-          title="CPU usage — last 24h"
+          title="CPU usage"
           legend={[{ color: "#378ADD", label: "cpu %" }]}
           canvasRef={cpuRef}
           height={150}
         />
         <ChartCard
-          title="Memory usage — last 24h"
+          title="Memory usage"
           legend={[{ color: "#7F77DD", label: "memory %" }]}
           canvasRef={memRef}
           height={150}
@@ -454,6 +568,35 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           ["DNS",        s.dns],
           ["Region",     s.region],
         ]} />
+      </div>
+
+      {/* Recent events (device_logs) */}
+      <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Recent events</span>
+          {logs.length > 0 && <span className="text-[10px] text-slate-400">{logs.length}</span>}
+        </div>
+        {logs.length === 0 ? (
+          <div className="text-xs text-slate-400 py-5 text-center">No events logged yet.</div>
+        ) : (
+          <div className="flex flex-col divide-y divide-slate-100 dark:divide-white/[0.05] max-h-72 overflow-y-auto">
+            {logs.map((l, i) => (
+              <div key={i} className="flex items-start gap-2.5 py-2">
+                <span className="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: logColor(l.log_level) }} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs text-slate-700 dark:text-slate-200 break-words">{l.message}</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">{fmtDateTime(l.recorded_at)}</div>
+                </div>
+                <span
+                  className="text-[9px] uppercase font-semibold tracking-wider flex-shrink-0 mt-0.5"
+                  style={{ color: logColor(l.log_level) }}
+                >
+                  {l.log_level}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
     </div>

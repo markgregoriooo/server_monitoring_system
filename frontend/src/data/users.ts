@@ -19,28 +19,6 @@ export interface RoleConfig {
   pages: string[];
 }
 
-// Mock users — simulates a MySQL users table
-// export const mockUsers: User[] = [
-//   {
-//     id: 1,
-//     name: "Admin",
-//     username: "admin",
-//     password: "admin123",
-//     role: "admin",
-//     avatar: "SA",
-//     email: "admin@cspc.edu.ph",
-//   },
-//   {
-//     id: 2,
-//     name: "Staff",
-//     username: "staff",
-//     password: "staff123",
-//     role: "it_staff",
-//     avatar: "IS",
-//     email: "staff@cspc.edu.ph",
-//   },
-// ];
-
 // Role definitions — what each role can access
 export const roleConfig: Record<Role, RoleConfig> = {
   admin: {

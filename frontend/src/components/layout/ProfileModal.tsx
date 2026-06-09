@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { api } from "../../api/api";
+import { initials } from "../../utils/format";
+import { API_URL } from "../../config";
 
 interface ProfileForm {
   name: string;
@@ -17,10 +19,6 @@ interface PasswordForm {
 interface ProfileModalProps {
   open: boolean;
   onClose: () => void;
-}
-
-function initials(name: string) {
-  return name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
 }
 
 function passwordStrength(pw: string): { label: string; bars: string[] } {
@@ -61,7 +59,7 @@ export default function ProfileModal({ open, onClose }: ProfileModalProps) {
 
   const imageSrc =
     avatarPreview ||
-    (user?.profile_image ? `http://localhost:3000${user.profile_image}` : null);
+    (user?.profile_image ? `${API_URL}${user.profile_image}` : null);
 
   const strength = passwordStrength(pwForm.next);
 

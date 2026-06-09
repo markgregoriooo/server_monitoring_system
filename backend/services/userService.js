@@ -97,12 +97,32 @@ const userService = {
   async updateUser(id, data) {
     const { name, username, email, role, status } = data;
 
+    const validRoles    = ["admin", "it_staff"];
+    const validStatuses = ["active", "inactive"];
+
+    if (role !== undefined && !validRoles.includes(role)) {
+      throw new Error("Invalid role.");
+    }
+    if (status !== undefined && !validStatuses.includes(status)) {
+      throw new Error("Invalid status.");
+    }
+
+    // F-02: a role downgrade or disable must invalidate the user's existing token.
+    const [[before]] = await db.query(
+      "SELECT role, status FROM users WHERE user_id = ?",
+      [id],
+    );
+    const mustRevoke =
+      (role !== undefined && role !== before?.role) ||
+      (status === "inactive" && before?.status !== "inactive");
+
     // update user
     await db.query(
-      `UPDATE users SET name = ?, username = ?, email = ?, role = ?, status = ?, 
+      `UPDATE users SET name = ?, username = ?, email = ?, role = ?, status = ?,
+      token_version = token_version + ?,
       updated_at = NOW()
       WHERE user_id = ?`,
-      [name, username, email, role, status, id],
+      [name, username, email, role, status, mustRevoke ? 1 : 0, id],
     );
 
     // get updated user
@@ -138,11 +158,12 @@ const userService = {
     // hash new password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // update password
+    // update password — F-02: revoke existing sessions on admin reset.
     await db.query(
       `UPDATE users
      SET
        hash_password = ?,
+       token_version = token_version + 1,
        updated_at = NOW()
      WHERE user_id = ?`,
       [hashedPassword, id],
@@ -159,13 +180,15 @@ const userService = {
       throw new Error("Invalid status.");
     }
 
+    // F-02: disabling an account revokes its live token immediately.
     await db.query(
       `UPDATE users
      SET
        status = ?,
+       token_version = token_version + IF(? = 'inactive', 1, 0),
        updated_at = NOW()
      WHERE user_id = ?`,
-      [status, id],
+      [status, status, id],
     );
 
     const [rows] = await db.query(
@@ -350,11 +373,13 @@ const userService = {
     // hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    // update password
+    // update password — F-02: a password change invalidates older tokens. The
+    // client must re-authenticate after this call (the current token is revoked too).
     await db.query(
       `UPDATE users
        SET
          hash_password = ?,
+         token_version = token_version + 1,
          updated_at = NOW()
        WHERE user_id = ?`,
       [hashedPassword, userId],

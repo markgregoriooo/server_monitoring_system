@@ -39,7 +39,11 @@ const registerEvents = (io, socket) => {
     try {
       const result = await airconService.applyAutoIR(data);
       if (result) {
-        io.emit("airconAutoUpdate", { setTemp: result.setTemp, action: result.action });
+        io.emit("airconAutoUpdate", {
+          setTemp: result.setTemp,
+          action: result.action,
+          deviceIds: result.deviceIds,
+        });
       }
     } catch (err) {
       console.error("[irFired handler error]", err);

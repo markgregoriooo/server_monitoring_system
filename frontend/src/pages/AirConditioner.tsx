@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
+import { useAuth } from "../context/AuthContext";
 
 interface Aircon {
   id: number;
   name: string;
+  ir_channel: number;
   enabled: boolean;
   mode: string;
   fanMode: string;
@@ -24,29 +26,89 @@ interface SensorData {
   timestamp: string;
 }
 
+interface ChannelEntry { channel: number; gpio: number; }
+
+// ─── GF tokens ────────────────────────────────────────────────────────────────
+
+const GF = {
+  bg:          "var(--gf-bg)",
+  panel:       "var(--gf-panel)",
+  border:      "var(--gf-panel-border)",
+  divider:     "var(--gf-divider)",
+  header:      "var(--gf-header)",
+  textPrimary: "var(--gf-text-primary)",
+  textMuted:   "var(--gf-text-muted)",
+  textDim:     "var(--gf-text-dim)",
+  hover:       "var(--gf-hover)",
+  hoverStrong: "var(--gf-hover-strong)",
+  accent:      "var(--gf-accent)",
+  accentDim:   "var(--gf-accent-dim)",
+} as const;
+
+const GREEN = "#73BF69";
+const ORANGE = "#FF780A";
+const RED = "#F2495C";
+const BLUE = "#5794F2";
+const MUTED = "#6B7280";
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// Room temperature mapped to the CLAUDE.md IR comfort zones.
 function tempColor(t: number | string): string {
-  if (typeof t !== "number") return "#94a3b8";
-  if (t >= 28) return "#E24B4A";
-  if (t >= 25) return "#EF9F27";
-  return "#73BF69";
+  if (typeof t !== "number") return MUTED;
+  if (t < 22) return BLUE; // TOO_COLD
+  if (t <= 27) return GREEN; // NORMAL / ACCEPTABLE
+  if (t <= 29) return ORANGE; // NEAR_CRIT
+  return RED; // CRITICAL
 }
 
 function humColor(h: number | string): string {
-  if (typeof h !== "number") return "#94a3b8";
-  if (h >= 70) return "#E24B4A";
-  if (h >= 55) return "#EF9F27";
-  return "#73BF69";
+  if (typeof h !== "number") return MUTED;
+  if (h < 30 || h > 70) return ORANGE;
+  return GREEN;
 }
 
-// ─── GaugeCanvas ──────────────────────────────────────────────────────────────
+// ─── Panel (Grafana panel chrome) ───────────────────────────────────────────────
 
-function GaugeCanvas({
-  value, unit, pct, color,
+function Panel({
+  title,
+  right,
+  children,
+  className = "",
+  bodyStyle,
+  noPad,
 }: {
-  value: string | number; unit: string; pct: number; color: string;
+  title?: React.ReactNode;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  bodyStyle?: React.CSSProperties;
+  noPad?: boolean;
 }) {
+  return (
+    <div
+      className={`flex flex-col rounded-[2px] ${className}`}
+      style={{ background: GF.panel, border: `1px solid ${GF.border}` }}
+    >
+      {title !== undefined && (
+        <div
+          className="flex items-center justify-between gap-2 px-3 shrink-0"
+          style={{ minHeight: 32, borderBottom: `1px solid ${GF.divider}` }}
+        >
+          <div className="flex items-center gap-2 min-w-0 py-1.5">{title}</div>
+          {right && <div className="flex items-center gap-2 shrink-0">{right}</div>}
+        </div>
+      )}
+      <div className="flex-1 min-h-0" style={{ padding: noPad ? 0 : 12, ...bodyStyle }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── Sparkline (area, for stat panels) ──────────────────────────────────────────
+
+function Sparkline({ data, color, height = 38 }: { data: number[]; color: string; height?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -54,67 +116,84 @@ function GaugeCanvas({
     if (!c) return;
     const ctx = c.getContext("2d");
     if (!ctx) return;
-    const w = c.width, h = c.height;
-    const cx = w / 2, cy = h * 0.68, r = w * 0.36;
-    const s = Math.PI * 0.8, e = Math.PI * 2.2;
-    const f = s + (e - s) * Math.min(Math.max(pct, 0), 1);
-    const sw = e - s;
+    const W = (c.width = 280);
+    const H = (c.height = height);
+    ctx.clearRect(0, 0, W, H);
+    const pts = data.slice(-48);
+    if (pts.length < 2) return;
 
-    ctx.clearRect(0, 0, w, h);
+    const min = Math.min(...pts);
+    const max = Math.max(...pts);
+    const span = max - min || 1;
+    const x = (i: number) => (i / (pts.length - 1)) * W;
+    const y = (v: number) => H - 4 - ((v - min) / span) * (H - 10);
 
-    // bg track
-    ctx.beginPath(); ctx.arc(cx, cy, r, s, e);
-    ctx.strokeStyle = "rgba(128,128,128,0.15)";
-    ctx.lineWidth = w * 0.07; ctx.lineCap = "round"; ctx.stroke();
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, color + "44");
+    grad.addColorStop(1, color + "00");
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    pts.forEach((v, i) => ctx.lineTo(x(i), y(v)));
+    ctx.lineTo(W, H);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
 
-    // threshold bands
-    let prev = s;
-    for (const [end, col] of [
-      [0.5,  "rgba(115,191,105,0.15)"],
-      [0.75, "rgba(239,159,39,0.15)"],
-      [1.0,  "rgba(226,75,74,0.15)"],
-    ] as [number, string][]) {
-      const be = s + sw * end;
-      ctx.beginPath(); ctx.arc(cx, cy, r, prev, be);
-      ctx.strokeStyle = col; ctx.lineWidth = w * 0.07; ctx.lineCap = "butt"; ctx.stroke();
-      prev = be;
-    }
+    ctx.beginPath();
+    pts.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  }, [data, color, height]);
 
-    // filled arc
-    if (pct > 0) {
-      ctx.beginPath(); ctx.arc(cx, cy, r, s, f);
-      ctx.strokeStyle = color; ctx.lineWidth = w * 0.07; ctx.lineCap = "round"; ctx.stroke();
-    }
-
-    // value text
-    ctx.fillStyle = color;
-    ctx.font = `bold ${Math.round(r * 0.4)}px monospace`;
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(String(value), cx, cy - r * 0.08);
-
-    // unit text
-    ctx.fillStyle = "rgba(148,163,184,0.6)";
-    ctx.font = `${Math.round(r * 0.22)}px monospace`;
-    ctx.fillText(unit, cx, cy + r * 0.32);
-  }, [pct, color, value, unit]);
-
-  return (
-    <canvas
-      ref={ref}
-      width={130}
-      height={100}
-      style={{ width: "100%", maxWidth: 130, height: "auto" }}
-    />
-  );
+  return <canvas ref={ref} style={{ width: "100%", height, display: "block" }} />;
 }
 
-// ─── StatCell ─────────────────────────────────────────────────────────────────
+// ─── StatPanel (Grafana stat with sparkline background) ─────────────────────────
 
-function StatCell({ label, value }: { label: string; value: string }) {
+function StatPanel({
+  label,
+  value,
+  unit,
+  color,
+  sub,
+  spark,
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  color: string;
+  sub?: string;
+  spark?: number[];
+}) {
   return (
-    <div className="flex flex-col bg-white dark:bg-[#0d1117] px-3 py-3 gap-1">
-      <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-widest">{label}</span>
-      <span className="text-lg font-bold font-mono leading-none text-slate-700 dark:text-slate-200">{value}</span>
+    <div
+      className="relative overflow-hidden rounded-[2px] flex flex-col"
+      style={{ background: GF.panel, border: `1px solid ${GF.border}`, minHeight: 104 }}
+    >
+      <div className="flex items-center justify-between px-3 pt-2.5 z-10">
+        <span className="text-[10px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
+          {label}
+        </span>
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
+      </div>
+      <div className="px-3 pt-1.5 z-10">
+        <span className="text-[28px] font-bold leading-none" style={{ color }}>
+          {value}
+        </span>
+        {unit && <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
+        {sub && (
+          <div className="text-[9px] mt-1 tracking-widest" style={{ color: GF.textDim }}>
+            {sub}
+          </div>
+        )}
+      </div>
+      {spark && spark.length > 1 && (
+        <div className="absolute inset-x-0 bottom-0 opacity-70 pointer-events-none">
+          <Sparkline data={spark} color={color} />
+        </div>
+      )}
     </div>
   );
 }
@@ -122,174 +201,328 @@ function StatCell({ label, value }: { label: string; value: string }) {
 // ─── AirconCard ───────────────────────────────────────────────────────────────
 
 function AirconCard({
-  ac, log, roomTemp, humidity,
+  ac, log, canDelete, canManage, onDelete, onToggle,
 }: {
   ac: Aircon;
   log: LogEntry[];
-  roomTemp: number | string;
-  humidity: number | string;
+  canDelete: boolean;
+  canManage: boolean;
+  onDelete: (id: number) => void;
+  onToggle: (id: number, enabled: boolean) => void;
 }) {
-  const tempVal   = typeof roomTemp === "number" ? roomTemp.toFixed(1) : "--";
-  const humVal    = typeof humidity === "number"  ? humidity.toFixed(1) : "--";
-  const tempPct   = typeof roomTemp === "number" ? (roomTemp - 15) / 25 : 0;
-  const humPct    = typeof humidity === "number"  ? humidity / 100       : 0;
-  const tColor    = tempColor(roomTemp);
-  const hColor    = humColor(humidity);
+  const [toggling, setToggling] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  // Determine overall room status
-  const roomStatus =
-    typeof roomTemp === "number" && roomTemp >= 28 ? "critical" :
-    typeof roomTemp === "number" && roomTemp >= 25 ? "warm" : "normal";
+  const handleToggle = async () => {
+    setToggling(true);
+    const result = await api.toggleAircon(ac.id);
+    setToggling(false);
+    if (result.success) {
+      onToggle(ac.id, result.data?.enabled ?? !ac.enabled);
+    } else {
+      alert(result.error ?? "Failed to toggle unit.");
+    }
+  };
 
-  const statusLabel = { critical: "High Temp", warm: "Warm",   normal: "Normal" }[roomStatus];
-  const statusStyle = {
-    critical: "bg-red-100 dark:bg-red-500/10 border-red-300 dark:border-red-500/25 text-red-600 dark:text-red-400",
-    warm:     "bg-amber-100 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/25 text-amber-600 dark:text-amber-400",
-    normal:   "bg-green-100 dark:bg-green-500/10 border-green-300 dark:border-green-500/25 text-green-600 dark:text-green-400",
-  }[roomStatus];
+  const handleDelete = async () => {
+    if (!confirm(`Remove "${ac.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    const result = await api.deleteAircon(ac.id);
+    if (result.success) {
+      onDelete(ac.id);
+    } else {
+      alert(result.error ?? "Failed to remove unit.");
+      setDeleting(false);
+    }
+  };
+
+  const dotColor = ac.enabled ? GREEN : MUTED;
+
+  const header = (
+    <>
+      <span className="relative flex h-2 w-2 shrink-0">
+        {ac.enabled && (
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ background: dotColor }} />
+        )}
+        <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: dotColor }} />
+      </span>
+      <span className="text-[12px] font-semibold truncate" style={{ color: GF.textPrimary }}>{ac.name}</span>
+      <span
+        className="text-[9px] px-1.5 py-0.5 rounded-[2px] tracking-widest shrink-0"
+        style={{ color: GF.textDim, background: GF.hover, border: `1px solid ${GF.divider}` }}
+      >
+        CH {ac.ir_channel}
+      </span>
+      <span
+        className="text-[9px] font-bold tracking-widest px-2 py-0.5 rounded-[2px] shrink-0"
+        style={{
+          color: ac.enabled ? GREEN : GF.textMuted,
+          background: ac.enabled ? "rgba(115,191,105,0.1)" : GF.hover,
+        }}
+      >
+        {ac.enabled ? "ONLINE" : "OFFLINE"}
+      </span>
+    </>
+  );
+
+  const actions = (
+    <>
+      {canManage && (
+        <button
+          onClick={handleToggle}
+          disabled={toggling}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] text-[10px] font-semibold transition-colors disabled:opacity-40"
+          style={{
+            color: ac.enabled ? RED : GREEN,
+            background: ac.enabled ? "rgba(242,73,92,0.1)" : "rgba(115,191,105,0.1)",
+            border: `1px solid ${ac.enabled ? "rgba(242,73,92,0.25)" : "rgba(115,191,105,0.25)"}`,
+          }}
+        >
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: ac.enabled ? RED : GREEN }} />
+          {toggling ? "…" : ac.enabled ? "Turn Off" : "Turn On"}
+        </button>
+      )}
+      {canDelete && (
+        <button
+          onClick={handleDelete}
+          disabled={deleting}
+          title="Remove this unit"
+          className="w-6 h-6 flex items-center justify-center rounded-[2px] transition-colors disabled:opacity-40"
+          style={{ color: GF.textMuted, background: GF.hover }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = RED; e.currentTarget.style.background = "rgba(242,73,92,0.1)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = GF.textMuted; e.currentTarget.style.background = GF.hover; }}
+        >
+          <svg width="11" height="11" viewBox="0 0 14 14" fill="none">
+            <path d="M2 3h10M5 3V2h4v1M6 6v4M8 6v4M3 3l1 9h6l1-9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
+    </>
+  );
 
   return (
-    <div className="flex flex-col rounded-xl border border-slate-200 dark:border-white/[0.08] overflow-hidden bg-white dark:bg-white/[0.02]">
-
-      {/* ── Header ── */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-white/[0.03]">
-        <div className="flex items-center gap-2">
-          <span className="relative flex h-2 w-2">
-            {ac.enabled && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-60" />}
-            <span className={`relative inline-flex rounded-full h-2 w-2 ${ac.enabled ? "bg-green-400" : "bg-slate-400"}`} />
-          </span>
-          <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">{ac.name}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border ${statusStyle}`}>
-            {statusLabel}
-          </span>
-          <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${
-            ac.enabled
-              ? "bg-slate-100 dark:bg-white/[0.04] border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-300"
-              : "bg-slate-100 dark:bg-white/[0.04] border-slate-200 dark:border-white/[0.08] text-slate-400 dark:text-slate-500"
-          }`}>
-            {ac.enabled ? "Online" : "Offline"}
-          </span>
-        </div>
+    <Panel title={header} right={actions} noPad>
+      {/* Compact stats row */}
+      <div className="grid grid-cols-5 gap-px" style={{ background: GF.divider, borderBottom: `1px solid ${GF.divider}` }}>
+        {[
+          ["State", ac.enabled ? "on" : "off"],
+          ["Fan", ac.fanMode ?? "auto"],
+          ["Mode", ac.mode],
+          ["Set Temp", `${ac.setTemp}°C`],
+          ["Uptime", ac.uptime],
+        ].map(([label, value]) => (
+          <div key={label} className="flex flex-col px-3 py-2.5 gap-0.5" style={{ background: GF.panel }}>
+            <span className="text-[8px] tracking-widest uppercase" style={{ color: GF.textDim }}>{label}</span>
+            <span className="text-[11px] font-bold" style={{ color: GF.textPrimary }}>{value}</span>
+          </div>
+        ))}
       </div>
 
-      {/* ── Gauges row — Room Temp + Humidity ── */}
-      <div className="grid grid-cols-2 gap-px bg-slate-200 dark:bg-white/[0.06] border-b border-slate-200 dark:border-white/[0.08]">
-        <div className="flex flex-col items-center bg-white dark:bg-[#0d1117] px-3 pt-3 pb-2 gap-1">
-          <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-widest self-start">Room Temperature</span>
-          <GaugeCanvas value={tempVal} unit="°C" pct={tempPct} color={tColor} />
-        </div>
-        <div className="flex flex-col items-center bg-white dark:bg-[#0d1117] px-3 pt-3 pb-2 gap-1">
-          <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-widest self-start">Room Humidity</span>
-          <GaugeCanvas value={humVal} unit="%H" pct={humPct} color={hColor} />
-        </div>
-      </div>
-
-      {/* ── A/C stats row 1: State / Fan Mode / A/C Mode ── */}
-      <div className="grid grid-cols-3 gap-px bg-slate-200 dark:bg-white/[0.06] border-b border-slate-200 dark:border-white/[0.08]">
-        <StatCell label="State"    value={ac.enabled ? "on" : "off"} />
-        <StatCell label="Fan Mode" value={ac.fanMode ?? "auto"} />
-        <StatCell label="A/C Mode" value={ac.mode} />
-      </div>
-
-      {/* ── A/C stats row 2: Set Temp / Uptime ── */}
-      <div className="grid grid-cols-2 gap-px bg-slate-200 dark:bg-white/[0.06] border-b border-slate-200 dark:border-white/[0.08]">
-        <StatCell label="Set Temp" value={`${ac.setTemp} °C`} />
-        <StatCell label="Uptime"   value={ac.uptime} />
-      </div>
-
-      {/* ── Activity log ── */}
-      <div className="flex flex-col flex-1 p-4 gap-2">
+      {/* Activity log */}
+      <div className="flex flex-col p-3 gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-[9px] font-mono text-slate-400 dark:text-slate-600 tracking-widest uppercase">
-            Activity Log
-          </span>
-          {log.length > 0 && (
-            <span className="text-[9px] font-mono text-slate-400 dark:text-slate-600">
-              {log.length} entries
-            </span>
-          )}
+          <span className="text-[9px] tracking-widest uppercase" style={{ color: GF.textDim }}>Activity Log</span>
+          {log.length > 0 && <span className="text-[9px]" style={{ color: GF.textDim }}>{log.length} entries</span>}
         </div>
-
-        <div className="flex flex-col gap-1.5 overflow-y-auto max-h-48">
+        <div className="flex flex-col gap-1 overflow-y-auto" style={{ maxHeight: 160 }}>
           {log.length === 0 ? (
-            <div className="text-[10px] font-mono text-slate-400 dark:text-slate-600">No activity recorded.</div>
-          ) : (
-            log.slice(0, 8).map((entry, i) => {
-              // Infer severity from action text
-              const isCritical = entry.action.toLowerCase().includes("off") || entry.action.toLowerCase().includes("error");
-              const isWarn     = entry.action.toLowerCase().includes("trigger") || entry.action.toLowerCase().includes("exceeded");
-              const dotColor   = isCritical ? "bg-red-400" : isWarn ? "bg-amber-400" : "bg-blue-400";
-              return (
-                <div
-                  key={i}
-                  className="flex gap-2 items-start bg-slate-50 dark:bg-white/[0.02] rounded-lg px-2.5 py-2 border border-slate-100 dark:border-white/[0.05]"
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1 ${dotColor}`} />
-                  <span className="text-[9px] font-mono text-slate-400 dark:text-slate-600 flex-shrink-0 whitespace-nowrap pt-0.5">
-                    {entry.time}
-                  </span>
-                  <div className="min-w-0">
-                    <div className="text-[10px] font-mono font-medium text-slate-600 dark:text-slate-300 truncate">{entry.action}</div>
-                    <div className="text-[9px] font-mono text-slate-400 dark:text-slate-500">{entry.reason}</div>
-                  </div>
+            <div className="text-[10px] py-2" style={{ color: GF.textDim }}>No activity recorded.</div>
+          ) : log.slice(0, 6).map((entry, i) => {
+            const isOff = entry.action.toLowerCase().includes("off") || entry.action.toLowerCase().includes("error");
+            const isWarn = entry.action.toLowerCase().includes("trigger") || entry.action.toLowerCase().includes("exceeded");
+            const dot = isOff ? RED : isWarn ? ORANGE : BLUE;
+            return (
+              <div key={i} className="flex gap-2 items-start px-2.5 py-1.5 rounded-[2px]" style={{ background: GF.hover, borderLeft: `2px solid ${dot}` }}>
+                <span className="text-[9px] flex-shrink-0 whitespace-nowrap pt-0.5" style={{ color: GF.textDim }}>{entry.time}</span>
+                <div className="min-w-0">
+                  <div className="text-[10px] font-semibold truncate" style={{ color: GF.textPrimary }}>{entry.action}</div>
+                  <div className="text-[9px]" style={{ color: GF.textMuted }}>{entry.reason}</div>
                 </div>
-              );
-            })
-          )}
+              </div>
+            );
+          })}
         </div>
       </div>
-
-    </div>
+    </Panel>
   );
 }
 
-// ─── Summary bar ──────────────────────────────────────────────────────────────
+// ─── AddAirconModal ───────────────────────────────────────────────────────────
 
-function SummaryBar({
-  aircons, roomTemp, humidity,
-}: {
-  aircons: Aircon[]; roomTemp: number | string; humidity: number | string;
+function AddAirconModal({ usedChannels, channelMap, onAdd, onClose }: {
+  usedChannels: number[];
+  channelMap: ChannelEntry[];
+  onAdd: (ac: Aircon, logs: LogEntry[]) => void;
+  onClose: () => void;
 }) {
-  const online = aircons.filter(a => a.enabled).length;
-  const panels = [
-    {
-      label: "Units Online",
-      value: `${online} / ${aircons.length}`,
-      color: online === aircons.length ? "text-green-600 dark:text-green-400"
-           : online === 0 ? "text-red-600 dark:text-red-400"
-           : "text-amber-600 dark:text-amber-400",
-    },
-    {
-      label: "Room Temp",
-      value: typeof roomTemp === "number" ? `${roomTemp.toFixed(1)} °C` : "--",
-      color: typeof roomTemp === "number" && roomTemp >= 28 ? "text-red-600 dark:text-red-400"
-           : typeof roomTemp === "number" && roomTemp >= 25 ? "text-amber-600 dark:text-amber-400"
-           : "text-cyan-600 dark:text-cyan-400",
-    },
-    {
-      label: "Room Humidity",
-      value: typeof humidity === "number" ? `${humidity.toFixed(1)} %` : "--",
-      color: typeof humidity === "number" && humidity >= 70 ? "text-red-600 dark:text-red-400"
-           : typeof humidity === "number" && humidity >= 55 ? "text-amber-600 dark:text-amber-400"
-           : "text-sky-600 dark:text-sky-400",
-    },
-    {
-      label: "Active Mode",
-      value: aircons.find(a => a.enabled)?.mode ?? "—",
-      color: "text-slate-700 dark:text-slate-200",
-    },
-  ];
+  const [name,    setName]    = useState("");
+  const [channel, setChannel] = useState("");
+  const [error,   setError]   = useState("");
+  const [saving,  setSaving]  = useState(false);
+
+  const esp32Online  = channelMap.length > 0;
+  const allChannels  = esp32Online
+    ? channelMap
+    : Array.from({ length: 8 }, (_, i) => ({ channel: i + 1, gpio: 0 }));
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    const ch = parseInt(channel);
+    if (!name.trim())              return setError("Name is required.");
+    if (!ch || ch < 1 || ch > 8)   return setError("Select a valid IR channel.");
+    if (usedChannels.includes(ch)) return setError(`Channel ${ch} is already assigned.`);
+
+    setSaving(true);
+    const result = await api.addAircon(name.trim(), ch);
+    setSaving(false);
+    if (!result.success) return setError(result.error ?? "Failed to add unit.");
+
+    const refresh = await api.getAircon();
+    if (refresh.success && refresh.data) {
+      const newUnit = (refresh.data.aircons as Aircon[]).find(
+        a => a.ir_channel === ch && a.name === name.trim()
+      );
+      if (newUnit) onAdd(newUnit, []);
+    }
+    onClose();
+  };
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-      {panels.map(p => (
-        <div key={p.label} className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-4">
-          <div className="text-[9px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5">{p.label}</div>
-          <div className={`text-2xl font-bold font-mono leading-none ${p.color}`}>{p.value}</div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }}>
+      <div className="w-full max-w-sm mx-4 rounded-[2px] shadow-2xl overflow-hidden"
+        style={{ background: GF.panel, border: `1px solid ${GF.border}` }}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3.5"
+          style={{ borderBottom: `1px solid ${GF.divider}` }}>
+          <div>
+            <div className="text-[12px] font-semibold" style={{ color: GF.textPrimary }}>
+              Add Air Conditioner
+            </div>
+            <div className="text-[10px] mt-0.5" style={{ color: GF.textMuted }}>
+              Register a new IR-controlled unit
+            </div>
+          </div>
+          <button onClick={onClose}
+            className="w-6 h-6 flex items-center justify-center rounded-[2px] transition-colors"
+            style={{ color: GF.textMuted, background: GF.hover }}
+            onMouseEnter={e => (e.currentTarget.style.color = GF.textPrimary)}
+            onMouseLeave={e => (e.currentTarget.style.color = GF.textMuted)}>
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+              <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
         </div>
-      ))}
+
+        <form onSubmit={handleSubmit} className="p-5 flex flex-col gap-4">
+          {!esp32Online && (
+            <div className="flex items-start gap-2 px-3 py-2.5 rounded-[2px]"
+              style={{ background: "rgba(255,120,10,0.08)", border: "1px solid rgba(255,120,10,0.2)" }}>
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" className="mt-0.5 flex-shrink-0" style={{ color: ORANGE }}>
+                <path d="M7 1L13 12H1L7 1Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
+                <path d="M7 5v3M7 10v.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+              </svg>
+              <p className="text-[10px] leading-relaxed" style={{ color: ORANGE }}>
+                ESP32 offline — GPIO assignments unavailable.
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[9px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
+              Unit Name
+            </label>
+            <input type="text" value={name} onChange={e => setName(e.target.value)}
+              placeholder="e.g. AC Unit 3"
+              className="w-full px-3 py-2 rounded-[2px] text-[12px] focus:outline-none"
+              style={{
+                background:   GF.hover,
+                border:       `1px solid ${GF.divider}`,
+                color:        GF.textPrimary,
+                fontFamily:   "monospace",
+              }}
+              onFocus={e  => (e.currentTarget.style.border = `1px solid ${GF.accent}`)}
+              onBlur={e   => (e.currentTarget.style.border = `1px solid ${GF.divider}`)}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[9px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
+              IR Channel
+            </label>
+            <div className="flex flex-col gap-1.5">
+              {allChannels.map(({ channel: ch, gpio }) => {
+                const inUse    = usedChannels.includes(ch);
+                const selected = channel === String(ch);
+                return (
+                  <button key={ch} type="button" disabled={inUse}
+                    onClick={() => !inUse && setChannel(String(ch))}
+                    className="flex items-center justify-between px-3 py-2.5 rounded-[2px] text-left transition-colors"
+                    style={{
+                      opacity:    inUse ? 0.4 : 1,
+                      cursor:     inUse ? "not-allowed" : "pointer",
+                      background: selected ? GF.accentDim : GF.hover,
+                      border:     `1px solid ${selected ? GF.accent : GF.divider}`,
+                    }}>
+                    <div className="flex items-center gap-3">
+                      <span className="w-6 h-6 rounded-[2px] flex items-center justify-center text-[11px] font-bold"
+                        style={{
+                          background: selected ? GF.accent : GF.hoverStrong,
+                          color:      selected ? "#fff" : GF.textMuted,
+                        }}>
+                        {ch}
+                      </span>
+                      <div>
+                        <div className="text-[11px] font-semibold" style={{ color: GF.textPrimary }}>
+                          Channel {ch}
+                        </div>
+                        {esp32Online && gpio > 0 && (
+                          <div className="text-[10px]" style={{ color: GF.textMuted }}>
+                            Wire IR TX → <span className="font-bold" style={{ color: GF.accent }}>GPIO {gpio}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[9px] font-bold tracking-widest px-2 py-0.5 rounded-[2px]"
+                      style={{
+                        color:      inUse ? GF.textDim : GREEN,
+                        background: inUse ? GF.hover    : "rgba(115,191,105,0.1)",
+                      }}>
+                      {inUse ? "IN USE" : "AVAIL"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {error && (
+            <p className="text-[11px] px-3 py-2 rounded-[2px]"
+              style={{ color: RED, background: "rgba(242,73,92,0.08)", border: "1px solid rgba(242,73,92,0.2)" }}>
+              {error}
+            </p>
+          )}
+
+          <div className="flex gap-2 pt-1">
+            <button type="button" onClick={onClose}
+              className="flex-1 py-2 rounded-[2px] text-[12px] transition-colors"
+              style={{ color: GF.textMuted, border: `1px solid ${GF.divider}`, background: "transparent" }}
+              onMouseEnter={e => (e.currentTarget.style.background = GF.hover)}
+              onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+              Cancel
+            </button>
+            <button type="submit" disabled={saving || !channel}
+              className="flex-1 py-2 rounded-[2px] text-[12px] font-bold transition-colors disabled:opacity-40"
+              style={{ background: GF.accent, color: "#fff" }}
+              onMouseEnter={e => (e.currentTarget.style.background = "#4a82d8")}
+              onMouseLeave={e => (e.currentTarget.style.background = GF.accent)}>
+              {saving ? "Adding…" : "Add Unit"}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -297,24 +530,33 @@ function SummaryBar({
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function AirConditioner() {
-  const [aircons,  setAircons]  = useState<Aircon[]>([]);
-  const [logs,     setLogs]     = useState<Record<number, LogEntry[]>>({});
-  const [loading,  setLoading]  = useState<boolean>(true);
-  const [roomTemp, setRoomTemp] = useState<number | string>("--");
-  const [humidity, setHumidity] = useState<number | string>("--");
+  const { user }  = useAuth();
+  const isAdmin   = user?.role === "admin";
+  const canManage = isAdmin || user?.role === "it_staff";
+
+  const [aircons,    setAircons]    = useState<Aircon[]>([]);
+  const [logs,       setLogs]       = useState<Record<number, LogEntry[]>>({});
+  const [channelMap, setChannelMap] = useState<ChannelEntry[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [roomTemp,   setRoomTemp]   = useState<number | string>("--");
+  const [humidity,   setHumidity]   = useState<number | string>("--");
+  const [tempHist,   setTempHist]   = useState<number[]>([]);
+  const [humHist,    setHumHist]    = useState<number[]>([]);
+  const [showModal,  setShowModal]  = useState(false);
+  const [clock,      setClock]      = useState(() => new Date());
+
+  // Live toolbar clock
+  useEffect(() => {
+    const t = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
-    api.getAircon().then((result) => {
+    api.getAircon().then(result => {
       if (result.success && result.data) {
-        const units: Aircon[] = Array.isArray(result.data.aircons)
-          ? result.data.aircons
-          : result.data.aircon
-          ? [result.data.aircon]
-          : [];
-        setAircons(units);
-        const logMap: Record<number, LogEntry[]> = {};
-        units.forEach((u) => { logMap[u.id] = result.data.log ?? []; });
-        setLogs(logMap);
+        setAircons(result.data.aircons ?? []);
+        setLogs(result.data.logs ?? {});
+        setChannelMap(result.data.channelMap ?? []);
       }
       setLoading(false);
     }).catch(() => setLoading(false));
@@ -323,69 +565,201 @@ export default function AirConditioner() {
       if (!data) return;
       setRoomTemp(data.temperature);
       setHumidity(data.humidity);
+      setTempHist(p => [...p.slice(-60), data.temperature]);
+      setHumHist(p => [...p.slice(-60), data.humidity]);
     };
     socket.on("sensorData", handleLive);
 
-    socket.on("airconStatus", (data: { aircon: Aircon; entry?: LogEntry }) => {
-      setAircons((prev) =>
-        prev.map((a) => a.id === data.aircon.id ? { ...a, ...data.aircon } : a)
-      );
-      if (data.entry) {
-        setLogs((prev) => ({
+    socket.on("airconStatus", (data: { aircon: Partial<Aircon>; entry?: LogEntry }) => {
+      setAircons(prev => prev.map(a => {
+        if (a.id !== data.aircon.id) return a;
+        const merged = { ...a, ...data.aircon };
+        // Keep Uptime in step with on/off so the card reflects a toggle live.
+        // (getAll computes uptime server-side — without this it stays stale until refresh.)
+        if (typeof data.aircon.enabled === "boolean") {
+          merged.uptime = data.aircon.enabled ? "just now" : "offline";
+        }
+        return merged;
+      }));
+      if (data.entry && data.aircon.id != null) {
+        setLogs(prev => ({
           ...prev,
-          [data.aircon.id]: [data.entry!, ...(prev[data.aircon.id] ?? [])].slice(0, 50),
+          [data.aircon.id!]: [data.entry!, ...(prev[data.aircon.id!] ?? [])].slice(0, 50),
         }));
       }
+    });
+
+    socket.on("irChannelMap", (data: { channels: ChannelEntry[] }) => {
+      setChannelMap(data.channels ?? []);
+    });
+
+    socket.on("airconAutoUpdate", (data: { setTemp: number; action: string; deviceIds?: number[] }) => {
+      const ids = new Set((data.deviceIds ?? []).map(Number));
+      if (ids.size === 0) return; // auto IR adjusted no running units
+      // Only the units that were ON are re-targeted — a manually-off unit stays off
+      // (auto IR no longer switches power, so it can't re-enable a unit you turned off).
+      setAircons(prev => prev.map(a => ids.has(a.id) ? { ...a, setTemp: data.setTemp } : a));
+      const entry: LogEntry = {
+        time:   new Date().toLocaleTimeString("en-PH"),
+        action: data.action,
+        reason: "Temperature zone change",
+      };
+      setLogs(prev => {
+        const next = { ...prev };
+        for (const id of ids) next[id] = [entry, ...(next[id] ?? [])].slice(0, 50);
+        return next;
+      });
     });
 
     return () => {
       socket.off("sensorData", handleLive);
       socket.off("airconStatus");
+      socket.off("irChannelMap");
+      socket.off("airconAutoUpdate");
     };
   }, []);
 
-  return (
-    <div className="p-4 lg:p-6 flex flex-col gap-4 bg-white dark:bg-transparent">
+  const handleUnitAdded   = (ac: Aircon, newLogs: LogEntry[]) => {
+    setAircons(prev => [...prev, ac]);
+    setLogs(prev => ({ ...prev, [ac.id]: newLogs }));
+  };
+  const handleUnitDeleted = (id: number) => {
+    setAircons(prev => prev.filter(a => a.id !== id));
+    setLogs(prev => { const n = { ...prev }; delete n[id]; return n; });
+  };
+  const handleUnitToggled = (id: number, enabled: boolean) => {
+    setAircons(prev => prev.map(a =>
+      a.id === id ? { ...a, enabled, uptime: enabled ? "just now" : "offline" } : a));
+  };
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-base font-bold text-slate-900 dark:text-white">Air Conditioner Monitor</div>
-          <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
-            Server Room · {aircons.length} unit{aircons.length !== 1 ? "s" : ""}
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-60" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
+  const usedChannels = aircons.map(a => a.ir_channel);
+  const online       = aircons.filter(a => a.enabled).length;
+  const total        = aircons.length;
+  const activeMode   = aircons.find(a => a.enabled)?.mode ?? "—";
+  const esp32Online  = channelMap.length > 0;
+  const onlineColor  = total === 0 ? MUTED : online === total ? GREEN : online === 0 ? RED : ORANGE;
+
+  const pill = "flex items-center gap-1.5 h-7 px-2.5 rounded-[2px] text-[11px]";
+  const pillStyle: React.CSSProperties = { color: GF.textMuted, border: `1px solid ${GF.divider}`, background: GF.panel };
+
+  return (
+    <div className="flex flex-col gap-3 p-3"
+      style={{ background: GF.bg, minHeight: "100%", fontFamily: "'JetBrains Mono', monospace" }}>
+
+      {/* ── Toolbar ── */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2.5">
+          <span className="text-[9px] px-1.5 py-0.5 rounded-[2px] tracking-widest uppercase"
+            style={{ color: GF.accent, background: "rgba(87,148,242,0.12)" }}>
+            {total} unit{total !== 1 ? "s" : ""}
           </span>
-          <span className="text-[10px] text-slate-400 dark:text-slate-500">Live</span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* ESP32 link status */}
+          <span className={pill} style={{ ...pillStyle, color: esp32Online ? GREEN : ORANGE,
+            borderColor: esp32Online ? "rgba(115,191,105,0.3)" : "rgba(255,120,10,0.3)" }}>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: esp32Online ? GREEN : ORANGE }} />
+            ESP32 {esp32Online ? "ONLINE" : "OFFLINE"}
+          </span>
+
+          {canManage && (
+            <button onClick={() => setShowModal(true)}
+              className="flex items-center gap-1.5 h-7 px-3 rounded-[2px] text-[11px] font-semibold transition-colors"
+              style={{ background: GF.accent, color: "#fff" }}
+              onMouseEnter={e => (e.currentTarget.style.background = "#4a82d8")}
+              onMouseLeave={e => (e.currentTarget.style.background = GF.accent)}>
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              </svg>
+              Add Aircon
+            </button>
+          )}
         </div>
       </div>
 
       {loading ? (
-        <div className="text-center py-16 text-slate-400 text-sm">Loading...</div>
+        <div className="flex items-center justify-center py-20">
+          <span className="text-[11px] tracking-widest" style={{ color: GF.textDim }}>Loading…</span>
+        </div>
       ) : (
         <>
-          {/* Summary bar */}
-          <SummaryBar aircons={aircons} roomTemp={roomTemp} humidity={humidity} />
-
-          {/* Cards */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {aircons.map((ac) => (
-              <AirconCard
-                key={ac.id}
-                ac={ac}
-                log={logs[ac.id] ?? []}
-                roomTemp={roomTemp}
-                humidity={humidity}
-              />
-            ))}
+          {/* ── Stat row ── */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <StatPanel
+              label="Room Temp"
+              value={typeof roomTemp === "number" ? roomTemp.toFixed(1) : "--"}
+              unit="°C"
+              color={tempColor(roomTemp)}
+              sub="DHT11 · LIVE"
+              spark={tempHist}
+            />
+            <StatPanel
+              label="Room Humidity"
+              value={typeof humidity === "number" ? humidity.toFixed(1) : "--"}
+              unit="%"
+              color={humColor(humidity)}
+              sub="DHT11 · LIVE"
+              spark={humHist}
+            />
+            <StatPanel
+              label="Units Online"
+              value={`${online}/${total}`}
+              color={onlineColor}
+              sub={`${total - online} offline`}
+            />
+            <StatPanel
+              label="Active Mode"
+              value={String(activeMode).toUpperCase()}
+              color={activeMode === "—" ? MUTED : GF.accent}
+              sub="auto IR control"
+            />
           </div>
+
+          {/* ── AC unit cards ── */}
+          {total === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-3">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" style={{ color: GF.textDim }}>
+                <rect x="2" y="6" width="20" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+                <path d="M8 10h8M8 14h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+              <span className="text-[11px]" style={{ color: GF.textMuted }}>No aircon units registered.</span>
+              {canManage && (
+                <button onClick={() => setShowModal(true)}
+                  className="text-[11px] font-semibold transition-colors"
+                  style={{ color: GF.accent }}
+                  onMouseEnter={e => (e.currentTarget.style.opacity = "0.8")}
+                  onMouseLeave={e => (e.currentTarget.style.opacity = "1")}>
+                  Add the first unit →
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {aircons.map(ac => (
+                <AirconCard
+                  key={ac.id}
+                  ac={ac}
+                  log={logs[ac.id] ?? []}
+                  canManage={canManage}
+                  canDelete={isAdmin}
+                  onToggle={handleUnitToggled}
+                  onDelete={handleUnitDeleted}
+                />
+              ))}
+            </div>
+          )}
         </>
       )}
 
+      {showModal && (
+        <AddAirconModal
+          usedChannels={usedChannels}
+          channelMap={channelMap}
+          onAdd={handleUnitAdded}
+          onClose={() => setShowModal(false)}
+        />
+      )}
     </div>
   );
 }

@@ -8,7 +8,27 @@ import {
 } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api/api.js";
+import { resetSessionExpiredGuard } from "../api/client.js";
 import { socket } from "../socket/socket.js";
+
+// Read the JWT's `exp` (epoch seconds) without a library. Null if missing/unparseable.
+function decodeJwtExp(token: string | null): number | null {
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1] ?? ""));
+    return typeof payload?.exp === "number" ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+function readToken(): string | null {
+  try {
+    return JSON.parse(sessionStorage.getItem("cspc_token") || "null");
+  } catch {
+    return null;
+  }
+}
 
 interface User {
   id: number;
@@ -63,6 +83,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [user]);
 
+  // Clear the session locally, no server round-trip. Used by manual logout (after
+  // notifying the server) and by both auto-logout paths below, where the token is
+  // already invalid so calling the server is pointless. Setting user to null makes
+  // AppShell redirect to /login automatically.
+  const clearLocalSession = useCallback(() => {
+    socket.disconnect();
+    setUser(null);
+    sessionStorage.removeItem("cspc_user");
+    sessionStorage.removeItem("cspc_token");
+  }, []);
+
+  // Reactive auto-logout: the axios response interceptor emits this when the
+  // backend rejects our token (expired, or a session invalidated elsewhere). Act
+  // only if we still hold a token, so a stray event after logout is a no-op. The
+  // login page shows a notice via the cspc_session_expired flag.
+  useEffect(() => {
+    const onExpired = () => {
+      if (!sessionStorage.getItem("cspc_user")) return; // not logged in — ignore stray events
+      sessionStorage.setItem("cspc_session_expired", "1");
+      clearLocalSession();
+    };
+    window.addEventListener("cspc:session-expired", onExpired);
+    return () => window.removeEventListener("cspc:session-expired", onExpired);
+  }, [clearLocalSession]);
+
+  // Proactive auto-logout exactly when the JWT expires, so an idle tab doesn't sit
+  // on a dead token until the next request. Re-runs on login / restore-from-storage,
+  // reading exp from the current token.
+  useEffect(() => {
+    if (!user) return;
+    const exp = decodeJwtExp(readToken());
+    if (!exp) return;
+    const expire = () => {
+      sessionStorage.setItem("cspc_session_expired", "1");
+      clearLocalSession();
+    };
+    const msLeft = exp * 1000 - Date.now();
+    if (msLeft <= 0) {
+      expire();
+      return;
+    }
+    const t = setTimeout(expire, msLeft);
+    return () => clearTimeout(t);
+  }, [user, clearLocalSession]);
+
   const login = useCallback(async (email: string, password: string) => {
     const result = await api.login(email, password);
 
@@ -95,6 +160,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     sessionStorage.setItem("cspc_token", JSON.stringify(token));
     sessionStorage.setItem("cspc_user", JSON.stringify(safeUser));
+    sessionStorage.removeItem("cspc_session_expired"); // fresh login — drop any expiry notice
+    resetSessionExpiredGuard();                         // re-arm the interceptor's one-shot guard
 
     setUser(safeUser);
     socket.connect();
@@ -108,12 +175,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       /* ignore */
     }
-
-    socket.disconnect();
-    setUser(null);
-    sessionStorage.removeItem("cspc_user");
-    sessionStorage.removeItem("cspc_token");
-  }, []);
+    clearLocalSession();
+  }, [clearLocalSession]);
 
   const updateUser = useCallback((data: Partial<User>) => {
     setUser((prev) => {

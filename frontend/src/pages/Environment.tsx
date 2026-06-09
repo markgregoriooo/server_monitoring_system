@@ -393,8 +393,8 @@ function StatusBadge({ status }: { status: string }) {
 // ─── GaugeArc ─────────────────────────────────────────────────────────────────
 // 270° arc gauge (same geometry as AirConditioner.tsx), bottom clipped by canvas.
 
-function GaugeArc({ value, unit, pct, color }: {
-  value: string | number; unit: string; pct: number; color: string;
+function GaugeArc({ value, unit, pct, color, isDark }: {
+  value: string | number; unit: string; pct: number; color: string; isDark: boolean;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -411,7 +411,7 @@ function GaugeArc({ value, unit, pct, color }: {
 
     // background track
     ctx.beginPath(); ctx.arc(cx, cy, r, s, e);
-    ctx.strokeStyle = "rgba(128,128,128,0.12)";
+    ctx.strokeStyle = isDark ? "rgba(128,128,128,0.12)" : "rgba(0,0,0,0.10)";
     ctx.lineWidth = w * 0.07; ctx.lineCap = "round"; ctx.stroke();
 
     // threshold bands (green → orange → red)
@@ -440,15 +440,26 @@ function GaugeArc({ value, unit, pct, color }: {
     ctx.fillText(String(value), cx, cy - r * 0.1);
 
     // unit text
-    ctx.fillStyle = "rgba(107,114,128,0.75)";
+    ctx.fillStyle = isDark ? "rgba(107,114,128,0.75)" : "rgba(71,85,105,0.85)";
     ctx.font = `${Math.round(r * 0.26)}px monospace`;
     ctx.fillText(unit, cx, cy + r * 0.36);
-  }, [pct, color, value, unit]);
+  }, [pct, color, value, unit, isDark]);
 
   return (
     <canvas ref={ref} width={130} height={100}
       style={{ width: "100%", maxWidth: 130, height: "auto" }} />
   );
+}
+
+// Light moving-average so live raw readings render as a smooth, flowing curve
+// (matching the aggregated Server Detail charts). Window of 5 ≈ ~15s of samples.
+function smooth(data: number[], window = 5): number[] {
+  if (data.length <= 2) return data;
+  return data.map((_, i) => {
+    const start = Math.max(0, i - window + 1);
+    const slice = data.slice(start, i + 1);
+    return +(slice.reduce((a, b) => a + b, 0) / slice.length).toFixed(2);
+  });
 }
 
 // ─── Sparkline ────────────────────────────────────────────────────────────────
@@ -488,9 +499,10 @@ interface StatPanelProps {
   max: string;
   avg: string;
   min: string;
+  isDark: boolean;
 }
 
-function StatPanel({ title, value, unit, color, segPct, sparkData, max, avg, min }: StatPanelProps) {
+function StatPanel({ title, value, unit, color, segPct, sparkData, max, avg, min, isDark }: StatPanelProps) {
   return (
     <div className="flex flex-col rounded" style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}` }}>
       {/* Panel title bar */}
@@ -502,7 +514,7 @@ function StatPanel({ title, value, unit, color, segPct, sparkData, max, avg, min
 
       {/* Arc gauge — shows live value + unit in centre */}
       <div className="flex justify-center px-3 pt-2 pb-0">
-        <GaugeArc value={value} unit={unit} pct={segPct} color={color} />
+        <GaugeArc value={value} unit={unit} pct={segPct} color={color} isDark={isDark} />
       </div>
 
       {/* Sparkline */}
@@ -1160,18 +1172,18 @@ export default function Environment() {
     labels,
     datasets: [
       {
-        label: "Temperature", data: temps, yAxisID: "yTemp",
+        label: "Temperature", data: smooth(temps), yAxisID: "yTemp",
         borderColor: "#F59E0B",
         backgroundColor: (ctx: ScriptableContext<"line">) => gradientFill(ctx, "rgba(245,158,11,0.16)", "rgba(245,158,11,0.01)"),
         borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#F59E0B", fill: true, tension: 0.3,
+        pointHoverBackgroundColor: "#F59E0B", fill: true, tension: 0.4,
       },
       {
-        label: "Humidity", data: hums, yAxisID: "yHum",
+        label: "Humidity", data: smooth(hums), yAxisID: "yHum",
         borderColor: "#38BDF8",
         backgroundColor: (ctx: ScriptableContext<"line">) => gradientFill(ctx, "rgba(56,189,248,0.12)", "rgba(56,189,248,0.01)"),
         borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#38BDF8", fill: true, tension: 0.3,
+        pointHoverBackgroundColor: "#38BDF8", fill: true, tension: 0.4,
       },
     ],
   }), [labels, temps, hums]);
@@ -1180,18 +1192,18 @@ export default function Environment() {
     labels: smokeLabels,
     datasets: [
       {
-        label: "MQ2-1", data: ppm1s,
+        label: "MQ2-1", data: smooth(ppm1s),
         borderColor: "#A78BFA",
         backgroundColor: (ctx: ScriptableContext<"line">) => gradientFill(ctx, "rgba(167,139,250,0.14)", "rgba(167,139,250,0.01)"),
         borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#A78BFA", fill: true, tension: 0.3,
+        pointHoverBackgroundColor: "#A78BFA", fill: true, tension: 0.4,
       },
       {
-        label: "MQ2-2", data: ppm2s,
+        label: "MQ2-2", data: smooth(ppm2s),
         borderColor: "#F472B6",
         backgroundColor: (ctx: ScriptableContext<"line">) => gradientFill(ctx, "rgba(244,114,182,0.10)", "rgba(244,114,182,0.01)"),
         borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#F472B6", fill: true, tension: 0.3,
+        pointHoverBackgroundColor: "#F472B6", fill: true, tension: 0.4,
       },
     ],
   }), [smokeLabels, ppm1s, ppm2s]);
@@ -1239,6 +1251,7 @@ export default function Environment() {
             max={peakTemp !== "--" ? `${peakTemp}°` : "--"}
             avg={avgTemp  !== "--" ? `${avgTemp}°`  : "--"}
             min={minTemp  !== "--" ? `${minTemp}°`  : "--"}
+            isDark={isDark}
           />
           <StatPanel
             title="Humidity"
@@ -1248,6 +1261,7 @@ export default function Environment() {
             max={peakHum !== "--" ? `${peakHum}%` : "--"}
             avg={avgHum  !== "--" ? `${avgHum}%`  : "--"}
             min={minHum  !== "--" ? `${minHum}%`  : "--"}
+            isDark={isDark}
           />
           <StatPanel
             title="MQ2 Sensor 1"
@@ -1258,6 +1272,7 @@ export default function Environment() {
             max={ppm1s.length > 0 ? `${Math.max(...ppm1s).toFixed(0)}` : "--"}
             avg={ppm1s.length > 0 ? `${(ppm1s.reduce((a,b)=>a+b,0)/ppm1s.length).toFixed(0)}` : "--"}
             min={ppm1s.length > 0 ? `${Math.min(...ppm1s).toFixed(0)}` : "--"}
+            isDark={isDark}
           />
           <StatPanel
             title="MQ2 Sensor 2"
@@ -1268,6 +1283,7 @@ export default function Environment() {
             max={ppm2s.length > 0 ? `${Math.max(...ppm2s).toFixed(0)}` : "--"}
             avg={ppm2s.length > 0 ? `${(ppm2s.reduce((a,b)=>a+b,0)/ppm2s.length).toFixed(0)}` : "--"}
             min={ppm2s.length > 0 ? `${Math.min(...ppm2s).toFixed(0)}` : "--"}
+            isDark={isDark}
           />
           <StatePanel
             smokeStatus={liveSmokeStatus}

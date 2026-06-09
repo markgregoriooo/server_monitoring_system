@@ -7,27 +7,43 @@ const router = express.Router();
 
 // login rate limiter
 const loginLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 5, // 5 attempts per ip
-  standardHeaders: "draft-7",
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 failed attempts per IP + email
+  standardHeaders: "draft-8",
   legacyHeaders: false,
   skipSuccessfulRequests: true,
+  // keyGenerator via ipKeyGenerator(req.ip, 56) below.
+  // Bucket per account (email) + IP so one account's failures don't lock out
+  // everyone else behind a shared NAT, and an attacker can't pivot accounts.
+  // ipKeyGenerator normalizes IPv6 into the /56 subnet for the IP portion.
   keyGenerator: (req) => {
-    const forwarded = req.headers["x-forwarded-for"];
-    const ip = forwarded ? forwarded.split(",")[0].trim() : req.ip;
-    return ipKeyGenerator(ip);
+    const ipKey = ipKeyGenerator(req.ip, 56);
+    const email = (req.body?.email ?? "").trim().toLowerCase();
+    return `${ipKey}:${email}`;
   },
   handler: (req, res) => {
     res.status(429).json({
-      error: "Too many login attempts. Try again in 5 minutes.",
+      error: "Too many login attempts. Try again in 15 minutes.",
     });
   },
 });
 
+// Extract client IP + browser from the request for audit logging.
+// `trust proxy` is enabled in server.js, so req.ip respects X-Forwarded-For.
+function getClientInfo(req) {
+  return {
+    ip: req.ip ?? null,
+    userAgent: req.get("user-agent") ?? null,
+  };
+}
+
 // POST /api/auth/login
 router.post("/login", loginLimiter, async (req, res) => {
   try {
-    const result = await authService.login(req.body);
+    const result = await authService.login({
+      ...req.body,
+      ...getClientInfo(req),
+    });
 
     res.json({
       token: result.token,
@@ -41,20 +57,19 @@ router.post("/login", loginLimiter, async (req, res) => {
 });
 
 // GET /api/auth/me  
-router.get("/me", authMiddleware, (req, res) => {
-  res.json({
-    user: req.user,
-  });
+router.get("/me", authMiddleware, async (req, res) => {
+  try {
+    const user = await authService.getMe(req.user.id);
+    res.json({ user });
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+  }
 });
 
 // POST /api/auth/logout
 router.post("/logout", authMiddleware, async (req, res) => {
   try {
-    // req.user comes from authMiddleware
-    await db.query(
-      "UPDATE users SET status = ? WHERE id = ?",
-      ["inactive", req.user.id]
-    );
+      await authService.logout(req.user.id, getClientInfo(req));
 
     res.json({
       success: true,
