@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { useAuth } from "../../context/AuthContext.js";
+import { BRAND } from "../../branding";
 
 interface LoginResult {
   success: boolean;
@@ -9,20 +10,35 @@ interface LoginResult {
 
 export default function Login() {
   const { login } = useAuth();
-  const [username, setUsername] = useState<string>("");
+  const [email, setEmail] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [showPass, setShowPass] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
+
+  // Shown once when the user was auto-logged-out by an expired/invalid session.
+  // Read the flag here (pure — no side effect), then clear it in the effect below.
+  // Removing it inside this initializer would break under React StrictMode, which
+  // double-invokes initializers in dev and would wipe the flag before it shows.
+  const [notice, setNotice] = useState<string>(() =>
+    sessionStorage.getItem("cspc_session_expired")
+      ? "Your session expired. Please sign in again."
+      : "",
+  );
+
+  useEffect(() => {
+    sessionStorage.removeItem("cspc_session_expired");
+  }, []);
 
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError("");
+    setNotice("");
 
-    if (!username || !password) {
-      setError("Please enter both username and password.");
+    if (!email || !password) {
+      setError("Please enter both email and password.");
       return;
     }
 
@@ -30,7 +46,7 @@ export default function Login() {
 
     await new Promise((r) => setTimeout(r, 700));
 
-    const result: LoginResult = await login(username, password);
+    const result: LoginResult = await login(email, password);
 
     if (!result.success) {
       setError(result.error || "Login failed");
@@ -60,18 +76,30 @@ export default function Login() {
 
       <div className="w-full max-w-md relative z-10">
         <div className="flex flex-col items-center mb-8">
-          {/* <div
-            className="w-20 h-20 rounded-full bg-gradient-to-br from-[#f5c400] to-[#d4a800]
-            flex items-center justify-center font-black text-base text-[#080f1e]
-            shadow-[0_0_40px_rgba(245,196,0,0.4)] mb-5 border-2 border-[#f5c400]/30"
-          >
-            CSPC
-          </div> */}
+          {BRAND.logoSrc ? (
+            <img
+              src={BRAND.logoSrc}
+              alt={BRAND.name}
+              className="w-20 h-20 rounded-full object-contain mb-5 shadow-[0_0_40px_rgba(245,196,0,0.25)]"
+            />
+          ) : (
+            <div
+              className="w-20 h-20 rounded-full bg-gradient-to-br from-[#f5c400] to-[#d4a800]
+              flex items-center justify-center font-black text-base text-[#080f1e]
+              shadow-[0_0_40px_rgba(245,196,0,0.4)] mb-5 border-2 border-[#f5c400]/30"
+            >
+              {BRAND.logoText}
+            </div>
+          )}
 
-          <h1 className="text-2xl font-bold text-white tracking-tight">CSPC-ICTU</h1>
+          <h1 className="font-bold text-white tracking-tight text-center leading-snug flex flex-col items-center">
+            <span className="text-lg sm:text-xl">Camarines Sur Polytechnic Colleges</span>
+            <span className="text-sm sm:text-base text-white/90">Information and Communications</span>
+            <span className="text-xs sm:text-sm text-white/80">Technology Unit</span>
+          </h1>
 
-          <p className="text-[10px] text-[#f5c400]/60 font-mono tracking-[0.2em] mt-1.5 text-center">
-            SERVER ENVIRONMENT MONITORING & CONTROL SYSTEM
+          <p className="text-[10px] text-[#f5c400]/60 font-mono tracking-[0.2em] mt-3 text-center">
+            {BRAND.tagline}
           </p>
         </div>
 
@@ -84,21 +112,27 @@ export default function Login() {
             Enter your credentials to access the dashboard.
           </p>
 
+          {notice && (
+            <div className="flex items-center gap-2.5 px-4 py-3 mb-4 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 text-sm">
+              {notice}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div>
               <label className="block text-xs text-slate-400 font-semibold mb-1.5">
-                Username
+                Email
               </label>
 
               <input
-                type="text"
-                value={username}
+                type="email"
+                value={email}
                 onChange={(e) => {
-                  setUsername(e.target.value);
+                  setEmail(e.target.value);
                   setError("");
                 }}
-                placeholder="Enter your username"
-                autoComplete="username"
+                placeholder="Enter your email"
+                autoComplete="email"
                 className="w-full px-4 py-3 rounded-xl text-white text-sm font-mono placeholder-slate-600 outline-none transition
                   bg-white/[0.05] border border-white/10 focus:border-blue-500/60 focus:bg-white/[0.08]"
               />

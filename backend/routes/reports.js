@@ -13,7 +13,7 @@ router.get("/", authMiddleware, (req, res) => {
 router.post(
   "/",
   authMiddleware,
-  requireRole("super_admin", "it_staff"),
+  requireRole("admin", "it_staff"),
   (req, res) => {
     const { title, type } = req.body;
 

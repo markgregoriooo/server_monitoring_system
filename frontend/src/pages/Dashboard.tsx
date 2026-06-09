@@ -45,18 +45,45 @@ interface Aircon {
   humidity: number;
 }
 
+// ─── Grafana design tokens ──────────────────────────────────────────────────────
+
+const gf = {
+  bg:          "var(--gf-bg)",
+  panel:       "var(--gf-panel)",
+  border:      "var(--gf-panel-border)",
+  divider:     "var(--gf-divider)",
+  header:      "var(--gf-header)",
+  textPrimary: "var(--gf-text-primary)",
+  textMuted:   "var(--gf-text-muted)",
+  textDim:     "var(--gf-text-dim)",
+  accent:      "#5794F2",
+  hover:       "var(--gf-hover)",
+} as const;
+
+const GREEN = "#73BF69";
+const ORANGE = "#FF780A";
+const RED = "#F2495C";
+const BLUE = "#5794F2";
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function barColor(v: number) {
-  if (v > 70) return "#E24B4A";
-  if (v > 50) return "#EF9F27";
-  return "#73BF69";
+function loadColor(v: number) {
+  if (v >= 85) return RED;
+  if (v >= 65) return ORANGE;
+  return GREEN;
 }
 
+// Maps room temperature to the CLAUDE.md IR comfort zones.
 function tempColor(t: number) {
-  if (t >= 28) return "#E24B4A";
-  if (t >= 25) return "#EF9F27";
-  return "#73BF69";
+  if (t < 22) return BLUE; // TOO_COLD
+  if (t <= 27) return GREEN; // NORMAL / ACCEPTABLE
+  if (t <= 29) return ORANGE; // NEAR_CRIT
+  return RED; // CRITICAL
+}
+
+function humColor(h: number) {
+  if (h < 30 || h > 70) return ORANGE;
+  return GREEN;
 }
 
 function gradientFill(
@@ -74,20 +101,199 @@ function gradientFill(
   return g;
 }
 
-// ─── GaugeCanvas ──────────────────────────────────────────────────────────────
+// Light moving-average so the live raw readings render as a smooth, flowing curve
+// (matching the aggregated Server Detail charts). Window of 5 ≈ ~15s of samples.
+function smooth(data: number[], window = 5): number[] {
+  if (data.length <= 2) return data;
+  return data.map((_, i) => {
+    const start = Math.max(0, i - window + 1);
+    const slice = data.slice(start, i + 1);
+    return +(slice.reduce((a, b) => a + b, 0) / slice.length).toFixed(2);
+  });
+}
+
+// ─── Panel (Grafana panel chrome) ───────────────────────────────────────────────
+
+function Panel({
+  title,
+  right,
+  children,
+  className = "",
+  bodyStyle,
+  noPad,
+}: {
+  title?: string;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  bodyStyle?: React.CSSProperties;
+  noPad?: boolean;
+}) {
+  return (
+    <div
+      className={`flex flex-col rounded-[2px] ${className}`}
+      style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
+    >
+      {title !== undefined && (
+        <div
+          className="flex items-center justify-between px-3 shrink-0"
+          style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}
+        >
+          <span
+            className="text-[11px] font-medium tracking-wide truncate"
+            style={{ color: gf.textPrimary, opacity: 0.85 }}
+          >
+            {title}
+          </span>
+          {right && <div className="flex items-center gap-2">{right}</div>}
+        </div>
+      )}
+      <div
+        className="flex-1 min-h-0"
+        style={{ padding: noPad ? 0 : 12, ...bodyStyle }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── Sparkline (area, for stat panels) ──────────────────────────────────────────
+
+function Sparkline({
+  data,
+  color,
+  height = 42,
+}: {
+  data: number[];
+  color: string;
+  height?: number;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    const W = (c.width = 280);
+    const H = (c.height = height);
+    ctx.clearRect(0, 0, W, H);
+    const pts = data.slice(-48);
+    if (pts.length < 2) return;
+
+    const min = Math.min(...pts);
+    const max = Math.max(...pts);
+    const span = max - min || 1;
+    const x = (i: number) => (i / (pts.length - 1)) * W;
+    const y = (v: number) => H - 4 - ((v - min) / span) * (H - 10);
+
+    // area fill
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, color + "44");
+    grad.addColorStop(1, color + "00");
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    pts.forEach((v, i) => ctx.lineTo(x(i), y(v)));
+    ctx.lineTo(W, H);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // line
+    ctx.beginPath();
+    pts.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  }, [data, color, height]);
+
+  return (
+    <canvas
+      ref={ref}
+      style={{ width: "100%", height, display: "block" }}
+    />
+  );
+}
+
+// ─── StatPanel (Grafana stat with sparkline background) ─────────────────────────
+
+function StatPanel({
+  label,
+  value,
+  unit,
+  color,
+  sub,
+  spark,
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  color: string;
+  sub?: string;
+  spark?: number[];
+}) {
+  return (
+    <div
+      className="relative overflow-hidden rounded-[2px] flex flex-col"
+      style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 104 }}
+    >
+      <div className="flex items-center justify-between px-3 pt-2.5 z-10">
+        <span
+          className="text-[10px] tracking-widest uppercase"
+          style={{ color: gf.textMuted }}
+        >
+          {label}
+        </span>
+        <span
+          className="w-1.5 h-1.5 rounded-full"
+          style={{ background: color, boxShadow: `0 0 6px ${color}` }}
+        />
+      </div>
+      <div className="px-3 pt-1.5 z-10">
+        <span
+          className="text-[30px] font-bold leading-none"
+          style={{ color }}
+        >
+          {value}
+        </span>
+        {unit && (
+          <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>
+            {unit}
+          </span>
+        )}
+        {sub && (
+          <div className="text-[9px] mt-1 tracking-widest" style={{ color: gf.textDim }}>
+            {sub}
+          </div>
+        )}
+      </div>
+      {spark && spark.length > 1 && (
+        <div className="absolute inset-x-0 bottom-0 opacity-70 pointer-events-none">
+          <Sparkline data={spark} color={color} height={38} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── RadialGauge ────────────────────────────────────────────────────────────────
 
 function GaugeCanvas({
   value,
   label,
   pct,
   color,
-  size = 110,
+  size = 120,
+  isDark,
 }: {
   value: string | number;
   label: string;
   pct: number;
   color: string;
   size?: number;
+  isDark: boolean;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -108,16 +314,16 @@ function GaugeCanvas({
 
     ctx.beginPath();
     ctx.arc(cx, cy, r, s, e);
-    ctx.strokeStyle = "rgba(128,128,128,0.15)";
+    ctx.strokeStyle = isDark ? "rgba(128,128,128,0.15)" : "rgba(0,0,0,0.10)";
     ctx.lineWidth = size * 0.07;
     ctx.lineCap = "round";
     ctx.stroke();
 
     let prev = s;
     for (const [end, col] of [
-      [0.5, "rgba(115,191,105,0.15)"],
-      [0.75, "rgba(239,159,39,0.15)"],
-      [1.0, "rgba(226,75,74,0.15)"],
+      [0.65, "rgba(115,191,105,0.16)"],
+      [0.85, "rgba(255,120,10,0.16)"],
+      [1.0, "rgba(242,73,92,0.16)"],
     ] as [number, string][]) {
       const be = s + sw * end;
       ctx.beginPath();
@@ -139,124 +345,79 @@ function GaugeCanvas({
     }
 
     ctx.fillStyle = color;
-    ctx.font = `bold ${Math.round(size * 0.18)}px monospace`;
+    ctx.font = `bold ${Math.round(size * 0.18)}px 'JetBrains Mono', monospace`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(String(value), cx, cy - r * 0.08);
 
-    ctx.fillStyle = "rgba(148,163,184,0.55)";
-    ctx.font = `${Math.round(size * 0.1)}px monospace`;
+    ctx.fillStyle = isDark ? "rgba(148,163,184,0.55)" : "rgba(71,85,105,0.8)";
+    ctx.font = `${Math.round(size * 0.1)}px 'JetBrains Mono', monospace`;
     ctx.fillText(label, cx, cy + r * 0.35);
-  }, [pct, color, value, label, size]);
+  }, [pct, color, value, label, size, isDark]);
 
   return (
     <canvas
       ref={ref}
       width={size}
-      height={size * 0.78}
+      height={size * 0.92}
       style={{ width: "100%", maxWidth: size, height: "auto" }}
     />
   );
 }
 
-// ─── StatPanel ────────────────────────────────────────────────────────────────
+// ─── BarGauge (Grafana gradient horizontal bar) ─────────────────────────────────
 
-function StatPanel({
-  title,
+function BarGauge({
+  label,
   value,
-  sub,
-  color,
-  accent,
+  status,
 }: {
-  title: string;
-  value: string | number;
-  sub?: string;
-  color?: string;
-  accent: string;
+  label: string;
+  value: number;
+  status?: string;
 }) {
+  const v = Math.min(Math.max(value, 0), 100);
   return (
-    <div className="relative overflow-hidden rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-4 flex flex-col gap-1">
-      <div className={`absolute top-0 left-0 right-0 h-0.5 ${accent}`} />
-      <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 tracking-widest uppercase">
-        {title}
+    <div className="flex items-center gap-3 px-3 py-1.5">
+      <div className="flex items-center gap-2 w-28 shrink-0">
+        {status && (
+          <span
+            className="w-1.5 h-1.5 rounded-full shrink-0"
+            style={{
+              background: status === "Online" ? GREEN : RED,
+              boxShadow: `0 0 5px ${status === "Online" ? GREEN : RED}`,
+            }}
+          />
+        )}
+        <span
+          className="text-[11px] truncate"
+          style={{ color: gf.textPrimary }}
+        >
+          {label}
+        </span>
       </div>
       <div
-        className="text-[28px] font-bold font-mono leading-none"
-        style={{ color: color ?? undefined }}
+        className="flex-1 h-3.5 rounded-[2px] overflow-hidden"
+        style={{ background: "var(--gf-seg-empty)" }}
       >
-        {value}
-      </div>
-      {sub && (
-        <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500">
-          {sub}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── GaugeStatPanel ───────────────────────────────────────────────────────────
-
-function GaugeStatPanel({
-  title,
-  value,
-  pct,
-  color,
-  accent,
-  sub,
-}: {
-  title: string;
-  value: string | number;
-  pct: number;
-  color: string;
-  accent: string;
-  sub?: string;
-}) {
-  return (
-    <div className="relative overflow-hidden rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] px-3 pt-3 pb-2 flex flex-col">
-      <div className={`absolute top-0 left-0 right-0 h-0.5 ${accent}`} />
-      <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 tracking-widest uppercase mb-1">
-        {title}
-      </div>
-      <div className="flex-1 flex items-center justify-center">
-        <GaugeCanvas
-          value={value}
-          label={sub ?? ""}
-          pct={pct}
-          color={color}
-          size={100}
+        <div
+          className="h-full rounded-[2px] transition-all duration-500"
+          style={{
+            width: `${v}%`,
+            // Absolute 0–100 gradient revealed up to the value (Grafana "gradient" mode).
+            background:
+              "linear-gradient(90deg, #73BF69 0%, #73BF69 55%, #FF780A 78%, #F2495C 95%)",
+            backgroundSize: `${v > 0 ? (100 / v) * 100 : 100}% 100%`,
+          }}
         />
       </div>
-    </div>
-  );
-}
-
-// ─── MiniBar ──────────────────────────────────────────────────────────────────
-
-function MiniBar({ value, color }: { value: number; color: string }) {
-  return (
-    <div className="w-12 sm:w-16 h-1.5 bg-slate-200 dark:bg-white/10 rounded-full overflow-hidden">
-      <div
-        className="h-full rounded-full transition-all"
-        style={{ width: `${value}%`, background: color }}
-      />
-    </div>
-  );
-}
-
-// ─── LiveDot ──────────────────────────────────────────────────────────────────
-
-function LiveDot() {
-  return (
-    <span className="flex items-center gap-1.5">
-      <span className="relative flex h-2 w-2">
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-60" />
-        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
+      <span
+        className="text-[11px] font-bold w-10 text-right shrink-0"
+        style={{ color: loadColor(v) }}
+      >
+        {v}%
       </span>
-      <span className="text-[9px] font-mono text-green-400/70 tracking-widest">
-        LIVE
-      </span>
-    </span>
+    </div>
   );
 }
 
@@ -274,11 +435,23 @@ export default function Dashboard() {
   const [isDark, setIsDark] = useState(() =>
     document.documentElement.classList.contains("dark"),
   );
+  const [paused, setPaused] = useState(false);
+  const [clock, setClock] = useState(() => new Date());
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chartRef = useRef<any>(null);
   const resetZoom = useCallback(() => {
     chartRef.current?.resetZoom?.();
+  }, []);
+
+  // Live toolbar clock
+  useEffect(() => {
+    const t = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(t);
   }, []);
 
   // Track dark mode
@@ -295,7 +468,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     api.getServers().then((result) => {
-      if (result.success && result.data) setServers(result.data.servers);
+      if (result.success && result.data) setServers(result.data.servers ?? []);
     });
 
     api.getAlerts().then((result) => {
@@ -314,9 +487,12 @@ export default function Dashboard() {
     });
 
     const handleSensor = (data: SensorData) => {
+      if (pausedRef.current) return;
       setLiveTemp(data.temperature);
       setLiveHum(data.humidity);
+      setLastUpdate(new Date());
       const time = new Date(data.timestamp).toLocaleTimeString("en-PH", {
+        timeZone: "Asia/Manila",
         hour: "2-digit",
         minute: "2-digit",
       });
@@ -325,8 +501,28 @@ export default function Dashboard() {
       setChartHums((p) => [...p.slice(-300), data.humidity]);
     };
 
-    const handleMetrics = (data: { servers: Server[] }) =>
-      setServers(data.servers);
+    // serverMetrics now arrives as a single-server update: { server: {...} }.
+    // Merge it into the list by id (don't overwrite the whole array).
+    const handleMetrics = (data: { server?: any }) => {
+      if (pausedRef.current) return;
+      const sv = data?.server;
+      if (!sv) return;
+      const incoming: Server = {
+        id: Number(sv.id),
+        name: sv.name ?? "—",
+        status: sv.status ?? "Online",
+        cpu: Math.round(sv.cpuPercent ?? 0),
+        memory: Math.round(sv.memPercent ?? 0),
+        uptime: sv.uptimeLabel ?? "—",
+      };
+      setServers((prev) => {
+        const idx = prev.findIndex((s) => s.id === incoming.id);
+        if (idx === -1) return [...prev, incoming];
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...incoming };
+        return next;
+      });
+    };
 
     const handleAircon = (data: { aircon: Aircon }) => {
       setAircons((prev) =>
@@ -338,14 +534,36 @@ export default function Dashboard() {
       );
     };
 
+    const handleRemoved = (data: { id: number }) => {
+      setServers((prev) => prev.filter((s) => s.id !== Number(data?.id)));
+    };
+
+    // Live status flip from the backend offline sweep. A stopped agent sends no
+    // metrics, so this is the only event that can turn a server Offline here.
+    const handleStatus = (data: { id: number | string; status: string }) => {
+      setServers((prev) =>
+        prev.map((s) =>
+          s.id === Number(data?.id)
+            ? data.status === "Offline"
+              ? { ...s, status: "Offline", cpu: 0, memory: 0, uptime: "—" }
+              : { ...s, status: data.status }
+            : s,
+        ),
+      );
+    };
+
     socket.on("sensorData", handleSensor);
     socket.on("serverMetrics", handleMetrics);
     socket.on("airconStatus", handleAircon);
+    socket.on("serverRemoved", handleRemoved);
+    socket.on("serverStatus", handleStatus);
 
     return () => {
       socket.off("sensorData", handleSensor);
       socket.off("serverMetrics", handleMetrics);
       socket.off("airconStatus", handleAircon);
+      socket.off("serverRemoved", handleRemoved);
+      socket.off("serverStatus", handleStatus);
     };
   }, []);
 
@@ -356,18 +574,16 @@ export default function Dashboard() {
     ? Math.round(servers.reduce((a, s) => a + s.memory, 0) / servers.length)
     : 0;
   const online = servers.filter((s) => s.status === "Online").length;
+  const acOnline = aircons.filter((a) => a.enabled).length;
+
   const maxTempY = chartTemps.length
     ? Math.ceil(Math.max(...chartTemps)) + 3
     : 40;
   const minTempY = chartTemps.length
     ? Math.floor(Math.min(...chartTemps)) - 2
     : 15;
-  const maxHumY = chartHums.length
-    ? Math.ceil(Math.max(...chartHums)) + 3
-    : 100;
-  const minHumY = chartHums.length
-    ? Math.floor(Math.min(...chartHums)) - 3
-    : 30;
+  const maxHumY = chartHums.length ? Math.ceil(Math.max(...chartHums)) + 3 : 100;
+  const minHumY = chartHums.length ? Math.floor(Math.min(...chartHums)) - 3 : 30;
   const gridColor = isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.05)";
   const tickColor = isDark ? "rgba(140,160,200,0.4)" : "rgba(80,100,130,0.5)";
 
@@ -377,28 +593,28 @@ export default function Dashboard() {
     datasets: [
       {
         label: "Temperature",
-        data: chartTemps,
-        borderColor: "#f59e0b",
+        data: smooth(chartTemps),
+        borderColor: ORANGE,
         backgroundColor: (ctx: ScriptableContext<"line">) =>
-          gradientFill(ctx, "rgba(245,158,11,0.18)", "rgba(245,158,11,0.01)"),
+          gradientFill(ctx, "rgba(255,120,10,0.18)", "rgba(255,120,10,0.01)"),
         borderWidth: 1.5,
         pointRadius: 0,
         pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#f59e0b",
+        pointHoverBackgroundColor: ORANGE,
         fill: true,
         tension: 0.4,
         yAxisID: "yTemp",
       },
       {
         label: "Humidity",
-        data: chartHums,
-        borderColor: "#38bdf8",
+        data: smooth(chartHums),
+        borderColor: BLUE,
         backgroundColor: (ctx: ScriptableContext<"line">) =>
-          gradientFill(ctx, "rgba(56,189,248,0.12)", "rgba(56,189,248,0.01)"),
+          gradientFill(ctx, "rgba(87,148,242,0.14)", "rgba(87,148,242,0.01)"),
         borderWidth: 1.5,
         pointRadius: 0,
         pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#38bdf8",
+        pointHoverBackgroundColor: BLUE,
         fill: true,
         tension: 0.4,
         yAxisID: "yHum",
@@ -462,7 +678,7 @@ export default function Dashboard() {
         grid: { color: gridColor, drawTicks: false },
         border: { display: false },
         ticks: {
-          color: "#f59e0b",
+          color: ORANGE,
           font: { size: 9, family: "monospace" },
           padding: 6,
           callback: (v) => `${v}°`,
@@ -476,7 +692,7 @@ export default function Dashboard() {
         grid: { display: false },
         border: { display: false },
         ticks: {
-          color: "#38bdf8",
+          color: BLUE,
           font: { size: 9, family: "monospace" },
           padding: 6,
           callback: (v) => `${v}%`,
@@ -487,187 +703,230 @@ export default function Dashboard() {
     },
   };
 
+  const pill =
+    "flex items-center gap-1.5 h-7 px-2.5 rounded-[2px] text-[11px] transition-colors";
+  const pillStyle: React.CSSProperties = {
+    color: gf.textMuted,
+    border: `1px solid ${gf.divider}`,
+    background: gf.panel,
+  };
+
   return (
-    <div className="p-4 lg:p-6 flex flex-col gap-4 bg-white dark:bg-transparent">
-      {/* ── KPI Row ── */}
-      <div
-        className="grid grid-cols-2 lg:grid-cols-4 gap-3"
-        style={{ minHeight: 130 }}
-      >
+    <div
+      className="flex flex-col gap-3 p-3"
+      style={{
+        background: gf.bg,
+        minHeight: "100%",
+        fontFamily: "'JetBrains Mono', monospace",
+      }}
+    >
+      {/* ── Dashboard toolbar ── */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2.5">
+          <span
+            className="text-[13px] font-semibold"
+            style={{ color: gf.textPrimary }}
+          >
+            Server Room — Overview
+          </span>
+          <span
+            className="text-[9px] px-1.5 py-0.5 rounded-[2px] tracking-widest uppercase"
+            style={{ color: gf.accent, background: "rgba(87,148,242,0.12)" }}
+          >
+            CSPC · ICTU
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* live / pause */}
+          <button
+            onClick={() => setPaused((p) => !p)}
+            className={pill}
+            style={{
+              ...pillStyle,
+              color: paused ? ORANGE : GREEN,
+              borderColor: paused ? "rgba(255,120,10,0.3)" : "rgba(115,191,105,0.3)",
+            }}
+            title={paused ? "Resume live updates" : "Pause live updates"}
+          >
+            {paused ? (
+              <>
+                <svg width="9" height="9" viewBox="0 0 12 12" fill="currentColor">
+                  <path d="M3 2l7 4-7 4z" />
+                </svg>
+                PAUSED
+              </>
+            ) : (
+              <>
+                <span className="relative flex h-2 w-2">
+                  <span
+                    className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
+                    style={{ background: GREEN }}
+                  />
+                  <span
+                    className="relative inline-flex rounded-full h-2 w-2"
+                    style={{ background: GREEN }}
+                  />
+                </span>
+                LIVE
+              </>
+            )}
+          </button>
+
+        </div>
+      </div>
+
+      {/* ── Row 1: Stat panels ── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatPanel
-          title="Room Temperature"
-          value={
-            typeof liveTemp === "number" ? `${liveTemp.toFixed(1)} °C` : "--"
-          }
-          sub="DHT Sensor · Live"
-          accent="bg-gradient-to-r from-amber-400 to-orange-500"
-          {...(typeof liveTemp === "number"
-            ? { color: tempColor(liveTemp) }
-            : {})}
+          label="Room Temp"
+          value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : "--"}
+          unit="°C"
+          color={typeof liveTemp === "number" ? tempColor(liveTemp) : gf.textMuted}
+          sub="DHT11 · LIVE"
+          spark={chartTemps}
         />
         <StatPanel
-          title="Room Humidity"
-          value={typeof liveHum === "number" ? `${liveHum.toFixed(1)} %` : "--"}
-          sub="DHT Sensor · Live"
-          color="#38bdf8"
-          accent="bg-gradient-to-r from-sky-400 to-blue-500"
+          label="Humidity"
+          value={typeof liveHum === "number" ? liveHum.toFixed(1) : "--"}
+          unit="%"
+          color={typeof liveHum === "number" ? humColor(liveHum) : gf.textMuted}
+          sub="DHT11 · LIVE"
+          spark={chartHums}
         />
-        <GaugeStatPanel
-          title="Avg CPU Load"
-          value={`${cpuAvg}%`}
-          pct={cpuAvg / 100}
-          color={barColor(cpuAvg)}
-          accent="bg-gradient-to-r from-blue-400 to-blue-600"
-          sub="across servers"
+        <StatPanel
+          label="Servers Online"
+          value={`${online}/${servers.length}`}
+          color={online === servers.length && servers.length > 0 ? GREEN : ORANGE}
+          sub={`${servers.length - online} offline`}
         />
-        <GaugeStatPanel
-          title="Avg Memory"
-          value={`${memAvg}%`}
-          pct={memAvg / 100}
-          color={barColor(memAvg)}
-          accent="bg-gradient-to-r from-yellow-400 to-yellow-600"
-          sub="across servers"
+        <StatPanel
+          label="Active Alerts"
+          value={String(alerts.length)}
+          color={alerts.length === 0 ? GREEN : alerts.length > 2 ? RED : ORANGE}
+          sub={`${acOnline}/${aircons.length} AC running`}
         />
       </div>
 
-      {/* ── Combined Env Chart + Aircon status ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Chart */}
-        <div className="lg:col-span-2 rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 dark:border-white/[0.06]">
-            <div className="flex items-center gap-4">
-              <span className="flex items-center gap-1.5 text-[11px] font-mono">
-                <span
-                  className="w-2.5 h-2.5 rounded-sm"
-                  style={{ background: "#f59e0b" }}
-                />
-                <span className="text-slate-600 dark:text-slate-300">
-                  Temperature
+      {/* ── Row 2: Time series + gauges ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <Panel
+          className="lg:col-span-2"
+          title="Temperature & Humidity"
+          right={
+            <>
+              {([
+                [ORANGE, typeof liveTemp === "number" ? `${liveTemp.toFixed(1)}°C` : "--", "Temp"],
+                [BLUE, typeof liveHum === "number" ? `${liveHum.toFixed(1)}%` : "--", "Hum"],
+              ] as [string, string, string][]).map(([color, val, label]) => (
+                <span key={label} className="flex items-center gap-1.5 text-[11px]">
+                  <span
+                    className="w-3 h-0.5 rounded-full"
+                    style={{ background: color }}
+                  />
+                  <span style={{ color: gf.textMuted }}>{label}</span>
+                  <span className="font-semibold" style={{ color }}>
+                    {val}
+                  </span>
                 </span>
-                <span className="font-semibold" style={{ color: "#f59e0b" }}>
-                  {typeof liveTemp === "number"
-                    ? `${liveTemp.toFixed(1)} °C`
-                    : "--"}
-                </span>
-              </span>
-              <span className="flex items-center gap-1.5 text-[11px] font-mono">
-                <span
-                  className="w-2.5 h-2.5 rounded-sm"
-                  style={{ background: "#38bdf8" }}
-                />
-                <span className="text-slate-600 dark:text-slate-300">
-                  Humidity
-                </span>
-                <span className="font-semibold" style={{ color: "#38bdf8" }}>
-                  {typeof liveHum === "number"
-                    ? `${liveHum.toFixed(1)} %`
-                    : "--"}
-                </span>
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <LiveDot />
+              ))}
               <button
                 onClick={resetZoom}
-                className="text-[9px] font-mono text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 border border-slate-300 dark:border-white/10 px-2 py-0.5 rounded transition-colors"
+                className="flex items-center gap-1 text-[10px] px-2 h-6 rounded-[2px]"
+                style={{ color: gf.textMuted, border: `1px solid ${gf.divider}` }}
               >
-                ⟳ Reset
+                <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
+                  <path d="M12 7A5 5 0 1 1 7 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M12 2v5h-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Reset
               </button>
-            </div>
-          </div>
-          <div className="px-3 pt-3 pb-4" style={{ height: 220 }}>
-            <Line ref={chartRef} data={combinedData} options={combinedOpts} />
-          </div>
-        </div>
+            </>
+          }
+          bodyStyle={{ height: 248, padding: "10px 12px 14px" }}
+        >
+          <Line ref={chartRef} data={combinedData} options={combinedOpts} />
+        </Panel>
 
-        {/* Aircon status cards */}
-        <div className="flex flex-col gap-3">
-          <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-1">
-            Air Conditioner
-          </div>
-          {aircons.length === 0 ? (
-            <div className="text-xs text-slate-400 font-mono px-1">
-              Loading...
+        <div className="grid grid-cols-2 gap-3">
+          <Panel title="Avg CPU">
+            <div className="flex items-center justify-center h-full">
+              <GaugeCanvas
+                value={`${cpuAvg}%`}
+                label="load"
+                pct={cpuAvg / 100}
+                color={loadColor(cpuAvg)}
+                size={120}
+                isDark={isDark}
+              />
             </div>
-          ) : (
-            aircons.map((ac) => (
-              <div
-                key={ac.id}
-                className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] overflow-hidden"
-              >
-                <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200 dark:border-white/[0.06]">
-                  <div className="flex items-center gap-2">
-                    <span className="relative flex h-1.5 w-1.5">
-                      {ac.enabled && (
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-60" />
-                      )}
-                      <span
-                        className="relative inline-flex rounded-full h-1.5 w-1.5"
-                        style={{
-                          background: ac.enabled ? "#4ade80" : "#6b7280",
-                        }}
-                      />
-                    </span>
-                    <span className="text-[11px] font-mono font-semibold text-slate-700 dark:text-slate-200">
-                      {ac.name}
-                    </span>
-                  </div>
-                  <span
-                    className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-sm border ${
-                      ac.enabled
-                        ? "bg-green-500/10 border-green-500/20 text-green-600 dark:text-green-400"
-                        : "bg-slate-200 dark:bg-white/[0.04] border-slate-300 dark:border-white/[0.08] text-slate-500"
-                    }`}
-                  >
-                    {ac.enabled ? "ONLINE" : "OFFLINE"}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-px bg-slate-200 dark:bg-white/[0.06]">
-                  {[
-                    { label: "State", value: ac.enabled ? "on" : "off" },
-                    { label: "Mode", value: ac.mode },
-                    { label: "Set Temp", value: `${ac.setTemp}°C` },
-                  ].map(({ label, value }, index) => (
-                    <div
-                      key={`${ac.id}-${label}-${index}`}
-                      className="flex flex-col bg-slate-50 dark:bg-[#0d1117] px-2 py-2 gap-0.5"
-                    >
-                      <span className="text-[8px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-widest">
-                        {label}
-                      </span>
-                      <span className="text-xs font-bold font-mono text-slate-700 dark:text-slate-200">
-                        {value}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))
-          )}
+          </Panel>
+          <Panel title="Avg Memory">
+            <div className="flex items-center justify-center h-full">
+              <GaugeCanvas
+                value={`${memAvg}%`}
+                label="used"
+                pct={memAvg / 100}
+                color={loadColor(memAvg)}
+                size={120}
+                isDark={isDark}
+              />
+            </div>
+          </Panel>
         </div>
       </div>
 
-      {/* ── Servers + Alerts ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Server table */}
-        <div className="lg:col-span-2 rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-sm font-bold text-slate-900 dark:text-white">
-              Server Metrics
+      {/* ── Row 3: Bar gauges per host ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <Panel title="Host CPU" noPad bodyStyle={{ padding: "8px 0" }}>
+          {servers.length === 0 ? (
+            <div className="text-[10px] text-center py-6" style={{ color: gf.textDim }}>
+              No hosts
             </div>
-            <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 dark:text-slate-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+          ) : (
+            servers.map((s) => (
+              <BarGauge key={s.id} label={s.name} value={s.cpu} status={s.status} />
+            ))
+          )}
+        </Panel>
+        <Panel title="Host Memory" noPad bodyStyle={{ padding: "8px 0" }}>
+          {servers.length === 0 ? (
+            <div className="text-[10px] text-center py-6" style={{ color: gf.textDim }}>
+              No hosts
+            </div>
+          ) : (
+            servers.map((s) => (
+              <BarGauge key={s.id} label={s.name} value={s.memory} status={s.status} />
+            ))
+          )}
+        </Panel>
+      </div>
+
+      {/* ── Row 4: Server table + alerts ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <Panel
+          className="lg:col-span-2"
+          title="Server Metrics"
+          noPad
+          right={
+            <span
+              className="flex items-center gap-1.5 text-[10px]"
+              style={{ color: gf.textMuted }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN }} />
               {online}/{servers.length} online
-            </div>
-          </div>
+            </span>
+          }
+        >
           <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
+            <table className="w-full border-collapse">
               <thead>
-                <tr>
+                <tr style={{ borderBottom: `1px solid ${gf.divider}` }}>
                   {["Server", "Status", "CPU", "Memory", "Uptime"].map((h) => (
                     <th
                       key={h}
-                      className="text-left px-3 py-2 text-[10px] text-slate-500 font-semibold tracking-widest border-b border-slate-200 dark:border-white/[0.07]"
+                      className="text-left px-3 py-2 text-[9px] tracking-widest uppercase"
+                      style={{ color: gf.textDim }}
                     >
                       {h}
                     </th>
@@ -678,87 +937,177 @@ export default function Dashboard() {
                 {servers.map((s, i) => (
                   <tr
                     key={s.id}
-                    className={
-                      i % 2 === 0 ? "bg-slate-50 dark:bg-white/[0.015]" : ""
-                    }
+                    style={{
+                      background: i % 2 === 0 ? "transparent" : gf.hover,
+                      borderBottom: `1px solid ${gf.divider}`,
+                    }}
                   >
-                    <td className="px-3 py-2.5 text-slate-900 dark:text-white font-semibold text-xs">
+                    <td
+                      className="px-3 py-2.5 text-[11px] font-semibold"
+                      style={{ color: gf.textPrimary }}
+                    >
                       {s.name}
                     </td>
                     <td className="px-3 py-2.5">
                       <StatusBadge status={s.status} />
                     </td>
                     <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="font-mono font-bold text-xs"
-                          style={{ color: barColor(s.cpu) }}
-                        >
-                          {s.cpu}%
-                        </span>
-                        <MiniBar value={s.cpu} color={barColor(s.cpu)} />
-                      </div>
+                      <span
+                        className="text-[11px] font-bold"
+                        style={{ color: loadColor(s.cpu) }}
+                      >
+                        {s.cpu}%
+                      </span>
                     </td>
                     <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="font-mono font-bold text-xs"
-                          style={{ color: barColor(s.memory) }}
-                        >
-                          {s.memory}%
-                        </span>
-                        <MiniBar value={s.memory} color={barColor(s.memory)} />
-                      </div>
+                      <span
+                        className="text-[11px] font-bold"
+                        style={{ color: loadColor(s.memory) }}
+                      >
+                        {s.memory}%
+                      </span>
                     </td>
-                    <td className="px-3 py-2.5 text-slate-500 dark:text-slate-400 text-xs">
+                    <td className="px-3 py-2.5 text-[10px]" style={{ color: gf.textMuted }}>
                       {s.uptime}
                     </td>
                   </tr>
                 ))}
+                {servers.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="text-center py-6 text-[10px]" style={{ color: gf.textDim }}>
+                      No data
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
-        </div>
+        </Panel>
 
-        {/* Alerts */}
-        <div className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-4">
-          <div className="text-sm font-bold text-slate-900 dark:text-white mb-3">
-            Alerts
-          </div>
-          <div className="flex flex-col gap-2">
-            {alerts.map((a) => (
-              <div
-                key={a.id}
-                className={`flex items-start gap-2.5 p-2.5 rounded-lg border ${
-                  a.type === "warning"
-                    ? "bg-amber-50 dark:bg-amber-500/5 border-amber-200 dark:border-amber-500/15"
-                    : "bg-blue-50 dark:bg-blue-500/5 border-blue-200 dark:border-blue-500/15"
-                }`}
-              >
-                <span className="text-base flex-shrink-0">
-                  {a.type === "warning" ? "⚠️" : "ℹ️"}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs font-semibold text-slate-900 dark:text-white">
-                    {a.title}
+        <Panel
+          title="Alerts"
+          noPad
+          right={
+            lastUpdate && (
+              <span className="text-[9px]" style={{ color: gf.textDim }}>
+                upd {lastUpdate.toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour12: false })}
+              </span>
+            )
+          }
+        >
+          <div className="flex flex-col gap-1.5 p-3 overflow-y-auto" style={{ maxHeight: 300 }}>
+            {alerts.map((a) => {
+              const isWarn = a.type === "warning";
+              const c = isWarn ? ORANGE : BLUE;
+              return (
+                <div
+                  key={a.id}
+                  className="flex items-start gap-2.5 px-2.5 py-2 rounded-[2px]"
+                  style={{
+                    background: `${c}12`,
+                    borderLeft: `2px solid ${c}`,
+                  }}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[11px] font-semibold" style={{ color: gf.textPrimary }}>
+                      {a.title}
+                    </div>
+                    <div className="text-[9px] mt-0.5" style={{ color: gf.textMuted }}>
+                      {a.desc}
+                    </div>
                   </div>
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    {a.desc}
-                  </div>
+                  <span className="text-[9px] shrink-0" style={{ color: gf.textDim }}>
+                    {a.time}
+                  </span>
                 </div>
-                <div className="text-[10px] text-slate-500 font-mono flex-shrink-0">
-                  {a.time}
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {alerts.length === 0 && (
-              <div className="text-xs text-slate-400 dark:text-slate-600 font-mono text-center py-4">
-                No alerts
+              <div className="flex flex-col items-center gap-1 py-8">
+                <span style={{ color: GREEN }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
+                <div className="text-[10px]" style={{ color: gf.textDim }}>
+                  No active alerts
+                </div>
               </div>
             )}
           </div>
-        </div>
+        </Panel>
       </div>
+
+      {/* ── Row 5: Air conditioner units ── */}
+      <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
+        {aircons.length === 0 ? (
+          <div className="text-[10px] text-center py-4" style={{ color: gf.textDim }}>
+            No AC units registered
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {aircons.map((ac) => (
+              <div
+                key={ac.id}
+                className="flex flex-col rounded-[2px]"
+                style={{ background: gf.bg, border: `1px solid ${gf.border}` }}
+              >
+                <div
+                  className="flex items-center justify-between px-3 py-2"
+                  style={{ borderBottom: `1px solid ${gf.divider}` }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="relative flex h-1.5 w-1.5">
+                      {ac.enabled && (
+                        <span
+                          className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
+                          style={{ background: GREEN }}
+                        />
+                      )}
+                      <span
+                        className="relative inline-flex rounded-full h-1.5 w-1.5"
+                        style={{ background: ac.enabled ? GREEN : gf.textMuted }}
+                      />
+                    </span>
+                    <span className="text-[11px] font-semibold" style={{ color: gf.textPrimary }}>
+                      {ac.name}
+                    </span>
+                  </div>
+                  <span
+                    className="text-[9px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
+                    style={{
+                      color: ac.enabled ? GREEN : gf.textMuted,
+                      background: ac.enabled ? "rgba(115,191,105,0.12)" : gf.hover,
+                    }}
+                  >
+                    {ac.enabled ? "ONLINE" : "OFFLINE"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-px" style={{ background: gf.divider }}>
+                  {[
+                    ["Mode", ac.mode],
+                    ["Set", `${ac.setTemp}°`],
+                    ["Room", ac.roomTemp != null ? `${ac.roomTemp}°` : "--"],
+                  ].map(([lbl, val]) => (
+                    <div
+                      key={lbl}
+                      className="flex flex-col px-2 py-2 gap-0.5"
+                      style={{ background: gf.panel }}
+                    >
+                      <span className="text-[8px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                        {lbl}
+                      </span>
+                      <span className="text-[11px] font-bold" style={{ color: gf.textPrimary }}>
+                        {val}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }
