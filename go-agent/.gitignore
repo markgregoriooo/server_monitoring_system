@@ -1,0 +1,5 @@
+# Build output
+/dist/
+
+# Per-host runtime config — contains the device token. Never commit.
+agent.conf

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { api } from "../api/api";
 import { roleConfig } from "../data/users";
 import { useAuth } from "../context/AuthContext";
+import { API_URL } from "../config";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -389,8 +390,7 @@ export default function UserManagement() {
       {/* ── Header ── */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-base font-bold text-slate-900 dark:text-white">User Management</div>
-          <div className="text-[10px] font-mono text-slate-400 mt-0.5 tracking-widest uppercase">
+          <div className="text-[10px] font-mono text-slate-400 tracking-widest uppercase">
             {users.length} user{users.length !== 1 ? "s" : ""} · CSPC Server Monitoring System
           </div>
         </div>
@@ -493,7 +493,7 @@ export default function UserManagement() {
                       <div className="flex items-center gap-3">
                         <div className={`w-8 h-8 rounded-lg border overflow-hidden flex-shrink-0 ${avatarColor(u.role)}`}>
                           {u.profile_image ? (
-                            <img src={`http://localhost:3000${u.profile_image}`} alt={u.name} className="w-full h-full object-cover" />
+                            <img src={`${API_URL}${u.profile_image}`} alt={u.name} className="w-full h-full object-cover" />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-xs font-bold font-mono">
                               {u.avatar || initials(u.name)}

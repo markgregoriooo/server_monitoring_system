@@ -1,6 +1,5 @@
 import apiClient from "./client.js";
 
-// api.ts
 interface LoginUser {
   id: number;
   name: string;
@@ -49,9 +48,9 @@ const handleError = (err: any): ApiResult<never> => {
 
 export const api = {
   // Auth
-  login: async (username: string, password: string): Promise<ApiResult<LoginResponse>> => {
+  login: async (email: string, password: string): Promise<ApiResult<LoginResponse>> => {
     try {
-      const res = await apiClient.post<LoginResponse>("/auth/login", { username, password });
+      const res = await apiClient.post<LoginResponse>("/auth/login", { email, password });
       return { success: true, data: res.data };
     } catch (err: any) {
       const status = err?.response?.status;
@@ -71,109 +70,6 @@ export const api = {
   logout: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.post("/auth/logout");
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  // Servers
-  getServers: async (): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.get("/servers");
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  getEnvHistory: async (count: number = 20): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.get(`/environment/history?count=${count}`);
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  getHistoryLogs: async (): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.get("/environment/logs");
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  // Aircon
-  getAircon: async (): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.get("/aircon");
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  toggleAircon: async (): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.post("/aircon/toggle");
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  setAirconMode: async (mode: string): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.post("/aircon/mode", { mode });
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  setAirconTemp: async (temp: number): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.post("/aircon/temp", { temp });
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  // Alerts
-  getAlerts: async (): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.get("/alerts");
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  getAuditLog: async (): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.get("/alerts/audit");
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  // Reports
-  getReports: async (): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.get("/reports");
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  generateReport: async (title: string, type: string): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.post("/reports", { title, type });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
@@ -281,6 +177,186 @@ export const api = {
       return handleError(err);
     }
   },
+
+  // Servers (live metrics from the Go monitoring agents)
+  getServers: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/servers");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Real metric history for one server (InfluxDB) — range: "-1h" | "-6h" | "-24h"
+  getServerHistory: async (id: number, range: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/servers/${id}/history`, { params: { range } });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Device event log for one server (MySQL device_logs)
+  getServerLogs: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/servers/${id}/logs`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Server agents — admin approval flow
+  getPendingAgents: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/agents/pending");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  approveAgent: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/agents/${id}/approve`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  rejectAgent: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/agents/${id}/reject`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteServer: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/servers/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getEnvHistory: async (count: number = 20): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/environment/history?count=${count}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getHistoryLogs: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/environment/logs");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Aircon
+  getAircon: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/aircon");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  addAircon: async (name: string, ir_channel: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/aircon", { name, ir_channel });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteAircon: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/aircon/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  toggleAircon: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch(`/aircon/${id}/toggle`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  setAirconMode: async (id: number, mode: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch(`/aircon/${id}/mode`, { mode });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  setAirconTemp: async (id: number, temp: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch(`/aircon/${id}/temp`, { temp });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Alerts
+  getAlerts: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/alerts");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getAuditLog: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/alerts/audit");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Reports
+  getReports: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/reports");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  generateReport: async (title: string, type: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/reports", { title, type });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  
 
 
 };

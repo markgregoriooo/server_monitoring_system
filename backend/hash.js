@@ -9,4 +9,4 @@ const hashPassword = async () => {
 
 hashPassword();
 
-$2b$10$8/Tlp6itKUYAeVWCEEERveHP6l71eVP2A3D5QgmWKk75VceHjSkaK
+// $2b$10$.9xknj/Hvs52X/VWp9Xfc.oS1DcUJREfz8eTZFLg2Lro6ZcO8GuXG
