@@ -4,7 +4,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemeContext";
 import { roleConfig } from "../../data/users";
 import { BRAND } from "../../branding";
-import { API_URL } from "../../config";
+import { avatarUrl } from "../../utils/format";
 import ProfileModal from "./ProfileModal";
 
 type RoleKey = keyof typeof roleConfig;
@@ -93,6 +93,12 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [profileOpen, setProfileOpen] = useState(false);
+  // Success toast shown AFTER the profile modal closes (same style as UserManagement).
+  const [profileToast, setProfileToast] = useState("");
+  const showProfileToast = (msg: string) => {
+    setProfileToast(msg);
+    setTimeout(() => setProfileToast(""), 3000);
+  };
 
   const allowed   = user ? roleConfig[user.role as RoleKey]?.pages || [] : [];
   const navItems  = allNavItems.filter(item => allowed.includes(item.id));
@@ -245,7 +251,8 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
                 onMouseLeave={e => (e.currentTarget.style.background = "var(--gf-hover)")}>
                 <div className="w-6 h-6 rounded flex-shrink-0 overflow-hidden">
                   {user.profile_image ? (
-                    <img src={`${API_URL}${user.profile_image}`} alt={user.name}
+                    <img src={avatarUrl(user.profile_image) ?? ""} alt={user.name}
+                      referrerPolicy="no-referrer"
                       className="w-full h-full object-cover" />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-[9px] font-bold text-white"
@@ -286,7 +293,26 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
         </div>
       </aside>
 
-      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
+      <ProfileModal
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        onSaved={showProfileToast}
+      />
+
+      {/* Success toast — fixed top-right, persists after the modal closes. */}
+      {profileToast && (
+        <div
+          className="fixed top-5 right-5 z-[80] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl"
+          style={{
+            color: "#73BF69",
+            background: "#73BF6914",
+            borderColor: "#73BF6940",
+            fontFamily: "'JetBrains Mono', monospace",
+          }}
+        >
+          <span>✓</span> {profileToast}
+        </div>
+      )}
     </>
   );
 }

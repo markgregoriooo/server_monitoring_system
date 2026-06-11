@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@react-oauth/google": "^0.13.5",
     "axios": "^1.15.0",
     "chart.js": "^4.4.0",
     "chartjs-plugin-zoom": "^2.2.0",

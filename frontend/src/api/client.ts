@@ -41,8 +41,8 @@ apiClient.interceptors.request.use(
 // elsewhere — logout, disable, role or password change all return 401 here) and
 // on the specific 403 "Invalid or expired token." We deliberately do NOT fire on
 // 403 "Insufficient permissions." (a valid user hitting a forbidden action), nor
-// on the /auth/login or /auth/logout requests themselves (bad credentials also
-// return 401, and a logout shouldn't masquerade as an expiry).
+// on the /auth/google or /auth/logout requests themselves (a failed sign-in or a
+// pending/rejected account returns 401/403, and a logout shouldn't look like an expiry).
 let sessionExpiredNotified = false;
 
 export function resetSessionExpiredGuard() {
@@ -61,7 +61,7 @@ apiClient.interceptors.response.use(
     const status: number | undefined = error?.response?.status;
     const serverError: string | undefined = error?.response?.data?.error;
     const url: string = error?.config?.url ?? "";
-    const isAuthEndpoint = url.includes("/auth/login") || url.includes("/auth/logout");
+    const isAuthEndpoint = url.includes("/auth/google") || url.includes("/auth/logout");
 
     const isAuthFailure =
       (status === 401 ||
