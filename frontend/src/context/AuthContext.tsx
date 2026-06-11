@@ -37,7 +37,7 @@ interface User {
   email: string;
   role: string;
 
-    avatar?: string | undefined;
+  avatar?: string | undefined;
   profile_image?: string | undefined;
   status?: string | undefined;
   created_at?: string | undefined;
@@ -48,13 +48,14 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  login: (
-    email: string,
-    password: string,
+  // Google sign-in is the only login path. Resolves with success on an active
+  // account; otherwise carries a `status` ("pending" | "rejected" | "disabled").
+  loginWithGoogle: (
+    code: string,
   ) => Promise<{
     success: boolean;
-    user?: User;
-    error?: string;
+    status?: string | undefined;
+    error?: string | undefined;
   }>;
   logout: () => Promise<void>;
   updateUser: (data: Partial<User>) => void;
@@ -128,14 +129,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(t);
   }, [user, clearLocalSession]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const result = await api.login(email, password);
+  const loginWithGoogle = useCallback(async (code: string) => {
+    const result = await api.loginWithGoogle(code);
 
-    // success flag instead
-    if (!result.success || !result.data) {
+    // Active accounts come back with a token. Anything else (pending / rejected /
+    // disabled, or an error) has no token — surface its status to the Login page.
+    if (!result.success || !result.data?.token) {
       return {
         success: false,
-        error: result.error ?? "Login failed.",
+        status: result.data?.status,
+        error: result.error ?? result.data?.message ?? "Sign-in failed.",
       };
     }
 
@@ -166,7 +169,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(safeUser);
     socket.connect();
 
-    return { success: true, user: safeUser };
+    return { success: true };
   }, []);
 
   const logout = useCallback(async () => {
@@ -199,8 +202,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, login, logout, updateUser }),
-    [user, login, logout, updateUser],
+    () => ({ user, loginWithGoogle, logout, updateUser }),
+    [user, loginWithGoogle, logout, updateUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

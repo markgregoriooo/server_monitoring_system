@@ -54,6 +54,17 @@ router.patch(
   }),
 );
 
+// Admin: list registrations awaiting approval.
+// MUST be declared before "/:id" so "pending" isn't captured as an :id param.
+router.get(
+  "/pending",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    res.json({ pending: await userService.listPending() });
+  }),
+);
+
 // GET single user
 router.get(
   "/:id",
@@ -136,6 +147,31 @@ router.patch(
       success: true,
       user: updatedUser,
     });
+  }),
+);
+
+// Admin: approve a pending registration and assign its role (admin | it_staff).
+router.post(
+  "/:id/approve",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    const user = await userService.approveUser(parseInt(req.params.id), req.body.role);
+    req.app.get("io")?.emit("userApproved", { id: user.id });
+    res.json({ success: true, user });
+  }),
+);
+
+// Admin: reject a pending registration.
+router.post(
+  "/:id/reject",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    await userService.rejectUser(parseInt(req.params.id));
+    // Refresh open admin pending lists (the row left the 'pending' state).
+    req.app.get("io")?.emit("userPending", { id: parseInt(req.params.id) });
+    res.json({ success: true });
   }),
 );
 

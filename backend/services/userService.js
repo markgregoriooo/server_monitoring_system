@@ -28,6 +28,104 @@ const userService = {
     return user;
   },
 
+  // ── Google auth / registration-approval support ─────────────────────────────
+
+  // Raw row by email (includes status / google_sub) — used by the Google login
+  // path to decide: log in (active) vs pending vs rejected vs disabled.
+  async findByEmail(email) {
+    const [rows] = await db.query("SELECT * FROM users WHERE email = ? LIMIT 1", [
+      String(email).trim().toLowerCase(),
+    ]);
+    return rows[0] ?? null;
+  },
+
+  // Create a PENDING registration from a verified Google profile (no password).
+  // role is a placeholder until an admin approves and assigns the real one.
+  async registerGoogleUser({ email, googleSub, name, picture = null }) {
+    const normEmail = String(email).trim().toLowerCase();
+
+    // username from the email local-part, sanitized + de-duplicated.
+    const base =
+      (normEmail.split("@")[0] || "user").replace(/[^a-z0-9._-]/gi, "").slice(0, 40) || "user";
+    let username = base;
+    for (let i = 1; ; i++) {
+      const [[dup]] = await db.query("SELECT user_id FROM users WHERE username = ? LIMIT 1", [
+        username,
+      ]);
+      if (!dup) break;
+      username = `${base}${i}`;
+    }
+
+    const avatar =
+      (name || "")
+        .trim()
+        .split(/\s+/)
+        .map((w) => w[0])
+        .join("")
+        .toUpperCase()
+        .slice(0, 2) || "U";
+
+    const [result] = await db.query(
+      `INSERT INTO users
+         (name, username, email, google_sub, auth_provider, role, status, profile_image, avatar, created_at)
+       VALUES (?, ?, ?, ?, 'google', 'it_staff', 'pending', ?, ?, NOW())`,
+      [name, username, normEmail, googleSub, picture, avatar],
+    );
+
+    const [[row]] = await db.query(
+      `SELECT user_id AS id, name, username, email, role, status, profile_image, avatar
+         FROM users WHERE user_id = ?`,
+      [result.insertId],
+    );
+    return row;
+  },
+
+  // Link a Google account id to an existing user (e.g. the bootstrapped admin).
+  async linkGoogleSub(userId, googleSub) {
+    await db.query("UPDATE users SET google_sub = ? WHERE user_id = ?", [googleSub, userId]);
+  },
+
+  // Admin: list accounts awaiting approval.
+  async listPending() {
+    const [rows] = await db.query(
+      `SELECT user_id AS id, name, username, email, role, profile_image, avatar, created_at
+         FROM users WHERE status = 'pending' ORDER BY created_at DESC`,
+    );
+    return rows;
+  },
+
+  // Admin: approve a pending registration and assign its role.
+  async approveUser(id, role) {
+    const validRoles = ["admin", "it_staff"];
+    if (!validRoles.includes(role)) throw new Error("Invalid role.");
+
+    const [[user]] = await db.query("SELECT status FROM users WHERE user_id = ? LIMIT 1", [id]);
+    if (!user) throw new Error("User not found.");
+    if (user.status !== "pending") throw new Error("User is not awaiting approval.");
+
+    await db.query("UPDATE users SET status = 'active', role = ?, updated_at = NOW() WHERE user_id = ?", [
+      role,
+      id,
+    ]);
+
+    const [[row]] = await db.query(
+      "SELECT user_id AS id, name, username, email, role, status FROM users WHERE user_id = ?",
+      [id],
+    );
+    return row;
+  },
+
+  // Admin: reject a pending registration. Kept (status='rejected') for the audit
+  // trail; it blocks future sign-in until an admin deletes the row to re-allow.
+  async rejectUser(id) {
+    const [[user]] = await db.query("SELECT status FROM users WHERE user_id = ? LIMIT 1", [id]);
+    if (!user) throw new Error("User not found.");
+    if (user.status !== "pending") throw new Error("User is not awaiting approval.");
+
+    await db.query("UPDATE users SET status = 'rejected', updated_at = NOW() WHERE user_id = ?", [id]);
+    return true;
+  },
+
   // CREATE USER -admin
   async createUser(data) {
     const { name, username, email, password, role, status = "active" } = data;
@@ -98,7 +196,7 @@ const userService = {
     const { name, username, email, role, status } = data;
 
     const validRoles    = ["admin", "it_staff"];
-    const validStatuses = ["active", "inactive"];
+    const validStatuses = ["pending", "active", "inactive", "rejected"];
 
     if (role !== undefined && !validRoles.includes(role)) {
       throw new Error("Invalid role.");
