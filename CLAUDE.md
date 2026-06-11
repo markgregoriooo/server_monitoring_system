@@ -39,7 +39,12 @@ INFLUX_ORG=
 INFLUX_BUCKET=
 AGENT_INSTALL_KEY= # shared key the Go agents present at enrollment (POST /api/agents/register)
 WEB_ORIGIN=        # allowed dashboard origins, comma-separated — or * for any (roaming LAN); blank = localhost+LAN default
+GOOGLE_CLIENT_ID=       # Google OAuth web client ID (public). Login verifies ID tokens against it. Must match frontend VITE_GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET=   # Google OAuth web client SECRET. Required: the auth-code flow exchanges the code server-side
+GOOGLE_ALLOWED_DOMAINS= # comma-separated CSPC domains allowed to sign in; blank = cspc.edu.ph,my.cspc.edu.ph
 ```
+
+Frontend also needs `VITE_GOOGLE_CLIENT_ID` in `frontend/.env` (same client ID; restart `npm run dev` after changing). See `google-oauth.md`.
 
 ### Backend address (no longer hardcoded in the dashboard)
 The dashboard's backend URL is centralized in `frontend/src/config.ts`, which **auto-detects**
@@ -132,15 +137,19 @@ SESSION_NOTES.md                ← per-session work log
 
 ## Authentication & Authorization
 
-- JWT signed with `JWT_SECRET`, expires 1 h, stored in `sessionStorage` as `cspc_token`. Carries a `tv` (token_version) claim; `authMiddleware` rejects the token when `users.token_version` / `status` no longer match (logout, disable, role/password change bump it — server-side session revocation)
+- **Login is Google OAuth (OIDC) only** — the custom "CSPC Mail" button runs the **authorization-code flow** (`@react-oauth/google`, `flow: "auth-code"`) and sends a one-time **code** to `POST /api/auth/google`. `services/googleAuthService.js` exchanges the code with Google (server-side, using `GOOGLE_CLIENT_SECRET`), verifies the returned **ID token** with `verifyIdToken` (`google-auth-library` — audience enforced), enforces the CSPC domains (`@cspc.edu.ph` / `@my.cspc.edu.ph`, exact match + `email_verified`), then issues the app JWT via `authService.issueSession`. The old password/bcrypt login (`/auth/login`) was **removed**. Full guide: `google-oauth.md`.
+- **Self-register → admin approve/reject.** A first-time Google sign-in creates a `users` row with `status='pending'`; an admin approves it (assigning `admin` or `it_staff`) or rejects it (`status='rejected'`) from **User Management → Pending registrations**. Pending/rejected/inactive accounts can never obtain a session (`authMiddleware` requires `status='active'`). Multiple admins are allowed. DB migration: `migrations/2026-06-09_google_auth.sql`.
+- JWT signed with `JWT_SECRET`, expires 1 h, stored in `sessionStorage` as `cspc_token`. Carries a `tv` (token_version) claim; `authMiddleware` rejects the token when `users.token_version` / `status` no longer match (logout, disable, role change bump it — server-side session revocation)
 - Socket.IO: browsers send JWT in `socket.handshake.auth.token`; ESP32 device key is read from `socket.handshake.auth.deviceKey` (preferred) or `.query.deviceKey` (legacy EIO3 fallback — firmware still sends it here)
 - Go agents authenticate metric POSTs with a Bearer `AGT-…` token (`middleware/agentAuth.js`); first-run enrollment uses the shared `AGENT_INSTALL_KEY`
 - `socket.isDevice = true` for ESP32, `false` for browsers
 
 | Role | DB value | Access |
 |------|----------|--------|
-| Admin | `admin` | all pages + user management |
+| Admin | `admin` | all pages + user management (approves registrations) |
 | IT Staff | `it_staff` | dashboard, server metrics, environment, aircon, history, reports |
+
+> Login no longer uses passwords. `users.hash_password` is now nullable; `users.status` gained `pending`/`rejected`; new columns `google_sub` + `auth_provider`. The User Management "Add User"/"Reset PW" and Profile "Change Password" UIs are now vestigial.
 
 ### Mock endpoints (still `data/db.js`, not real)
 - `routes/environment.js` GET `/history` + `/logs` return mock random data, **not** InfluxDB — real sensor history comes via Socket.IO `changeRange` → `sensorHistory`
@@ -174,6 +183,7 @@ SESSION_NOTES.md                ← per-session work log
 | `serverStatus` | offline sweep flips a stale server → `{ id, status: "Offline" }` |
 | `serverRemoved` | admin removes a server → `{ id }` |
 | `agentApproved` / `agentPending` | agent approved / registered-or-rejected (admin pending list) |
+| `userPending` / `userApproved` | user self-registered-or-rejected / approved (admin Pending registrations panel) |
 | `deviceLog` | new `device_logs` entry (lifecycle + CPU/Mem/Disk threshold crossings) |
 | `airconStatus` | manual toggle/mode/temp change |
 | `airconAutoUpdate` | ESP32 auto IR zone change |
