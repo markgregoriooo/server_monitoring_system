@@ -134,7 +134,7 @@ function parseLabelToISO(label: string): string {
   };
   const [mon, day, year, time = "00:00"] = label.split(" ");
   const [h = "0", m = "0"] = time.split(":");
-  return new Date(+(year ?? 0), months[mon] ?? 0, +(day ?? 1), +h, +m).toISOString();
+  return new Date(+(year ?? 0), months[mon ?? ""] ?? 0, +(day ?? 1), +h, +m).toISOString();
 }
 
 // ─── Chart helpers ────────────────────────────────────────────────────────────
@@ -194,11 +194,14 @@ function makeCombinedOptions(
       x: {
         grid: { color: gridColor, drawTicks: false }, border: { display: false },
         ticks: {
-          color: (ctx) => ctx.tick?.label === undefined
-            ? timeColor
-            : (Array.isArray(ctx.tick.label) && ctx.tick.label.length > 1
-                ? [dateColor, timeColor]
-                : timeColor),
+          // Chart.js typings only allow a single Color from this callback, but it
+          // also accepts a [date, time] array at runtime for two-line ticks — cast.
+          color: ((ctx: { tick?: { label?: unknown } }) =>
+            ctx.tick?.label === undefined
+              ? timeColor
+              : (Array.isArray(ctx.tick.label) && ctx.tick.label.length > 1
+                  ? [dateColor, timeColor]
+                  : timeColor)) as unknown as string,
           font: { size: isMobile ? 8 : 9, family: "monospace" },
           maxTicksLimit: isMobile ? 4 : 7, maxRotation: 0,
           callback: function(_val, index): string[] {
@@ -279,11 +282,14 @@ function makeSmokeOptions(
       x: {
         grid: { color: gridColor, drawTicks: false }, border: { display: false },
         ticks: {
-          color: (ctx) => ctx.tick?.label === undefined
-            ? timeColor
-            : (Array.isArray(ctx.tick.label) && ctx.tick.label.length > 1
-                ? [dateColor, timeColor]
-                : timeColor),
+          // Chart.js typings only allow a single Color from this callback, but it
+          // also accepts a [date, time] array at runtime for two-line ticks — cast.
+          color: ((ctx: { tick?: { label?: unknown } }) =>
+            ctx.tick?.label === undefined
+              ? timeColor
+              : (Array.isArray(ctx.tick.label) && ctx.tick.label.length > 1
+                  ? [dateColor, timeColor]
+                  : timeColor)) as unknown as string,
           font: { size: isMobile ? 8 : 9, family: "monospace" },
           maxTicksLimit: isMobile ? 4 : 7, maxRotation: 0,
           callback: function(_val, index): string[] {

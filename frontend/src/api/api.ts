@@ -47,13 +47,45 @@ const handleError = (err: any): ApiResult<never> => {
 };
 
 export const api = {
-  // Auth
-  login: async (email: string, password: string): Promise<ApiResult<LoginResponse>> => {
+  // Auth — Google sign-in is the ONLY login path. Send the one-time AUTH CODE
+  // (from the custom "CSPC Mail" button's authorization-code flow); the backend
+  // exchanges it with Google. On an active account the backend returns
+  // { token, user }. For a not-yet-active account it returns a body with status =
+  // "pending" | "rejected" | "disabled", which we pass through (via data) so the
+  // Login page can show the right message instead of an error.
+  loginWithGoogle: async (code: string): Promise<ApiResult<LoginResponse & { status?: string; message?: string }>> => {
     try {
-      const res = await apiClient.post<LoginResponse>("/auth/login", { email, password });
+      const res = await apiClient.post<LoginResponse>("/auth/google", { code });
+      return { success: true, data: res.data as any };
+    } catch (err: any) {
+      return { ...handleError(err), data: err?.response?.data };
+    }
+  },
+
+  // Admin — registration approvals
+  getPendingUsers: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/users/pending");
       return { success: true, data: res.data };
     } catch (err: any) {
-      const status = err?.response?.status;
+      return handleError(err);
+    }
+  },
+
+  approveUser: async (id: number, role: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/users/${id}/approve`, { role });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  rejectUser: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/users/${id}/reject`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
       return handleError(err);
     }
   },

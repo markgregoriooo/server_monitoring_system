@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useLocation } from "react-router";
 import { useAuth } from "../../context/AuthContext";
 import { BRAND } from "../../branding";
-import { API_URL } from "../../config";
+import { avatarUrl } from "../../utils/format";
 
 type HeaderProps = {
   title: string;
@@ -134,7 +134,8 @@ export default function Header({ alertCount = 0, onMenuToggle, collapsed, onTogg
           <div className="w-6 h-6 rounded overflow-hidden flex-shrink-0"
             style={{ border: "1px solid var(--gf-panel-border)" }}>
             {user.profile_image ? (
-              <img src={`${API_URL}${user.profile_image}`} alt={user.name}
+              <img src={avatarUrl(user.profile_image) ?? ""} alt={user.name}
+                referrerPolicy="no-referrer"
                 className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-[9px] font-bold text-white"

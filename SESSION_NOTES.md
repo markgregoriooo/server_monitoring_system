@@ -517,3 +517,228 @@ pre-existing `Environment.tsx` warnings.
 
 ---
 
+## SESSION 7 — 2026-06-09
+**Branch:** `server-metrics` → merged to `main`, then new branch `google-oauth`
+**Developer:** Mark Gregorio
+
+> Two parts: (1) reviewed + hardened the Server Metrics feature and shipped it (committed +
+> merged to `main`); (2) started the **Google OAuth login** redesign on a fresh branch.
+
+### Server Metrics — review fixes (committed in `5f5a084`, merged to `main`)
+
+- **Agent POSTs off the browser rate-limit budget.** `/api/servers/metrics` got its own
+  `metricsLimiter` (1000/15min/IP, `routes/servers.js`); the global limiter now `skip`s that
+  path (`src/server.js`). Prevents a NAT'd fleet of agents from 429-ing the dashboard.
+- **Offline servers no longer show stale uptime** — `withLive()` returns `uptime:null` when
+  offline; the `serverStatus` Offline handlers in `ServerMetrics.tsx` + `Dashboard.tsx` zero it.
+- **Accurate network history** — `serverHistoryHandler` aggregates the cumulative net counters
+  with `last()` (split Flux: gauges use `mean`, counters use `last`) so derived MB/s is exact.
+- **Unknown-host metric refetch** (`ServerMetrics.tsx`) + **fixed-interval (10s) aggregate
+  sparkline sampling** (was per-socket-push, non-uniform) + **`:id` param validation** on the
+  server detail/logs routes. InfluxDB retention documented as a one-time `influx` CLI step.
+- **Committed the whole uncommitted Sessions 1–6 pile** (`git add -A`, 85 files) → `5f5a084`,
+  pushed, **fast-forwarded `main`** (clean, no conflicts). Hygiene verified: no secrets/binaries.
+
+### Google OAuth login — new feature (branch `google-oauth`, NOT yet committed)
+
+**Decision:** login becomes **Google OAuth (OIDC) only** — password/bcrypt login retired.
+Self-register → admin approve/reject, restricted to CSPC domains. Mirrors the Go-agent
+enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
+
+- **Backend:** `services/googleAuthService.js` (verify Google ID token via `google-auth-library`,
+  enforce `@cspc.edu.ph`/`@my.cspc.edu.ph` + `email_verified`, login-or-create-pending). New
+  `POST /api/auth/google` (the only login path; removed `/auth/login` + `loginLimiter`).
+  `authService.issueSession()` extracted from the old `login()`. `userService` gained
+  `findByEmail`/`registerGoogleUser`/`linkGoogleSub`/`listPending`/`approveUser`/`rejectUser`.
+  `routes/users.js`: `GET /users/pending`, `POST /users/:id/approve` (role), `/reject` — emit
+  `userPending`/`userApproved`.
+- **DB migration** `migrations/2026-06-09_google_auth.sql` — `hash_password` nullable, `status`
+  enum +`pending`/`rejected`, new `google_sub` + `auth_provider`, and a bootstrap `UPDATE` to
+  flip the existing admin active (**edit the email placeholder before running**).
+- **Frontend:** `@react-oauth/google` `GoogleOAuthProvider` in `main.tsx`; `Login.tsx` rewritten
+  to a "Continue with Google" button with pending/rejected/disabled messaging;
+  `AuthContext.loginWithGoogle()`; `api` calls; a **Pending registrations** panel in
+  `UserManagement.tsx` (approve w/ role dropdown + reject, live via socket). `client.ts`
+  interceptor ignore-list updated `/auth/login` → `/auth/google`.
+- **Env:** `GOOGLE_CLIENT_ID` + `GOOGLE_ALLOWED_DOMAINS` (backend), `VITE_GOOGLE_CLIENT_ID`
+  (frontend). Google Cloud project is **External + Testing** (not under CSPC Workspace, so no
+  Internal) — only Test users can sign in until published.
+- **Verified:** backend `node --check` + import-chain resolve clean; frontend `tsc` shows only
+  the 3 pre-existing `Environment.tsx` warnings. **Live login NOT yet run** — needs the migration
+  applied (with the admin email) + both servers restarted.
+
+### Still pending / not done
+
+- **Run the migration + restart servers + live-test** the Google login (admin login, then
+  register a 2nd CSPC account → pending → approve).
+- **Vestigial password UI** left in place (User Management "Add User"/"Reset PW", Profile
+  "Change Password") — harmless under Google-only; flagged for removal.
+- `google-oauth` branch is uncommitted.
+
+---
+
+## SESSION 8 — 2026-06-09  *(same day, cont. of Session 7)*
+**Branch:** `google-oauth`
+**Developer:** Mark Gregorio
+
+> Took the Google OAuth feature from "builds/typechecks" to **verified-working on desktop**,
+> then iterated heavily on the sign-in UX, a token-flow change, several bug fixes, and a Grafana
+> restyle of the auth-related pages. Full guide kept current in `google-oauth.md`.
+
+### "CSPC Mail" button → switched ID-token flow to access-token flow
+
+- Google's **official** Sign-in button can't show custom text, so the login button couldn't say
+  "CSPC Mail". Replaced `<GoogleLogin>` with a **custom button** wired to `useGoogleLogin`
+  (implicit flow) → returns a Google **access token** (not an ID token).
+- **Backend (`googleAuthService.authenticate`)** now verifies the **access token** via
+  `client.getTokenInfo()`, **checks `aud === GOOGLE_CLIENT_ID`** (anti-replay), and fetches
+  name + photo from the **`userinfo`** endpoint — instead of `verifyIdToken`. Still **no client
+  secret / no Console change** (public client ID only). `routes/auth.js` reads `{ access_token }`;
+  `api.ts` posts `access_token`; `AuthContext.loginWithGoogle(accessToken)`.
+
+### Bug fix — "Your Google email is not verified" for everyone
+
+- tokeninfo returns `email_verified` as the **string `"true"`**, not a boolean; the check
+  `=== true` failed for all accounts (incl. the admin). Now accepts `true` **or** `"true"`.
+
+### Bug fix — approved Google users showed no profile photo
+
+- Backend stored the Google photo URL in `profile_image`, but every avatar render did
+  `` `${API_URL}${profile_image}` `` (only valid for uploaded files) → broke the absolute Google
+  URL. Added **`avatarUrl()`** in `utils/format.ts` (absolute URL → as-is; relative → prefix
+  backend URL; empty → initials) and applied it in **Header, Sidebar, ProfileModal,
+  UserManagement** (+ `referrerPolicy="no-referrer"` to avoid Google 403s).
+
+### UserManagement — "Invited" status (resolves "always Active" complaint)
+
+- An approved account showed green **Active** even before its first login (approve sets
+  `status='active'`). `StatusBadge` now derives login state from `last_login`:
+  active + never-logged-in → **"Invited"** (blue); flips to **Active** on first login. Disabled
+  accounts still read **Inactive**, so the two stay distinct (no DB/semantic change).
+
+### UI — Grafana restyle of auth pages
+
+- **`Login.tsx`** rebuilt in `--gf-*` tokens (panel chrome, 2px radius, JetBrains Mono, status
+  colors), Grafana-blue spinner, mobile-responsive (`sm:` breakpoints, full-width button). A
+  first-time guide note was added then **removed at request**.
+- **`UserManagement.tsx`** fully converted from `slate-*`/`dark:` to `--gf-*` (StatPanels,
+  panel chrome table, status/role pills, gf-styled modals/toast). **Removed the "Add User"
+  feature** entirely (button + modal + state + `handleAdd`) — meaningless under Google-only.
+
+### Cleanup — `Environment.tsx` is now type-clean
+
+- Fixed the **3 long-standing pre-existing TS warnings** (a possibly-undefined index in
+  `parseLabelToISO`, and two Chart.js `ticks.color` callbacks returning a `[date,time]` color
+  array the typings reject). `tsc --noEmit` is now **fully clean** across the frontend.
+
+### Mobile testing via tunnel (explored, then reverted)
+
+- Google sign-in won't run on a raw-IP / `http` origin, so phone login needs an HTTPS origin.
+  Set up a **Cloudflare quick tunnel** (one tunnel + a Vite dev proxy for `/api` + `/socket.io`
+  so a single HTTPS origin covers both servers) and verified mobile login worked.
+  User found it too involved for now → **reverted** `vite.config.ts` (proxy/allowedHosts removed),
+  `VITE_API_URL` back to blank, `WEB_ORIGIN` back to the localhost default. cloudflared stays
+  installed but idle.
+
+### Docs
+
+- **`google-oauth.md`** rewritten to the access-token / custom-button reality (flow diagram,
+  `getTokenInfo`+`aud`+`userinfo`, the `email_verified` gotcha, avatar handling, "Invited",
+  origin_mismatch/cache troubleshooting, mobile note). **`CLAUDE.md`** auth section already
+  covers the model.
+
+### Verified
+
+- Backend `node --check` + import-chain clean; frontend **`tsc --noEmit` fully clean (0 errors)**.
+- **Live desktop login confirmed working** (admin account). Hit + fixed `origin_mismatch`
+  (localhost not in authorized origins) and a browser-cache quirk (works in Incognito → clear
+  site data for the normal window).
+
+### Still pending / not done
+
+- **Vestigial UI remaining:** User Management "Reset PW" + Profile "Change Password" (Add User
+  already removed). Candidates for removal.
+- **Live approval round-trip** with a real 2nd CSPC account not yet exercised (needs a second
+  test-user Google account).
+- `google-oauth` branch still **uncommitted**.
+
+---
+
+## SESSION 9 — 2026-06-10
+**Branch:** `google-oauth`
+**Developer:** Mark Gregorio
+
+> Migrated the Google login from the **implicit / access-token** flow (Session 8) to the
+> **authorization-code** flow with server-side code exchange + local ID-token verification —
+> the current OAuth best practice (implicit is deprecated under OAuth 2.1 / RFC 9700). Net
+> result is *less* backend code. Guide kept current in `google-oauth.md`.
+
+### Auth flow — implicit (access token) → authorization-code (one-time code)
+
+- **Why:** the implicit flow returns the token in the browser and is deprecated (OAuth 2.1 /
+  RFC 9700). Auth-code keeps the token off the browser, and the returned **ID token already
+  carries `email` + `email_verified` (real boolean) + `name` + `picture`** — so the separate
+  `tokeninfo` **and** `userinfo` round-trips both go away. Two Google calls → one.
+- **Frontend (`Login.tsx`):** `useGoogleLogin({ flow: "auth-code" })`; `onSuccess` now gets
+  `resp.code` (a one-time auth code) instead of `resp.access_token`. The custom **CSPC Mail**
+  button + label are unchanged.
+- **Chain renamed `accessToken`/`access_token` → `code`:** `AuthContext.loginWithGoogle(code)`,
+  `api.loginWithGoogle` posts `{ code }`, `routes/auth.js` reads `req.body.code`.
+- **Backend (`services/googleAuthService.js`) — the core, now shorter:**
+  - `OAuth2Client` constructed with `{ clientId, clientSecret, redirectUri: "postmessage" }`
+    (`postmessage` = the magic redirect URI Google uses for the popup auth-code flow; needs **no**
+    entry in "Authorized redirect URIs").
+  - `client.getToken(code)` exchanges the code (server-to-server, authenticated with the secret)
+    → `client.verifyIdToken({ idToken, audience: CLIENT_ID })` verifies the signature **locally**
+    and enforces the audience (anti-replay) in one call.
+  - **Deleted:** `getTokenInfo`, the manual `info.aud === CLIENT_ID` check (verifyIdToken does it),
+    and the entire `fetchProfile()` / `userinfo` function. `email_verified` is now a plain
+    `=== true` (no more string-`"true"` workaround — that was a tokeninfo quirk).
+
+### Env / Google Cloud
+
+- **New `GOOGLE_CLIENT_SECRET`** in `backend/.env` (the code exchange requires it). Confirmed
+  `backend/.env` is **git-ignored** (`git check-ignore`) so the secret is never committed.
+- **Gotcha hit live:** Google **no longer lets you view or download an existing client secret** —
+  the Clients page shows only the last 4 chars (e.g. `…X3N8`). Had to click **"Add secret"** to
+  mint a fresh one (shown once, `GOCSPX-…`). Documented in `google-oauth.md` §3.
+
+### Bug fix — closing the Google popup left the button stuck on "Signing in…"
+
+- **Symptom:** open the **CSPC Mail** popup, close it without signing in → the button stayed
+  disabled showing "Signing in…", not clickable again.
+- **Cause:** `handleClick` sets `loading=true`, and only `onError` reset it. But closing/blocking
+  the popup is a **non-OAuth** error in `@react-oauth/google` → it fires **`onNonOAuthError`**
+  (type `popup_closed` | `popup_failed_to_open`), which we didn't handle, so `loading` never reset.
+- **Fix (`Login.tsx`):** added `onNonOAuthError` to `useGoogleLogin` — always `setLoading(false)`;
+  a plain close just re-enables the button (no scary banner), a blocked popup
+  (`popup_failed_to_open`) shows an "allow popups" hint. `tsc` clean.
+
+### Docs updated
+
+- **`google-oauth.md`** — §1 concept, §2 flow narrative + ASCII diagram (`getToken` +
+  `verifyIdToken`), §3 setup + new ⚠️ "secret shown once / Add secret" callout, §4 env vars
+  (+`GOOGLE_CLIENT_SECRET`), §6/§7 file tables, §9 troubleshooting (new "Could not verify… →
+  missing/wrong secret" bullet; fixed a stale `getTokenInfo` reference), §12 code-trace steps.
+- **`CLAUDE.md`** — env-var list (+`GOOGLE_CLIENT_SECRET`) and the auth-section description
+  (implicit/ID-token wording → auth-code + `verifyIdToken`).
+
+### Verified
+
+- Frontend **`tsc --noEmit` clean** (root `tsconfig.json` includes `src`; covers the renamed
+  `Login.tsx` / `AuthContext.tsx` / `api.ts`).
+- **Backend wiring smoke-tested:** `POST /api/auth/google { code: "bogus" }` → **401**
+  `{"error":"Could not verify your Google sign-in. Please try again."}` — confirms both env vars
+  loaded, the `OAuth2Client` built, and the new `getToken` exchange path is live (a blank secret
+  would instead say "not configured"). Dep versions support it: `google-auth-library` ^10.7,
+  `@react-oauth/google` ^0.13.5.
+
+### Still pending / not done
+
+- **Live browser sign-in not yet run** on the new flow — needs a human Google popup login with the
+  admin CSPC account (can't be automated). Smoke test covers the wiring up to the code exchange.
+- Vestigial password UI (User Management "Reset PW", Profile "Change Password") still present.
+- `google-oauth` branch still **uncommitted**.
+
+---
+
