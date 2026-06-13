@@ -1,4 +1,5 @@
 import { useState } from "react";
+import NotificationPreferences from "../components/notifications/NotificationPreferences";
 
 interface ThresholdField {
   label: string;
@@ -46,6 +47,9 @@ export default function Settings() {
 
   return (
     <div className="p-4 lg:p-6 flex flex-col gap-4 bg-white dark:bg-transparent">
+      {/* Real, persisted notification preferences (the rest of this page is mock) */}
+      <NotificationPreferences />
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Connection */}

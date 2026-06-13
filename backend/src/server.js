@@ -175,3 +175,19 @@ setInterval(async () => {
     console.error("[OFFLINE_SWEEP] error:", err);
   }
 }, OFFLINE_SWEEP_MS);
+
+// Notification retention — purge alerts (and, via cascade, their per-user feed
+// rows) older than NOTIFY_RETENTION_DAYS so the tables don't grow unbounded.
+// Runs at startup and daily.
+const RETENTION_DAYS = Number(process.env.NOTIFY_RETENTION_DAYS) || 30;
+const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const runNotificationPurge = async () => {
+  try {
+    const purged = await notificationService.purgeOld(RETENTION_DAYS);
+    if (purged) console.log(`[notifications] purged ${purged} alert(s) older than ${RETENTION_DAYS}d`);
+  } catch (err) {
+    console.error("[notifications] purge error:", err.message);
+  }
+};
+runNotificationPurge();
+setInterval(runNotificationPurge, PURGE_INTERVAL_MS);

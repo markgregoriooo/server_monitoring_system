@@ -33,4 +33,38 @@ router.post(
   }),
 );
 
+// POST /api/notifications/clear  body: { ids: number[] }  OR  { all: true }
+// Removes feed rows (dismiss). Scoped to the caller.
+router.post(
+  "/clear",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const { ids, all } = req.body ?? {};
+    const removed = all
+      ? await notificationService.clearAll(req.user.id)
+      : await notificationService.dismiss(req.user.id, ids ?? []);
+    const unreadCount = await notificationService.unreadCount(req.user.id);
+    res.json({ success: true, removed, unreadCount });
+  }),
+);
+
+// GET /api/notifications/prefs → this user's notification preferences
+router.get(
+  "/prefs",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    res.json({ prefs: await notificationService.getPrefs(req.user.id) });
+  }),
+);
+
+// PUT /api/notifications/prefs  body: { emailEnabled?, popupEnabled?, minEmailSeverity? }
+router.put(
+  "/prefs",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const prefs = await notificationService.savePrefs(req.user.id, req.body ?? {});
+    res.json({ success: true, prefs });
+  }),
+);
+
 export default router;

@@ -7,7 +7,7 @@ import { desktopPermission, requestDesktopPermission } from "../../utils/browser
 import { isSoundEnabled, setSoundEnabled } from "../../utils/notificationSound";
 
 export default function NotificationPanel({ onClose }: { onClose: () => void }) {
-  const { items, unreadCount, markRead, markAllRead } = useNotifications();
+  const { items, unreadCount, markRead, markAllRead, dismiss, clearAll } = useNotifications();
   const navigate = useNavigate();
 
   // Desktop (OS) popups are opt-in: offer to enable while permission is still "default".
@@ -47,7 +47,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
         <span className="text-[12px] font-semibold tracking-wide" style={{ color: "var(--gf-text-primary)" }}>
           NOTIFICATIONS{unreadCount > 0 ? ` (${unreadCount})` : ""}
         </span>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
           {unreadCount > 0 && (
             <button
               onClick={() => markAllRead()}
@@ -57,6 +57,17 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
               onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
             >
               Mark all read
+            </button>
+          )}
+          {items.length > 0 && (
+            <button
+              onClick={() => clearAll()}
+              className="text-[11px] transition-colors"
+              style={{ color: "var(--gf-text-muted)" }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = "var(--gf-text-primary)")}
+              onMouseLeave={(e) => (e.currentTarget.style.color = "var(--gf-text-muted)")}
+            >
+              Clear all
             </button>
           )}
           <button
@@ -107,41 +118,59 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
           </div>
         ) : (
           items.map((n) => (
-            <button
+            // relative wrapper so the dismiss control is a sibling (not a nested
+            // button) of the clickable row — valid HTML + group-hover reveal.
+            <div
               key={n.id}
-              onClick={() => onItemClick(n)}
-              className="w-full text-left px-3.5 py-3 flex gap-2.5 transition-colors"
-              style={{
-                borderBottom: "1px solid var(--gf-divider)",
-                background: n.isRead ? "transparent" : "var(--gf-accent-dim)",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--gf-hover)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = n.isRead ? "transparent" : "var(--gf-accent-dim)")}
+              className="relative group"
+              style={{ borderBottom: "1px solid var(--gf-divider)" }}
             >
-              {/* severity dot */}
-              <span
-                className="mt-1 flex-shrink-0 rounded-full"
-                style={{ width: 8, height: 8, background: SEVERITY_COLOR[n.severity] ?? "var(--gf-text-muted)" }}
-              />
-              <span className="flex-1 min-w-0">
-                <span className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-semibold truncate" style={{ color: "var(--gf-text-primary)" }}>
-                    {n.title}
+              <button
+                onClick={() => onItemClick(n)}
+                className="w-full text-left pl-3.5 pr-8 py-3 flex gap-2.5 transition-colors"
+                style={{ background: n.isRead ? "transparent" : "var(--gf-accent-dim)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--gf-hover)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = n.isRead ? "transparent" : "var(--gf-accent-dim)")}
+              >
+                {/* severity dot */}
+                <span
+                  className="mt-1 flex-shrink-0 rounded-full"
+                  style={{ width: 8, height: 8, background: SEVERITY_COLOR[n.severity] ?? "var(--gf-text-muted)" }}
+                />
+                <span className="flex-1 min-w-0">
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="text-[12px] font-semibold truncate" style={{ color: "var(--gf-text-primary)" }}>
+                      {n.title}
+                    </span>
+                    <span className="text-[10px] flex-shrink-0" style={{ color: "var(--gf-text-dim)" }}>
+                      {relativeTime(n.sentAt || n.createdAt)}
+                    </span>
                   </span>
-                  <span className="text-[10px] flex-shrink-0" style={{ color: "var(--gf-text-dim)" }}>
-                    {relativeTime(n.sentAt || n.createdAt)}
+                  <span className="block text-[11px] mt-0.5 truncate" style={{ color: "var(--gf-text-muted)" }}>
+                    {n.message}
                   </span>
+                  {n.deviceName && (
+                    <span className="block text-[10px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
+                      {n.deviceName}
+                    </span>
+                  )}
                 </span>
-                <span className="block text-[11px] mt-0.5 truncate" style={{ color: "var(--gf-text-muted)" }}>
-                  {n.message}
-                </span>
-                {n.deviceName && (
-                  <span className="block text-[10px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
-                    {n.deviceName}
-                  </span>
-                )}
-              </span>
-            </button>
+              </button>
+              {/* dismiss (X) — reveals on row hover */}
+              <button
+                onClick={() => dismiss([n.id])}
+                aria-label="Dismiss notification"
+                title="Dismiss"
+                className="absolute top-2 right-1.5 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                style={{ color: "var(--gf-text-dim)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "var(--gf-text-primary)")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "var(--gf-text-dim)")}
+              >
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
+                  <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
           ))
         )}
       </div>

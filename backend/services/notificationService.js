@@ -182,4 +182,73 @@ async function markAllRead(userId) {
   return res.affectedRows;
 }
 
-export default { init, raiseAlert, listForUser, unreadCount, markRead, markAllRead };
+// Remove feed rows (delete, not just read) — scoped to the caller. The underlying
+// `alerts` event stays (other users keep their copy; retention handles history).
+async function dismiss(userId, ids) {
+  const clean = (Array.isArray(ids) ? ids : []).map(Number).filter(Number.isInteger);
+  if (!clean.length) return 0;
+  const [res] = await db.query(
+    `DELETE FROM alert_notifications WHERE user_id = ? AND id IN (?)`,
+    [userId, clean],
+  );
+  return res.affectedRows;
+}
+
+async function clearAll(userId) {
+  const [res] = await db.query(`DELETE FROM alert_notifications WHERE user_id = ?`, [userId]);
+  return res.affectedRows;
+}
+
+// ─── Per-user preferences (notification_prefs) ─────────────────────────────────
+// A missing row = defaults (email on, popups on, min severity from env).
+
+function defaultMinSeverity() {
+  return normalizeSeverity(process.env.NOTIFY_EMAIL_MIN_SEVERITY) || "critical";
+}
+
+async function getPrefs(userId) {
+  const [[row]] = await db.query(
+    `SELECT email_enabled, popup_enabled, min_email_severity
+       FROM notification_prefs WHERE user_id = ?`,
+    [userId],
+  );
+  return {
+    emailEnabled: row ? Boolean(row.email_enabled) : true,
+    popupEnabled: row ? Boolean(row.popup_enabled) : true,
+    minEmailSeverity: row?.min_email_severity ?? defaultMinSeverity(),
+  };
+}
+
+// Upsert; accepts a partial patch and preserves untouched fields.
+async function savePrefs(userId, patch = {}) {
+  const cur = await getPrefs(userId);
+  const next = {
+    emailEnabled: patch.emailEnabled ?? cur.emailEnabled,
+    popupEnabled: patch.popupEnabled ?? cur.popupEnabled,
+    minEmailSeverity: normalizeSeverity(patch.minEmailSeverity) ?? cur.minEmailSeverity,
+  };
+  await db.query(
+    `INSERT INTO notification_prefs (user_id, email_enabled, popup_enabled, min_email_severity)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE email_enabled = VALUES(email_enabled),
+                             popup_enabled = VALUES(popup_enabled),
+                             min_email_severity = VALUES(min_email_severity)`,
+    [userId, next.emailEnabled ? 1 : 0, next.popupEnabled ? 1 : 0, next.minEmailSeverity],
+  );
+  return next;
+}
+
+// Retention: delete alerts older than `days`; alert_notifications cascade (FK).
+async function purgeOld(days) {
+  const n = Number(days) || 30;
+  const [res] = await db.query(
+    `DELETE FROM alerts WHERE created_at < (NOW() - INTERVAL ? DAY)`,
+    [n],
+  );
+  return res.affectedRows;
+}
+
+export default {
+  init, raiseAlert, listForUser, unreadCount, markRead, markAllRead,
+  dismiss, clearAll, getPrefs, savePrefs, purgeOld,
+};

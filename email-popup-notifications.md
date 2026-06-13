@@ -250,7 +250,13 @@ NOTIFY_EMAIL_TO=           # optional override (testing): force all alert emails
   via a DB check, so an always-critical device alerts once, not every poll/restart, and flapping
   is damped. Notifications of `type:"environment"` deep-link to `/environment`.
 - **Phase 4 (when router-ups merges):** add UPS-on-battery / interface-down `raiseAlert` calls.
-- **Still open (P2/P3):** notification retention/cleanup; per-user `notification_prefs` **UI**
-  (table respected, no editor yet); unify the Dashboard's mock `/api/alerts` with the real feed.
+- **✅ P2 (DONE):** (a) **Retention** — daily purge of alerts older than `NOTIFY_RETENTION_DAYS`
+  (default 30; feed rows cascade) in `server.js`. (b) **Clear / dismiss** — per-item dismiss (X)
+  + "Clear all" in the bell panel → `POST /api/notifications/clear` (`dismiss`/`clearAll`).
+  (c) **Per-user prefs UI** — `NotificationPreferences` card on the Settings page (email on/off +
+  min email severity), persisted via `GET`/`PUT /api/notifications/prefs` (`notification_prefs`
+  upsert). `tsc`/`vite build`/`node --check` clean.
+- **Still open (P3):** unify the Dashboard's mock `/api/alerts` panel with the real feed; minor
+  polish (`prefers-reduced-motion`, a full "view all" history beyond the latest 100).
 - See `CLAUDE.md` (Socket.IO events, data stores, UI tokens) and the `alerts` / `alert_notifications`
   tables in `V10…schema.sql` for the existing scaffolding this builds on.

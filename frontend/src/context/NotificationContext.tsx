@@ -40,6 +40,8 @@ interface NotificationContextType {
   refresh: () => Promise<void>;
   markRead: (ids: number[]) => Promise<void>;
   markAllRead: () => Promise<void>;
+  dismiss: (ids: number[]) => Promise<void>;
+  clearAll: () => Promise<void>;
   // Subscribe to NEW (live) notifications only — for ephemeral consumers like the
   // toast host. Returns an unsubscribe fn. Avoids a second socket listener.
   subscribe: (fn: IncomingListener) => () => void;
@@ -116,9 +118,25 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     if (!res.success) refresh();
   }, [refresh]);
 
+  const dismiss = useCallback(async (ids: number[]) => {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    setItems((prev) => prev.filter((n) => !idSet.has(n.id))); // optimistic remove
+    const res = await api.dismissNotifications(ids);
+    if (res.success && res.data) setUnreadCount(res.data.unreadCount ?? 0);
+    else refresh();
+  }, [refresh]);
+
+  const clearAll = useCallback(async () => {
+    setItems([]); // optimistic
+    setUnreadCount(0);
+    const res = await api.clearAllNotifications();
+    if (!res.success) refresh();
+  }, [refresh]);
+
   const value = useMemo(
-    () => ({ items, unreadCount, refresh, markRead, markAllRead, subscribe }),
-    [items, unreadCount, refresh, markRead, markAllRead, subscribe],
+    () => ({ items, unreadCount, refresh, markRead, markAllRead, dismiss, clearAll, subscribe }),
+    [items, unreadCount, refresh, markRead, markAllRead, dismiss, clearAll, subscribe],
   );
 
   return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;

@@ -388,6 +388,46 @@ export const api = {
     }
   },
 
+  dismissNotifications: async (ids: number[]): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/notifications/clear", { ids });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  clearAllNotifications: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/notifications/clear", { all: true });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getNotificationPrefs: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/notifications/prefs");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  saveNotificationPrefs: async (prefs: {
+    emailEnabled?: boolean;
+    popupEnabled?: boolean;
+    minEmailSeverity?: string;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put("/notifications/prefs", prefs);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getAuditLog: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/alerts/audit");
