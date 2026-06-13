@@ -16,6 +16,7 @@ import Login from "./pages/auth/Login";
 import Unauthorized from "./pages/auth/Unauthorized";
 import Sidebar from "./components/layout/Sidebar";
 import Header from "./components/layout/Header";
+import ToastHost from "./components/notifications/ToastHost";
 import Dashboard from "./pages/Dashboard";
 import ServerMetrics from "./pages/ServerMetrics";
 import Environment from "./pages/Environment";
@@ -170,6 +171,9 @@ function AppShell() {
           </Routes>
         </main>
       </div>
+
+      {/* Live notification toasts — overlay, independent of the current route */}
+      <ToastHost />
     </div>
   );
 }

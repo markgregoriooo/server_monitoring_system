@@ -186,7 +186,7 @@ SESSION_NOTES.md                ← per-session work log
 | `agentApproved` / `agentPending` | agent approved / registered-or-rejected (admin pending list) |
 | `userPending` / `userApproved` | user self-registered-or-rejected / approved (admin Pending registrations panel) |
 | `deviceLog` | new `device_logs` entry (lifecycle + CPU/Mem/Disk threshold crossings) |
-| `notification` | new alert raised → pushed to **one user's** room (`user:<id>`) → bell feed + badge. Persisted (`alerts` + `alert_notifications`). See `email-popup-notifications.md` |
+| `notification` | new alert raised → pushed to **one user's** room (`user:<id>`) → bell feed + badge + corner **toast** (`ToastHost`) + opt-in **OS popup** (Web Notifications API, tab-backgrounded only). Persisted (`alerts` + `alert_notifications`). See `email-popup-notifications.md` |
 | `airconStatus` | manual toggle/mode/temp change |
 | `airconAutoUpdate` | ESP32 auto IR zone change |
 | `irChannelMap` | forwarded from ESP32 on connect |

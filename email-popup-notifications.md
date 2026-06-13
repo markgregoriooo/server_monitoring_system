@@ -228,8 +228,12 @@ NOTIFY_EMAIL_TO=           # optional override (testing): force all alert emails
   `NotificationPanel` dropdown + real unread badge in `Header` (replaces the hardcoded
   `alertCount={2}`). Notifications carry the **device name**. `node --check` + `tsc` clean.
   *Live end-to-end test (agent → threshold → bell) still pending a running stack.*
-- **Phase 2 — live popup:** toast host + browser Notifications API on the `notification` event
-  (the socket event already fires; this adds the visual popup + OS notification).
+- **✅ Phase 2 — live popup (DONE):** `components/notifications/ToastHost.tsx` renders corner
+  toasts (auto-dismiss 6s, severity color, click-through, stack cap), driven by a `subscribe()`
+  API on `NotificationContext` (single socket listener, no duplication). `utils/browserNotify.ts`
+  fires an **OS popup** via the Web Notifications API — opt-in (permission prompt surfaced as
+  "Enable desktop alerts" in the bell panel), and only when the tab is **backgrounded** (a focused
+  user already sees the toast). `tsc` + `vite build` clean.
 - **Phase 3 — email (Resend):** `emailService` + `resend` dep + `.env` keys → email on
   severity-gated alerts (`notification_prefs.min_email_severity`), mark `alert_notifications.emailed=1`.
   Verify against a Resend test address first.

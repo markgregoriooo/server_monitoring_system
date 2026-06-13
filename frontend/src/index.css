@@ -91,3 +91,9 @@
     border-radius: 2px;
   }
 }
+
+/* Toast entrance (used by ToastHost via animate-[fadeIn_…]) */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

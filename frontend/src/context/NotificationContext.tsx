@@ -5,11 +5,13 @@ import {
   useState,
   useCallback,
   useMemo,
+  useRef,
 } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api/api.js";
 import { socket } from "../socket/socket.js";
 import { useAuth } from "./AuthContext.js";
+import { fireDesktopNotification } from "../utils/browserNotify.js";
 
 export type Severity = "info" | "warning" | "critical";
 
@@ -29,12 +31,17 @@ export interface AppNotification {
   sentAt: string;
 }
 
+type IncomingListener = (n: AppNotification) => void;
+
 interface NotificationContextType {
   items: AppNotification[];
   unreadCount: number;
   refresh: () => Promise<void>;
   markRead: (ids: number[]) => Promise<void>;
   markAllRead: () => Promise<void>;
+  // Subscribe to NEW (live) notifications only — for ephemeral consumers like the
+  // toast host. Returns an unsubscribe fn. Avoids a second socket listener.
+  subscribe: (fn: IncomingListener) => () => void;
 }
 
 const NotificationContext = createContext<NotificationContextType | null>(null);
@@ -45,6 +52,14 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const [items, setItems] = useState<AppNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+
+  // Live-event subscribers (toast host, etc.). A ref so subscribe/unsubscribe
+  // never re-creates the socket handler.
+  const listenersRef = useRef<Set<IncomingListener>>(new Set());
+  const subscribe = useCallback((fn: IncomingListener) => {
+    listenersRef.current.add(fn);
+    return () => { listenersRef.current.delete(fn); };
+  }, []);
 
   const refresh = useCallback(async () => {
     const res = await api.getNotifications();
@@ -71,6 +86,8 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     const onNotification = (n: AppNotification) => {
       setItems((prev) => [n, ...prev].slice(0, MAX_ITEMS));
       setUnreadCount((c) => c + 1);
+      fireDesktopNotification({ title: n.title, message: n.message, alertId: n.alertId }); // OS popup (if granted + tab hidden)
+      listenersRef.current.forEach((fn) => fn(n)); // in-app toasts, etc.
     };
     const onReconnect = () => { refresh(); };
     socket.on("notification", onNotification);
@@ -98,8 +115,8 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const value = useMemo(
-    () => ({ items, unreadCount, refresh, markRead, markAllRead }),
-    [items, unreadCount, refresh, markRead, markAllRead],
+    () => ({ items, unreadCount, refresh, markRead, markAllRead, subscribe }),
+    [items, unreadCount, refresh, markRead, markAllRead, subscribe],
   );
 
   return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;

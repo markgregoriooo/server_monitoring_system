@@ -1,44 +1,16 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useNotifications } from "../../context/NotificationContext";
-import type { AppNotification, Severity } from "../../context/NotificationContext";
-
-// Grafana status palette (see CLAUDE.md → Status Colors).
-const SEVERITY_COLOR: Record<Severity, string> = {
-  critical: "#E02F44",
-  warning: "#FF780A",
-  info: "#5794F2",
-};
-
-// Where clicking a notification takes you. All current triggers are server-side;
-// extend this as UPS / router / environment triggers land.
-function routeFor(n: AppNotification): string {
-  switch (n.type) {
-    case "cpu":
-    case "mem":
-    case "disk":
-    case "offline":
-      return "/server-metrics";
-    default:
-      return "/";
-  }
-}
-
-function relativeTime(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "";
-  const s = Math.round((Date.now() - t) / 1000);
-  if (s < 60) return "just now";
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.round(h / 24);
-  return `${d}d ago`;
-}
+import type { AppNotification } from "../../context/NotificationContext";
+import { SEVERITY_COLOR, routeFor, relativeTime } from "./notificationUtils";
+import { desktopPermission, requestDesktopPermission } from "../../utils/browserNotify";
 
 export default function NotificationPanel({ onClose }: { onClose: () => void }) {
   const { items, unreadCount, markRead, markAllRead } = useNotifications();
   const navigate = useNavigate();
+
+  // Desktop (OS) popups are opt-in: offer to enable while permission is still "default".
+  const [perm, setPerm] = useState(desktopPermission());
 
   const onItemClick = (n: AppNotification) => {
     if (!n.isRead) markRead([n.id]);
@@ -78,6 +50,22 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
           </button>
         )}
       </div>
+
+      {/* Desktop-popup opt-in (only while the browser hasn't decided yet) */}
+      {perm === "default" && (
+        <button
+          onClick={async () => setPerm(await requestDesktopPermission())}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] w-full transition-colors flex-shrink-0"
+          style={{ color: "var(--gf-accent)", borderBottom: "1px solid var(--gf-divider)" }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--gf-hover)")}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        >
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+            <path d="M8 2a5 5 0 00-5 5v3l-1 1.5h12L13 10V7a5 5 0 00-5-5z" stroke="currentColor" strokeWidth="1.3" />
+          </svg>
+          Enable desktop alerts
+        </button>
+      )}
 
       {/* List */}
       <div className="overflow-y-auto">
