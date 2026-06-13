@@ -12,6 +12,10 @@ export const handleConnection = (io, socket) => {
     airconService.getChannelConfig()
       .then(config => socket.emit("irConfig", config))
       .catch(err => console.error("[irConfig push error]", err));
+  } else if (socket.user?.id) {
+    // Browser: join a per-user room so notifications can target this user across
+    // all their open tabs (io.to(`user:<id>`).emit("notification", …)).
+    socket.join(`user:${socket.user.id}`);
   }
 
   registerEvents(io, socket);

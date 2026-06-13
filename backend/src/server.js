@@ -8,6 +8,7 @@ import { handleConnection } from "../sockets/connectionHandler.js";
 import { JWT_SECRET } from "../middleware/auth.js";
 import db from "../config/mysql.js";
 import agentService from "../services/agentService.js";
+import notificationService from "../services/notificationService.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
@@ -18,6 +19,7 @@ import airconRoutes from "../routes/aircon.js";
 import userRoutes from "../routes/users.js";
 import alertRoutes from "../routes/alerts.js";
 import reportRoutes from "../routes/reports.js";
+import notificationRoutes from "../routes/notifications.js";
 
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, //15 mins
@@ -106,6 +108,11 @@ io.use(async (socket, next) => {
 // expose io so routes can emit to the ESP32
 app.set("io", io);
 
+// Hand the notification service the live Socket.IO server once, so any trigger
+// (offline sweep, threshold checks, …) can raise + push notifications without
+// threading `io` through every call.
+notificationService.init(io);
+
 // socket connections
 io.on("connection", (socket) => {
   handleConnection(io, socket);
@@ -120,6 +127,7 @@ app.use("/api/aircon", airconRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/reports", reportRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" })
@@ -154,6 +162,14 @@ setInterval(async () => {
     for (const o of offlined) {
       io.emit("serverStatus", { id: o.id, status: "Offline" });
       if (o.log) io.emit("deviceLog", o.log);
+      // A server dropping offline is notification-worthy (bell + future email).
+      await notificationService.raiseAlert({
+        deviceId: o.id,
+        type: "offline",
+        title: "Server offline",
+        message: o.name ? `${o.name} went offline — no metrics received` : (o.log?.message || `Server ${o.id} stopped reporting`),
+        severity: "warning",
+      });
     }
   } catch (err) {
     console.error("[OFFLINE_SWEEP] error:", err);

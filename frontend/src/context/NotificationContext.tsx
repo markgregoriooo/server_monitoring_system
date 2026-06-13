@@ -1,0 +1,112 @@
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+} from "react";
+import type { ReactNode } from "react";
+import { api } from "../api/api.js";
+import { socket } from "../socket/socket.js";
+import { useAuth } from "./AuthContext.js";
+
+export type Severity = "info" | "warning" | "critical";
+
+// Mirrors the backend toClient() shape (camelCase). `id` is the per-user
+// alert_notifications row — the thing we mark read.
+export interface AppNotification {
+  id: number;
+  alertId: number;
+  deviceId: number;
+  deviceName: string | null;
+  type: string;
+  title: string;
+  message: string;
+  severity: Severity;
+  isRead: boolean;
+  createdAt: string;
+  sentAt: string;
+}
+
+interface NotificationContextType {
+  items: AppNotification[];
+  unreadCount: number;
+  refresh: () => Promise<void>;
+  markRead: (ids: number[]) => Promise<void>;
+  markAllRead: () => Promise<void>;
+}
+
+const NotificationContext = createContext<NotificationContextType | null>(null);
+
+const MAX_ITEMS = 100; // cap the in-memory feed; older history is still in the DB
+
+export function NotificationProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const [items, setItems] = useState<AppNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const refresh = useCallback(async () => {
+    const res = await api.getNotifications();
+    if (res.success && res.data) {
+      setItems(res.data.notifications ?? []);
+      setUnreadCount(res.data.unreadCount ?? 0);
+    }
+  }, []);
+
+  // Load on login / refresh-from-storage; clear on logout.
+  useEffect(() => {
+    if (!user) {
+      setItems([]);
+      setUnreadCount(0);
+      return;
+    }
+    refresh();
+  }, [user, refresh]);
+
+  // Live feed: prepend on push, and re-sync on (re)connect so a tab that was
+  // asleep/offline doesn't miss events fired while its socket was down.
+  useEffect(() => {
+    if (!user) return;
+    const onNotification = (n: AppNotification) => {
+      setItems((prev) => [n, ...prev].slice(0, MAX_ITEMS));
+      setUnreadCount((c) => c + 1);
+    };
+    const onReconnect = () => { refresh(); };
+    socket.on("notification", onNotification);
+    socket.on("connect", onReconnect);
+    return () => {
+      socket.off("notification", onNotification);
+      socket.off("connect", onReconnect);
+    };
+  }, [user, refresh]);
+
+  const markRead = useCallback(async (ids: number[]) => {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    setItems((prev) => prev.map((n) => (idSet.has(n.id) ? { ...n, isRead: true } : n))); // optimistic
+    const res = await api.markNotificationsRead(ids);
+    if (res.success && res.data) setUnreadCount(res.data.unreadCount ?? 0);
+    else refresh(); // reconcile on failure
+  }, [refresh]);
+
+  const markAllRead = useCallback(async () => {
+    setItems((prev) => prev.map((n) => ({ ...n, isRead: true }))); // optimistic
+    setUnreadCount(0);
+    const res = await api.markAllNotificationsRead();
+    if (!res.success) refresh();
+  }, [refresh]);
+
+  const value = useMemo(
+    () => ({ items, unreadCount, refresh, markRead, markAllRead }),
+    [items, unreadCount, refresh, markRead, markAllRead],
+  );
+
+  return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;
+}
+
+export function useNotifications() {
+  const ctx = useContext(NotificationContext);
+  if (!ctx) throw new Error("useNotifications must be used within NotificationProvider");
+  return ctx;
+}

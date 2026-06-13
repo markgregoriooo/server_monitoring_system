@@ -9,6 +9,7 @@ import {
 } from "react-router-dom";
 
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { NotificationProvider } from "./context/NotificationContext";
 import { roleConfig } from "./data/users";
 
 import Login from "./pages/auth/Login";
@@ -108,7 +109,6 @@ function AppShell() {
 
         <Header
           title={pageTitles[location.pathname] || "Dashboard"}
-          alertCount={2}
           onMenuToggle={() => setMobileOpen(p => !p)}
           collapsed={collapsed}
           onToggleCollapse={toggleCollapsed}
@@ -177,7 +177,9 @@ function AppShell() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppShell />
+      <NotificationProvider>
+        <AppShell />
+      </NotificationProvider>
     </AuthProvider>
   );
 }

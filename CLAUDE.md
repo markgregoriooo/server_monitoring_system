@@ -85,6 +85,7 @@ backend/services/
   permissionService.js          ← static role-based permissions
   airconService.js              ← all aircon DB logic (getAll, toggle, applyAutoIR, etc.)
   agentService.js               ← Go-agent + server-device DB logic (devices + server_specs + device_network + agent_tokens); enroll/approve/reject, offline sweep, device_logs
+  notificationService.js        ← raiseAlert() → writes `alerts` + fans out `alert_notifications` per active user + pushes `notification` to each user room; listForUser/unreadCount/markRead. `init(io)` once at startup. See `email-popup-notifications.md`
 backend/handlers/
   sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers
   querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
@@ -153,7 +154,7 @@ SESSION_NOTES.md                ← per-session work log
 
 ### Mock endpoints (still `data/db.js`, not real)
 - `routes/environment.js` GET `/history` + `/logs` return mock random data, **not** InfluxDB — real sensor history comes via Socket.IO `changeRange` → `sensorHistory`
-- `routes/alerts.js` (`alerts`, `auditLog`) and `routes/reports.js` (`reports`) serve in-memory arrays that reset on restart, even though real `alerts` / `reports` tables exist in the schema
+- `routes/alerts.js` (`alerts`, `auditLog`) and `routes/reports.js` (`reports`) serve in-memory arrays that reset on restart, even though real `alerts` / `reports` tables exist in the schema. **Note:** the new **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) does write the **real** `alerts` + `alert_notifications` tables — the bell feed is persisted (only the legacy `/api/alerts` Dashboard panel is still the mock). See `email-popup-notifications.md`.
 
 > The `reports.js` role gate is **fixed** — it now uses `requireRole("admin", "it_staff")` (previously referenced a non-existent `super_admin`, which 403'd admins).
 
@@ -185,6 +186,7 @@ SESSION_NOTES.md                ← per-session work log
 | `agentApproved` / `agentPending` | agent approved / registered-or-rejected (admin pending list) |
 | `userPending` / `userApproved` | user self-registered-or-rejected / approved (admin Pending registrations panel) |
 | `deviceLog` | new `device_logs` entry (lifecycle + CPU/Mem/Disk threshold crossings) |
+| `notification` | new alert raised → pushed to **one user's** room (`user:<id>`) → bell feed + badge. Persisted (`alerts` + `alert_notifications`). See `email-popup-notifications.md` |
 | `airconStatus` | manual toggle/mode/temp change |
 | `airconAutoUpdate` | ESP32 auto IR zone change |
 | `irChannelMap` | forwarded from ESP32 on connect |

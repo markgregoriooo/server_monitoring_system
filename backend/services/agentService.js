@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import db from "../config/mysql.js";
+import notificationService from "./notificationService.js";
 
 // ─── All Go-agent + server-device DB logic (devices + server_specs +
 //     device_network + agent_tokens). Mirrors the airconService pattern. ───────
@@ -327,8 +328,19 @@ async function checkThresholds(deviceId, metrics) {
     // …but only LOG the onset of a problem — not recoveries — to keep
     // device_logs lean (it records what matters: register, approve, incidents).
     const pct = Math.round(v);
-    if (band === "critical") events.push(await logDevice(id, "critical", `${label} critical: ${pct}%`));
-    else if (band === "warning") events.push(await logDevice(id, "warning", `${label} high: ${pct}%`));
+    if (band === "critical") {
+      events.push(await logDevice(id, "critical", `${label} critical: ${pct}%`));
+      await notificationService.raiseAlert({
+        deviceId: id, type: key, severity: "critical",
+        title: `${label} critical`, message: `${label} critical: ${pct}%`, metricValue: v,
+      });
+    } else if (band === "warning") {
+      events.push(await logDevice(id, "warning", `${label} high: ${pct}%`));
+      await notificationService.raiseAlert({
+        deviceId: id, type: key, severity: "warning",
+        title: `${label} high`, message: `${label} high: ${pct}%`, metricValue: v,
+      });
+    }
   }
 
   alertState.set(id, next);

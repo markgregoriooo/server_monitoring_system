@@ -360,6 +360,34 @@ export const api = {
     }
   },
 
+  // Notifications — the per-user bell feed.
+  getNotifications: async (limit?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/notifications", limit ? { params: { limit } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  markNotificationsRead: async (ids: number[]): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/notifications/read", { ids });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  markAllNotificationsRead: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/notifications/read", { all: true });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getAuditLog: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/alerts/audit");

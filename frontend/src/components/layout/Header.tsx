@@ -1,12 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLocation } from "react-router";
 import { useAuth } from "../../context/AuthContext";
+import { useNotifications } from "../../context/NotificationContext";
+import NotificationPanel from "../notifications/NotificationPanel";
 import { BRAND } from "../../branding";
 import { avatarUrl } from "../../utils/format";
 
 type HeaderProps = {
   title: string;
-  alertCount?: number;
   onMenuToggle?: () => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
@@ -41,10 +42,28 @@ function LivePing() {
   );
 }
 
-export default function Header({ alertCount = 0, onMenuToggle, collapsed, onToggleCollapse }: HeaderProps) {
+export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: HeaderProps) {
   const { user }    = useAuth();
+  const { unreadCount } = useNotifications();
   const location    = useLocation();
   const [section, page] = breadcrumbs[location.pathname] ?? [BRAND.name, "Dashboard"];
+
+  // Notification bell dropdown — close on outside-click or Escape.
+  const [bellOpen, setBellOpen] = useState(false);
+  const bellRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!bellOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (bellRef.current && !bellRef.current.contains(e.target as Node)) setBellOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setBellOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [bellOpen]);
 
   // Live clock, pinned to Philippine time regardless of the viewer's machine zone.
   const [clock, setClock] = useState(() => new Date());
@@ -111,23 +130,30 @@ export default function Header({ alertCount = 0, onMenuToggle, collapsed, onTogg
           {now}
         </span>
 
-        {/* Notification bell */}
-        <button className="relative transition-colors"
-          style={{ color: "var(--gf-text-muted)" }}
-          onMouseEnter={e => (e.currentTarget.style.color = "var(--gf-text-primary)")}
-          onMouseLeave={e => (e.currentTarget.style.color = "var(--gf-text-muted)")}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M8 2a5 5 0 00-5 5v3l-1 1.5h12L13 10V7a5 5 0 00-5-5z"
-              stroke="currentColor" strokeWidth="1.3"/>
-            <path d="M6.5 13.5a1.5 1.5 0 003 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-          </svg>
-          {alertCount > 0 && (
-            <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full text-white flex items-center justify-center"
-              style={{ background: "#F2495C", fontSize: 7, fontWeight: 700 }}>
-              {alertCount}
-            </span>
-          )}
-        </button>
+        {/* Notification bell + dropdown */}
+        <div className="relative" ref={bellRef}>
+          <button
+            onClick={() => setBellOpen(o => !o)}
+            aria-label="Notifications"
+            aria-expanded={bellOpen}
+            className="relative transition-colors flex items-center"
+            style={{ color: bellOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)" }}
+            onMouseEnter={e => (e.currentTarget.style.color = "var(--gf-text-primary)")}
+            onMouseLeave={e => (e.currentTarget.style.color = bellOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)")}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M8 2a5 5 0 00-5 5v3l-1 1.5h12L13 10V7a5 5 0 00-5-5z"
+                stroke="currentColor" strokeWidth="1.3"/>
+              <path d="M6.5 13.5a1.5 1.5 0 003 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+            {unreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[14px] h-3.5 px-0.5 rounded-full text-white flex items-center justify-center"
+                style={{ background: "#F2495C", fontSize: 7, fontWeight: 700 }}>
+                {unreadCount > 99 ? "99+" : unreadCount}
+              </span>
+            )}
+          </button>
+          {bellOpen && <NotificationPanel onClose={() => setBellOpen(false)} />}
+        </div>
 
         {/* User avatar — clicking handled in Sidebar ProfileModal */}
         {user && (
