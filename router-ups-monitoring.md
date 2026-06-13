@@ -2,13 +2,24 @@
 
 Monitoring for the two remaining server-room data sources in the architecture diagram:
 **(C) other routers** (the non-MikroTik network gear) and **(D) UPS units**. Both are read
-**over the LAN** — nothing is installed *on* the device — using **SNMP** as the primary
-technique, with **NUT** as the fallback for UPS units that only expose USB/serial.
+**over the LAN via SNMP** — nothing is installed *on* the device.
 Branch: `router-ups-monitoring`.
 
-> 🧭 **Status: DESIGN / PLAN — not yet implemented.** This file is the blueprint we build
-> against. MikroTik router monitoring (data source **B**) is explicitly **out of scope here**
-> and handled separately. Code sections below describe the *intended* files; they don't exist yet.
+> ⚠️ **SNMP-only (no NUT).** A UPS must have a **network / SNMP card** to be monitored — a
+> USB-/serial-only UPS is **out of scope** (it would need an SNMP card added first). Routers
+> still use **ICMP ping** as a complement for reachability / latency / packet-loss — that's not
+> a separate stack, just a ping.
+
+> ✅ **Scope (confirmed with client):** UPS monitoring is **monitor-and-alert only** — the
+> system never takes automated action on a power event (no automatic server shutdown). It
+> observes, records to InfluxDB, and raises alerts; humans decide what to do.
+
+> 🧭 **Status: IMPLEMENTED (poller + APIs + pages) — seeding pending.** The poller, handlers,
+> read routes, and the two dashboard pages are built (`node --check` / `tsc` clean; see §8 /
+> SESSION_NOTES SESSION 10). What's left is **registering the real devices** — the
+> `migrations/2026-06-12_router_ups_devices.sql` template, blocked on the §10 device facts — and
+> a live end-to-end test against a real SNMP target. MikroTik router monitoring (data source
+> **B**) is explicitly **out of scope here** and handled separately.
 
 > 📖 **New to this?** Read §1–§3 for the concept and the one decision that drives everything,
 > then §4 (what we read) and §5 (how it fits the current system).
@@ -38,33 +49,33 @@ already works — except this is a **pull** (we poll) rather than a **push** (th
 | | C — Other routers | D — UPS |
 |---|---|---|
 | **What** | non-MikroTik managed routers/switches in the room | UPS units protecting the racks |
-| **Primary method** | **SNMP** (IF-MIB / MIB-II — standardized across vendors) | **SNMP** via the UPS-MIB (RFC 1628) — *if* it has a network card |
-| **Fallback** | **ICMP ping** (reachability + latency + packet loss) when SNMP is absent | **NUT** (Network UPS Tools) over USB/serial when there's no network card |
+| **Method** | **SNMP** (IF-MIB / MIB-II — standardized across vendors) | **SNMP** via the UPS-MIB (RFC 1628) — **requires a network / SNMP card** |
+| **If no SNMP** | **ICMP ping** (reachability + latency + packet loss) | **not supported** — a USB-only UPS needs an SNMP card added first |
 | **Poll interval** | ~60 s | ~60 s |
 
 ---
 
 ## 3. The one decision that drives everything: **how does the device connect?**
 
-Before writing any code, look at the actual hardware. This single question decides the path,
-and it's already modeled in `ups_details.communication_type ENUM('usb','snmp','serial','network')`.
+Before writing any code, look at the actual hardware. This single question decides the path.
+(`ups_details.communication_type` records it; under SNMP-only we use `'snmp'` / `'network'`.)
 
 ```
 Router (C)                              UPS (D)
   │                                       │
-  ├─ has SNMP? (managed gear usually      ├─ has an Ethernet port / network card?
+  ├─ has SNMP? (managed gear usually      ├─ has an Ethernet port / SNMP card?
   │  does — check its web UI →            │   │
-  │  "SNMP" settings page)                │   ├─ YES → SNMP, UPS-MIB (RFC 1628)  ── same poller as C
+  │  "SNMP" settings page)                │   ├─ YES → SNMP, UPS-MIB (RFC 1628) ── same poller as C
   │   │                                   │   │
-  │   ├─ YES → SNMP poller (IF-MIB)       │   └─ NO (USB/serial only) → NUT on a
-  │   │                                   │         nearby host (Pi or the server),
-  │   └─ NO  → ICMP ping only             │         queried over TCP 3493 — or the
-  │           (up/down + loss)            │         existing Go agent runs `upsc` and
-  │                                       │         POSTs it like server metrics
+  │   ├─ YES → SNMP poller (IF-MIB)       │   └─ NO (USB/serial only) → NOT SUPPORTED
+  │   │                                   │         (add an SNMP/network card to monitor it)
+  │   └─ NO  → ICMP ping only             │
+  │           (up/down + loss)            │
 ```
 
-**Recommendation:** make the **SNMP poller the one primary path** (covers all of C, plus any
-UPS with a network card), and treat **NUT** purely as the UPS fallback for USB-only units.
+**Recommendation:** one **SNMP poller** is the whole feature — it covers every router (with
+ICMP ping filling in for unmanaged ones) and every UPS that has a network card. Confirm each
+UPS has an SNMP card during requirements; a USB-only unit can't be monitored without one.
 
 ---
 
@@ -118,12 +129,66 @@ The data model is **already there** — this feature mostly fills in services + 
 
 New pieces:
 
-- **InfluxDB measurements:** `network_metrics` (per-interface throughput, status) and
-  `ups_metrics` (battery %, runtime, load, voltages, on-battery) — tagged by `device_id`,
-  matching the `server_metrics` convention so history queries reuse the same Flux shape.
 - **Socket.IO:** `networkMetrics` / `upsMetrics` broadcasts on each poll (like `serverMetrics`);
   `deviceLog` reused for threshold crossings (e.g. UPS on battery, interface down).
 - **Pull, not push:** unlike the Go agent (push), the poller *initiates* every read on a timer.
+
+### InfluxDB measurements
+
+Three measurements, tagged by the **stable** `device_id` (the permanent join key — a rename
+starts a new series, so don't rename; resolve display names from MySQL). `network_traffic` and
+`router_metrics` are shared by **both** collectors — the SNMP poller (non-MikroTik) *and* the
+RouterOS API path (MikroTik) write the same shapes.
+
+```
+network_traffic   ── per-interface, 60s ─────────────────────────────────────────
+  Tags:   device_id, device_name, interface_name, location_label
+  Fields: rx_bytes(uinteger)      CUMULATIVE Counter64 (ifHCInOctets) — rate at query time
+          tx_bytes(uinteger)      CUMULATIVE Counter64 (ifHCOutOctets)
+          rx_errors(uinteger)     CUMULATIVE counter
+          tx_errors(uinteger)     CUMULATIVE counter
+          link_up(boolean)
+          utilization_pct(float)  precomputed gauge (rate ÷ link speed)
+
+router_metrics    ── per-device, 60s (also covers ping-only / unmanaged routers) ─
+  Tags:   device_id, device_name, device_type
+  Fields: cpu_percent(float)         vendor MIB — only where the device exposes it
+          mem_percent(float)         vendor MIB
+          uptime_seconds(float)
+          latency_ms(float)          device-level ICMP
+          packet_loss_pct(float)     device-level ICMP
+          reachable(boolean)         ICMP up/down — the one metric a no-SNMP router still gives
+          connected_clients(integer) device-level; optional
+
+ups_metrics       ── per-device, 60s ────────────────────────────────────────────
+  Tags:   device_id, device_name, location, communication_type
+  Fields: battery_charge_pct(float)   runtime_remaining_min(float)   load_pct(float)
+          input_voltage(float)        output_voltage(float)          battery_voltage(float)
+          on_battery(boolean)         temperature(float — only if the UPS reports it)
+```
+
+**Why cumulative byte/error counters, not pre-computed rates?** It's the Telegraf/LibreNMS/
+Prometheus convention and matches the existing `server_metrics.net_bytes_*`. Cumulative is
+**lossless** (re-window any rate later) and **survives missed polls** (the derivative uses real
+elapsed time). Two rules: use the **64-bit** counters (`ifHCInOctets`, not Counter32 — it wraps
+in seconds on a gigabit link), and type them **uinteger**, *not float* (a 64-bit octet counter
+exceeds float64's ~4.5×10¹⁵ safe-integer range and would lose precision). InfluxDB pins a
+field's type on first write, so lock these in up front (this is also why `link_up` is `boolean`,
+consistent with `on_battery`).
+
+Derive throughput from the counters at query time:
+
+```flux
+from(bucket: "monitoring")
+  |> range(start: -1h)
+  |> filter(fn: (r) => r._measurement == "network_traffic" and r._field == "rx_bytes")
+  |> filter(fn: (r) => r.device_id == "12")
+  |> derivative(unit: 1s, nonNegative: true)   // → bytes/sec; nonNegative resets the spike on reboot/wrap
+```
+
+(`×8` for bits/sec.) When writing from `@influxdata/influxdb-client`, the `uinteger`/`integer`
+fields must use `point.uintField(...)` / `point.intField(...)` — `floatField` would store the
+wrong type and break the pinned schema.
 
 ---
 
@@ -136,27 +201,25 @@ backend startup
 snmpPollerService  ── every ~60s, for each device ───────────────────────────────
    │  1. SNMP GET/walk the device's OID set (net-snmp)
    │       routers → IF-MIB        UPS → UPS-MIB (RFC 1628)
-   │  2. for counters, diff against the previous sample → rates (B/s, % util)
-   │  3. write point → InfluxDB (network_metrics | ups_metrics), tag device_id
+   │  2. counters (rx/tx bytes, errors) are written cumulative; utilization_pct is
+   │       computed from the delta vs the previous sample (see §5)
+   │  3. write point → InfluxDB (network_traffic / router_metrics | ups_metrics), tag device_id
    │  4. broadcast latest → Socket.IO (networkMetrics | upsMetrics)
    │  5. evaluate thresholds → device_logs + deviceLog event
    ▼
 (unreachable device → mark offline, emit serverStatus-style event, skip stale values)
 ```
 
-**NUT fallback (USB-only UPS):** run NUT on a host physically next to the UPS (a Raspberry Pi
-or the same server the Go agent runs on); the UPS connects by USB and NUT exposes it on TCP
-**3493**. Either the poller queries NUT over 3493, or — simpler — the **existing Go agent runs
-`upsc <ups>` and POSTs the values** through the metric pipeline it already has, so no new
-ingest path is needed.
+**UPS path:** the same `snmpPollerService` polls each UPS over SNMP using the UPS-MIB
+(RFC 1628) — no separate ingest path. A UPS without a network/SNMP card can't be monitored
+(SNMP-only); flag those during requirements so an SNMP card can be added.
 
 ---
 
 ## 7. Library & config (planned)
 
 - **Backend dependency:** [`net-snmp`](https://www.npmjs.com/package/net-snmp) — pure-JS SNMP
-  client; supports v2c and v3, GET / GETNEXT / walk. (NUT path adds nothing to `package.json` —
-  it shells out to `upsc` or speaks the NUT TCP protocol.)
+  client; supports v2c and v3, GET / GETNEXT / walk. (No other dependency — SNMP-only.)
 - **SNMP version:** **v2c** is simplest (a shared *community string*, but sent in cleartext —
   acceptable on a trusted management LAN). **v3** adds per-user auth + encryption; prefer it if
   the gear supports it and the LAN isn't fully trusted.
@@ -165,24 +228,24 @@ ingest path is needed.
 
 ```
 SNMP_POLL_INTERVAL_MS=60000   # default poll cadence for the router/UPS poller
-NUT_HOST=                     # host:port running upsd (blank = NUT path disabled)
 ```
 
 ---
 
 ## 8. Planned files
 
-| File | Role |
-|---|---|
-| `backend/services/snmpPollerService.js` | the poll loop: load devices, SNMP GET/walk, diff counters, write InfluxDB, broadcast, thresholds |
-| `backend/services/snmpClient.js` | thin `net-snmp` wrapper (GET/walk, v2c/v3, timeouts, OID maps for IF-MIB + UPS-MIB) |
-| `backend/handlers/networkMetricsHandler.js` | shape a router sample → InfluxDB `network_metrics` + `networkMetrics` broadcast |
-| `backend/handlers/upsMetricsHandler.js` | shape a UPS sample → InfluxDB `ups_metrics` + `upsMetrics` broadcast |
-| `backend/routes/network.js` | `GET /api/network`, `GET /api/network/:id/history` (Flux on `network_metrics`) |
-| `backend/routes/ups.js` | `GET /api/ups`, `GET /api/ups/:id/history` |
-| `frontend/src/pages/NetworkMonitoring.tsx` | router list + per-interface throughput/status (Grafana `--gf-*` tokens) |
-| `frontend/src/pages/UpsMonitoring.tsx` | UPS battery %, runtime, load, on-battery banner |
-| migration | register `router`/`ups` devices + their `device_network` / `ups_details` rows; add `network_interfaces` seed |
+| File | Role | Status |
+|---|---|---|
+| `backend/services/snmpClient.js` | thin `net-snmp` wrapper (GET/walkColumn, v2c, timeouts, OID maps for IF-MIB + UPS-MIB) | ✅ built (loopback-verified) |
+| `backend/services/snmpPollerService.js` | poll loop: load devices, SNMP GET/walk, diff counters, write InfluxDB, broadcast, thresholds; + list reads | ✅ built |
+| `backend/handlers/networkMetricsHandler.js` | router sample → InfluxDB `network_traffic` (per-interface) + `router_metrics` + `networkMetrics` broadcast | ✅ built |
+| `backend/handlers/upsMetricsHandler.js` | UPS sample → InfluxDB `ups_metrics` + `upsMetrics` broadcast | ✅ built |
+| `backend/handlers/networkHistoryHandler.js` / `upsHistoryHandler.js` | Flux history (throughput / battery+load) | ✅ built |
+| `backend/routes/network.js` | `GET /api/network`, `/:id/history`, `/:id/logs` | ✅ built |
+| `backend/routes/ups.js` | `GET /api/ups`, `/:id/history`, `/:id/logs` | ✅ built |
+| `frontend/src/pages/NetworkMonitoring.tsx` | router list + per-interface throughput/status (Grafana `--gf-*` tokens) | ✅ built |
+| `frontend/src/pages/UpsMonitoring.tsx` | UPS battery %, runtime, load, on-battery banner | ✅ built |
+| `migrations/2026-06-12_router_ups_devices.sql` | register `router`/`ups` devices + `device_network` / `ups_details` / `network_interfaces` | ⏳ template — needs §10 device facts |
 
 ---
 
@@ -192,40 +255,50 @@ NUT_HOST=                     # host:port running upsd (blank = NUT path disable
 string; v3: create a read-only user). Note the **community string / credentials** and confirm
 UDP **161** is reachable from the backend host. Add a `devices` + `device_network` row.
 
-**UPS (D) with a network card:** enable **SNMP** on the UPS's network management card, set a
-read-only community, and confirm it answers the UPS-MIB (`snmpwalk -v2c -c <community> <ip>
-1.3.6.1.2.1.33`). Add `devices` + `device_network` + `ups_details(communication_type='snmp')`.
-
-**UPS (D) USB-only:** install **NUT** on the nearby host, configure the driver for the model
-(`usbhid-ups` covers most), verify with `upsc <ups>@localhost`, then either point the poller at
-`NUT_HOST` or have the Go agent POST `upsc` output. Set `communication_type='usb'`.
+**UPS (D):** enable **SNMP** on the UPS's network management card, set a read-only community,
+and confirm it answers the UPS-MIB (`snmpwalk -v2c -c <community> <ip> 1.3.6.1.2.1.33`). Add
+`devices` + `device_network` + `ups_details(communication_type='snmp')`. *(A UPS with no
+network/SNMP card can't be monitored — it needs an SNMP card added first.)*
 
 > 🔎 **Quick probe before coding anything:** from the backend host run
 > `snmpwalk -v2c -c <community> <device-ip>` (install net-snmp tools). If it returns a tree, SNMP
-> works and we know the exact OIDs the device supports; if it times out, that device needs the
-> ping-only (router) or NUT (UPS) fallback.
+> works and we know the exact OIDs the device supports; if it times out, a router falls back to
+> ping-only, and a UPS can't be monitored until it has an SNMP/network card.
 
 ---
 
 ## 10. Open questions / decisions needed
 
-1. **Actual device models?** The router and UPS make/model decide SNMP-vs-ping (router) and
-   SNMP-vs-NUT (UPS), and which vendor MIB (if any) gives CPU/mem.
-2. **Does the UPS have an Ethernet port / network management card,** or only USB/serial?
-3. **SNMP v2c or v3?** (Is the management LAN trusted enough for a cleartext community string?)
-4. **Where does NUT run** if needed — a dedicated Raspberry Pi, or co-located with the Go agent?
-5. **Alerting** — reuse the existing `device_logs` / `deviceLog` threshold path, or build proper
+1. **Actual device models?** The router make/model decides SNMP-vs-ping and which vendor MIB
+   (if any) exposes CPU/mem.
+2. **Does each UPS have a network / SNMP card?** *(Required — a USB-/serial-only UPS can't be
+   monitored under SNMP-only; it needs an SNMP card added first.)*
+3. **SNMP v2c or v3?** — *settled by the schema:* `device_network` only stores a community
+   string + port (no v3 auth/priv columns), so the implementation is **v2c**. v3 would need a
+   follow-up migration to add credential columns + the `snmpClient` v3 branch. (Use a read-only
+   community on a trusted management LAN.)
+4. **Alerting** — reuse the existing `device_logs` / `deviceLog` threshold path, or build proper
    `alert_rules` rows for "UPS on battery" / "interface down"?
+
+> 📋 **Collecting these from the client:** Q1/Q2 (UPS SNMP cards), Q6-equivalent (managed routers),
+> Q9 (firewall/UDP 161), plus per-device IP/model/community, are gathered via
+> **`router-ups-client-questionnaire.md`** (and a Word `.docx` version) — a plain-language form for
+> the CSPC-ICTU team. Their answers fill in `migrations/2026-06-12_router_ups_devices.sql`.
 
 ---
 
 ## 11. Status & next steps
 
-- **Done:** design captured here; data model already supports it; SNMP poller box exists in the
-  architecture diagram.
-- **Not started:** `net-snmp` poller service, InfluxDB measurements, routes, frontend pages, NUT
-  fallback, migration to register the devices.
-- **Blocked on:** the device facts in §10 (models + connectivity) — answer those and the first
-  build target is `snmpPollerService.js` + `snmpClient.js` against one real router via `snmpwalk`.
+- **Done:** the whole pipeline — `snmpClient` + `snmpPollerService` + the metric/history
+  handlers + `/api/network` & `/api/ups` routes + the two Grafana dashboard pages. Verified
+  `node --check` / `tsc` clean. `network_traffic` / `router_metrics` / `ups_metrics` written as
+  designed (§5). New socket events `networkMetrics` / `upsMetrics` / `networkStatus` /
+  `upsStatus`; env `SNMP_POLL_INTERVAL_MS` (default 60s). **v2c** (per §10 Q3).
+- **Scope confirmed (client):** UPS = **monitor-and-alert only**, no automated server shutdown.
+- **Not started / blocked:** the **seed migration** (`migrations/2026-06-12_router_ups_devices.sql`
+  is a fill-in template) — blocked on the §10 device facts (Q1 UPS SNMP cards, Q6 managed
+  routers, Q9 firewall). Also: a **live end-to-end test** against a real SNMP target (needs MySQL
+  + InfluxDB + seeded devices + a reachable router/UPS), and an **ICMP-ping fallback module** for
+  unmanaged/no-community routers (currently skipped, returned `monitored:false`).
 - See `CLAUDE.md` (architecture + data stores) and the architecture diagram (data sources C, D)
   for the broader context.

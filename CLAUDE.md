@@ -38,6 +38,7 @@ INFLUX_TOKEN=
 INFLUX_ORG=
 INFLUX_BUCKET=
 AGENT_INSTALL_KEY= # shared key the Go agents present at enrollment (POST /api/agents/register)
+SNMP_POLL_INTERVAL_MS= # router/UPS SNMP poll cadence; blank = 60000 (60s). Per-device community/port live in device_network, not here
 WEB_ORIGIN=        # allowed dashboard origins, comma-separated — or * for any (roaming LAN); blank = localhost+LAN default
 GOOGLE_CLIENT_ID=       # Google OAuth web client ID (public). Login verifies ID tokens against it. Must match frontend VITE_GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=   # Google OAuth web client SECRET. Required: the auth-code flow exchanges the code server-side
@@ -67,11 +68,13 @@ Still hardcoded (firmware only): `iot/esp32/env_monitor_v2.ino` — `host`, `por
 
 Server room environment monitoring system for CSPC-ICTU.  
 ESP32 (DHT11 + 2× MQ-2 + IR TX array + RGB LED) → Node.js + Socket.IO → React dashboard.
+Three ingest paths: ESP32 (push, Socket.IO), Go agents (push, HTTP), and an SNMP
+poller (**pull** — routers via IF-MIB, UPS via UPS-MIB). See `router-ups-monitoring.md`.
 
 ### Tech Stack
-- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, resend (alert email)
+- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, resend (alert email), net-snmp
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS, JetBrains Mono font
-- **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment **and** server-metric time-series)
+- **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment, server-metric, **and** router/UPS time-series)
 - **Hardware:** ESP32, DHT11, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×4, DS3231 RTC (optional)
 
 ---
@@ -95,12 +98,18 @@ backend/services/
   alertsService.js              ← alert LIFECYCLE (shared, not per-user): list/acknowledge/resolve/openCount + auto-resolve when a metric recovers (called from checkThresholds + sensorHandler); broadcasts `alertUpdated`; `init(io)` once. Backs the now-real `routes/alerts.js`. Distinct from the per-user bell (`alert_notifications.is_read`)
   alertRulesService.js          ← configurable alert thresholds (`alert_rules`). In-memory cache (reload on startup + every mutation) + `getEffectiveRules(deviceId, metric)` resolver (per-server override else global `device_id=NULL`) + `nextBand()` hysteresis-aware evaluation + admin CRUD. Rules-only: no matching rule = no alert. metric_name: cpu/mem/disk + temperature/gas/humidity. See `email-popup-notifications.md`
   emailService.js               ← Resend wrapper: sendAlertEmail(to, alert) (inline-styled HTML). No-op if RESEND_API_KEY unset. NOTIFY_EMAIL_TO forces all mail to one address (testing)
+  snmpClient.js                 ← thin net-snmp wrapper: standard OID maps (IF-MIB/UPS-MIB), v2c session, get/walkColumn, value normalize (Counter64→BigInt)
+  snmpPollerService.js          ← router/UPS poll loop (load devices → SNMP collect → counter diff → handlers → status/threshold logs); + getNetworkDevices/getUpsDevices reads
 backend/handlers/
   sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers + raises per-metric room-level alerts (temperature/gas/humidity) on band escalation, evaluated against `alert_rules` (alertRulesService) — replaces the old firmware-status escalation
   querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
   offlineDataHandler.js         ← SD card batch flush from ESP32
   serverMetricsHandler.js       ← agent metric POST → InfluxDB (`server_metrics`) + broadcast `serverMetrics`
   serverHistoryHandler.js       ← Flux query on `server_metrics` for GET /api/servers/:id/history
+  networkMetricsHandler.js      ← router sample → InfluxDB (`router_metrics` + per-iface `network_traffic`) + broadcast `networkMetrics`
+  upsMetricsHandler.js          ← UPS sample → InfluxDB (`ups_metrics`) + broadcast `upsMetrics`
+  networkHistoryHandler.js      ← Flux on `network_traffic` (derived throughput) for GET /api/network/:id/history
+  upsHistoryHandler.js          ← Flux on `ups_metrics` for GET /api/ups/:id/history
 backend/sockets/connectionHandler.js  ← all socket events, device vs browser segregation
 backend/data/db.js              ← in-memory mock: alerts, reports, environment history — NOT persisted (servers are now real: MySQL + InfluxDB)
 backend/middleware/
@@ -139,8 +148,10 @@ SESSION_NOTES.md                ← per-session work log
 | Users, system_logs | MySQL | fully implemented |
 | Devices, aircon_state, aircon_logs | MySQL | fully implemented |
 | Servers (devices + server_specs + device_network + agent_tokens), device_logs | MySQL | fully implemented — Go-agent enrollment |
+| Routers/UPS (devices + device_network + ups_details + network_interfaces) | MySQL | SNMP poller; **devices seeded via `migrations/2026-06-12_router_ups_devices.sql`** (template — needs real device facts) |
 | Environment time-series | InfluxDB | measurement: `sensor_environment`, precision: ms |
 | Server-metric time-series | InfluxDB | measurement: `server_metrics` |
+| Router/UPS time-series | InfluxDB | measurements: `network_traffic` (per-iface, cumulative uint counters), `router_metrics`, `ups_metrics` — tagged by `device_id` |
 | **alerts, reports, environment history/logs** | `data/db.js` in-memory | **mock — not persisted**, resets on restart (`/api/alerts`, `/api/reports`, `/api/environment`) |
 
 ---
@@ -157,7 +168,7 @@ SESSION_NOTES.md                ← per-session work log
 | Role | DB value | Access |
 |------|----------|--------|
 | Admin | `admin` | all pages + user management (approves registrations) + alert rules (configurable thresholds) |
-| IT Staff | `it_staff` | dashboard, server metrics, environment, aircon, **alerts (acknowledge/resolve)**, history, reports |
+| IT Staff | `it_staff` | dashboard, server metrics, network, ups, environment, aircon, **alerts (acknowledge/resolve)**, history, reports |
 
 > Login no longer uses passwords. `users.hash_password` is now nullable; `users.status` gained `pending`/`rejected`; new columns `google_sub` + `auth_provider`. The User Management "Add User"/"Reset PW" and Profile "Change Password" UIs are now vestigial.
 
@@ -195,6 +206,9 @@ SESSION_NOTES.md                ← per-session work log
 | `serverMetrics` | on each Go agent metric POST (~10s/host) — see `server-metrics.md` |
 | `serverStatus` | offline sweep flips a stale server → `{ id, status: "Offline" }` |
 | `serverRemoved` | admin removes a server → `{ id }` |
+| `networkMetrics` | on each router SNMP poll (~60s) → `{ device }` (interfaces, utilization, uptime) |
+| `upsMetrics` | on each UPS SNMP poll (~60s) → `{ ups }` (battery %, runtime, load, on-battery) |
+| `networkStatus` / `upsStatus` | poller marks a router/UPS unreachable → `{ id, status: "Offline" }` |
 | `agentApproved` / `agentPending` | agent approved / registered-or-rejected (admin pending list) |
 | `userPending` / `userApproved` | user self-registered-or-rejected / approved (admin Pending registrations panel) |
 | `deviceLog` | new `device_logs` entry (lifecycle + CPU/Mem/Disk threshold crossings) |
@@ -285,7 +299,7 @@ Panel border-radius: `2px` (not `rounded-xl`). Font: `'JetBrains Mono', monospac
 ### Page Style Status
 | Page | Style |
 |------|-------|
-| Dashboard, Environment, AirConditioner, ServerMetrics, AlertRules, Alerts, Sidebar, Header | ✅ Grafana tokens |
+| Dashboard, Environment, AirConditioner, ServerMetrics, AlertRules, Alerts, NetworkMonitoring, UpsMonitoring, Sidebar, Header | ✅ Grafana tokens |
 | History, Reports, Settings, UserManagement | ⚠️ still use old `slate-*` classes |
 | ServerDetail | hybrid: `slate-*` base + `dark:` overrides (light/dark adapted, not `--gf-*`) |
 

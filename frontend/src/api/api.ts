@@ -260,6 +260,62 @@ export const api = {
     }
   },
 
+  // Network monitoring — routers/switches via SNMP (IF-MIB)
+  getNetworkDevices: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/network");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getNetworkHistory: async (id: number, range: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/network/${id}/history`, { params: { range } });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getNetworkLogs: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/network/${id}/logs`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // UPS monitoring — battery/load via SNMP (UPS-MIB / RFC 1628)
+  getUpsDevices: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/ups");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getUpsHistory: async (id: number, range: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/ups/${id}/history`, { params: { range } });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getUpsLogs: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/ups/${id}/logs`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getEnvHistory: async (count: number = 20): Promise<ApiResult> => {
     try {
       const res = await apiClient.get(`/environment/history?count=${count}`);

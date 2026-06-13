@@ -1,0 +1,90 @@
+import { writeClient, Point } from "../config/influx.js";
+
+// ─── Router/switch sample → InfluxDB + Socket.IO ──────────────────────────────
+//
+// Called by snmpPollerService once per reachable router each poll cycle. Mirrors
+// serverMetricsHandler: shape → write Influx → flush → broadcast. Two measurements
+// per device: one `router_metrics` point (per-device) + one `network_traffic`
+// point per interface. The byte/error counters are written CUMULATIVE as uinteger
+// (Counter64 BigInts) — rate is derived at query time (design doc §5). Never
+// throws: an Influx outage logs and still broadcasts so the dashboard stays live.
+
+// sample = {
+//   reachable, uptimeSeconds, cpuPercent|null, memPercent|null,
+//   latencyMs|null, packetLossPct|null, connectedClients|null,
+//   interfaces: [{ name, locationLabel, rxBytes(BigInt), txBytes(BigInt),
+//                  rxErrors(number), txErrors(number), linkUp(bool), utilizationPct|null }]
+// }
+export async function writeNetworkSample(io, device, sample) {
+  const ts = new Date(); // server-side ms precision (matches the other handlers)
+
+  // ---- Write to InfluxDB ----
+  try {
+    const rm = new Point("router_metrics")
+      .tag("device_id", String(device.id))
+      .tag("device_name", device.name ?? "")
+      .tag("device_type", device.type ?? "router")
+      .booleanField("reachable", sample.reachable !== false)
+      .floatField("uptime_seconds", Number(sample.uptimeSeconds ?? 0));
+    // CPU/mem come from vendor MIBs (non-standard) — only written where collected.
+    if (sample.cpuPercent != null) rm.floatField("cpu_percent", Number(sample.cpuPercent));
+    if (sample.memPercent != null) rm.floatField("mem_percent", Number(sample.memPercent));
+    if (sample.latencyMs != null) rm.floatField("latency_ms", Number(sample.latencyMs));
+    if (sample.packetLossPct != null) rm.floatField("packet_loss_pct", Number(sample.packetLossPct));
+    if (sample.connectedClients != null) rm.intField("connected_clients", Math.trunc(sample.connectedClients));
+    rm.timestamp(ts);
+    writeClient.writePoint(rm);
+
+    for (const i of sample.interfaces ?? []) {
+      const p = new Point("network_traffic")
+        .tag("device_id", String(device.id))
+        .tag("device_name", device.name ?? "")
+        .tag("interface_name", i.name ?? "")
+        .tag("location_label", i.locationLabel ?? "")
+        // uinteger, NOT float — a 64-bit octet counter exceeds float64 safe range.
+        .uintField("rx_bytes", i.rxBytes ?? 0)
+        .uintField("tx_bytes", i.txBytes ?? 0)
+        .uintField("rx_errors", i.rxErrors ?? 0)
+        .uintField("tx_errors", i.txErrors ?? 0)
+        .booleanField("link_up", Boolean(i.linkUp));
+      if (i.utilizationPct != null) p.floatField("utilization_pct", Number(i.utilizationPct));
+      p.timestamp(ts);
+      writeClient.writePoint(p);
+    }
+    await writeClient.flush();
+  } catch (err) {
+    console.error("[NETWORK_METRICS] InfluxDB error:", err);
+    // fall through — still broadcast so the UI stays live
+  }
+
+  // ---- Broadcast camelCase to dashboards (BigInts → strings: JSON can't carry BigInt) ----
+  try {
+    io?.emit("networkMetrics", {
+      device: {
+        id: device.id,
+        name: device.name,
+        ip: device.ip,
+        type: device.type ?? "router",
+        location: device.location,
+        status: "Online",
+        reachable: sample.reachable !== false,
+        uptimeSeconds: sample.uptimeSeconds ?? null,
+        cpuPercent: sample.cpuPercent ?? null,
+        memPercent: sample.memPercent ?? null,
+        interfaces: (sample.interfaces ?? []).map((i) => ({
+          name: i.name,
+          locationLabel: i.locationLabel ?? "",
+          linkUp: Boolean(i.linkUp),
+          utilizationPct: i.utilizationPct ?? null,
+          rxBytes: i.rxBytes != null ? String(i.rxBytes) : null,
+          txBytes: i.txBytes != null ? String(i.txBytes) : null,
+        })),
+        timestamp: ts.toISOString(),
+      },
+    });
+  } catch (err) {
+    console.error("[NETWORK_METRICS] emit error:", err);
+  }
+}
+
+export default { writeNetworkSample };

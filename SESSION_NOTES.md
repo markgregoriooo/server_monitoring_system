@@ -1097,3 +1097,89 @@ enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
 
 ---
 
+## SESSION 11 — 2026-06-12
+**Branch:** `router-ups-monitoring`
+**Developer:** Mark Gregorio
+
+> Built the **Router & UPS SNMP monitoring** feature from the existing design doc
+> (`router-ups-monitoring.md`, committed earlier on this branch). One **pull**-based SNMP
+> poller covers both classes (routers via IF-MIB, UPS via UPS-MIB / RFC 1628) — the mirror of
+> the push-based Go agents. Built in increments, each verified without real hardware via a
+> loopback SNMP simulator. **Increments 1–4 done; Increment 5 (seed migration) is a template
+> blocked on the device facts.**
+
+### Key schema finding — v2c only
+- `device_network` stores `snmp_community` + `snmp_port` but has **no v3 columns** (no auth
+  user/protocol/priv), so the DB models **SNMP v2c only**. The design's "v2c or v3?" open
+  question is settled by the schema: v2c now; v3 needs a follow-up migration. `snmpClient` has a
+  single marked v3 extension point.
+
+### Increment 1 — `snmpClient.js` (thin net-snmp wrapper)
+- New dep **`net-snmp@3.26.3`** (the only new backend dep — SNMP-only). `services/snmpClient.js`:
+  **standard** OID maps (MIB-II system, IF-MIB, UPS-MIB), v2c session open/close, `get`,
+  `walkColumn`, value normalize (OctetString→string, **Counter64→BigInt** precision-safe).
+- OIDs are IETF/IANA constants (same on every vendor) — **not** mock like the IR NEC codes.
+  Defaults (`161`, `"public"`, timeouts) are real, overridden per-device from `device_network`.
+- **Verified live** on a loopback net-snmp agent: get + walkColumn + Counter64 BigInt + UPS decode.
+
+### Increment 2 — poller + handlers + simulator
+- `services/snmpPollerService.js`: `loadDevices` (routers/ups + connection info), pure
+  `collectRouter`/`collectUps` collectors (SNMP→sample, no DB/Influx), per-interface
+  utilization from the counter delta, status flips (poll IS the heartbeat — no separate sweep),
+  threshold logging (interface-down, UPS on-battery / low-battery — onset only, reuses
+  `agentService.logDevice`).
+- `handlers/networkMetricsHandler.js` → `router_metrics` + per-iface `network_traffic`
+  (cumulative **uint** counters; BigInt via `point.uintField`) + `networkMetrics` broadcast.
+  `handlers/upsMetricsHandler.js` → `ups_metrics` + `upsMetrics` broadcast.
+- `scripts/snmpSim.js`: reusable loopback router (3 ifaces, one DOWN, advancing Counter64) +
+  UPS — develop/test with **no hardware**. Prints ready-to-run seed SQL.
+- `src/server.js`: gated 60s `pollAll` interval (no-op until a router/ups is registered);
+  `SNMP_POLL_INTERVAL_MS` env (default 60000).
+- **Verified:** `node --check` all; import-chain resolves; **collectors run live against the
+  simulator** (router IF-MIB + UPS-MIB shaped correctly, utilization computed from real deltas).
+
+### Increment 3 — read APIs
+- Poller gained a per-device **latest cache** (mirrors `agentService.latestMetrics`) +
+  `getNetworkDevices`/`getUpsDevices` (overlay cache on MySQL; `monitored` flag marks
+  ping-only/USB devices). `handlers/networkHistoryHandler.js` (Flux: per-iface `last` →
+  `derivative` → grouped `sum` = total throughput) + `handlers/upsHistoryHandler.js` (gauge
+  means). `routes/network.js` + `routes/ups.js`: `GET /` , `:id/history`, `:id/logs` (JWT).
+  Mounted `/api/network` + `/api/ups`. **Verified:** `node --check` + import-chain clean.
+
+### Increment 4 — frontend pages
+- `pages/NetworkMonitoring.tsx` (router list, per-iface utilization bars + up/down, throughput
+  history chart w/ range selector, live `networkMetrics`/`networkStatus`) and
+  `pages/UpsMonitoring.tsx` (battery/load/runtime/voltage cards, **on-battery banner**, history
+  chart, live `upsMetrics`/`upsStatus`). All Grafana `--gf-*`. `api.ts`: 6 new methods.
+  Wired routes `/network` + `/ups` in `App.tsx`, nav items + icons in `Sidebar.tsx`, role access
+  (admin + it_staff) in `data/users.ts`. **Verified:** `tsc --noEmit` fully clean.
+
+### Docs + Increment 5 template + client questionnaire
+- **`CLAUDE.md`** updated: `SNMP_POLL_INTERVAL_MS` env, repo layout (new files), data-stores
+  table (router/ups MySQL + `network_traffic`/`router_metrics`/`ups_metrics` Influx), socket
+  events (`networkMetrics`/`upsMetrics`/`networkStatus`/`upsStatus`), role + page-style tables.
+- **`router-ups-monitoring.md`** updated: status banner → "IMPLEMENTED — seeding pending", §8 file
+  table (Status column, simulator row later removed), §10 Q3 settled (v2c), §11 status rewritten.
+- **`migrations/2026-06-12_router_ups_devices.sql`** — Increment 5 **template** (commented
+  INSERTs + placeholders) to register the real routers/UPS.
+- **Client questionnaire** — `router-ups-client-questionnaire.md` **+ a Word `.docx`** (generated
+  with `python-docx`) that collects the §10 device facts (Q1 UPS SNMP cards, Q6 managed routers,
+  Q9 firewall/UDP 161, + per-device IP/model/community) in plain language for the CSPC-ICTU team.
+  Filled when the client responds, then drives the seed migration. (Verdict given: feasible, low
+  technical risk — remaining work is operational, not code.)
+
+### Still pending / not done
+- **Increment 5 is blocked on the device facts** (router-ups-monitoring.md §10): Q1 UPS SNMP
+  cards?, Q6 managed routers?, Q9 firewall allows UDP 161? — answers decide which rows to seed.
+- **Full live stack test not yet run** (needs MySQL + InfluxDB up + seeded devices + a reachable
+  SNMP target): the route responses, Influx history, and pages rendering live data. Up to the
+  SNMP collection layer it was proven during the session against a loopback agent.
+- **Loopback SNMP simulator removed at request** — `backend/scripts/snmpSim.js` (built this
+  session to verify Increments 1–2 with no hardware) was deleted afterward, and its references in
+  the docs / migration / page empty-states cleaned up. Re-add if a no-hardware harness is wanted
+  again (it's a standalone `net-snmp` agent script — nothing in the app imported it).
+- **ICMP-ping fallback** for unmanaged/no-community routers is a **separate module not built** —
+  such routers are currently skipped by `loadDevices` (returned with `monitored:false`).
+- `router-ups-monitoring` branch still **uncommitted**.
+
+---
