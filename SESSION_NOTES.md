@@ -742,3 +742,82 @@ enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
 
 ---
 
+## SESSION 10 — 2026-06-13
+**Branch:** `email-popup-notifications` (off `main`)
+**Developer:** Mark Gregorio
+
+> Built the **notification system** end to end across three channels — **bell feed**, **in-app
+> toast + OS popup**, and **email via Resend** — reusing the schema's already-present `alerts` /
+> `alert_notifications` tables. Full design + a file-by-file study guide live in
+> **`email-popup-notifications.md`** (read §12 to study the code). 7 commits.
+
+### Data model (reuse, don't reinvent)
+- `alerts` = the event (1 row); `alert_notifications` = per-user delivery/read row (the bell feed);
+  `notification_prefs` = one row per user (missing row → defaults).
+- **Migrations (run in phpMyAdmin):**
+  - `2026-06-13_notifications.sql` — `is_read` default + `emailed` flag; `metric_value` nullable;
+    `status` default; **new `notification_prefs`** table.
+  - `2026-06-13_alerts_nullable_device.sql` — `alerts.device_id` NULL-able (room-level
+    **environment** alerts have no device row).
+
+### Backend (all new unless noted)
+- **`services/notificationService.js`** — the core. `raiseAlert()` = cooldown check → INSERT alert
+  → fan out one `alert_notifications` per active user → `io.to("user:<id>").emit("notification")` →
+  severity-gated Resend email (mark `emailed=1`). Plus `listForUser` / `unreadCount` / `markRead` /
+  `markAllRead` / `dismiss` / `clearAll` / `getPrefs` / `savePrefs` / `purgeOld`. `init(io)` once at
+  startup. `toClient()` builds the camelCase payload shared by socket + REST.
+- **`services/emailService.js`** — Resend wrapper; **no-op (warn once) if `RESEND_API_KEY` unset**.
+- **`routes/notifications.js`** — `GET /` (feed+unread), `POST /read`, `POST /clear`, `GET`/`PUT /prefs`.
+- **Edits:** `server.js` (mount route, `init(io)`, raiseAlert on offline sweep, **daily retention
+  purge**), `sockets/connectionHandler.js` (browser joins room `user:<id>`),
+  `services/agentService.js` (`checkThresholds` raises CPU/Mem/Disk alerts on band onset),
+  `handlers/sensorHandler.js` (raises **environment** alert on status escalation).
+
+### Frontend (all new unless noted)
+- **`context/NotificationContext.tsx`** — single hub: fetch feed, subscribe to `notification`
+  (prepend + badge++ + **sound** + **OS popup** + toast), `markRead`/`markAllRead`/`dismiss`/
+  `clearAll`/`subscribe`. Wrapped around app in `App.tsx`.
+- **`components/notifications/`** — `NotificationPanel.tsx` (bell dropdown: mark/clear/dismiss,
+  sound mute, enable-desktop, click→navigate), `ToastHost.tsx` (corner toasts),
+  `notificationUtils.ts` (`SEVERITY_COLOR`/`routeFor`/`relativeTime`), `NotificationPreferences.tsx`
+  (Settings card: email on/off + min severity).
+- **`utils/browserNotify.ts`** (Web Notifications API), **`utils/notificationSound.ts`** (Web Audio
+  chime + mute).
+- **Edits:** `Header.tsx` (clickable bell, real badge), `Dashboard.tsx` ("Alerts" panel + stat now
+  read the real feed), `Settings.tsx` (mount prefs card), `api.ts` (7 notification methods),
+  `ServerMetrics.tsx` (`?device=<id>` deep-link opens that server's detail), `index.css`
+  (`--gf-shadow` token + `fadeIn`).
+
+### New socket event
+- `notification` → emitted to one user's room (`user:<id>`); camelCase payload (see §8 of the doc).
+
+### Env (added to `backend/.env`, documented in CLAUDE.md)
+`RESEND_API_KEY`, `RESEND_FROM`, `NOTIFY_EMAIL_MIN_SEVERITY` (default critical),
+`NOTIFY_EMAIL_TO` (test override), `NOTIFY_COOLDOWN_MIN` (default 30), `NOTIFY_RETENTION_DAYS`
+(default 30).
+
+### Hardening (post-review)
+- **Environment/smoke alerts** wired (were missing — the most important server-room alert).
+- **Restart-proof de-dup cooldown** — same `device+type+severity` won't re-alert within
+  `NOTIFY_COOLDOWN_MIN` (DB-based, survives `nodemon` restarts; damps flapping). Fixes the
+  "always-critical server re-emails on every restart" Resend-quota risk.
+- **Retention** purge + **clear/dismiss** actions so the tables don't grow unbounded.
+- **Per-user prefs UI** on Settings (email controls; server-enforced).
+- **Dashboard** unified onto the real feed; toast honours `prefers-reduced-motion`.
+
+### Verified
+- `node --check` (backend) + `tsc --noEmit` + `vite build` (frontend) clean throughout.
+- Email path confirmed live by the user (received a real alert email from the always-critical server).
+
+### Still pending / not done
+- **Live end-to-end test** of the full stack (agent + ESP32 → bell/toast/email) not yet driven here.
+- **Settings "Alert Thresholds" sliders are still mock** — server bands are hardcoded in
+  `agentService.checkThresholds`; environment thresholds live in the ESP32 firmware. Making them
+  web-configurable is a future task (backend `alert_rules`/`settings` + firmware runtime config).
+- Optional **"view all" history page** (paginated) not built — bell shows latest 100 + clear/dismiss.
+- **Phase 4:** UPS-on-battery / interface-down `raiseAlert` calls land when `router-ups-monitoring`
+  merges (one call each).
+- Branch not yet PR'd into `main`.
+
+---
+

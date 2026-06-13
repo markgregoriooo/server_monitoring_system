@@ -13,12 +13,14 @@ hardcoded bell badge (`alertCount={2}`) and the in-memory mock `/api/alerts`:
 
 Branch: `email-popup-notifications` (off `main`).
 
-> 🧭 **Status: PLANNED — not started.** This doc is the design. The schema already ships the
-> tables (`alerts`, `alert_notifications`, `alert_rules`) and the bell button already exists in
-> `Header.tsx`; nothing wires them together yet.
+> 🧭 **Status: BUILT & COMPLETE** on branch `email-popup-notifications` (7 commits). All three
+> channels work; triggers cover server metrics, offline, and environment/smoke; plus de-dup
+> cooldown, retention, per-user prefs UI, and the Dashboard now reads the real feed. The only
+> deferred extra is a paginated "view all" history page.
 
-> 📖 **New to this?** Read §1 (concept) and §2 (the one decision: what *is* a notification here).
-> Then §3 (data model — we reuse existing tables) and §4 (how an event becomes a notification).
+> 📖 **Studying this feature?** Read §1–§4 for the concept and core flow, then jump to **§12 —
+> the file-by-file + code walkthrough** (the authoritative guide to every file and how the code
+> fits together). §5–§11 are the design history (how/why decisions were made).
 
 ---
 
@@ -152,12 +154,18 @@ every tab that user has open. (Devices/ESP32 never join a user room.)
 
 | File | Role | New? |
 |---|---|---|
-| `frontend/src/context/NotificationContext.tsx` | fetch feed on mount; subscribe to socket `notification`; hold `items[]` + `unreadCount`; expose `markRead`/`markAllRead`; fire toast + browser popup | new |
-| `frontend/src/components/notifications/NotificationPanel.tsx` | the bell **dropdown** — list, unread highlight, "mark all read", click → mark read + navigate to source page | new |
-| `frontend/src/components/notifications/Toast.tsx` (+ host) | corner toast on each live `notification` (auto-dismiss; severity color) | new |
-| `frontend/src/components/layout/Header.tsx` | make the bell **clickable** → toggle panel; badge count from context (drop the static `alertCount`) | edit |
-| `frontend/src/App.tsx` | wrap app in `NotificationProvider`; mount `<ToastHost/>`; remove hardcoded `alertCount={2}` | edit |
-| `frontend/src/api/api.ts` | `getNotifications()`, `markNotificationsRead(ids)`, `markAllNotificationsRead()` (all `ApiResult<T>`) | edit |
+| `frontend/src/context/NotificationContext.tsx` | fetch feed on mount; subscribe to socket `notification`; hold `items[]` + `unreadCount`; expose `markRead`/`markAllRead`/`dismiss`/`clearAll`/`subscribe`; fire toast + browser popup + sound | new |
+| `frontend/src/components/notifications/NotificationPanel.tsx` | the bell **dropdown** — list, unread highlight, mark-all-read, **clear-all**, per-item **dismiss (X)**, sound mute, "enable desktop alerts", click → mark read + navigate | new |
+| `frontend/src/components/notifications/ToastHost.tsx` | corner toast stack on each live `notification` (auto-dismiss 6s, severity color, click-through) | new |
+| `frontend/src/components/notifications/notificationUtils.ts` | shared `SEVERITY_COLOR`, `routeFor(n)` (deep-link target), `relativeTime()` | new |
+| `frontend/src/components/notifications/NotificationPreferences.tsx` | Settings card — email on/off + min email severity (persisted) | new |
+| `frontend/src/utils/browserNotify.ts` | Web Notifications API wrapper (permission + fire-when-backgrounded) | new |
+| `frontend/src/utils/notificationSound.ts` | Web Audio chime + mute toggle (localStorage) | new |
+| `frontend/src/components/layout/Header.tsx` | bell **clickable** → toggle panel; badge from context (dropped static `alertCount`) | edit |
+| `frontend/src/App.tsx` | wrap in `NotificationProvider`; mount `<ToastHost/>` | edit |
+| `frontend/src/pages/Dashboard.tsx` | "Alerts" panel + "Active Alerts" stat read the real feed (context) | edit |
+| `frontend/src/pages/Settings.tsx` | mount `<NotificationPreferences/>` | edit |
+| `frontend/src/api/api.ts` | `getNotifications`, `markNotificationsRead`, `markAllNotificationsRead`, `dismissNotifications`, `clearAllNotifications`, `getNotificationPrefs`, `saveNotificationPrefs` | edit |
 
 - **In-app toast** is the baseline popup (always shown on a live event). **Browser/OS popup** is an
   enhancement: ask `Notification.requestPermission()` once (e.g. from a Settings toggle), then fire
@@ -172,10 +180,10 @@ every tab that user has open. (Devices/ESP32 never join a user room.)
 
 | Event | Direction | Payload |
 |---|---|---|
-| `notification` | Server → **one user's** browsers (`io.to("user:"+id)`) | `{ id, alert_id, device_id, type, title, message, severity, created_at, is_read:false }` |
-| `notificationRead` *(optional)* | Server → same user's other tabs | `{ ids:[…] }` — keeps multiple open tabs' unread counts in sync |
+| `notification` | Server → **one user's** browsers (`io.to("user:"+id)`) | camelCase: `{ id, alertId, deviceId, deviceName, type, title, message, severity, isRead:false, createdAt, sentAt }` — `id` is the per-user `alert_notifications.id` (the row you mark read / dismiss) |
 
-(Existing `deviceLog` / `serverStatus` stay as-is; `notification` is the new persisted, per-user one.)
+(Existing `deviceLog` / `serverStatus` stay as-is; `notification` is the new persisted, per-user one.
+The payload is built by `notificationService.toClient()`, so it always matches the REST feed shape.)
 
 ---
 
@@ -188,9 +196,11 @@ every tab that user has open. (Devices/ESP32 never join a user room.)
 
 ```
 RESEND_API_KEY=            # Resend API key; blank → email channel disabled (bell+toast still work)
-RESEND_FROM=               # e.g. "CSPC ICTU Monitoring <alerts@your-verified-domain>"
+RESEND_FROM=               # e.g. "CSPC ICTU Monitoring <alerts@your-verified-domain>"; blank = onboarding@resend.dev (test)
 NOTIFY_EMAIL_MIN_SEVERITY= # critical | warning | info — min severity that triggers email; blank = critical
 NOTIFY_EMAIL_TO=           # optional override (testing): force all alert emails to this address
+NOTIFY_COOLDOWN_MIN=       # de-dup window (min): same device+type+severity won't re-alert within it; blank = 30
+NOTIFY_RETENTION_DAYS=     # alerts older than this are purged daily (feed rows cascade); blank = 30
 ```
 
 > 🔐 Treat `RESEND_API_KEY` like any secret — backend-only, never shipped to the frontend.
@@ -265,3 +275,109 @@ NOTIFY_EMAIL_TO=           # optional override (testing): force all alert emails
   build on request.
 - See `CLAUDE.md` (Socket.IO events, data stores, UI tokens) and the `alerts` / `alert_notifications`
   tables in `V10…schema.sql` for the existing scaffolding this builds on.
+
+---
+
+## 12. Study guide — file-by-file + code walkthrough
+
+> This is the authoritative map of what was actually built. Read it top to bottom to understand
+> the whole feature; or jump to a file when you're editing it.
+
+### 12.0 Suggested reading order
+1. **Database** (§12.1) — the two migrations + the three tables. Everything anchors here.
+2. **`backend/services/notificationService.js`** (§12.2) — the heart. Read `raiseAlert` first.
+3. **One trigger** — `backend/services/agentService.js` → `checkThresholds` (§12.3) to see how a
+   real event calls `raiseAlert`.
+4. **`backend/routes/notifications.js`** (§12.4) — the REST surface the frontend calls.
+5. **`frontend/src/context/NotificationContext.tsx`** (§12.5) — the single client-side hub.
+6. The **UI consumers** — `Header` → `NotificationPanel`, `ToastHost`, `NotificationPreferences`.
+
+### 12.1 Database (run these in phpMyAdmin)
+- `migrations/2026-06-13_notifications.sql` — defaults on `alert_notifications.is_read`, adds
+  `emailed`, makes `alerts.metric_value` nullable + `status` default, creates `notification_prefs`.
+- `migrations/2026-06-13_alerts_nullable_device.sql` — makes `alerts.device_id` NULL-able (so
+  room-level **environment** alerts, which have no device row, can be stored).
+- **Tables:** `alerts` = the event (1 row). `alert_notifications` = the per-user delivery/read row
+  (N per event — this is the bell feed). `notification_prefs` = one row per user (email on/off,
+  popup on/off, min email severity); a missing row means "defaults".
+
+### 12.2 `backend/services/notificationService.js` — the core (read this first)
+The single entry point everything funnels through. Exposes (`export default { … }`):
+- **`init(io)`** — called once in `server.js`; stashes the Socket.IO server so any trigger can push
+  without passing `io` around.
+- **`raiseAlert({ deviceId, type, title, message, severity, metricValue })`** — the whole pipeline:
+  1. **Cooldown check** — skip if an identical `device+type+severity` alert exists within
+     `NOTIFY_COOLDOWN_MIN` (a DB query → restart-proof de-dup).
+  2. `INSERT` into `alerts` (the event).
+  3. `SELECT` active users + their email + `notification_prefs` (LEFT JOIN, defaults if no row).
+  4. Bulk `INSERT` one `alert_notifications` row per user.
+  5. `SELECT` those rows back (joined to `alerts` + `devices` for `device_name`) and
+     `io.to("user:"+id).emit("notification", toClient(row))` to each recipient's room.
+  6. **Email** (if Resend configured): for each recipient, gate on `email_enabled` +
+     severity ≥ their `min_email_severity`, send concurrently (`Promise.allSettled`), then set
+     `emailed=1`. Best-effort — wrapped so a failure never breaks the caller.
+- **`toClient(row)`** — maps the snake_case DB row → the camelCase payload used by BOTH the socket
+  push and the REST feed (so they're always identical).
+- **Reads:** `listForUser`, `unreadCount`. **Mutations:** `markRead`, `markAllRead`, `dismiss`
+  (delete rows), `clearAll`. **Prefs:** `getPrefs`, `savePrefs` (upsert). **Retention:** `purgeOld`.
+- Key idea: **best-effort** everywhere — monitoring must never break because a notification failed.
+
+### 12.3 Triggers — where `raiseAlert` is called from
+- `backend/services/agentService.js` → **`checkThresholds`** — server CPU/Mem/Disk; in-memory
+  hysteresis (`alertState` Map, 70–80 % hold band) raises once on the band crossing.
+- `backend/src/server.js` → **offline sweep** — raises a "Server offline" alert per transition;
+  also `init(io)`, mounts the route, and runs the daily **retention purge**.
+- `backend/handlers/sensorHandler.js` → **environment** — raises a room-level alert when the
+  ESP32's `environment_status` escalates (NULL `device_id`).
+
+### 12.4 `backend/routes/notifications.js` — REST (all `authMiddleware`, scoped to `req.user.id`)
+- `GET /api/notifications` → `{ notifications, unreadCount }`
+- `POST /api/notifications/read` `{ ids } | { all:true }`
+- `POST /api/notifications/clear` `{ ids } | { all:true }` (dismiss / clear-all)
+- `GET /api/notifications/prefs` → `{ prefs }`  ·  `PUT /api/notifications/prefs` `{ emailEnabled?, popupEnabled?, minEmailSeverity? }`
+- Plus `backend/services/emailService.js` (Resend HTML email; no-op without a key) and
+  `backend/sockets/connectionHandler.js` (browser joins room `user:<id>` on connect).
+
+### 12.5 Frontend
+- **`context/NotificationContext.tsx`** — the hub. Fetches the feed on login, subscribes to the
+  `notification` socket event (prepend + badge++ + **sound** + **desktop popup** + notify toast
+  subscribers), re-syncs on reconnect. Exposes `items`, `unreadCount`, `markRead`, `markAllRead`,
+  `dismiss`, `clearAll`, and `subscribe(fn)` (so the toast host taps the live stream without a
+  second socket listener). Wrapped around the app in `App.tsx`.
+- **`components/layout/Header.tsx`** — the bell: badge = `unreadCount`, click toggles the panel
+  (closes on outside-click / Escape).
+- **`components/notifications/NotificationPanel.tsx`** — the dropdown list. Mark-all-read,
+  clear-all, per-item dismiss (X on hover), sound mute, "enable desktop alerts", click an item →
+  mark read + `navigate(routeFor(n))`.
+- **`components/notifications/ToastHost.tsx`** — corner toast stack (mounted once in `App.tsx`).
+- **`components/notifications/notificationUtils.ts`** — `SEVERITY_COLOR`, `routeFor(n)`
+  (cpu/mem/disk/offline → `/server-metrics?device=<id>`; environment → `/environment`),
+  `relativeTime()`. **This is where you add routing for new alert types.**
+- **`components/notifications/NotificationPreferences.tsx`** — the Settings card (email prefs).
+- **`utils/browserNotify.ts`** (OS popup) · **`utils/notificationSound.ts`** (chime + mute).
+- **Deep-link landing:** `pages/ServerMetrics.tsx` reads `?device=<id>` and opens that server's
+  detail; `pages/Dashboard.tsx` renders the real feed in its "Alerts" panel.
+
+### 12.6 End-to-end trace (follow one alert through the system)
+```
+ESP32 / agent event
+  → trigger (checkThresholds | offline sweep | sensorHandler)
+    → notificationService.raiseAlert(...)
+      → [cooldown?] → INSERT alerts → INSERT alert_notifications (per user)
+        → io.to("user:<id>").emit("notification", payload)   ── live
+        → emailService.sendAlertEmail(...) (severity-gated)  ── email
+  ── browser ─────────────────────────────────────────────────────────
+  socket "notification" → NotificationContext.onNotification
+      → prepend to items, unreadCount++, play sound, OS popup, toast
+  bell badge (Header) ⇄ unreadCount ; panel lists items ; click → navigate
+  page reload → GET /api/notifications rehydrates the same list (persisted)
+```
+
+### 12.7 How to test each channel
+- **Bell + toast + sound:** trigger a server CPU ≥ 90 % (or stop an agent → offline in ~15 s).
+- **Environment:** let the ESP32 report a hot/smoke status (needs the nullable-device ALTER).
+- **Email:** set `RESEND_API_KEY` + `NOTIFY_EMAIL_TO` (your Resend signup email) in `backend/.env`,
+  restart, trigger a **critical** alert. Temporarily set `NOTIFY_EMAIL_MIN_SEVERITY=info` to email
+  everything while testing.
+- **Prefs:** Settings → Notification Preferences → toggle email / change min severity → Save.
+- **Cooldown:** trigger the same alert twice within `NOTIFY_COOLDOWN_MIN` → only the first fires.
