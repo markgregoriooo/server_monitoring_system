@@ -50,7 +50,7 @@ export default function ToastHost() {
       {toasts.map((n) => (
         <div
           key={n.id}
-          className="flex items-start gap-2 px-3 py-2.5 cursor-pointer animate-[fadeIn_0.15s_ease-out]"
+          className="flex items-start gap-2 px-3 py-2.5 cursor-pointer animate-[fadeIn_0.15s_ease-out] motion-reduce:animate-none"
           style={{
             background: "var(--gf-panel)",
             border: "1px solid var(--gf-panel-border)",

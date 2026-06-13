@@ -256,7 +256,12 @@ NOTIFY_EMAIL_TO=           # optional override (testing): force all alert emails
   (c) **Per-user prefs UI** — `NotificationPreferences` card on the Settings page (email on/off +
   min email severity), persisted via `GET`/`PUT /api/notifications/prefs` (`notification_prefs`
   upsert). `tsc`/`vite build`/`node --check` clean.
-- **Still open (P3):** unify the Dashboard's mock `/api/alerts` panel with the real feed; minor
-  polish (`prefers-reduced-motion`, a full "view all" history beyond the latest 100).
+- **✅ P3 (DONE):** (a) the **Dashboard "Alerts" panel** + "Active Alerts" stat now render the
+  **real feed** via `NotificationContext` (severity-colored, relative time) — the legacy
+  `/api/alerts` mock is no longer used by the UI. (b) Toast honours `prefers-reduced-motion`
+  (`motion-reduce:animate-none`). `tsc` + `vite build` clean.
+- **Optional extra (not built):** a dedicated full **"view all" history page** with pagination
+  (the bell shows the latest 100, with clear/dismiss) — a genuine new feature rather than polish;
+  build on request.
 - See `CLAUDE.md` (Socket.IO events, data stores, UI tokens) and the `alerts` / `alert_notifications`
   tables in `V10…schema.sql` for the existing scaffolding this builds on.

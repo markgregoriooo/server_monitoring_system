@@ -161,7 +161,7 @@ SESSION_NOTES.md                ← per-session work log
 
 ### Mock endpoints (still `data/db.js`, not real)
 - `routes/environment.js` GET `/history` + `/logs` return mock random data, **not** InfluxDB — real sensor history comes via Socket.IO `changeRange` → `sensorHistory`
-- `routes/alerts.js` (`alerts`, `auditLog`) and `routes/reports.js` (`reports`) serve in-memory arrays that reset on restart, even though real `alerts` / `reports` tables exist in the schema. **Note:** the new **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) does write the **real** `alerts` + `alert_notifications` tables — the bell feed is persisted (only the legacy `/api/alerts` Dashboard panel is still the mock). See `email-popup-notifications.md`.
+- `routes/alerts.js` (`alerts`, `auditLog`) and `routes/reports.js` (`reports`) serve in-memory arrays that reset on restart, even though real `alerts` / `reports` tables exist in the schema. **Note:** the **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) writes the **real** `alerts` + `alert_notifications` tables, and **both** the bell feed and the **Dashboard "Alerts" panel** now render that real feed (via `NotificationContext`). The legacy `/api/alerts` mock route is now unused by the UI. See `email-popup-notifications.md`.
 
 > The `reports.js` role gate is **fixed** — it now uses `requireRole("admin", "it_staff")` (previously referenced a non-existent `super_admin`, which 403'd admins).
 
