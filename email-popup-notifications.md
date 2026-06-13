@@ -234,9 +234,14 @@ NOTIFY_EMAIL_TO=           # optional override (testing): force all alert emails
   fires an **OS popup** via the Web Notifications API — opt-in (permission prompt surfaced as
   "Enable desktop alerts" in the bell panel), and only when the tab is **backgrounded** (a focused
   user already sees the toast). `tsc` + `vite build` clean.
-- **Phase 3 — email (Resend):** `emailService` + `resend` dep + `.env` keys → email on
-  severity-gated alerts (`notification_prefs.min_email_severity`), mark `alert_notifications.emailed=1`.
-  Verify against a Resend test address first.
+- **✅ Phase 3 — email (Resend) (DONE — code; needs keys to send):** `services/emailService.js`
+  (Resend SDK, inline-styled HTML, no-op when `RESEND_API_KEY` unset). `raiseAlert` now fetches
+  each active user's email + prefs (`notification_prefs`, missing row → env defaults) and sends a
+  **severity-gated, per-user** email concurrently (best-effort), marking `alert_notifications.emailed=1`.
+  Env: `RESEND_API_KEY`, `RESEND_FROM`, `NOTIFY_EMAIL_MIN_SEVERITY` (default critical),
+  `NOTIFY_EMAIL_TO` (test override). `node --check` + import smoke clean.
+  **To actually send:** add the Resend keys to `backend/.env` and verify against a Resend test
+  address first (`onboarding@resend.dev` sender → your own inbox).
 - **Phase 4 (when router-ups merges):** add UPS-on-battery / interface-down `raiseAlert` calls.
 - See `CLAUDE.md` (Socket.IO events, data stores, UI tokens) and the `alerts` / `alert_notifications`
   tables in `V10…schema.sql` for the existing scaffolding this builds on.

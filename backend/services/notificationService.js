@@ -1,5 +1,6 @@
 import "../config/env.js";
 import db from "../config/mysql.js";
+import emailService from "./emailService.js";
 
 // Notifications = the bell feed. One `alerts` row is the EVENT; we fan it out to
 // one `alert_notifications` row PER active user (the per-user read state + feed).
@@ -15,6 +16,12 @@ export function init(io) {
 }
 
 const SEVERITIES = ["info", "warning", "critical"];
+const SEV_RANK = { info: 0, warning: 1, critical: 2 };
+
+function normalizeSeverity(s) {
+  const v = String(s ?? "").toLowerCase();
+  return SEVERITIES.includes(v) ? v : null;
+}
 
 // DB row (snake_case, from the alerts ⨝ alert_notifications join) → client payload (camelCase).
 function toClient(r) {
@@ -49,9 +56,18 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
     );
     const alertId = ins.insertId;
 
-    // 2) recipients — every active user
+    // 2) recipients — every active user, with their email + email preferences
+    //    (a missing notification_prefs row falls back to defaults: enabled, and the
+    //    env-configured minimum severity).
+    const emailMinDefault = normalizeSeverity(process.env.NOTIFY_EMAIL_MIN_SEVERITY) || "critical";
     const [users] = await db.query(
-      `SELECT user_id FROM users WHERE status = 'active'`,
+      `SELECT u.user_id, u.email,
+              COALESCE(p.email_enabled, 1)              AS email_enabled,
+              COALESCE(p.min_email_severity, ?)         AS min_email_severity
+         FROM users u
+         LEFT JOIN notification_prefs p ON p.user_id = u.user_id
+        WHERE u.status = 'active'`,
+      [emailMinDefault],
     );
     if (!users.length) return alertId;
 
@@ -77,6 +93,25 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
         _io.to(`user:${r.user_id}`).emit("notification", toClient(r));
       }
     }
+
+    // 5) email channel — severity-gated, per-user pref. Only when Resend is
+    //    configured. Concurrent + best-effort: an email failure never affects the
+    //    bell/toast that already fired. Mark emailed=1 so a re-run never re-sends.
+    if (emailService.isEnabled()) {
+      const byUser = new Map(users.map((u) => [u.user_id, u]));
+      await Promise.allSettled(
+        rows.map(async (r) => {
+          const u = byUser.get(r.user_id);
+          if (!u || !u.email || !Number(u.email_enabled)) return;
+          if (SEV_RANK[severity] < (SEV_RANK[u.min_email_severity] ?? 2)) return;
+          const ok = await emailService.sendAlertEmail(u.email, {
+            title, message, severity, deviceName: r.device_name ?? null, createdAt: r.created_at,
+          });
+          if (ok) await db.query(`UPDATE alert_notifications SET emailed = 1 WHERE id = ?`, [r.id]);
+        }),
+      );
+    }
+
     return alertId;
   } catch (err) {
     console.error("[notifications] raiseAlert error:", err.message);

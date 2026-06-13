@@ -42,6 +42,10 @@ WEB_ORIGIN=        # allowed dashboard origins, comma-separated — or * for any
 GOOGLE_CLIENT_ID=       # Google OAuth web client ID (public). Login verifies ID tokens against it. Must match frontend VITE_GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=   # Google OAuth web client SECRET. Required: the auth-code flow exchanges the code server-side
 GOOGLE_ALLOWED_DOMAINS= # comma-separated CSPC domains allowed to sign in; blank = cspc.edu.ph,my.cspc.edu.ph
+RESEND_API_KEY=         # Resend API key for alert emails. BLANK = email channel off (bell + toast still work). See email-popup-notifications.md
+RESEND_FROM=            # sender, e.g. "CSPC ICTU Monitoring <alerts@your-verified-domain>"; blank = Resend test sender (onboarding@resend.dev)
+NOTIFY_EMAIL_MIN_SEVERITY= # min severity that triggers an email: info|warning|critical; blank = critical. Per-user override in notification_prefs
+NOTIFY_EMAIL_TO=        # optional: force ALL alert emails to this address (testing); blank = send to each active user's real email
 ```
 
 Frontend also needs `VITE_GOOGLE_CLIENT_ID` in `frontend/.env` (same client ID; restart `npm run dev` after changing). See `google-oauth.md`.
@@ -63,7 +67,7 @@ Server room environment monitoring system for CSPC-ICTU.
 ESP32 (DHT11 + 2× MQ-2 + IR TX array + RGB LED) → Node.js + Socket.IO → React dashboard.
 
 ### Tech Stack
-- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client
+- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, resend (alert email)
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS, JetBrains Mono font
 - **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment **and** server-metric time-series)
 - **Hardware:** ESP32, DHT11, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×4, DS3231 RTC (optional)
@@ -85,7 +89,8 @@ backend/services/
   permissionService.js          ← static role-based permissions
   airconService.js              ← all aircon DB logic (getAll, toggle, applyAutoIR, etc.)
   agentService.js               ← Go-agent + server-device DB logic (devices + server_specs + device_network + agent_tokens); enroll/approve/reject, offline sweep, device_logs
-  notificationService.js        ← raiseAlert() → writes `alerts` + fans out `alert_notifications` per active user + pushes `notification` to each user room; listForUser/unreadCount/markRead. `init(io)` once at startup. See `email-popup-notifications.md`
+  notificationService.js        ← raiseAlert() → writes `alerts` + fans out `alert_notifications` per active user + pushes `notification` to each user room + severity-gated email; listForUser/unreadCount/markRead. `init(io)` once at startup. See `email-popup-notifications.md`
+  emailService.js               ← Resend wrapper: sendAlertEmail(to, alert) (inline-styled HTML). No-op if RESEND_API_KEY unset. NOTIFY_EMAIL_TO forces all mail to one address (testing)
 backend/handlers/
   sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers
   querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
