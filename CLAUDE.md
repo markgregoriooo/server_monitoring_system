@@ -46,6 +46,7 @@ RESEND_API_KEY=         # Resend API key for alert emails. BLANK = email channel
 RESEND_FROM=            # sender, e.g. "CSPC ICTU Monitoring <alerts@your-verified-domain>"; blank = Resend test sender (onboarding@resend.dev)
 NOTIFY_EMAIL_MIN_SEVERITY= # min severity that triggers an email: info|warning|critical; blank = critical. Per-user override in notification_prefs
 NOTIFY_EMAIL_TO=        # optional: force ALL alert emails to this address (testing); blank = send to each active user's real email
+NOTIFY_COOLDOWN_MIN=    # de-dup window in minutes — same device+type+severity won't re-alert within it (restart-proof); blank = 30
 ```
 
 Frontend also needs `VITE_GOOGLE_CLIENT_ID` in `frontend/.env` (same client ID; restart `npm run dev` after changing). See `google-oauth.md`.
@@ -89,10 +90,10 @@ backend/services/
   permissionService.js          ← static role-based permissions
   airconService.js              ← all aircon DB logic (getAll, toggle, applyAutoIR, etc.)
   agentService.js               ← Go-agent + server-device DB logic (devices + server_specs + device_network + agent_tokens); enroll/approve/reject, offline sweep, device_logs
-  notificationService.js        ← raiseAlert() → writes `alerts` + fans out `alert_notifications` per active user + pushes `notification` to each user room + severity-gated email; listForUser/unreadCount/markRead. `init(io)` once at startup. See `email-popup-notifications.md`
+  notificationService.js        ← raiseAlert() → de-dup cooldown (NOTIFY_COOLDOWN_MIN, restart-proof) → writes `alerts` + fans out `alert_notifications` per active user + pushes `notification` to each user room + severity-gated email; listForUser/unreadCount/markRead. `init(io)` once at startup. Triggers: server CPU/mem/disk + offline + **environment** (sensorHandler, room-level/NULL device). See `email-popup-notifications.md`
   emailService.js               ← Resend wrapper: sendAlertEmail(to, alert) (inline-styled HTML). No-op if RESEND_API_KEY unset. NOTIFY_EMAIL_TO forces all mail to one address (testing)
 backend/handlers/
-  sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers
+  sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers + raises a room-level `environment` notification on status escalation (WARNING/DANGER/CRITICAL / smoke)
   querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
   offlineDataHandler.js         ← SD card batch flush from ESP32
   serverMetricsHandler.js       ← agent metric POST → InfluxDB (`server_metrics`) + broadcast `serverMetrics`

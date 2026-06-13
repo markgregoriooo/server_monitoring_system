@@ -242,6 +242,15 @@ NOTIFY_EMAIL_TO=           # optional override (testing): force all alert emails
   `NOTIFY_EMAIL_TO` (test override). `node --check` + import smoke clean.
   **To actually send:** add the Resend keys to `backend/.env` and verify against a Resend test
   address first (`onboarding@resend.dev` sender → your own inbox).
+- **✅ P1 hardening (DONE):** (a) **Environment alerts wired** — `sensorHandler` now raises a
+  room-level alert when the ESP32's `environment_status` escalates into WARNING/DANGER/CRITICAL
+  (or smoke DANGER), severity-mapped, `device_id` NULL (system alert — needs the
+  `2026-06-13_alerts_nullable_device.sql` ALTER). (b) **Restart-proof cooldown** — `raiseAlert`
+  skips an identical `device+type+severity` alert within `NOTIFY_COOLDOWN_MIN` (default 30 min),
+  via a DB check, so an always-critical device alerts once, not every poll/restart, and flapping
+  is damped. Notifications of `type:"environment"` deep-link to `/environment`.
 - **Phase 4 (when router-ups merges):** add UPS-on-battery / interface-down `raiseAlert` calls.
+- **Still open (P2/P3):** notification retention/cleanup; per-user `notification_prefs` **UI**
+  (table respected, no editor yet); unify the Dashboard's mock `/api/alerts` with the real feed.
 - See `CLAUDE.md` (Socket.IO events, data stores, UI tokens) and the `alerts` / `alert_notifications`
   tables in `V10…schema.sql` for the existing scaffolding this builds on.

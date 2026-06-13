@@ -47,12 +47,28 @@ function toClient(r) {
 async function raiseAlert({ deviceId, type, title, message, severity = "info", metricValue = null }) {
   try {
     if (!SEVERITIES.includes(severity)) severity = "info";
+    const dId = deviceId ?? null;
+
+    // Cooldown / de-dup (restart-proof): skip if an identical alert (same device +
+    // type + severity) was already raised within the window. Stops the bell + email
+    // repeating for a value that stays in-band across polls AND across backend
+    // restarts (the in-memory hysteresis can't survive a restart; this DB check can).
+    // `<=>` is MySQL's null-safe equals, since device_id may be NULL (system alerts).
+    const cooldownMin = Number(process.env.NOTIFY_COOLDOWN_MIN) || 30;
+    const [[recent]] = await db.query(
+      `SELECT alert_id FROM alerts
+        WHERE device_id <=> ? AND type = ? AND severity = ?
+          AND created_at > (NOW() - INTERVAL ? MINUTE)
+        ORDER BY alert_id DESC LIMIT 1`,
+      [dId, type, severity, cooldownMin],
+    );
+    if (recent) return recent.alert_id;
 
     // 1) the event
     const [ins] = await db.query(
       `INSERT INTO alerts (device_id, metric_value, type, title, message, severity, status)
        VALUES (?, ?, ?, ?, ?, ?, 'active')`,
-      [deviceId, metricValue, type, title, message, severity],
+      [dId, metricValue, type, title, message, severity],
     );
     const alertId = ins.insertId;
 

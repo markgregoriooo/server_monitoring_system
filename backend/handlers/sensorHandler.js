@@ -1,4 +1,31 @@
 import { writeClient, Point } from "../config/influx.js";
+import notificationService from "../services/notificationService.js";
+
+// ESP32 status strings (env_monitor_v2.ino) → notification severity.
+const ENV_SEVERITY = { WARNING: "warning", DANGER: "critical", CRITICAL: "critical" };
+const ENV_RANK = { NORMAL: 0, TOO_COLD: 0, WARNING: 1, DANGER: 2, CRITICAL: 3 };
+
+// Raise an environment alert only when the room's status ESCALATES into a worse
+// band — not on every 1s reading, and not on recovery. The DB cooldown in
+// notificationService then suppresses repeats while it sits in that band.
+let lastEnvStatus = "NORMAL";
+function maybeRaiseEnvAlert(data) {
+  const status = data.environment_status;
+  const rank = ENV_RANK[status] ?? 0;
+  const worsened = rank > (ENV_RANK[lastEnvStatus] ?? 0);
+  lastEnvStatus = status;
+  if (!worsened || !ENV_SEVERITY[status]) return;
+
+  const smoke = data.smoke_status === "DANGER";
+  const gas = Math.max(data.mq2_1_ppm, data.mq2_2_ppm);
+  notificationService.raiseAlert({
+    deviceId: null, // the ESP32 isn't a devices row — this is a room-level (system) alert
+    type: "environment",
+    severity: ENV_SEVERITY[status],
+    title: smoke ? "Smoke detected — server room" : `Server room ${status.toLowerCase()}`,
+    message: `Temp ${data.temperature}°C · humidity ${data.humidity}% · gas ${gas}ppm (${status})`,
+  });
+}
 
 export async function sensorHandler(socket, data) {
   const now = Date.now();
@@ -70,4 +97,7 @@ export async function sensorHandler(socket, data) {
   } catch (error) {
     console.error("[SENSOR] Emit error:", error);
   }
+
+  // ---- Environment alert (temp / humidity / gas / smoke escalation) ----
+  maybeRaiseEnvAlert(data);
 }
