@@ -37,6 +37,21 @@ const Icons: Record<string, React.ReactNode> = {
       <circle cx="12" cy="12" r="1" fill="currentColor"/>
     </svg>
   ),
+  network: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <rect x="1" y="2" width="14" height="4" rx="1" stroke="currentColor" strokeWidth="1.4"/>
+      <rect x="1" y="10" width="14" height="4" rx="1" stroke="currentColor" strokeWidth="1.4"/>
+      <path d="M8 6v4" stroke="currentColor" strokeWidth="1.4"/>
+      <circle cx="3.5" cy="4" r="0.8" fill="currentColor"/>
+      <circle cx="3.5" cy="12" r="0.8" fill="currentColor"/>
+    </svg>
+  ),
+  ups: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <rect x="1.5" y="3" width="13" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
+      <path d="M9 5.5L6.5 8.5H8.5L7 10.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  ),
   environment: (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <path d="M8 2v7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
@@ -96,6 +111,8 @@ const Icons: Record<string, React.ReactNode> = {
 const allNavItems: NavItem[] = [
   { id: "dashboard",        label: "Dashboard",        path: "/",                icon: Icons["dashboard"] },
   { id: "server-metrics",   label: "Server Metrics",   path: "/server-metrics",  icon: Icons["server-metrics"] },
+  { id: "network",          label: "Network",          path: "/network",         icon: Icons["network"] },
+  { id: "ups",              label: "UPS",              path: "/ups",             icon: Icons["ups"] },
   { id: "environment",      label: "Environment",      path: "/environment",     icon: Icons["environment"] },
   { id: "air-conditioner",  label: "Air Conditioner",  path: "/air-conditioner", icon: Icons["air-conditioner"] },
   { id: "alerts",           label: "Alerts",           path: "/alerts",          icon: Icons["alerts"] },

@@ -29,6 +29,8 @@ export const roleConfig: Record<Role, RoleConfig> = {
     pages: [
       "dashboard",
       "server-metrics",
+      "network",
+      "ups",
       "environment",
       "air-conditioner",
       "alerts",
@@ -47,6 +49,8 @@ export const roleConfig: Record<Role, RoleConfig> = {
     pages: [
       "dashboard",
       "server-metrics",
+      "network",
+      "ups",
       "environment",
       "air-conditioner",
       "alerts",

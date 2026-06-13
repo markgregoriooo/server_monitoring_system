@@ -11,11 +11,14 @@ import agentService from "../services/agentService.js";
 import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
+import snmpPollerService from "../services/snmpPollerService.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
 import serverRoutes from "../routes/servers.js";
 import agentRoutes from "../routes/agents.js";
+import networkRoutes from "../routes/network.js";
+import upsRoutes from "../routes/ups.js";
 import environmentRoutes from "../routes/environment.js";
 import airconRoutes from "../routes/aircon.js";
 import userRoutes from "../routes/users.js";
@@ -132,6 +135,8 @@ io.on("connection", (socket) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/servers", serverRoutes);
 app.use("/api/agents", agentRoutes);
+app.use("/api/network", networkRoutes);
+app.use("/api/ups", upsRoutes);
 app.use("/api/environment", environmentRoutes);
 app.use("/api/aircon", airconRoutes);
 app.use("/api/users", userRoutes);
@@ -205,3 +210,12 @@ const runNotificationPurge = async () => {
 };
 runNotificationPurge();
 setInterval(runNotificationPurge, PURGE_INTERVAL_MS);
+
+// SNMP poller — pulls metrics from routers (IF-MIB) + UPS units (UPS-MIB) on a
+// timer (the pull mirror of the push-based Go agents). Self-gating: pollAll loads
+// the router/ups devices each cycle and is a near-no-op (one empty SELECT) until
+// such a device is registered, so this is harmless when none exist yet.
+const SNMP_POLL_INTERVAL_MS = Number(process.env.SNMP_POLL_INTERVAL_MS) || 60_000;
+setInterval(() => {
+  snmpPollerService.pollAll(io).catch((err) => console.error("[SNMP_POLLER] error:", err));
+}, SNMP_POLL_INTERVAL_MS);
