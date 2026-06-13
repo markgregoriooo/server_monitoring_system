@@ -8,15 +8,18 @@ export const SEVERITY_COLOR: Record<Severity, string> = {
   info: "#5794F2",
 };
 
-// Where clicking a notification takes you. All current triggers are server-side;
-// extend this as UPS / router / environment triggers land.
+// Where clicking a notification takes you. All current triggers are server-side,
+// so we deep-link to that specific server's detail (ServerMetrics reads ?device=).
+// Extend this as UPS / router / environment triggers land.
 export function routeFor(n: AppNotification): string {
   switch (n.type) {
     case "cpu":
     case "mem":
     case "disk":
     case "offline":
-      return "/server-metrics";
+      return n.deviceId ? `/server-metrics?device=${n.deviceId}` : "/server-metrics";
+    case "environment":
+      return "/environment";
     default:
       return "/";
   }

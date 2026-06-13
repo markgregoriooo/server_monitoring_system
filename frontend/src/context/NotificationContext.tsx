@@ -12,6 +12,7 @@ import { api } from "../api/api.js";
 import { socket } from "../socket/socket.js";
 import { useAuth } from "./AuthContext.js";
 import { fireDesktopNotification } from "../utils/browserNotify.js";
+import { playNotificationSound } from "../utils/notificationSound.js";
 
 export type Severity = "info" | "warning" | "critical";
 
@@ -86,6 +87,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     const onNotification = (n: AppNotification) => {
       setItems((prev) => [n, ...prev].slice(0, MAX_ITEMS));
       setUnreadCount((c) => c + 1);
+      playNotificationSound(); // chime (if not muted)
       fireDesktopNotification({ title: n.title, message: n.message, alertId: n.alertId }); // OS popup (if granted + tab hidden)
       listenersRef.current.forEach((fn) => fn(n)); // in-app toasts, etc.
     };

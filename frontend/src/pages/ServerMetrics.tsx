@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api/api";
 import ServerDetail from "./ServerDetail";
 import { socket } from "../socket/socket";
@@ -436,6 +437,7 @@ export default function ServerMetrics() {
   const [aggCpu, setAggCpu]             = useState<number[]>([]);
   const [aggMem, setAggMem]             = useState<number[]>([]);
   const [openId, setOpenId]             = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
@@ -510,6 +512,19 @@ export default function ServerMetrics() {
       socket.off("serverStatus", onStatus);
     };
   }, []);
+
+  // Deep-link from a notification: /server-metrics?device=<id> opens that server's
+  // detail once the list has loaded, then drops the param (so Back returns to the
+  // list and a refresh doesn't re-trigger).
+  useEffect(() => {
+    const deviceParam = searchParams.get("device");
+    if (!deviceParam) return;
+    const match = servers.find((s) => s.id === String(deviceParam));
+    if (!match) return;
+    setDetailServer(match);
+    searchParams.delete("device");
+    setSearchParams(searchParams, { replace: true });
+  }, [servers, searchParams, setSearchParams]);
 
   const total  = servers.length;
   const online = servers.filter((s) => s.status === "Online").length;

@@ -23,6 +23,9 @@
   --gf-seg-empty:     rgba(255,255,255,0.06);
   --gf-scroll-bg:     rgba(0,0,0,0.25);
   --gf-scrollbar:     rgba(255,255,255,0.10);
+  /* elevation for floating panels (dropdowns/toasts) — on dark, a faint light ring
+     makes the edge readable against the dark page; plus a soft drop shadow for depth */
+  --gf-shadow: 0 8px 28px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.14);
 
   /* legacy aliases kept for pages that still reference --bg etc. */
   --bg:         var(--gf-bg);
@@ -48,6 +51,8 @@
   --gf-seg-empty:     rgba(0,0,0,0.08);
   --gf-scroll-bg:     rgba(0,0,0,0.04);
   --gf-scrollbar:     rgba(0,0,0,0.15);
+  /* light mode: a darker drop shadow + subtle dark ring so the panel edge reads */
+  --gf-shadow: 0 8px 28px rgba(0,0,0,0.20), 0 0 0 1px rgba(0,0,0,0.06);
 
   --bg:         var(--gf-bg);
   --surface:    var(--gf-panel);

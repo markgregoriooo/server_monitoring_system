@@ -50,12 +50,13 @@ export default function ToastHost() {
       {toasts.map((n) => (
         <div
           key={n.id}
-          className="flex items-start gap-2 px-3 py-2.5 shadow-xl cursor-pointer animate-[fadeIn_0.15s_ease-out]"
+          className="flex items-start gap-2 px-3 py-2.5 cursor-pointer animate-[fadeIn_0.15s_ease-out]"
           style={{
             background: "var(--gf-panel)",
             border: "1px solid var(--gf-panel-border)",
             borderLeft: `3px solid ${SEVERITY_COLOR[n.severity] ?? "var(--gf-text-muted)"}`,
-            borderRadius: 2,
+            borderRadius: 6,
+            boxShadow: "var(--gf-shadow)",
           }}
           onClick={() => onClick(n)}
           role="alert"

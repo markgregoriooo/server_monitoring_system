@@ -4,6 +4,7 @@ import { useNotifications } from "../../context/NotificationContext";
 import type { AppNotification } from "../../context/NotificationContext";
 import { SEVERITY_COLOR, routeFor, relativeTime } from "./notificationUtils";
 import { desktopPermission, requestDesktopPermission } from "../../utils/browserNotify";
+import { isSoundEnabled, setSoundEnabled } from "../../utils/notificationSound";
 
 export default function NotificationPanel({ onClose }: { onClose: () => void }) {
   const { items, unreadCount, markRead, markAllRead } = useNotifications();
@@ -11,6 +12,13 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
 
   // Desktop (OS) popups are opt-in: offer to enable while permission is still "default".
   const [perm, setPerm] = useState(desktopPermission());
+  // Notification chime — on by default, mutable from this panel.
+  const [soundOn, setSoundOn] = useState(isSoundEnabled());
+  const toggleSound = () => {
+    const next = !soundOn;
+    setSoundEnabled(next);
+    setSoundOn(next);
+  };
 
   const onItemClick = (n: AppNotification) => {
     if (!n.isRead) markRead([n.id]);
@@ -20,11 +28,12 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
 
   return (
     <div
-      className="absolute right-0 mt-2 w-80 max-h-[70vh] flex flex-col z-50 shadow-xl"
+      className="fixed top-12 right-2 w-[calc(100vw-1rem)] max-w-sm sm:absolute sm:top-auto sm:right-0 sm:mt-2 sm:w-96 sm:max-w-none max-h-[78vh] flex flex-col z-50 overflow-hidden"
       style={{
         background: "var(--gf-panel)",
         border: "1px solid var(--gf-panel-border)",
-        borderRadius: 2,
+        borderRadius: 8,
+        boxShadow: "var(--gf-shadow)",
         fontFamily: "'JetBrains Mono', monospace",
       }}
       role="dialog"
@@ -32,23 +41,46 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between px-3 py-2 flex-shrink-0"
+        className="flex items-center justify-between px-3.5 py-2.5 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--gf-divider)" }}
       >
-        <span className="text-[11px] font-semibold tracking-wide" style={{ color: "var(--gf-text-primary)" }}>
+        <span className="text-[12px] font-semibold tracking-wide" style={{ color: "var(--gf-text-primary)" }}>
           NOTIFICATIONS{unreadCount > 0 ? ` (${unreadCount})` : ""}
         </span>
-        {unreadCount > 0 && (
+        <div className="flex items-center gap-3">
+          {unreadCount > 0 && (
+            <button
+              onClick={() => markAllRead()}
+              className="text-[11px] transition-colors"
+              style={{ color: "var(--gf-accent)" }}
+              onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.8")}
+              onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
+            >
+              Mark all read
+            </button>
+          )}
           <button
-            onClick={() => markAllRead()}
-            className="text-[10px] transition-colors"
-            style={{ color: "var(--gf-accent)" }}
-            onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.8")}
-            onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
+            onClick={toggleSound}
+            aria-label={soundOn ? "Mute notification sound" : "Unmute notification sound"}
+            title={soundOn ? "Sound on" : "Sound off"}
+            className="transition-colors flex items-center"
+            style={{ color: soundOn ? "var(--gf-text-muted)" : "var(--gf-text-dim)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--gf-text-primary)")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = soundOn ? "var(--gf-text-muted)" : "var(--gf-text-dim)")}
           >
-            Mark all read
+            {soundOn ? (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M8 3L4.5 6H2v4h2.5L8 13V3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+                <path d="M10.5 5.5a3 3 0 010 5M12.5 4a5.5 5.5 0 010 8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M8 3L4.5 6H2v4h2.5L8 13V3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+                <path d="M11 6l3 3M14 6l-3 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              </svg>
+            )}
           </button>
-        )}
+        </div>
       </div>
 
       {/* Desktop-popup opt-in (only while the browser hasn't decided yet) */}
@@ -68,9 +100,9 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
       )}
 
       {/* List */}
-      <div className="overflow-y-auto">
+      <div className="overflow-y-auto pb-2">
         {items.length === 0 ? (
-          <div className="px-3 py-8 text-center text-[11px]" style={{ color: "var(--gf-text-muted)" }}>
+          <div className="px-3 py-10 text-center text-[12px]" style={{ color: "var(--gf-text-muted)" }}>
             No notifications
           </div>
         ) : (
@@ -78,7 +110,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
             <button
               key={n.id}
               onClick={() => onItemClick(n)}
-              className="w-full text-left px-3 py-2.5 flex gap-2.5 transition-colors"
+              className="w-full text-left px-3.5 py-3 flex gap-2.5 transition-colors"
               style={{
                 borderBottom: "1px solid var(--gf-divider)",
                 background: n.isRead ? "transparent" : "var(--gf-accent-dim)",
@@ -89,22 +121,22 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
               {/* severity dot */}
               <span
                 className="mt-1 flex-shrink-0 rounded-full"
-                style={{ width: 7, height: 7, background: SEVERITY_COLOR[n.severity] ?? "var(--gf-text-muted)" }}
+                style={{ width: 8, height: 8, background: SEVERITY_COLOR[n.severity] ?? "var(--gf-text-muted)" }}
               />
               <span className="flex-1 min-w-0">
                 <span className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-semibold truncate" style={{ color: "var(--gf-text-primary)" }}>
+                  <span className="text-[12px] font-semibold truncate" style={{ color: "var(--gf-text-primary)" }}>
                     {n.title}
                   </span>
-                  <span className="text-[9px] flex-shrink-0" style={{ color: "var(--gf-text-dim)" }}>
+                  <span className="text-[10px] flex-shrink-0" style={{ color: "var(--gf-text-dim)" }}>
                     {relativeTime(n.sentAt || n.createdAt)}
                   </span>
                 </span>
-                <span className="block text-[10px] mt-0.5 truncate" style={{ color: "var(--gf-text-muted)" }}>
+                <span className="block text-[11px] mt-0.5 truncate" style={{ color: "var(--gf-text-muted)" }}>
                   {n.message}
                 </span>
                 {n.deviceName && (
-                  <span className="block text-[9px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
+                  <span className="block text-[10px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
                     {n.deviceName}
                   </span>
                 )}
