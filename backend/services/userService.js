@@ -1,6 +1,26 @@
 import db from "../config/mysql.js";
 import bcrypt from "bcryptjs";
 
+// ─── Last-admin invariant (best practice) ─────────────────────────────────────
+// The system must always retain at least one ACTIVE admin. These helpers back the
+// server-side guard so removing/disabling/demoting the final admin is rejected even
+// via a direct API call (the UI button-hiding is only a convenience on top).
+
+// Count active admins OTHER than `excludeId`.
+async function countOtherActiveAdmins(excludeId) {
+  const [[row]] = await db.query(
+    "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active' AND user_id <> ?",
+    [excludeId],
+  );
+  return Number(row?.n ?? 0);
+}
+
+function lastAdminError() {
+  const err = new Error("Cannot remove the last active administrator. Assign another admin first.");
+  err.status = 400;
+  return err;
+}
+
 const userService = {
   
   // GET ALL USERS
@@ -210,6 +230,15 @@ const userService = {
       "SELECT role, status FROM users WHERE user_id = ?",
       [id],
     );
+
+    // Best practice: never let an edit demote or disable the LAST active admin.
+    const wasActiveAdmin = before?.role === "admin" && before?.status === "active";
+    const willBeActiveAdmin =
+      (role ?? before?.role) === "admin" && (status ?? before?.status) === "active";
+    if (wasActiveAdmin && !willBeActiveAdmin && (await countOtherActiveAdmins(id)) === 0) {
+      throw lastAdminError();
+    }
+
     const mustRevoke =
       (role !== undefined && role !== before?.role) ||
       (status === "inactive" && before?.status !== "inactive");
@@ -237,45 +266,32 @@ const userService = {
     return rows[0];
   },
 
-  // RESET PASSWORD -admin
-  async resetPassword(id, password) {
-    if (!password || password.length < 6) {
-      throw new Error("Password must be at least 6 characters.");
-    }
-
-    // check user exists
-    const [rows] = await db.query(
-      "SELECT user_id FROM users WHERE user_id = ?",
-      [id],
-    );
-
-    if (rows.length === 0) {
-      throw new Error("User not found.");
-    }
-
-    // hash new password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // update password — F-02: revoke existing sessions on admin reset.
-    await db.query(
-      `UPDATE users
-     SET
-       hash_password = ?,
-       token_version = token_version + 1,
-       updated_at = NOW()
-     WHERE user_id = ?`,
-      [hashedPassword, id],
-    );
-
-    return true;
-  },
-
   // UPDATE USER STATUS -admin
-  async updateUserStatus(id, status) {
+  async updateUserStatus(id, status, currentUserId) {
     const validStatuses = ["active", "inactive"];
 
     if (!validStatuses.includes(status)) {
       throw new Error("Invalid status.");
+    }
+
+    if (status === "inactive") {
+      if (currentUserId !== undefined && id === currentUserId) {
+        const err = new Error("Cannot disable your own account.");
+        err.status = 400;
+        throw err;
+      }
+      // Never disable the last active admin.
+      const [[target]] = await db.query(
+        "SELECT role, status FROM users WHERE user_id = ?",
+        [id],
+      );
+      if (
+        target?.role === "admin" &&
+        target?.status === "active" &&
+        (await countOtherActiveAdmins(id)) === 0
+      ) {
+        throw lastAdminError();
+      }
     }
 
     // F-02: disabling an account revokes its live token immediately.
@@ -316,12 +332,22 @@ const userService = {
     }
 
     const [rows] = await db.query(
-      "SELECT user_id FROM users WHERE user_id = ?",
+      "SELECT role, status FROM users WHERE user_id = ?",
       [id],
     );
 
     if (rows.length === 0) {
       throw new Error("User not found.");
+    }
+
+    // Never delete the last active admin — the system would be left with no admins.
+    const target = rows[0];
+    if (
+      target.role === "admin" &&
+      target.status === "active" &&
+      (await countOtherActiveAdmins(id)) === 0
+    ) {
+      throw lastAdminError();
     }
 
     return await db.query("DELETE FROM users WHERE user_id = ?", [id]);

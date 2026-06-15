@@ -38,37 +38,51 @@ function toClient(r) {
     isRead: Boolean(r.is_read),
     createdAt: iso(r.created_at),
     sentAt: iso(r.sent_at),
+    // Shared lifecycle state so the bell can show acknowledge/resolve (distinct from
+    // the per-user is_read). Kept in sync live via the `alertUpdated` broadcast.
+    status: r.status ?? "active",
+    acknowledgedByName: r.acknowledged_by_name ?? null,
+    acknowledgedByRole: r.acknowledged_by_role ?? null,
+    acknowledgedAt: iso(r.acknowledged_at),
+    resolvedAt: iso(r.resolved_at),
   };
 }
 
 // Raise one alert and fan it out to every active user. Best-effort: a notification
 // failure must never break the monitoring path that triggered it, so this swallows
 // errors and returns the new alert_id (or null on failure).
-async function raiseAlert({ deviceId, type, title, message, severity = "info", metricValue = null }) {
+async function raiseAlert({ deviceId, type, title, message, severity = "info", metricValue = null, alertRuleId = null }) {
   try {
     if (!SEVERITIES.includes(severity)) severity = "info";
     const dId = deviceId ?? null;
 
     // Cooldown / de-dup (restart-proof): skip if an identical alert (same device +
-    // type + severity) was already raised within the window. Stops the bell + email
-    // repeating for a value that stays in-band across polls AND across backend
+    // type + severity) is still OPEN and was raised within the window. Stops the bell +
+    // email repeating for a value that stays in-band across polls AND across backend
     // restarts (the in-memory hysteresis can't survive a restart; this DB check can).
+    //
+    // `status <> 'resolved'` is the key: once an alert is resolved (manually or
+    // auto-resolved when the metric recovered), it no longer suppresses — so a genuine
+    // RECURRENCE re-alerts immediately instead of waiting out the window. This matches
+    // how real incident tools de-dup (per open incident, not a blind wall clock).
     // `<=>` is MySQL's null-safe equals, since device_id may be NULL (system alerts).
     const cooldownMin = Number(process.env.NOTIFY_COOLDOWN_MIN) || 30;
     const [[recent]] = await db.query(
       `SELECT alert_id FROM alerts
         WHERE device_id <=> ? AND type = ? AND severity = ?
+          AND status <> 'resolved'
           AND created_at > (NOW() - INTERVAL ? MINUTE)
         ORDER BY alert_id DESC LIMIT 1`,
       [dId, type, severity, cooldownMin],
     );
     if (recent) return recent.alert_id;
 
-    // 1) the event
+    // 1) the event — alert_rule_id records WHICH configurable rule fired (NULL for
+    //    triggers that aren't rule-based, e.g. server offline).
     const [ins] = await db.query(
-      `INSERT INTO alerts (device_id, metric_value, type, title, message, severity, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'active')`,
-      [dId, metricValue, type, title, message, severity],
+      `INSERT INTO alerts (device_id, alert_rule_id, metric_value, type, title, message, severity, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [dId, alertRuleId ?? null, metricValue, type, title, message, severity],
     );
     const alertId = ins.insertId;
 
@@ -97,10 +111,12 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
     const [rows] = await db.query(
       `SELECT n.id, n.user_id, n.is_read, n.sent_at,
               a.alert_id, a.device_id, a.type, a.title, a.message, a.severity, a.created_at,
-              d.device_name
+              a.status, a.acknowledged_at, a.resolved_at,
+              d.device_name, u.name AS acknowledged_by_name, u.role AS acknowledged_by_role
          FROM alert_notifications n
          JOIN alerts a   ON a.alert_id = n.alert_id
          LEFT JOIN devices d ON d.device_id = a.device_id
+         LEFT JOIN users u   ON u.user_id   = a.acknowledged_by
         WHERE n.alert_id = ?`,
       [alertId],
     );
@@ -141,10 +157,12 @@ async function listForUser(userId, { limit = 30 } = {}) {
   const [rows] = await db.query(
     `SELECT n.id, n.is_read, n.sent_at,
             a.alert_id, a.device_id, a.type, a.title, a.message, a.severity, a.created_at,
-            d.device_name
+            a.status, a.acknowledged_at, a.resolved_at,
+            d.device_name, u.name AS acknowledged_by_name, u.role AS acknowledged_by_role
        FROM alert_notifications n
        JOIN alerts a   ON a.alert_id = n.alert_id
        LEFT JOIN devices d ON d.device_id = a.device_id
+       LEFT JOIN users u   ON u.user_id   = a.acknowledged_by
       WHERE n.user_id = ?
       ORDER BY n.sent_at DESC, n.id DESC
       LIMIT ${n}`,
@@ -178,6 +196,19 @@ async function markAllRead(userId) {
     `UPDATE alert_notifications SET is_read = 1, read_at = NOW()
       WHERE user_id = ? AND is_read = 0`,
     [userId],
+  );
+  return res.affectedRows;
+}
+
+// Mark THIS user's bell row for a specific alert read — used when they acknowledge or
+// resolve that alert (acting on it means they've seen it). Scoped to the one user;
+// never touches anyone else's read state.
+async function markReadByAlert(userId, alertId) {
+  if (!userId || !alertId) return 0;
+  const [res] = await db.query(
+    `UPDATE alert_notifications SET is_read = 1, read_at = NOW()
+      WHERE user_id = ? AND alert_id = ? AND is_read = 0`,
+    [userId, Number(alertId)],
   );
   return res.affectedRows;
 }
@@ -249,6 +280,6 @@ async function purgeOld(days) {
 }
 
 export default {
-  init, raiseAlert, listForUser, unreadCount, markRead, markAllRead,
+  init, raiseAlert, listForUser, unreadCount, markRead, markAllRead, markReadByAlert,
   dismiss, clearAll, getPrefs, savePrefs, purgeOld,
 };

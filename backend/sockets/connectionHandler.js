@@ -2,6 +2,7 @@ import { sensorHandler }        from "../handlers/sensorHandler.js";
 import { offlineDataHandler }   from "../handlers/offlineDataHandler.js";
 import { sendSensorHistory }    from "../handlers/querySensorHistoryHandler.js";
 import airconService            from "../services/airconService.js";
+import alertRulesService        from "../services/alertRulesService.js";
 
 export const handleConnection = (io, socket) => {
   console.log("Client connected:", socket.id, socket.isDevice ? "[ESP32]" : "[browser]");
@@ -12,6 +13,16 @@ export const handleConnection = (io, socket) => {
     airconService.getChannelConfig()
       .then(config => socket.emit("irConfig", config))
       .catch(err => console.error("[irConfig push error]", err));
+    // Push configurable alarm thresholds so the device's LED/buzzer/status match the
+    // dashboard's Alert Rules (re-pushed on every rule change, see routes/alertRules.js).
+    alertRulesService.getRoomThresholds()
+      .then(cfg => socket.emit("envConfig", cfg))
+      .catch(err => console.error("[envConfig push error]", err));
+    // Push the auto-cooling IR zone boundaries (getIRZone) so the device fires IR at the
+    // dashboard's configured thresholds (re-pushed on change, see routes/aircon.js).
+    airconService.getDeviceIRConfig()
+      .then(cfg => socket.emit("acConfig", cfg))
+      .catch(err => console.error("[acConfig push error]", err));
   } else if (socket.user?.id) {
     // Browser: join a per-user room so notifications can target this user across
     // all their open tabs (io.to(`user:<id>`).emit("notification", …)).

@@ -1,30 +1,61 @@
 import { writeClient, Point } from "../config/influx.js";
 import notificationService from "../services/notificationService.js";
+import alertRulesService from "../services/alertRulesService.js";
+import alertsService from "../services/alertsService.js";
+import alertBandState from "../services/alertBandState.js";
 
-// ESP32 status strings (env_monitor_v2.ino) → notification severity.
-const ENV_SEVERITY = { WARNING: "warning", DANGER: "critical", CRITICAL: "critical" };
-const ENV_RANK = { NORMAL: 0, TOO_COLD: 0, WARNING: 1, DANGER: 2, CRITICAL: 3 };
+const SEV_RANK = alertRulesService.SEV_RANK;
 
-// Raise an environment alert only when the room's status ESCALATES into a worse
-// band — not on every 1s reading, and not on recovery. The DB cooldown in
-// notificationService then suppresses repeats while it sits in that band.
-let lastEnvStatus = "NORMAL";
-function maybeRaiseEnvAlert(data) {
-  const status = data.environment_status;
-  const rank = ENV_RANK[status] ?? 0;
-  const worsened = rank > (ENV_RANK[lastEnvStatus] ?? 0);
-  lastEnvStatus = status;
-  if (!worsened || !ENV_SEVERITY[status]) return;
+// Environment alerting is now rule-driven (alert_rules, device_id NULL = room-level),
+// replacing the firmware's fixed status bands. Each reported metric is evaluated
+// against its configurable thresholds and raises a PER-METRIC alert on the onset of a
+// worse band — nextBand applies hysteresis and the DB cooldown suppresses repeats. The
+// ESP32 isn't a `devices` row, so these stay system alerts (deviceId null) with no
+// device_logs. The firmware's environment_status is still used for the dashboard +
+// InfluxDB tags; it just no longer drives notifications. The per-metric "current band"
+// lives in the shared alertBandState (deviceId null = room-level) so the alert lifecycle
+// can re-arm it: after a resolve, a still-breaching metric re-alerts on the next reading.
 
-  const smoke = data.smoke_status === "DANGER";
-  const gas = Math.max(data.mq2_1_ppm, data.mq2_2_ppm);
-  notificationService.raiseAlert({
-    deviceId: null, // the ESP32 isn't a devices row — this is a room-level (system) alert
-    type: "environment",
-    severity: ENV_SEVERITY[status],
-    title: smoke ? "Smoke detected — server room" : `Server room ${status.toLowerCase()}`,
-    message: `Temp ${data.temperature}°C · humidity ${data.humidity}% · gas ${gas}ppm (${status})`,
-  });
+// metric_name (must match the seeded rules) → how to read it + phrase the alert.
+const ENV_METRICS = {
+  temperature: { value: (d) => d.temperature, unit: "°C", label: "Server room temperature" },
+  gas: { value: (d) => Math.max(d.mq2_1_ppm, d.mq2_2_ppm), unit: "ppm", label: "Server room gas" },
+  humidity: { value: (d) => d.humidity, unit: "%", label: "Server room humidity" },
+};
+
+async function maybeRaiseEnvAlert(data) {
+  try {
+    for (const [key, meta] of Object.entries(ENV_METRICS)) {
+      const v = meta.value(data);
+      if (typeof v !== "number" || Number.isNaN(v)) continue;
+
+      const rules = await alertRulesService.getEffectiveRules(null, key);
+      const prev = alertBandState.getBand(null, key);
+      const { band, rule } = alertRulesService.nextBand(rules, v, prev);
+      alertBandState.setBand(null, key, band);
+
+      // Recovery: metric back to normal → auto-resolve its open room-level alerts.
+      if (band === "normal" && prev !== "normal") {
+        await alertsService.autoResolveMetric(null, key);
+      }
+      if (SEV_RANK[band] <= SEV_RANK[prev]) continue; // only act on escalation
+
+      // Smoke = a gas reading the firmware flags DANGER — give it a clearer title.
+      const smoke = key === "gas" && data.smoke_status === "DANGER";
+      const word = band === "critical" ? "critical" : band === "warning" ? "high" : band;
+      await notificationService.raiseAlert({
+        deviceId: null, // ESP32 isn't a devices row — this is a room-level (system) alert
+        type: key,
+        severity: band,
+        title: smoke ? "Smoke detected — server room" : `${meta.label} ${word}`,
+        message: `${meta.label} ${word}: ${Math.round(v * 10) / 10}${meta.unit}`,
+        metricValue: v,
+        alertRuleId: rule?.alert_rule_id ?? null,
+      });
+    }
+  } catch (err) {
+    console.error("[SENSOR] env alert error:", err.message);
+  }
 }
 
 export async function sensorHandler(socket, data) {
@@ -99,5 +130,5 @@ export async function sensorHandler(socket, data) {
   }
 
   // ---- Environment alert (temp / humidity / gas / smoke escalation) ----
-  maybeRaiseEnvAlert(data);
+  await maybeRaiseEnvAlert(data);
 }

@@ -9,6 +9,8 @@ import { JWT_SECRET } from "../middleware/auth.js";
 import db from "../config/mysql.js";
 import agentService from "../services/agentService.js";
 import notificationService from "../services/notificationService.js";
+import alertRulesService from "../services/alertRulesService.js";
+import alertsService from "../services/alertsService.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
@@ -20,6 +22,7 @@ import userRoutes from "../routes/users.js";
 import alertRoutes from "../routes/alerts.js";
 import reportRoutes from "../routes/reports.js";
 import notificationRoutes from "../routes/notifications.js";
+import alertRuleRoutes from "../routes/alertRules.js";
 
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, //15 mins
@@ -112,6 +115,13 @@ app.set("io", io);
 // (offline sweep, threshold checks, …) can raise + push notifications without
 // threading `io` through every call.
 notificationService.init(io);
+alertsService.init(io); // so acknowledge/resolve + auto-resolve can broadcast alertUpdated
+
+// Warm the configurable-threshold cache so the first metric POST evaluates against
+// rules without a cold DB read (getEffectiveRules also lazy-loads as a fallback).
+alertRulesService.reload().catch((e) =>
+  console.error("[alert-rules] initial load failed:", e.message),
+);
 
 // socket connections
 io.on("connection", (socket) => {
@@ -128,6 +138,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/reports", reportRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/alert-rules", alertRuleRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" })
@@ -139,9 +150,12 @@ app.use((err, req, res, next) => {
 
   const status = err.status || 500;
 
-  res.status(status).json({
-    message: err.message || "Internal Server Error",
-  });
+  // Surface intentional (4xx) messages to the client — the frontend reads `error`.
+  // 5xx stays generic so unexpected internals aren't leaked.
+  const body = { message: err.message || "Internal Server Error" };
+  if (status >= 400 && status < 500) body.error = err.message;
+
+  res.status(status).json(body);
 });
 
 

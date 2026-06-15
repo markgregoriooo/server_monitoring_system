@@ -527,6 +527,141 @@ function AddAirconModal({ usedChannels, channelMap, onAdd, onClose }: {
   );
 }
 
+// ─── IRZoneConfig (auto-cooling thresholds) ─────────────────────────────────────
+// The ESP32's getIRZone() fires IR when the room temp crosses these boundaries. Target
+// temps per zone are fixed (captured IR codes) — only the boundaries (WHEN it fires) are
+// configurable. Admin edits; both roles can view. Saved via PUT /aircon/ir-config, which
+// re-pushes "acConfig" to the device live. Kept separate from Alert Rules on purpose:
+// cooling should ramp BEFORE the alarm thresholds, so its thresholds sit at/below them.
+
+function IRZoneConfig({ isAdmin }: { isAdmin: boolean }) {
+  const [form, setForm] = useState({ coldBelow: "", normalMax: "", acceptableMax: "", nearCritMax: "" });
+  const [meta, setMeta] = useState<{ updatedByName: string | null; updatedAt: string | null }>({
+    updatedByName: null, updatedAt: null,
+  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving]   = useState(false);
+  const [saved, setSaved]     = useState(false);
+  const [error, setError]     = useState("");
+
+  const apply = (c: {
+    coldBelow: number; normalMax: number; acceptableMax: number; nearCritMax: number;
+    updatedByName?: string | null; updatedAt?: string | null;
+  }) => {
+    setForm({
+      coldBelow: String(c.coldBelow), normalMax: String(c.normalMax),
+      acceptableMax: String(c.acceptableMax), nearCritMax: String(c.nearCritMax),
+    });
+    setMeta({ updatedByName: c.updatedByName ?? null, updatedAt: c.updatedAt ?? null });
+  };
+
+  useEffect(() => {
+    api.getAirconIRConfig().then((res) => {
+      if (res.success && res.data?.config) apply(res.data.config);
+      setLoading(false);
+    });
+  }, []);
+
+  const save = async () => {
+    setSaving(true); setError("");
+    const res = await api.saveAirconIRConfig({
+      coldBelow: Number(form.coldBelow), normalMax: Number(form.normalMax),
+      acceptableMax: Number(form.acceptableMax), nearCritMax: Number(form.nearCritMax),
+    });
+    setSaving(false);
+    if (res.success && res.data?.config) {
+      apply(res.data.config);
+      setSaved(true); setTimeout(() => setSaved(false), 2000);
+    } else {
+      setError(res.error ?? "Failed to save thresholds.");
+    }
+  };
+
+  const zones = [
+    { name: "Too Cold",      range: `< ${form.coldBelow || "–"}°C`,                              target: "28°C · Auto", color: BLUE },
+    { name: "Normal",        range: `${form.coldBelow || "–"}–${form.normalMax || "–"}°C`,       target: "26°C · Auto", color: GREEN },
+    { name: "Acceptable",    range: `${form.normalMax || "–"}–${form.acceptableMax || "–"}°C`,   target: "24°C · Auto", color: GREEN },
+    { name: "Near Critical", range: `${form.acceptableMax || "–"}–${form.nearCritMax || "–"}°C`, target: "22°C · High", color: ORANGE },
+    { name: "Critical",      range: `> ${form.nearCritMax || "–"}°C`,                            target: "20°C · High", color: RED },
+  ];
+
+  const field = (key: keyof typeof form, label: string) => (
+    <div className="flex flex-col gap-1">
+      <label className="text-[9px] tracking-widest uppercase" style={{ color: GF.textMuted }}>{label}</label>
+      <input
+        type="number" step="0.5" value={form[key]} disabled={!isAdmin}
+        onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))}
+        className="w-full px-2 py-1.5 rounded-[2px] text-[12px] focus:outline-none"
+        style={{ background: GF.hover, border: `1px solid ${GF.divider}`, color: GF.textPrimary, fontFamily: "monospace", opacity: isAdmin ? 1 : 0.6 }}
+      />
+    </div>
+  );
+
+  const title = <span className="text-[12px] font-semibold" style={{ color: GF.textPrimary }}>Auto-Cooling Thresholds</span>;
+
+  return (
+    <Panel title={title}>
+      {loading ? (
+        <div className="text-[11px] py-2" style={{ color: GF.textDim }}>Loading…</div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <p className="text-[10px] leading-relaxed" style={{ color: GF.textMuted }}>
+            Room temperature at which the ESP32 fires IR to change the AC setting — target temps per
+            zone are fixed (captured IR codes), so these set <span style={{ color: GF.textPrimary }}>when</span> each
+            kicks in. Separate from <span style={{ color: GF.textPrimary }}>Alert Rules</span> (which decide when to
+            alarm); keep these at or below your temperature alert thresholds so the AC ramps up before the room alarms.
+          </p>
+
+          {/* Zone map */}
+          <div className="grid grid-cols-1 sm:grid-cols-5 gap-px rounded-[2px] overflow-hidden" style={{ background: GF.divider }}>
+            {zones.map((z) => (
+              <div key={z.name} className="flex flex-col gap-1 px-3 py-2.5" style={{ background: GF.panel }}>
+                <span className="flex items-center gap-1.5 text-[10px] font-semibold" style={{ color: GF.textPrimary }}>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: z.color }} /> {z.name}
+                </span>
+                <span className="text-[10px]" style={{ color: GF.textMuted }}>{z.range}</span>
+                <span className="text-[10px] font-bold" style={{ color: z.color }}>{z.target}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Editable boundaries (admin) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {field("coldBelow", "Too Cold below")}
+            {field("normalMax", "Normal ≤")}
+            {field("acceptableMax", "Acceptable ≤")}
+            {field("nearCritMax", "Near Critical ≤")}
+          </div>
+
+          {error && (
+            <div className="text-[11px] px-3 py-2 rounded-[2px]" style={{ color: RED, background: "rgba(242,73,92,0.08)", border: "1px solid rgba(242,73,92,0.2)" }}>
+              {error}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <span className="text-[9px]" style={{ color: GF.textDim }}>
+              {meta.updatedByName ? `Edited by ${meta.updatedByName}` : "System default"}
+              {meta.updatedAt ? ` · ${new Date(meta.updatedAt).toLocaleString("en-PH", { timeZone: "Asia/Manila", hour12: false })}` : ""}
+            </span>
+            {isAdmin ? (
+              <button
+                onClick={save} disabled={saving}
+                className="px-3 py-1.5 rounded-[2px] text-[11px] font-semibold transition-colors disabled:opacity-50"
+                style={{ background: saved ? GREEN : GF.accent, color: "#fff" }}
+              >
+                {saved ? "✓ Saved" : saving ? "Saving…" : "Save thresholds"}
+              </button>
+            ) : (
+              <span className="text-[9px] tracking-widest uppercase" style={{ color: GF.textDim }}>Admin only</span>
+            )}
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function AirConditioner() {
@@ -715,6 +850,9 @@ export default function AirConditioner() {
               sub="auto IR control"
             />
           </div>
+
+          {/* ── Auto-cooling thresholds ── */}
+          <IRZoneConfig isAdmin={isAdmin} />
 
           {/* ── AC unit cards ── */}
           {total === 0 ? (

@@ -1,17 +1,50 @@
 import express from "express";
-import {alerts,auditLog} from "../data/db.js";
-import {authMiddleware} from "../middleware/auth.js";
+import asyncHandler from "../utils/asyncHandler.js";
+import alertsService from "../services/alertsService.js";
+import { authMiddleware, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// GET /api/alerts
-router.get("/", authMiddleware, (req, res) => {
-  res.json({ alerts });
-});
+// The shared alert list + lifecycle. Acknowledge/resolve is an operational action,
+// so both admin and it_staff can do it (managing the rules stays admin-only).
+router.use(authMiddleware, requireRole("admin", "it_staff"));
 
-// GET /api/alerts/audit
-router.get("/audit", authMiddleware, (req, res) => {
-  res.json({ log: auditLog });
-});
+// GET /api/alerts?status=active|acknowledged|resolved&limit=
+router.get(
+  "/",
+  asyncHandler(async (req, res) => {
+    res.json({
+      alerts: await alertsService.list({ status: req.query.status, limit: req.query.limit }),
+    });
+  }),
+);
+
+// GET /api/alerts/count — number of alerts needing attention (not resolved). Sidebar badge.
+router.get(
+  "/count",
+  asyncHandler(async (_req, res) => {
+    res.json({ open: await alertsService.openCount() });
+  }),
+);
+
+// POST /api/alerts/:id/acknowledge — "I'm handling this".
+router.post(
+  "/:id/acknowledge",
+  asyncHandler(async (req, res) => {
+    const alert = await alertsService.acknowledge(req.params.id, req.user.id);
+    if (!alert) return res.status(404).json({ error: "Alert not found." });
+    res.json({ success: true, alert });
+  }),
+);
+
+// POST /api/alerts/:id/resolve — "this is over".
+router.post(
+  "/:id/resolve",
+  asyncHandler(async (req, res) => {
+    const alert = await alertsService.resolve(req.params.id, req.user.id);
+    if (!alert) return res.status(404).json({ error: "Alert not found." });
+    res.json({ success: true, alert });
+  }),
+);
 
 export default router;
