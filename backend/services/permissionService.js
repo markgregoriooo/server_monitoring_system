@@ -8,6 +8,7 @@ const ROLE_PERMISSIONS = {
   it_staff: [
     "view:dashboard", "view:server-metrics", "view:environment",
     "view:air-conditioner", "view:history", "view:reports",
+    "view:settings",
   ],
 };
 

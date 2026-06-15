@@ -30,6 +30,38 @@ router.get("/channels", async (req, res, next) => {
   }
 });
 
+// Push the auto-cooling IR zone thresholds to the ESP32 (its getIRZone() boundaries) so
+// changing WHEN IR fires needs no reflash — mirrors envConfig in routes/alertRules.js.
+async function pushACConfig(io) {
+  if (!io) return;
+  try {
+    io.to("devices").emit("acConfig", await airconService.getDeviceIRConfig());
+  } catch (err) {
+    console.error("[acConfig push error]", err.message);
+  }
+}
+
+// ── GET /api/aircon/ir-config — auto-cooling zone thresholds (both roles) ──────
+router.get("/ir-config", authMiddleware, async (req, res, next) => {
+  try {
+    res.json({ config: await airconService.getIRConfig() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── PUT /api/aircon/ir-config — admin only; persist + re-push to the ESP32 ─────
+router.put("/ir-config", authMiddleware, requireRole("admin"), async (req, res, next) => {
+  try {
+    const config = await airconService.saveIRConfig(req.body ?? {}, req.user.id);
+    await pushACConfig(req.app.get("io"));
+    res.json({ success: true, config });
+  } catch (err) {
+    if (err.status === 400) return res.status(400).json({ error: err.message });
+    next(err);
+  }
+});
+
 // ── POST /api/aircon ──────────────────────────────────────────────────────────
 router.post("/", authMiddleware, requireRole("admin", "it_staff"), async (req, res, next) => {
   const { name, ir_channel } = req.body;

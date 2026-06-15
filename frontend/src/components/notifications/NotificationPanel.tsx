@@ -6,9 +6,17 @@ import { SEVERITY_COLOR, routeFor, relativeTime } from "./notificationUtils";
 import { desktopPermission, requestDesktopPermission } from "../../utils/browserNotify";
 import { isSoundEnabled, setSoundEnabled } from "../../utils/notificationSound";
 
+// Friendly role label for the acknowledge/resolve attribution line.
+const roleLabel = (r?: string | null) =>
+  r === "admin" ? "Admin" : r === "it_staff" ? "IT Staff" : r ?? "";
+
 export default function NotificationPanel({ onClose }: { onClose: () => void }) {
   const { items, unreadCount, markRead, markAllRead, dismiss, clearAll } = useNotifications();
   const navigate = useNavigate();
+
+  // Bell filter: show all, or only unread.
+  const [filter, setFilter] = useState<"all" | "unread">("all");
+  const visibleItems = filter === "unread" ? items.filter((n) => !n.isRead) : items;
 
   // Desktop (OS) popups are opt-in: offer to enable while permission is still "default".
   const [perm, setPerm] = useState(desktopPermission());
@@ -94,6 +102,35 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
         </div>
       </div>
 
+      {/* All / Unread filter */}
+      <div
+        className="flex items-center gap-1 px-3 py-2 flex-shrink-0"
+        style={{ borderBottom: "1px solid var(--gf-divider)" }}
+      >
+        {([
+          { key: "all", label: `All${items.length ? ` (${items.length})` : ""}` },
+          { key: "unread", label: `Unread${unreadCount ? ` (${unreadCount})` : ""}` },
+        ] as const).map((t) => {
+          const active = filter === t.key;
+          return (
+            <button
+              key={t.key}
+              onClick={() => setFilter(t.key)}
+              className="text-[11px] px-2.5 py-1 transition-colors"
+              style={{
+                borderRadius: 2,
+                background: active ? "var(--gf-accent)" : "transparent",
+                color: active ? "#fff" : "var(--gf-text-muted)",
+              }}
+              onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--gf-hover)"; }}
+              onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Desktop-popup opt-in (only while the browser hasn't decided yet) */}
       {perm === "default" && (
         <button
@@ -112,12 +149,12 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
 
       {/* List */}
       <div className="overflow-y-auto pb-2">
-        {items.length === 0 ? (
+        {visibleItems.length === 0 ? (
           <div className="px-3 py-10 text-center text-[12px]" style={{ color: "var(--gf-text-muted)" }}>
-            No notifications
+            {filter === "unread" ? "No unread notifications" : "No notifications"}
           </div>
         ) : (
-          items.map((n) => (
+          visibleItems.map((n) => (
             // relative wrapper so the dismiss control is a sibling (not a nested
             // button) of the clickable row — valid HTML + group-hover reveal.
             <div
@@ -152,6 +189,23 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
                   {n.deviceName && (
                     <span className="block text-[10px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
                       {n.deviceName}
+                    </span>
+                  )}
+                  {n.status && n.status !== "active" && (
+                    <span
+                      className="flex items-center gap-1 text-[10px] mt-1 font-medium"
+                      style={{ color: n.status === "resolved" ? "#73BF69" : "var(--gf-accent)" }}
+                    >
+                      {n.status === "resolved" ? (
+                        <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
+                          <path d="M3 8.5l3.5 3.5L13 4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      ) : (
+                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", display: "inline-block" }} />
+                      )}
+                      {n.status === "resolved" ? "Resolved" : "Acknowledged"}
+                      {n.acknowledgedByName ? ` by ${n.acknowledgedByName}` : ""}
+                      {n.acknowledgedByName && n.acknowledgedByRole ? ` · ${roleLabel(n.acknowledgedByRole)}` : ""}
                     </span>
                   )}
                 </span>

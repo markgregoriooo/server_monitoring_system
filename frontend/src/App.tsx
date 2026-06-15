@@ -25,6 +25,8 @@ import History from "./pages/History";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import UserManagement from "./pages/UserManagement";
+import AlertRules from "./pages/AlertRules";
+import Alerts from "./pages/Alerts";
 
 const pageTitles: Record<string, string> = {
   "/": "Server Environment Monitoring & Control System",
@@ -35,6 +37,8 @@ const pageTitles: Record<string, string> = {
   "/reports": "Reports",
   "/settings": "Settings",
   "/user-management": "User Management",
+  "/alert-rules": "Alert Rules",
+  "/alerts": "Alerts",
 };
 
 interface ProtectedRouteProps {
@@ -162,6 +166,18 @@ function AppShell() {
             <Route path="/user-management" element={
               <ProtectedRoute>
                 <UserManagement />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/alerts" element={
+              <ProtectedRoute>
+                <Alerts />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/alert-rules" element={
+              <ProtectedRoute>
+                <AlertRules />
               </ProtectedRoute>
             } />
 

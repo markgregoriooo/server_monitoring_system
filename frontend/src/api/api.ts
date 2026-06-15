@@ -156,23 +156,6 @@ export const api = {
     }
   },
 
-  resetPassword: async (id: number, password: string): Promise<ApiResult> => {
-    try {
-
-      const res = await apiClient.patch(`/users/${id}/reset-password`, { password });
-
-      return {
-        success: true,
-        data: res.data,
-      };
-
-    } catch (err: any) {
-
-      return handleError(err);
-
-    }
-  },
-
   updateUserStatus: async (id: number, status: string): Promise<ApiResult> => {
 
     try {
@@ -350,10 +333,58 @@ export const api = {
     }
   },
 
-  // Alerts
-  getAlerts: async (): Promise<ApiResult> => {
+  // Auto-cooling IR zone thresholds (when IR fires). GET both roles; PUT admin-only.
+  getAirconIRConfig: async (): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get("/alerts");
+      const res = await apiClient.get("/aircon/ir-config");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  saveAirconIRConfig: async (cfg: {
+    coldBelow: number; normalMax: number; acceptableMax: number; nearCritMax: number;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put("/aircon/ir-config", cfg);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Alerts — shared incident list + lifecycle (acknowledge / resolve). Admin + IT staff.
+  getAlerts: async (status?: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/alerts", status ? { params: { status } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getOpenAlertCount: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/alerts/count");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  acknowledgeAlert: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/alerts/${id}/acknowledge`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  resolveAlert: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/alerts/${id}/resolve`);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
@@ -428,15 +459,6 @@ export const api = {
     }
   },
 
-  getAuditLog: async (): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.get("/alerts/audit");
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
   // Reports
   getReports: async (): Promise<ApiResult> => {
     try {
@@ -456,7 +478,49 @@ export const api = {
     }
   },
 
-  
+  // Alert rules — configurable thresholds (admin only). deviceId null = global default
+  // that applies to every server / the room; a deviceId is a per-server override.
+  getAlertRules: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/alert-rules");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
+  createAlertRule: async (data: {
+    deviceId?: number | null;
+    metricName: string;
+    thresholdValue: number;
+    comparison: string;
+    severity: string;
+    isActive?: boolean;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/alert-rules", data);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  updateAlertRule: async (id: number, data: Record<string, unknown>): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put(`/alert-rules/${id}`, data);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteAlertRule: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/alert-rules/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
 
 };

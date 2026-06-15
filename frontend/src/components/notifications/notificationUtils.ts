@@ -18,7 +18,10 @@ export function routeFor(n: AppNotification): string {
     case "disk":
     case "offline":
       return n.deviceId ? `/server-metrics?device=${n.deviceId}` : "/server-metrics";
-    case "environment":
+    case "environment": // legacy combined env alerts (pre-configurable-thresholds)
+    case "temperature":
+    case "gas":
+    case "humidity":
       return "/environment";
     default:
       return "/";

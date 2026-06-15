@@ -44,7 +44,7 @@ function LivePing() {
 
 export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: HeaderProps) {
   const { user }    = useAuth();
-  const { unreadCount } = useNotifications();
+  const { unreadCount, openAlertCount, pendingAgentCount, pendingUserCount } = useNotifications();
   const location    = useLocation();
   const [section, page] = breadcrumbs[location.pathname] ?? [BRAND.name, "Dashboard"];
 
@@ -78,6 +78,19 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
     hour: "2-digit", minute: "2-digit", hour12: false,
   });
 
+  // Shown on the "open sidebar" buttons (mobile burger + desktop reopen) so a HIDDEN
+  // sidebar still surfaces everything its nav badges would: alerts needing attention
+  // PLUS pending approvals (servers + user registrations, admin-only). Red when any
+  // alert is open (urgent), else accent (just pending). 0 for it_staff = alerts only.
+  const navAttention = openAlertCount + pendingAgentCount + pendingUserCount;
+  const navBadge = navAttention > 0 ? (
+    <span className="absolute -top-1 -right-1 min-w-[14px] h-3.5 px-0.5 rounded-full text-white flex items-center justify-center"
+      style={{ background: openAlertCount > 0 ? "#F2495C" : "var(--gf-accent)", fontSize: 7, fontWeight: 700 }}
+      title={`${navAttention} item(s) need attention`}>
+      {navAttention > 99 ? "99+" : navAttention}
+    </span>
+  ) : null;
+
   return (
     <header className="h-10 flex items-center justify-between px-4 flex-shrink-0"
       style={{
@@ -89,13 +102,14 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
       {/* LEFT — mobile menu + breadcrumb */}
       <div className="flex items-center gap-3">
         <button onClick={onMenuToggle}
-          className="lg:hidden p-1 rounded transition-colors"
+          className="lg:hidden relative p-1 rounded transition-colors"
           style={{ color: "var(--gf-text-muted)" }}
           onMouseEnter={e => (e.currentTarget.style.color = "var(--gf-text-primary)")}
           onMouseLeave={e => (e.currentTarget.style.color = "var(--gf-text-muted)")}>
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16"/>
           </svg>
+          {navBadge}
         </button>
 
         {/* Desktop: show the sidebar again when it's collapsed */}
@@ -103,13 +117,14 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
           <button onClick={onToggleCollapse}
             aria-label="Show sidebar"
             title="Show sidebar (Ctrl/⌘ B)"
-            className="hidden lg:flex items-center justify-center p-1 rounded transition-colors"
+            className="hidden lg:flex relative items-center justify-center p-1 rounded transition-colors"
             style={{ color: "var(--gf-text-muted)" }}
             onMouseEnter={e => (e.currentTarget.style.color = "var(--gf-text-primary)")}
             onMouseLeave={e => (e.currentTarget.style.color = "var(--gf-text-muted)")}>
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
               <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
             </svg>
+            {navBadge}
           </button>
         )}
 

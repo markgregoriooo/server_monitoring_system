@@ -2,6 +2,7 @@ import { useState } from "react";
 import { NavLink } from "react-router";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemeContext";
+import { useNotifications } from "../../context/NotificationContext";
 import { roleConfig } from "../../data/users";
 import { BRAND } from "../../branding";
 import { avatarUrl } from "../../utils/format";
@@ -76,6 +77,20 @@ const Icons: Record<string, React.ReactNode> = {
       <path d="M11 7c1.1 0 2 .9 2 2M13 13c0-1.1-.9-2-2-2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
     </svg>
   ),
+  "alert-rules": (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path d="M8 1.5a3.5 3.5 0 0 0-3.5 3.5c0 3-1.5 4-1.5 4h10s-1.5-1-1.5-4A3.5 3.5 0 0 0 8 1.5z"
+        stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+      <path d="M6.5 13a1.5 1.5 0 0 0 3 0" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+    </svg>
+  ),
+  alerts: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path d="M8 2.5l6 11H2l6-11z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+      <path d="M8 7v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+      <circle cx="8" cy="11.6" r="0.5" fill="currentColor" stroke="currentColor" strokeWidth="0.6"/>
+    </svg>
+  ),
 };
 
 const allNavItems: NavItem[] = [
@@ -83,15 +98,18 @@ const allNavItems: NavItem[] = [
   { id: "server-metrics",   label: "Server Metrics",   path: "/server-metrics",  icon: Icons["server-metrics"] },
   { id: "environment",      label: "Environment",      path: "/environment",     icon: Icons["environment"] },
   { id: "air-conditioner",  label: "Air Conditioner",  path: "/air-conditioner", icon: Icons["air-conditioner"] },
+  { id: "alerts",           label: "Alerts",           path: "/alerts",          icon: Icons["alerts"] },
   { id: "history",          label: "History",          path: "/history",         icon: Icons["history"] },
   { id: "reports",          label: "Reports",          path: "/reports",         icon: Icons["reports"] },
-  { id: "settings",         label: "Settings",         path: "/settings",        icon: Icons["settings"] },
   { id: "user-management",  label: "User Management",  path: "/user-management", icon: Icons["user-management"] },
+  { id: "alert-rules",      label: "Alert Rules",      path: "/alert-rules",     icon: Icons["alert-rules"] },
+  { id: "settings",         label: "Settings",         path: "/settings",        icon: Icons["settings"] },
 ];
 
 export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollapse }: SidebarProps) {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { openAlertCount, pendingAgentCount, pendingUserCount } = useNotifications();
   const [profileOpen, setProfileOpen] = useState(false);
   // Success toast shown AFTER the profile modal closes (same style as UserManagement).
   const [profileToast, setProfileToast] = useState("");
@@ -202,6 +220,15 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
             >
               <span style={{ opacity: 0.75 }}>{item.icon}</span>
               {item.label}
+              {item.id === "alerts" && (
+                <NavBadge count={openAlertCount} color="#F2495C" title={`${openAlertCount} alert(s) need attention`} />
+              )}
+              {item.id === "server-metrics" && (
+                <NavBadge count={pendingAgentCount} color="var(--gf-accent)" title={`${pendingAgentCount} server(s) awaiting approval`} />
+              )}
+              {item.id === "user-management" && (
+                <NavBadge count={pendingUserCount} color="var(--gf-accent)" title={`${pendingUserCount} new registration(s)`} />
+              )}
             </NavLink>
           ))}
         </nav>
@@ -314,5 +341,20 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
         </div>
       )}
     </>
+  );
+}
+
+// Small count pill shown on a nav item (alerts = red, pending approvals = accent).
+// Self-hides when count is 0.
+function NavBadge({ count, color, title }: { count: number; color: string; title: string }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      className="ml-auto min-w-[13px] h-[13px] px-[3px] flex items-center justify-center rounded-full text-[7.5px] font-semibold leading-none"
+      style={{ background: color, color: "#fff" }}
+      title={title}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
   );
 }
