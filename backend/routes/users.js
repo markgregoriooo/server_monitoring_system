@@ -117,21 +117,6 @@ router.patch(
   }),
 );
 
-// Reset Password
-router.patch(
-  "/:id/reset-password",
-  authMiddleware,
-  requireRole("admin"),
-  asyncHandler(async (req, res) => {
-    await userService.resetPassword(Number(req.params.id), req.body.password);
-
-    res.json({
-      success: true,
-      message: "Password reset successfully",
-    });
-  }),
-);
-
 // Disable user
 router.patch(
   "/:id/status",
@@ -141,6 +126,7 @@ router.patch(
     const updatedUser = await userService.updateUserStatus(
       Number(req.params.id),
       req.body.status,
+      req.user.id,
     );
 
     res.json({

@@ -1,159 +1,136 @@
 import { useState } from "react";
+import { useAuth } from "../context/AuthContext";
+import { useTheme } from "../context/ThemeContext";
+import { roleConfig, type Role } from "../data/users";
+import { initials, avatarUrl } from "../utils/format";
+import ProfileModal from "../components/layout/ProfileModal";
+import NotificationPreferences from "../components/notifications/NotificationPreferences";
 
-interface ThresholdField {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-  min: number;
-  max: number;
-  color: string;
-  accent: string;
-}
+// Personal settings — everything on this page is PER-USER and scoped to the signed-in
+// account: profile (users row), notification prefs (notification_prefs, keyed by user_id,
+// API scoped to req.user.id), and theme (this browser's localStorage). No global/system
+// config lives here — alert thresholds are on the admin-only Alert Rules page; the old
+// mock "backend connection / thresholds / save" cards were removed.
 
-interface InfoItem {
-  label: string;
-  value: string;
-}
+const panelStyle: React.CSSProperties = {
+  background: "var(--gf-panel)",
+  border: "1px solid var(--gf-panel-border)",
+  borderRadius: 2,
+  fontFamily: "'JetBrains Mono', monospace",
+};
+const titleColor = { color: "var(--gf-text-primary)" };
+const subColor = { color: "var(--gf-text-muted)" };
 
 export default function Settings() {
-  const [serverIp, setServerIp] = useState<string>("localhost");
-  const [serverPort, setServerPort] = useState<string>("3000");
-  const [alertTemp, setAlertTemp] = useState<number>(28);
-  const [alertHum, setAlertHum] = useState<number>(80);
-  const [saved, setSaved] = useState<boolean>(false);
+  const { user } = useAuth();
+  const { theme, toggleTheme } = useTheme();
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [savedMsg, setSavedMsg] = useState("");
 
-  const handleSave = () => {
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const showSaved = (msg: string) => {
+    setSavedMsg(msg);
+    setTimeout(() => setSavedMsg(""), 3000);
   };
 
-  const inputClass = "w-full px-3 py-2 rounded-lg bg-white/[0.05] border border-white/10 text-white text-sm font-mono outline-none focus:border-blue-500/50 transition";
-  const labelClass = "text-xs text-slate-400 font-semibold mb-1.5 block";
-
-  const thresholdFields: ThresholdField[] = [
-    { label: "Max Temperature Alert (°C)", value: alertTemp, onChange: setAlertTemp, min: 20, max: 40, color: "text-red-400", accent: "#ef4444" },
-    { label: "Max Humidity Alert (%)", value: alertHum, onChange: setAlertHum, min: 50, max: 100, color: "text-blue-400", accent: "#4a90e2" },
-  ];
-
-  const infoItems: InfoItem[] = [
-    { label: "System Name", value: "CSPC-ICTU Server Monitor" },
-    { label: "Version", value: "v1.0.0" },
-    { label: "Frontend", value: "React 18 + Vite + Tailwind CSS" },
-    { label: "Backend", value: "Node.js + Express.js + Socket.IO" },
-    { label: "Database", value: "MySQL · InfluxDB (Time-Series)" },
-    { label: "Sensor", value: "DHT11 via ESP32" },
-  ];
+  const roleLabel = user ? roleConfig[user.role as Role]?.label ?? String(user.role) : "";
+  const imageSrc = avatarUrl(user?.profile_image);
 
   return (
-    <div className="p-4 lg:p-6 flex flex-col gap-4 bg-white dark:bg-transparent">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div className="p-4 lg:p-6 flex flex-col gap-4">
 
-        {/* Connection */}
-        <div className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-5">
-          <div className="text-sm font-bold text-slate-900 dark:text-white mb-4">Backend Connection</div>
+      <div className="text-[11px] tracking-widest uppercase" style={subColor}>
+        Personal settings — these apply to your account only.
+      </div>
 
-          <div className="flex flex-col gap-4">
-            <div>
-              <label className={labelClass}>Server IP / Hostname</label>
-              <input
-                value={serverIp}
-                onChange={e => setServerIp(e.target.value)}
-                placeholder="localhost"
-                className={inputClass}
-              />
+      {/* ── Profile (your users row) — edit via the shared ProfileModal ── */}
+      <div className="p-5" style={panelStyle}>
+        <div className="text-sm font-bold mb-1" style={titleColor}>Profile</div>
+        <div className="text-[11px] mb-4" style={subColor}>Your account identity.</div>
+
+        <div className="flex items-center gap-4">
+          {imageSrc ? (
+            <img
+              src={imageSrc}
+              alt="avatar"
+              referrerPolicy="no-referrer"
+              className="w-14 h-14 rounded-full object-cover flex-shrink-0"
+              style={{ border: "2px solid var(--gf-accent)" }}
+            />
+          ) : (
+            <div
+              className="w-14 h-14 rounded-full flex items-center justify-center text-lg font-bold text-white select-none flex-shrink-0"
+              style={{ background: "var(--gf-accent)" }}
+            >
+              {initials(String(user?.name ?? "?"))}
             </div>
-
-            <div>
-              <label className={labelClass}>Server Port</label>
-              <input
-                value={serverPort}
-                onChange={e => setServerPort(e.target.value)}
-                placeholder="5000"
-                className={inputClass}
-              />
-            </div>
-
-            <div className="px-3 py-2.5 rounded-lg bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.06]">
-              <div className="text-[10px] text-slate-500 font-mono mb-1">API BASE URL</div>
-              <div className="text-xs text-cyan-600 dark:text-cyan-400 font-mono">
-                http://{serverIp}:{serverPort}/api
-              </div>
-            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-semibold truncate" style={titleColor}>{String(user?.name ?? "")}</div>
+            <div className="text-[12px] truncate" style={subColor}>{String(user?.email ?? "")}</div>
+            <div className="text-[10px] mt-0.5 tracking-widest uppercase" style={{ color: "var(--gf-accent)" }}>{roleLabel}</div>
           </div>
-        </div>
-
-        {/* Thresholds */}
-        <div className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-5">
-          <div className="text-sm font-bold text-slate-900 dark:text-white mb-4">Alert Thresholds</div>
-
-          <div className="flex flex-col gap-5">
-            {thresholdFields.map(field => (
-              <div key={field.label}>
-                <div className="flex justify-between mb-2">
-                  <span className="text-xs text-slate-500 dark:text-slate-400">{field.label}</span>
-                  <span className={`text-sm font-bold font-mono ${field.color}`}>{field.value}</span>
-                </div>
-
-                <input
-                  type="range"
-                  min={field.min}
-                  max={field.max}
-                  value={field.value}
-                  onChange={e => field.onChange(+e.target.value)}
-                  className="w-full"
-                  style={{ accentColor: field.accent }}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* System Info */}
-        <div className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-5">
-          <div className="text-sm font-bold text-slate-900 dark:text-white mb-4">System Information</div>
-
-          <div className="flex flex-col gap-0">
-            {infoItems.map(item => (
-              <div
-                key={item.label}
-                className="flex justify-between py-2.5 border-b border-slate-200 dark:border-white/[0.05] last:border-0"
-              >
-                <span className="text-xs text-slate-500 dark:text-slate-400">
-                  {item.label}
-                </span>
-
-                <span className="text-xs text-slate-900 dark:text-white font-semibold font-mono text-right max-w-[60%]">
-                  {item.value}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Save */}
-        <div className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-5 flex flex-col gap-4 justify-between">
-          <div>
-            <div className="text-sm font-bold text-slate-900 dark:text-white mb-2">Save Changes</div>
-
-            <div className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-              Changes to connection settings take effect on next reload. Alert thresholds apply immediately.
-            </div>
-          </div>
-
           <button
-            onClick={handleSave}
-            className={`py-3 rounded-xl text-white font-bold text-sm border-none cursor-pointer transition-all duration-300
-            ${saved
-                ? "bg-gradient-to-r from-green-700 to-green-500 shadow-[0_4px_14px_rgba(34,197,94,0.25)]"
-                : "bg-gradient-to-r from-blue-700 to-blue-500 shadow-[0_4px_14px_rgba(26,86,196,0.25)] hover:opacity-90"
-              }`}
+            type="button"
+            onClick={() => setProfileOpen(true)}
+            className="text-[12px] px-3 py-1.5 transition-colors flex-shrink-0 hover:opacity-90"
+            style={{ background: "var(--gf-accent)", color: "#fff", borderRadius: 2 }}
           >
-            {saved ? "✓ Saved!" : "Save Settings"}
+            Edit profile
           </button>
         </div>
-
       </div>
+
+      {/* ── Notification preferences (per-user, persisted in notification_prefs) ── */}
+      <NotificationPreferences />
+
+      {/* ── Appearance (per-user, persisted in localStorage: cspc_theme) ── */}
+      <div className="p-5" style={panelStyle}>
+        <div className="text-sm font-bold mb-1" style={titleColor}>Appearance</div>
+        <div className="text-[11px] mb-4" style={subColor}>Theme for this browser.</div>
+        <div className="flex items-center justify-between">
+          <span className="text-[12px]" style={titleColor}>Theme</span>
+          <div
+            className="flex"
+            style={{ border: "1px solid var(--gf-panel-border)", borderRadius: 2, overflow: "hidden" }}
+          >
+            {(["dark", "light"] as const).map((t) => {
+              const active = theme === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => { if (!active) toggleTheme(); }}
+                  className="text-[12px] px-3 py-1 capitalize transition-colors"
+                  style={{
+                    background: active ? "var(--gf-accent)" : "transparent",
+                    color: active ? "#fff" : "var(--gf-text-muted)",
+                  }}
+                >
+                  {t}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} onSaved={showSaved} />
+
+      {/* Saved toast — fixed top-right, persists briefly after the modal closes. */}
+      {savedMsg && (
+        <div
+          className="fixed top-5 right-5 z-[80] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl"
+          style={{
+            color: "#73BF69",
+            background: "#73BF6914",
+            borderColor: "#73BF6940",
+            fontFamily: "'JetBrains Mono', monospace",
+          }}
+        >
+          <span>✓</span> {savedMsg}
+        </div>
+      )}
+
     </div>
   );
-
 }

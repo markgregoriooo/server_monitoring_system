@@ -125,8 +125,8 @@ const char* deviceSecret = "REDACTED-ROTATED-DEVICE-SECRET";
 
 /* ================= MQ-2 CONFIG ============== */
 #define RL_VALUE 10.0
-#define RO_CLEAN_AIR_1 6.98
-#define RO_CLEAN_AIR_2 6.76
+#define RO_CLEAN_AIR_1 9.15
+#define RO_CLEAN_AIR_2  7.28
 #define ADC_MAX 4095.0
 #define ADC_VREF 3.3
 #define MQ2_VCC 5.0
@@ -135,14 +135,25 @@ const char* deviceSecret = "REDACTED-ROTATED-DEVICE-SECRET";
 #define SMOKE_B -2.95
 
 /* ================= THRESHOLDS =============== */
-#define WARNING_PPM 150.0
-#define DANGER_PPM 300.0
-#define TEMP_COLD 22.0
-#define TEMP_WARNING 29.0
-#define TEMP_DANGER 32.0
-#define TEMP_CRITICAL 35.0
-#define HUM_DANGER 95.0
-#define HUM_WARNING 85.0
+// Runtime-configurable from the dashboard's Alert Rules page — the backend pushes
+// these live via the "envConfig" socket event (room-level alert_rules), so an admin
+// can retune the LED/buzzer/status bands WITHOUT reflashing. The values below are
+// only the fallback defaults used until the first envConfig arrives. The status
+// calculators, RGB LED and buzzer all derive from these, so the device's alarms stay
+// in sync with the dashboard's alerts.
+//   NOTE: alert_rules has warning+critical per metric, while this firmware also has a
+//   middle "DANGER" temp band. On envConfig we set TEMP_DANGER = TEMP_CRITICAL so the
+//   temp bands collapse to warning→critical, matching the dashboard's two severities.
+//   TEMP_COLD has no alert_rules equivalent, so it keeps this default (LED "too cold").
+//   IR/AC comfort zones (getIRZone) are a separate concept and are NOT driven here.
+float WARNING_PPM   = 150.0;
+float DANGER_PPM    = 300.0;
+float TEMP_COLD     = 22.0;
+float TEMP_WARNING  = 29.0;
+float TEMP_DANGER   = 32.0;
+float TEMP_CRITICAL = 35.0;
+float HUM_DANGER    = 95.0;
+float HUM_WARNING   = 85.0;
 
 /* ================= SD LOG FILE ============== */
 #define SD_ENABLED false   // set to true when SD module is connected
@@ -156,6 +167,15 @@ const char* deviceSecret = "REDACTED-ROTATED-DEVICE-SECRET";
 #define IR_ZONE_ACCEPTABLE 2  // 25–27°C → 24°C Auto
 #define IR_ZONE_NEAR_CRIT 3   // 28–29°C → 22°C High
 #define IR_ZONE_CRITICAL 4    // > 29°C  → 20°C High
+
+// Auto-cooling zone BOUNDARIES (°C) — mutable so the dashboard's Aircon threshold config
+// can retune WHEN IR fires, pushed via the "acConfig" socket event (no reflash). The
+// target temp per zone is fixed (tied to the captured IR codes below); only these
+// boundaries change. Must stay ascending. Defaults match the original hardcoded zones.
+float IR_TEMP_COLD_BELOW   = 22.0;  // <  this → TOO_COLD   (28°C Auto)
+float IR_TEMP_NORMAL_MAX   = 24.0;  // <= this → NORMAL     (26°C Auto)
+float IR_TEMP_ACCEPT_MAX   = 27.0;  // <= this → ACCEPTABLE (24°C Auto)
+float IR_TEMP_NEARCRIT_MAX = 29.0;  // <= this → NEAR_CRIT  (22°C High); above → CRITICAL (20°C High)
 
 /* ================= OBJECTS ================== */
 DHT dht(DHTPIN, DHTTYPE);
@@ -370,10 +390,10 @@ String calcEnvironmentStatus(float ppm1, float ppm2, float t, float h) {
  *  Returns zone ID based on temperature.
  * ─────────────────────────────────────────────*/
 int getIRZone(float t) {
-  if (t < 22.0) return IR_ZONE_TOO_COLD;
-  if (t <= 24.0) return IR_ZONE_NORMAL;
-  if (t <= 27.0) return IR_ZONE_ACCEPTABLE;
-  if (t <= 29.0) return IR_ZONE_NEAR_CRIT;
+  if (t <  IR_TEMP_COLD_BELOW)   return IR_ZONE_TOO_COLD;
+  if (t <= IR_TEMP_NORMAL_MAX)   return IR_ZONE_NORMAL;
+  if (t <= IR_TEMP_ACCEPT_MAX)   return IR_ZONE_ACCEPTABLE;
+  if (t <= IR_TEMP_NEARCRIT_MAX) return IR_ZONE_NEAR_CRIT;
   return IR_ZONE_CRITICAL;
 }
 
@@ -818,6 +838,37 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
           Serial.printf("  CH%d (GPIO%d): %s\n", i + 1, IR_CHANNEL_PINS[i],
                         enabledChannels[i] ? "enabled" : "disabled");
         }
+      }
+
+      // Configurable alarm thresholds from the dashboard (Alert Rules → room-level
+      // rules). Only present fields are applied, so unset metrics keep their default.
+      // tempCrit drives BOTH TEMP_DANGER and TEMP_CRITICAL → temp bands collapse to
+      // warning/critical, matching the dashboard's two severities.
+      if (strcmp(eventName, "envConfig") == 0) {
+        JsonObject cfg = doc[1];
+        if (cfg.containsKey("tempWarn")) TEMP_WARNING = cfg["tempWarn"].as<float>();
+        if (cfg.containsKey("tempCrit")) {
+          TEMP_CRITICAL = cfg["tempCrit"].as<float>();
+          TEMP_DANGER   = TEMP_CRITICAL;
+        }
+        if (cfg.containsKey("gasWarn")) WARNING_PPM = cfg["gasWarn"].as<float>();
+        if (cfg.containsKey("gasCrit")) DANGER_PPM  = cfg["gasCrit"].as<float>();
+        if (cfg.containsKey("humWarn")) HUM_WARNING = cfg["humWarn"].as<float>();
+        if (cfg.containsKey("humCrit")) HUM_DANGER  = cfg["humCrit"].as<float>();
+        Serial.printf("[ENV] Thresholds: tempW=%.1f tempC=%.1f gasW=%.1f gasC=%.1f humW=%.1f humC=%.1f\n",
+                      TEMP_WARNING, TEMP_CRITICAL, WARNING_PPM, DANGER_PPM, HUM_WARNING, HUM_DANGER);
+      }
+
+      // Auto-cooling IR zone boundaries from the dashboard (Aircon thresholds). Target
+      // temps per zone stay fixed (captured IR codes); only the boundaries change here.
+      if (strcmp(eventName, "acConfig") == 0) {
+        JsonObject cfg = doc[1];
+        if (cfg.containsKey("coldBelow"))     IR_TEMP_COLD_BELOW   = cfg["coldBelow"].as<float>();
+        if (cfg.containsKey("normalMax"))     IR_TEMP_NORMAL_MAX   = cfg["normalMax"].as<float>();
+        if (cfg.containsKey("acceptableMax")) IR_TEMP_ACCEPT_MAX   = cfg["acceptableMax"].as<float>();
+        if (cfg.containsKey("nearCritMax"))   IR_TEMP_NEARCRIT_MAX = cfg["nearCritMax"].as<float>();
+        Serial.printf("[AC] IR zones: cold<%.1f normal<=%.1f accept<=%.1f nearCrit<=%.1f\n",
+                      IR_TEMP_COLD_BELOW, IR_TEMP_NORMAL_MAX, IR_TEMP_ACCEPT_MAX, IR_TEMP_NEARCRIT_MAX);
       }
       break;
     }

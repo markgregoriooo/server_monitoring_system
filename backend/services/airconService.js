@@ -237,12 +237,93 @@ async function applyAutoIR({ zone, label }) {
   return { setTemp, action, deviceIds: ids };
 }
 
+// ─── Auto-cooling IR zone thresholds (configurable; pushed to the ESP32) ─────────
+// The firmware's getIRZone() switches the AC setting when the room temperature crosses
+// these boundaries. The TARGET temp per zone is fixed (tied to the captured raw IR codes
+// in the firmware) — only the BOUNDARIES (when IR fires) are configurable. One global
+// row (a single server room / one ESP32). Pushed live via the "acConfig" socket event.
+const IR_CFG_DEFAULTS = { coldBelow: 22, normalMax: 24, acceptableMax: 27, nearCritMax: 29 };
+
+function irCfgErr(status, message) {
+  const e = new Error(message);
+  e.status = status;
+  return e;
+}
+
+function irConfigToClient(r) {
+  return {
+    coldBelow: Number(r.cold_below),
+    normalMax: Number(r.normal_max),
+    acceptableMax: Number(r.acceptable_max),
+    nearCritMax: Number(r.near_crit_max),
+    updatedBy: r.updated_by ?? null,
+    updatedByName: r.updated_by_name ?? null,
+    updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : r.updated_at,
+  };
+}
+
+async function getIRConfig() {
+  const [[row]] = await db.query(`
+    SELECT c.cold_below, c.normal_max, c.acceptable_max, c.near_crit_max,
+           c.updated_by, c.updated_at, u.name AS updated_by_name
+    FROM aircon_ir_config c
+    LEFT JOIN users u ON u.user_id = c.updated_by
+    WHERE c.id = 1
+  `);
+  if (!row) return { ...IR_CFG_DEFAULTS, updatedBy: null, updatedByName: null, updatedAt: null };
+  return irConfigToClient(row);
+}
+
+async function saveIRConfig(data, userId = null) {
+  const cur = await getIRConfig();
+  const num = (v, fallback) => {
+    if (v === undefined || v === null || v === "") return fallback;
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw irCfgErr(400, "Thresholds must be numbers.");
+    return n;
+  };
+  const next = {
+    coldBelow: num(data.coldBelow, cur.coldBelow),
+    normalMax: num(data.normalMax, cur.normalMax),
+    acceptableMax: num(data.acceptableMax, cur.acceptableMax),
+    nearCritMax: num(data.nearCritMax, cur.nearCritMax),
+  };
+  // Boundaries must strictly ascend or zones overlap / become unreachable.
+  if (!(next.coldBelow < next.normalMax && next.normalMax < next.acceptableMax && next.acceptableMax < next.nearCritMax)) {
+    throw irCfgErr(400, "Thresholds must increase: Too Cold < Normal < Acceptable < Near Critical.");
+  }
+  for (const v of Object.values(next)) {
+    if (v < 10 || v > 40) throw irCfgErr(400, "Thresholds must be between 10°C and 40°C.");
+  }
+  await db.query(`
+    INSERT INTO aircon_ir_config (id, cold_below, normal_max, acceptable_max, near_crit_max, updated_by)
+    VALUES (1, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+      cold_below = VALUES(cold_below), normal_max = VALUES(normal_max),
+      acceptable_max = VALUES(acceptable_max), near_crit_max = VALUES(near_crit_max),
+      updated_by = VALUES(updated_by)
+  `, [next.coldBelow, next.normalMax, next.acceptableMax, next.nearCritMax, userId]);
+  return getIRConfig();
+}
+
+// The shape the ESP32 consumes via the "acConfig" socket event (boundaries only).
+async function getDeviceIRConfig() {
+  const c = await getIRConfig();
+  return {
+    coldBelow: c.coldBelow,
+    normalMax: c.normalMax,
+    acceptableMax: c.acceptableMax,
+    nearCritMax: c.nearCritMax,
+  };
+}
+
 const airconService = {
   getAll, getChannelConfig,
   addUnit, removeUnit,
   toggle, setMode, setTemp,
   applyAutoIR,
   setChannelMap, getChannelMap,
+  getIRConfig, saveIRConfig, getDeviceIRConfig,
 };
 
 export default airconService;

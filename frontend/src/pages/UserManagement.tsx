@@ -274,14 +274,6 @@ export default function UserManagement() {
   const [editError,   setEditError]   = useState("");
   const [editLoading, setEditLoading] = useState(false);
 
-  // Reset password modal
-  const [resetUser,    setResetUser]    = useState<User | null>(null);
-  const [newPassword,  setNewPassword]  = useState("");
-  const [confirmPw,    setConfirmPw]    = useState("");
-  const [showPw,       setShowPw]       = useState(false);
-  const [resetError,   setResetError]   = useState("");
-  const [resetLoading, setResetLoading] = useState(false);
-
   // Delete confirm
   const [deleteTarget,  setDeleteTarget]  = useState<User | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -404,48 +396,31 @@ export default function UserManagement() {
     }
   };
 
-  // ── Reset password ──
-  const openReset = (u: User) => {
-    setResetUser(u);
-    setNewPassword("");
-    setConfirmPw("");
-    setShowPw(false);
-    setResetError("");
-  };
-
-  const handleReset = async () => {
-    if (!resetUser) return;
-    if (newPassword.length < 6) { setResetError("Password must be at least 6 characters."); return; }
-    if (newPassword !== confirmPw) { setResetError("Passwords do not match."); return; }
-    setResetLoading(true);
-    const result = await api.resetPassword(resetUser.id, newPassword);
-    if (result.success) {
-      setResetUser(null);
-      setNewPassword("");
-      setConfirmPw("");
-      showToast("Password reset successfully.");
-    } else {
-      setResetError(result.error ?? "Failed to reset password.");
-    }
-    setResetLoading(false);
-  };
-
   // ── Delete ──
   const handleDelete = async () => {
     if (!deleteTarget) return;
     setDeleteLoading(true);
-    try {
-      await api.deleteUser(deleteTarget.id);
+    const result = await api.deleteUser(deleteTarget.id);
+    if (result.success) {
       setUsers((p) => p.filter((u) => u.id !== deleteTarget.id));
       showToast("User deleted.");
-    } catch {
-      showToast("Failed to delete user.", "error");
+      setDeleteTarget(null);
+    } else {
+      showToast(result.error ?? "Failed to delete user.", "error");
     }
-    setDeleteTarget(null);
     setDeleteLoading(false);
   };
 
-  const isProtected = (u: User) => u.id === 1 || String(u.id) === String(currentUser?.id);
+  // Mirrors the server-side guard: never offer actions that would remove the last
+  // active admin, and never let you act on your own account. (The backend in
+  // userService.js is the authoritative boundary; this just hides dead buttons.)
+  const activeAdminCount = users.filter(
+    (u) => u.role === "admin" && (u.status ?? "active") === "active",
+  ).length;
+  const isSelf            = (u: User) => String(u.id) === String(currentUser?.id);
+  const isLastActiveAdmin = (u: User) =>
+    u.role === "admin" && (u.status ?? "active") === "active" && activeAdminCount <= 1;
+  const isProtected = (u: User) => isSelf(u) || isLastActiveAdmin(u);
   const isAdmin     = (u: User) => u.role === "admin";
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -643,7 +618,7 @@ export default function UserManagement() {
                             {u.name}
                             {isProtected(u) && (
                               <span className="ml-1.5 text-[9px] text-[var(--gf-text-muted)] bg-[var(--gf-hover)] px-1.5 py-0.5 rounded-[2px]">
-                                {u.id === 1 ? "system" : "you"}
+                                {isLastActiveAdmin(u) ? "last admin" : "you"}
                               </span>
                             )}
                           </div>
@@ -668,10 +643,9 @@ export default function UserManagement() {
                     {/* Actions */}
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
-                        {!isAdmin(u) && (
+                        {!isSelf(u) && (
                           <ActionBtn onClick={() => openEdit(u)} title="Edit user">✎ Edit</ActionBtn>
                         )}
-                        <ActionBtn onClick={() => openReset(u)} title="Reset password">⟳ Reset PW</ActionBtn>
                         {!isProtected(u) && (
                           <ActionBtn
                             onClick={() => handleToggleStatus(u)}
@@ -733,7 +707,7 @@ export default function UserManagement() {
             </div>
             <div>
               <label className={labelCls}>Role</label>
-              <SelectField value={editForm.role} onChange={(v) => setEditForm((p) => ({ ...p, role: v }))} options={[{ value: "it_staff", label: "IT Staff" }]} />
+              <SelectField value={editForm.role} onChange={(v) => setEditForm((p) => ({ ...p, role: v }))} options={[{ value: "it_staff", label: "IT Staff" }, { value: "admin", label: "Admin" }]} />
             </div>
             <div>
               <label className={labelCls}>Account Status</label>
@@ -749,59 +723,6 @@ export default function UserManagement() {
             <button onClick={() => setEditUser(null)} className="flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] transition cursor-pointer">Cancel</button>
             <button onClick={handleEdit} disabled={editLoading} className="flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold text-white border-none cursor-pointer transition hover:opacity-90 disabled:opacity-60" style={{ background: "var(--gf-accent)" }}>
               {editLoading ? "Saving…" : "Save Changes"}
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* ── Reset Password Modal ── */}
-      <Modal title={`Reset Password — ${resetUser?.name ?? ""}`} open={!!resetUser} onClose={() => setResetUser(null)}>
-        <div className="flex flex-col gap-5">
-
-          <div className="px-4 py-3 rounded-[2px] text-sm leading-relaxed" style={{ color: ORANGE, background: `${ORANGE}14`, border: `1px solid ${ORANGE}40` }}>
-            This will immediately change the password for <strong>{resetUser?.username}</strong>. The user will need to log in again.
-          </div>
-
-          <div>
-            <label className={labelCls}>New Password *</label>
-            <div className="relative">
-              <input type={showPw ? "text" : "password"} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Min. 6 characters" className={inputCls + " pr-16"} />
-              <button onClick={() => setShowPw((p) => !p)} className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-[var(--gf-text-muted)] hover:text-[var(--gf-text-primary)] cursor-pointer">
-                {showPw ? "Hide" : "Show"}
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label className={labelCls}>Confirm Password *</label>
-            <input type={showPw ? "text" : "password"} value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} placeholder="Re-enter password" className={inputCls} />
-            {confirmPw && (
-              <div className="text-[11px] mt-2" style={{ color: newPassword === confirmPw ? GREEN : RED }}>
-                {newPassword === confirmPw ? "✓ Passwords match" : "✕ Passwords do not match"}
-              </div>
-            )}
-          </div>
-
-          {/* Strength bars */}
-          {newPassword && (
-            <div className="flex gap-1.5 items-center">
-              {[6, 8, 12].map((threshold, i) => (
-                <div key={i} className="h-1.5 flex-1 rounded-full transition-colors" style={{ background: newPassword.length >= threshold ? (i === 0 ? RED : i === 1 ? ORANGE : GREEN) : "var(--gf-hover)" }} />
-              ))}
-              <span className="text-[11px] text-[var(--gf-text-muted)] ml-1 w-16">
-                {newPassword.length < 6 ? "Too short" : newPassword.length < 8 ? "Weak" : newPassword.length < 12 ? "Fair" : "Strong"}
-              </span>
-            </div>
-          )}
-
-          {resetError && (
-            <div className="px-4 py-2.5 rounded-[2px] text-sm" style={{ color: RED, background: `${RED}14`, border: `1px solid ${RED}40` }}>{resetError}</div>
-          )}
-
-          <div className="flex gap-3 pt-1">
-            <button onClick={() => setResetUser(null)} className="flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] transition cursor-pointer">Cancel</button>
-            <button onClick={handleReset} disabled={resetLoading} className="flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold text-white border-none cursor-pointer transition hover:opacity-90 disabled:opacity-60" style={{ background: ORANGE }}>
-              {resetLoading ? "Resetting…" : "Reset Password"}
             </button>
           </div>
         </div>
