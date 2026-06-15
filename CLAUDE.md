@@ -42,6 +42,12 @@ WEB_ORIGIN=        # allowed dashboard origins, comma-separated — or * for any
 GOOGLE_CLIENT_ID=       # Google OAuth web client ID (public). Login verifies ID tokens against it. Must match frontend VITE_GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=   # Google OAuth web client SECRET. Required: the auth-code flow exchanges the code server-side
 GOOGLE_ALLOWED_DOMAINS= # comma-separated CSPC domains allowed to sign in; blank = cspc.edu.ph,my.cspc.edu.ph
+RESEND_API_KEY=         # Resend API key for alert emails. BLANK = email channel off (bell + toast still work). See email-popup-notifications.md
+RESEND_FROM=            # sender, e.g. "CSPC ICTU Monitoring <alerts@your-verified-domain>"; blank = Resend test sender (onboarding@resend.dev)
+NOTIFY_EMAIL_MIN_SEVERITY= # min severity that triggers an email: info|warning|critical; blank = critical. Per-user override in notification_prefs
+NOTIFY_EMAIL_TO=        # optional: force ALL alert emails to this address (testing); blank = send to each active user's real email
+NOTIFY_COOLDOWN_MIN=    # de-dup window in minutes — same device+type+severity won't re-alert within it (restart-proof); blank = 30
+NOTIFY_RETENTION_DAYS=  # alerts older than this are purged daily (feed rows cascade); blank = 30
 ```
 
 Frontend also needs `VITE_GOOGLE_CLIENT_ID` in `frontend/.env` (same client ID; restart `npm run dev` after changing). See `google-oauth.md`.
@@ -63,7 +69,7 @@ Server room environment monitoring system for CSPC-ICTU.
 ESP32 (DHT11 + 2× MQ-2 + IR TX array + RGB LED) → Node.js + Socket.IO → React dashboard.
 
 ### Tech Stack
-- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client
+- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, resend (alert email)
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS, JetBrains Mono font
 - **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment **and** server-metric time-series)
 - **Hardware:** ESP32, DHT11, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×4, DS3231 RTC (optional)
@@ -83,10 +89,14 @@ backend/services/
   authService.js                ← login, JWT, bcrypt
   userService.js                ← user CRUD
   permissionService.js          ← static role-based permissions
-  airconService.js              ← all aircon DB logic (getAll, toggle, applyAutoIR, etc.)
+  airconService.js              ← all aircon DB logic (getAll, toggle, applyAutoIR, etc.) + **configurable auto-cooling IR zone thresholds** (`aircon_ir_config`: getIRConfig/saveIRConfig/getDeviceIRConfig) pushed to the ESP32 via the `acConfig` socket event — sets WHEN IR fires (target temps per zone stay fixed = captured IR codes). See Air Conditioner System + `email-popup-notifications.md`
   agentService.js               ← Go-agent + server-device DB logic (devices + server_specs + device_network + agent_tokens); enroll/approve/reject, offline sweep, device_logs
+  notificationService.js        ← raiseAlert() → de-dup cooldown (NOTIFY_COOLDOWN_MIN, restart-proof, **open-alert-scoped** — a resolved alert no longer suppresses, so recurrences re-alert) → writes `alerts` (incl. `alert_rule_id` when rule-driven) + fans out `alert_notifications` per active user + pushes `notification` to each user room + severity-gated email; listForUser/unreadCount/markRead. `init(io)` once at startup. Triggers: server CPU/mem/disk + **environment** temperature/gas/humidity (both via configurable `alert_rules` — see alertRulesService) + offline (not rule-based). See `email-popup-notifications.md`
+  alertsService.js              ← alert LIFECYCLE (shared, not per-user): list/acknowledge/resolve/openCount + auto-resolve when a metric recovers (called from checkThresholds + sensorHandler); broadcasts `alertUpdated`; `init(io)` once. Backs the now-real `routes/alerts.js`. Distinct from the per-user bell (`alert_notifications.is_read`)
+  alertRulesService.js          ← configurable alert thresholds (`alert_rules`). In-memory cache (reload on startup + every mutation) + `getEffectiveRules(deviceId, metric)` resolver (per-server override else global `device_id=NULL`) + `nextBand()` hysteresis-aware evaluation + admin CRUD. Rules-only: no matching rule = no alert. metric_name: cpu/mem/disk + temperature/gas/humidity. See `email-popup-notifications.md`
+  emailService.js               ← Resend wrapper: sendAlertEmail(to, alert) (inline-styled HTML). No-op if RESEND_API_KEY unset. NOTIFY_EMAIL_TO forces all mail to one address (testing)
 backend/handlers/
-  sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers
+  sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers + raises per-metric room-level alerts (temperature/gas/humidity) on band escalation, evaluated against `alert_rules` (alertRulesService) — replaces the old firmware-status escalation
   querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
   offlineDataHandler.js         ← SD card batch flush from ESP32
   serverMetricsHandler.js       ← agent metric POST → InfluxDB (`server_metrics`) + broadcast `serverMetrics`
@@ -146,16 +156,19 @@ SESSION_NOTES.md                ← per-session work log
 
 | Role | DB value | Access |
 |------|----------|--------|
-| Admin | `admin` | all pages + user management (approves registrations) |
-| IT Staff | `it_staff` | dashboard, server metrics, environment, aircon, history, reports |
+| Admin | `admin` | all pages + user management (approves registrations) + alert rules (configurable thresholds) |
+| IT Staff | `it_staff` | dashboard, server metrics, environment, aircon, **alerts (acknowledge/resolve)**, history, reports |
 
 > Login no longer uses passwords. `users.hash_password` is now nullable; `users.status` gained `pending`/`rejected`; new columns `google_sub` + `auth_provider`. The User Management "Add User"/"Reset PW" and Profile "Change Password" UIs are now vestigial.
 
 ### Mock endpoints (still `data/db.js`, not real)
 - `routes/environment.js` GET `/history` + `/logs` return mock random data, **not** InfluxDB — real sensor history comes via Socket.IO `changeRange` → `sensorHistory`
-- `routes/alerts.js` (`alerts`, `auditLog`) and `routes/reports.js` (`reports`) serve in-memory arrays that reset on restart, even though real `alerts` / `reports` tables exist in the schema
+- `routes/reports.js` (`reports`) still serves an in-memory array that resets on restart, even though a real `reports` table exists. **Note:** the **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) writes the **real** `alerts` + `alert_notifications` tables, and both the bell feed and the **Dashboard "Alerts" panel** render that real per-user feed (via `NotificationContext`). See `email-popup-notifications.md`.
+- **`routes/alerts.js` is now REAL** (no longer mock): `services/alertsService.js` backs the shared alert **lifecycle** — `GET /api/alerts` (history, `?status=` filter), `POST /api/alerts/:id/acknowledge`, `POST /api/alerts/:id/resolve`, `GET /api/alerts/count` (open-alert count → sidebar **Alerts badge**), all admin + it_staff. Sets `alerts.status` + `acknowledged_by`/`acknowledged_at`/`resolved_at`. **Auto-resolves** open alerts when the metric recovers to normal (wired into `checkThresholds` + `sensorHandler`). Broadcasts `alertUpdated`. UI = **Alerts** page (`pages/Alerts.tsx`) + live unresolved-count badge on the nav (`NotificationContext.openAlertCount`). Shared incident state, distinct from the per-user bell (`is_read`). **Resolve attribution:** single "by {acknowledger}" (resolve folds into `acknowledged_by`); a `resolved_by` column exists from `migrations/2026-06-14_alerts_resolved_by.sql` but is **DORMANT/unused** (separate-resolver UI was built then reverted — see `email-popup-notifications.md` §13.8).
 
 > The `reports.js` role gate is **fixed** — it now uses `requireRole("admin", "it_staff")` (previously referenced a non-existent `super_admin`, which 403'd admins).
+
+> **Configurable alert thresholds (real, not mock).** The previously-unused `alert_rules` table now drives all threshold alerting. `routes/alertRules.js` (`GET/POST/PUT/DELETE /api/alert-rules`, **admin-only**) + `services/alertRulesService.js` manage them; the **Alert Rules** admin page (`pages/AlertRules.tsx`, sidebar nav, admin-only) is the UI. Scope = global default (`device_id=NULL`) + optional per-server override; fallback = rules-only (no rule → silent). Seed/migration: `migrations/2026-06-14_alert_rules.sql` (must be applied or alerting is silent). Old hardcoded 80/90 (servers) + firmware env thresholds are removed in favor of these rules.
 
 ---
 
@@ -185,6 +198,8 @@ SESSION_NOTES.md                ← per-session work log
 | `agentApproved` / `agentPending` | agent approved / registered-or-rejected (admin pending list) |
 | `userPending` / `userApproved` | user self-registered-or-rejected / approved (admin Pending registrations panel) |
 | `deviceLog` | new `device_logs` entry (lifecycle + CPU/Mem/Disk threshold crossings) |
+| `notification` | new alert raised → pushed to **one user's** room (`user:<id>`) → bell feed + badge + corner **toast** (`ToastHost`) + opt-in **OS popup** (Web Notifications API, tab-backgrounded only). Persisted (`alerts` + `alert_notifications`). See `email-popup-notifications.md` |
+| `alertUpdated` | an alert's lifecycle changed (manual acknowledge/resolve, or auto-resolve on metric recovery) → Alerts page refreshes live |
 | `airconStatus` | manual toggle/mode/temp change |
 | `airconAutoUpdate` | ESP32 auto IR zone change |
 | `irChannelMap` | forwarded from ESP32 on connect |
@@ -194,6 +209,8 @@ SESSION_NOTES.md                ← per-session work log
 |-------|------|
 | `irConfig` | on ESP32 connect + after any add/remove/toggle |
 | `irCommand` | manual Turn On/Off from dashboard |
+| `envConfig` | on ESP32 connect + after any **Alert Rules** change → room-level `alert_rules` thresholds (`{tempWarn,tempCrit,gasWarn,gasCrit,humWarn,humCrit}`, null fields omitted). Firmware applies them at runtime so its **LED/buzzer/reported status** match the dashboard's alert thresholds (no reflash). See alertRulesService + `email-popup-notifications.md` |
+| `acConfig` | on ESP32 connect + after any **Auto-Cooling Thresholds** change (AirConditioner page, admin) → IR zone **boundaries** (`{coldBelow,normalMax,acceptableMax,nearCritMax}` °C). Firmware's `getIRZone` uses them at runtime so **WHEN IR fires** tracks the dashboard (no reflash). Target temps per zone are fixed (captured IR codes). Separate from `envConfig`/alerts on purpose — cooling should ramp *before* the alarm thresholds. Backed by `aircon_ir_config` (airconService). See `email-popup-notifications.md` |
 
 ---
 
@@ -217,6 +234,14 @@ Each AC unit is a row in `devices` (type=`'aircon'`) with a linked row in `airco
 | 25–27°C | ACCEPTABLE (2) | 24°C | Auto |
 | 28–29°C | NEAR_CRIT (3) | 22°C | High |
 | > 29°C | CRITICAL (4) | 20°C | High |
+
+> **The "Room Temp" boundaries (22/24/27/29) are now CONFIGURABLE** — the **Auto-Cooling
+> Thresholds** card on the AirConditioner page (admin edit, both roles view) writes
+> `aircon_ir_config` and pushes `acConfig` to the ESP32, so an admin can retune **when IR
+> fires** with no reflash. The **Set Temp** column stays fixed (each is a captured raw IR
+> code). Migration: `migrations/2026-06-15_aircon_ir_config.sql`. This is deliberately
+> separate from the Alert Rules temperature thresholds (cooling should ramp *before* the
+> alarm). Default boundaries match the firmware's original compiled values.
 
 > **Power is manual-only.** `applyAutoIR` (on `irFired`) only re-targets the set
 > temperature of units that are **currently ON** — it never changes `is_on`. A unit a user
@@ -260,7 +285,7 @@ Panel border-radius: `2px` (not `rounded-xl`). Font: `'JetBrains Mono', monospac
 ### Page Style Status
 | Page | Style |
 |------|-------|
-| Dashboard, Environment, AirConditioner, ServerMetrics, Sidebar, Header | ✅ Grafana tokens |
+| Dashboard, Environment, AirConditioner, ServerMetrics, AlertRules, Alerts, Sidebar, Header | ✅ Grafana tokens |
 | History, Reports, Settings, UserManagement | ⚠️ still use old `slate-*` classes |
 | ServerDetail | hybrid: `slate-*` base + `dark:` overrides (light/dark adapted, not `--gf-*`) |
 
@@ -273,6 +298,8 @@ Panel border-radius: `2px` (not `rounded-xl`). Font: `'JetBrains Mono', monospac
 - `deviceSecret` must match `DEVICE_SECRET` in `backend/.env`
 - IR fires only on temperature **zone change**, not every loop tick
 - `enabledChannels[]` updated at runtime via `irConfig` socket event — no reflash needed to add/disable AC units
+- **Alarm thresholds are runtime-configurable** (`WARNING_PPM`/`DANGER_PPM`/`TEMP_WARNING`/`TEMP_DANGER`/`TEMP_CRITICAL`/`HUM_WARNING`/`HUM_DANGER` are now mutable globals, not `#define`) — updated via the `envConfig` socket event from the dashboard's Alert Rules. The LED, buzzer and reported status all derive from these, so they track the dashboard's thresholds without reflashing. `envConfig` sets `TEMP_DANGER = TEMP_CRITICAL` (collapsing temp to warning/critical). `TEMP_COLD` (LED "too cold") is intentionally **not** rule-driven. A metric with no rule keeps its compiled default on the device (dashboard goes silent, device retains its last threshold).
+- **IR/AC comfort-zone boundaries are runtime-configurable** (`IR_TEMP_COLD_BELOW`/`IR_TEMP_NORMAL_MAX`/`IR_TEMP_ACCEPT_MAX`/`IR_TEMP_NEARCRIT_MAX` are now mutable globals, not literals in `getIRZone`) — updated via the **`acConfig`** socket event from the dashboard's **Auto-Cooling Thresholds** card (separate from `envConfig`/Alert Rules — cooling ramps *before* the alarm). The per-zone target temps stay fixed (captured raw IR codes). No reflash needed to retune *when* IR fires.
 - Timestamp priority: DS3231 RTC → NTP (UTC+8, `pool.ntp.org`) → uptime fallback (`UP HH:MM:SS`)
 - Backend overrides ESP32 timestamp with `new Date()` for all InfluxDB writes and broadcasts
 - Buzzer: 10-bit LEDC resolution; `ledcWrite(pin, 0)` to silence (not `ledcWriteTone(pin, 0)`)

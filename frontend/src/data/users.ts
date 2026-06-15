@@ -31,10 +31,12 @@ export const roleConfig: Record<Role, RoleConfig> = {
       "server-metrics",
       "environment",
       "air-conditioner",
+      "alerts",
       "history",
       "reports",
       "settings",
       "user-management",
+      "alert-rules",
     ],
   },
   it_staff: {
@@ -47,8 +49,10 @@ export const roleConfig: Record<Role, RoleConfig> = {
       "server-metrics",
       "environment",
       "air-conditioner",
+      "alerts",
       "history",
       "reports",
+      "settings",
     ],
   }
 };

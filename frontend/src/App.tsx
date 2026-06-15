@@ -9,12 +9,14 @@ import {
 } from "react-router-dom";
 
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { NotificationProvider } from "./context/NotificationContext";
 import { roleConfig } from "./data/users";
 
 import Login from "./pages/auth/Login";
 import Unauthorized from "./pages/auth/Unauthorized";
 import Sidebar from "./components/layout/Sidebar";
 import Header from "./components/layout/Header";
+import ToastHost from "./components/notifications/ToastHost";
 import Dashboard from "./pages/Dashboard";
 import ServerMetrics from "./pages/ServerMetrics";
 import Environment from "./pages/Environment";
@@ -23,6 +25,8 @@ import History from "./pages/History";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import UserManagement from "./pages/UserManagement";
+import AlertRules from "./pages/AlertRules";
+import Alerts from "./pages/Alerts";
 
 const pageTitles: Record<string, string> = {
   "/": "Server Environment Monitoring & Control System",
@@ -33,6 +37,8 @@ const pageTitles: Record<string, string> = {
   "/reports": "Reports",
   "/settings": "Settings",
   "/user-management": "User Management",
+  "/alert-rules": "Alert Rules",
+  "/alerts": "Alerts",
 };
 
 interface ProtectedRouteProps {
@@ -108,7 +114,6 @@ function AppShell() {
 
         <Header
           title={pageTitles[location.pathname] || "Dashboard"}
-          alertCount={2}
           onMenuToggle={() => setMobileOpen(p => !p)}
           collapsed={collapsed}
           onToggleCollapse={toggleCollapsed}
@@ -164,12 +169,27 @@ function AppShell() {
               </ProtectedRoute>
             } />
 
+            <Route path="/alerts" element={
+              <ProtectedRoute>
+                <Alerts />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/alert-rules" element={
+              <ProtectedRoute>
+                <AlertRules />
+              </ProtectedRoute>
+            } />
+
             {/* fallback */}
             <Route path="*" element={<Navigate to="/" />} />
 
           </Routes>
         </main>
       </div>
+
+      {/* Live notification toasts — overlay, independent of the current route */}
+      <ToastHost />
     </div>
   );
 }
@@ -177,7 +197,9 @@ function AppShell() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppShell />
+      <NotificationProvider>
+        <AppShell />
+      </NotificationProvider>
     </AuthProvider>
   );
 }

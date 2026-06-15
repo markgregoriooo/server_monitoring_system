@@ -8,6 +8,9 @@ import { handleConnection } from "../sockets/connectionHandler.js";
 import { JWT_SECRET } from "../middleware/auth.js";
 import db from "../config/mysql.js";
 import agentService from "../services/agentService.js";
+import notificationService from "../services/notificationService.js";
+import alertRulesService from "../services/alertRulesService.js";
+import alertsService from "../services/alertsService.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
@@ -18,6 +21,8 @@ import airconRoutes from "../routes/aircon.js";
 import userRoutes from "../routes/users.js";
 import alertRoutes from "../routes/alerts.js";
 import reportRoutes from "../routes/reports.js";
+import notificationRoutes from "../routes/notifications.js";
+import alertRuleRoutes from "../routes/alertRules.js";
 
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, //15 mins
@@ -106,6 +111,18 @@ io.use(async (socket, next) => {
 // expose io so routes can emit to the ESP32
 app.set("io", io);
 
+// Hand the notification service the live Socket.IO server once, so any trigger
+// (offline sweep, threshold checks, …) can raise + push notifications without
+// threading `io` through every call.
+notificationService.init(io);
+alertsService.init(io); // so acknowledge/resolve + auto-resolve can broadcast alertUpdated
+
+// Warm the configurable-threshold cache so the first metric POST evaluates against
+// rules without a cold DB read (getEffectiveRules also lazy-loads as a fallback).
+alertRulesService.reload().catch((e) =>
+  console.error("[alert-rules] initial load failed:", e.message),
+);
+
 // socket connections
 io.on("connection", (socket) => {
   handleConnection(io, socket);
@@ -120,6 +137,8 @@ app.use("/api/aircon", airconRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/reports", reportRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/alert-rules", alertRuleRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" })
@@ -131,9 +150,12 @@ app.use((err, req, res, next) => {
 
   const status = err.status || 500;
 
-  res.status(status).json({
-    message: err.message || "Internal Server Error",
-  });
+  // Surface intentional (4xx) messages to the client — the frontend reads `error`.
+  // 5xx stays generic so unexpected internals aren't leaked.
+  const body = { message: err.message || "Internal Server Error" };
+  if (status >= 400 && status < 500) body.error = err.message;
+
+  res.status(status).json(body);
 });
 
 
@@ -154,8 +176,32 @@ setInterval(async () => {
     for (const o of offlined) {
       io.emit("serverStatus", { id: o.id, status: "Offline" });
       if (o.log) io.emit("deviceLog", o.log);
+      // A server dropping offline is notification-worthy (bell + future email).
+      await notificationService.raiseAlert({
+        deviceId: o.id,
+        type: "offline",
+        title: "Server offline",
+        message: o.name ? `${o.name} went offline — no metrics received` : (o.log?.message || `Server ${o.id} stopped reporting`),
+        severity: "warning",
+      });
     }
   } catch (err) {
     console.error("[OFFLINE_SWEEP] error:", err);
   }
 }, OFFLINE_SWEEP_MS);
+
+// Notification retention — purge alerts (and, via cascade, their per-user feed
+// rows) older than NOTIFY_RETENTION_DAYS so the tables don't grow unbounded.
+// Runs at startup and daily.
+const RETENTION_DAYS = Number(process.env.NOTIFY_RETENTION_DAYS) || 30;
+const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const runNotificationPurge = async () => {
+  try {
+    const purged = await notificationService.purgeOld(RETENTION_DAYS);
+    if (purged) console.log(`[notifications] purged ${purged} alert(s) older than ${RETENTION_DAYS}d`);
+  } catch (err) {
+    console.error("[notifications] purge error:", err.message);
+  }
+};
+runNotificationPurge();
+setInterval(runNotificationPurge, PURGE_INTERVAL_MS);

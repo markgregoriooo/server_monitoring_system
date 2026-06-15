@@ -6,6 +6,8 @@ import { Line } from "react-chartjs-2";
 import StatusBadge from "../components/ui/StatusBadge";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
+import { useNotifications } from "../context/NotificationContext";
+import { relativeTime } from "../components/notifications/notificationUtils";
 
 Chart.register(...registerables);
 
@@ -18,14 +20,6 @@ interface Server {
   cpu: number;
   memory: number;
   uptime: string;
-}
-
-interface Alert {
-  id: number;
-  type: string;
-  title: string;
-  desc: string;
-  time: string;
 }
 
 interface SensorData {
@@ -425,7 +419,8 @@ function BarGauge({
 
 export default function Dashboard() {
   const [servers, setServers] = useState<Server[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
+  // Real notification feed (replaces the old mock /api/alerts panel).
+  const { items: notifications, unreadCount } = useNotifications();
   const [aircons, setAircons] = useState<Aircon[]>([]);
   const [liveTemp, setLiveTemp] = useState<number | string>("--");
   const [liveHum, setLiveHum] = useState<number | string>("--");
@@ -469,10 +464,6 @@ export default function Dashboard() {
   useEffect(() => {
     api.getServers().then((result) => {
       if (result.success && result.data) setServers(result.data.servers ?? []);
-    });
-
-    api.getAlerts().then((result) => {
-      if (result.success && result.data) setAlerts(result.data.alerts);
     });
 
     api.getAircon().then((result) => {
@@ -802,8 +793,8 @@ export default function Dashboard() {
         />
         <StatPanel
           label="Active Alerts"
-          value={String(alerts.length)}
-          color={alerts.length === 0 ? GREEN : alerts.length > 2 ? RED : ORANGE}
+          value={String(unreadCount)}
+          color={unreadCount === 0 ? GREEN : unreadCount > 2 ? RED : ORANGE}
           sub={`${acOnline}/${aircons.length} AC running`}
         />
       </div>
@@ -996,9 +987,8 @@ export default function Dashboard() {
           }
         >
           <div className="flex flex-col gap-1.5 p-3 overflow-y-auto" style={{ maxHeight: 300 }}>
-            {alerts.map((a) => {
-              const isWarn = a.type === "warning";
-              const c = isWarn ? ORANGE : BLUE;
+            {notifications.map((a) => {
+              const c = a.severity === "critical" ? RED : a.severity === "warning" ? ORANGE : BLUE;
               return (
                 <div
                   key={a.id}
@@ -1013,16 +1003,16 @@ export default function Dashboard() {
                       {a.title}
                     </div>
                     <div className="text-[9px] mt-0.5" style={{ color: gf.textMuted }}>
-                      {a.desc}
+                      {a.message}
                     </div>
                   </div>
                   <span className="text-[9px] shrink-0" style={{ color: gf.textDim }}>
-                    {a.time}
+                    {relativeTime(a.sentAt || a.createdAt)}
                   </span>
                 </div>
               );
             })}
-            {alerts.length === 0 && (
+            {notifications.length === 0 && (
               <div className="flex flex-col items-center gap-1 py-8">
                 <span style={{ color: GREEN }}>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none">

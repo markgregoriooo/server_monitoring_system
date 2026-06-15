@@ -1,0 +1,79 @@
+import "../config/env.js";
+import { Resend } from "resend";
+
+// Resend email channel for alerts. Entirely optional: with no RESEND_API_KEY the
+// service is a no-op (isEnabled() === false), so the bell + toast keep working and
+// the app runs fine in dev without email configured.
+//
+//   RESEND_API_KEY   Resend API key. Blank → email disabled.
+//   RESEND_FROM      "Name <addr@verified-domain>". Falls back to Resend's test sender.
+//   NOTIFY_EMAIL_TO  Optional: force ALL alert mail to this address (testing).
+
+const API_KEY = process.env.RESEND_API_KEY;
+const FROM = process.env.RESEND_FROM || "CSPC ICTU Monitoring <onboarding@resend.dev>";
+const TO_OVERRIDE = (process.env.NOTIFY_EMAIL_TO || "").trim();
+
+const client = API_KEY ? new Resend(API_KEY) : null;
+if (!client) {
+  console.warn("[email] RESEND_API_KEY not set — email notifications disabled (bell + toast still work).");
+}
+
+const SEV_LABEL = { critical: "CRITICAL", warning: "WARNING", info: "INFO" };
+const SEV_COLOR = { critical: "#E02F44", warning: "#FF780A", info: "#5794F2" };
+
+function isEnabled() {
+  return Boolean(client);
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// Minimal inline-styled HTML (email clients ignore <style>/external CSS).
+function renderHtml(a) {
+  const color = SEV_COLOR[a.severity] ?? "#5794F2";
+  const label = SEV_LABEL[a.severity] ?? "ALERT";
+  const when = a.createdAt ? new Date(a.createdAt).toLocaleString("en-PH", { timeZone: "Asia/Manila", hour12: false }) : "";
+  return `<div style="font-family:Arial,Helvetica,sans-serif;background:#111217;padding:24px;color:#D9D9D9">
+    <div style="max-width:520px;margin:0 auto;background:#181B1F;border:1px solid rgba(255,255,255,0.07);border-left:4px solid ${color};border-radius:2px">
+      <div style="padding:16px 20px;border-bottom:1px solid rgba(255,255,255,0.07)">
+        <span style="display:inline-block;font-size:11px;font-weight:700;letter-spacing:1px;color:#fff;background:${color};padding:2px 8px;border-radius:2px">${label}</span>
+        <h2 style="margin:10px 0 0;font-size:16px;color:#D9D9D9">${esc(a.title)}</h2>
+      </div>
+      <div style="padding:16px 20px">
+        <p style="margin:0 0 12px;font-size:14px;line-height:1.5;color:#D9D9D9">${esc(a.message)}</p>
+        ${a.deviceName ? `<p style="margin:0 0 6px;font-size:12px;color:#6B7280">Device: <b style="color:#D9D9D9">${esc(a.deviceName)}</b></p>` : ""}
+        ${when ? `<p style="margin:0;font-size:12px;color:#6B7280">Time: ${esc(when)} (PH)</p>` : ""}
+      </div>
+      <div style="padding:12px 20px;border-top:1px solid rgba(255,255,255,0.07);font-size:11px;color:#4B5563">
+        CSPC-ICTU Server Room Monitoring — automated alert. Do not reply.
+      </div>
+    </div>
+  </div>`;
+}
+
+// Send one alert email. Returns true on success, false otherwise (never throws).
+async function sendAlertEmail(to, alert) {
+  if (!client) return false;
+  const recipient = TO_OVERRIDE || to;
+  if (!recipient) return false;
+  try {
+    const subject = `[${SEV_LABEL[alert.severity] ?? "ALERT"}] ${alert.title}${alert.deviceName ? ` — ${alert.deviceName}` : ""}`;
+    const { error } = await client.emails.send({
+      from: FROM,
+      to: recipient,
+      subject,
+      html: renderHtml(alert),
+    });
+    if (error) {
+      console.error("[email] Resend error:", error.message || error);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("[email] send failed:", err.message);
+    return false;
+  }
+}
+
+export default { isEnabled, sendAlertEmail };

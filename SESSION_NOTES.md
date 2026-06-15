@@ -742,3 +742,358 @@ enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
 
 ---
 
+## SESSION 10 — 2026-06-13
+**Branch:** `email-popup-notifications` (off `main`)
+**Developer:** Mark Gregorio
+
+> Built the **notification system** end to end across three channels — **bell feed**, **in-app
+> toast + OS popup**, and **email via Resend** — reusing the schema's already-present `alerts` /
+> `alert_notifications` tables. Full design + a file-by-file study guide live in
+> **`email-popup-notifications.md`** (read §12 to study the code). 7 commits.
+
+### Data model (reuse, don't reinvent)
+- `alerts` = the event (1 row); `alert_notifications` = per-user delivery/read row (the bell feed);
+  `notification_prefs` = one row per user (missing row → defaults).
+- **Migrations (run in phpMyAdmin):**
+  - `2026-06-13_notifications.sql` — `is_read` default + `emailed` flag; `metric_value` nullable;
+    `status` default; **new `notification_prefs`** table.
+  - `2026-06-13_alerts_nullable_device.sql` — `alerts.device_id` NULL-able (room-level
+    **environment** alerts have no device row).
+
+### Backend (all new unless noted)
+- **`services/notificationService.js`** — the core. `raiseAlert()` = cooldown check → INSERT alert
+  → fan out one `alert_notifications` per active user → `io.to("user:<id>").emit("notification")` →
+  severity-gated Resend email (mark `emailed=1`). Plus `listForUser` / `unreadCount` / `markRead` /
+  `markAllRead` / `dismiss` / `clearAll` / `getPrefs` / `savePrefs` / `purgeOld`. `init(io)` once at
+  startup. `toClient()` builds the camelCase payload shared by socket + REST.
+- **`services/emailService.js`** — Resend wrapper; **no-op (warn once) if `RESEND_API_KEY` unset**.
+- **`routes/notifications.js`** — `GET /` (feed+unread), `POST /read`, `POST /clear`, `GET`/`PUT /prefs`.
+- **Edits:** `server.js` (mount route, `init(io)`, raiseAlert on offline sweep, **daily retention
+  purge**), `sockets/connectionHandler.js` (browser joins room `user:<id>`),
+  `services/agentService.js` (`checkThresholds` raises CPU/Mem/Disk alerts on band onset),
+  `handlers/sensorHandler.js` (raises **environment** alert on status escalation).
+
+### Frontend (all new unless noted)
+- **`context/NotificationContext.tsx`** — single hub: fetch feed, subscribe to `notification`
+  (prepend + badge++ + **sound** + **OS popup** + toast), `markRead`/`markAllRead`/`dismiss`/
+  `clearAll`/`subscribe`. Wrapped around app in `App.tsx`.
+- **`components/notifications/`** — `NotificationPanel.tsx` (bell dropdown: mark/clear/dismiss,
+  sound mute, enable-desktop, click→navigate), `ToastHost.tsx` (corner toasts),
+  `notificationUtils.ts` (`SEVERITY_COLOR`/`routeFor`/`relativeTime`), `NotificationPreferences.tsx`
+  (Settings card: email on/off + min severity).
+- **`utils/browserNotify.ts`** (Web Notifications API), **`utils/notificationSound.ts`** (Web Audio
+  chime + mute).
+- **Edits:** `Header.tsx` (clickable bell, real badge), `Dashboard.tsx` ("Alerts" panel + stat now
+  read the real feed), `Settings.tsx` (mount prefs card), `api.ts` (7 notification methods),
+  `ServerMetrics.tsx` (`?device=<id>` deep-link opens that server's detail), `index.css`
+  (`--gf-shadow` token + `fadeIn`).
+
+### New socket event
+- `notification` → emitted to one user's room (`user:<id>`); camelCase payload (see §8 of the doc).
+
+### Env (added to `backend/.env`, documented in CLAUDE.md)
+`RESEND_API_KEY`, `RESEND_FROM`, `NOTIFY_EMAIL_MIN_SEVERITY` (default critical),
+`NOTIFY_EMAIL_TO` (test override), `NOTIFY_COOLDOWN_MIN` (default 30), `NOTIFY_RETENTION_DAYS`
+(default 30).
+
+### Hardening (post-review)
+- **Environment/smoke alerts** wired (were missing — the most important server-room alert).
+- **Restart-proof de-dup cooldown** — same `device+type+severity` won't re-alert within
+  `NOTIFY_COOLDOWN_MIN` (DB-based, survives `nodemon` restarts; damps flapping). Fixes the
+  "always-critical server re-emails on every restart" Resend-quota risk.
+- **Retention** purge + **clear/dismiss** actions so the tables don't grow unbounded.
+- **Per-user prefs UI** on Settings (email controls; server-enforced).
+- **Dashboard** unified onto the real feed; toast honours `prefers-reduced-motion`.
+
+### Verified
+- `node --check` (backend) + `tsc --noEmit` + `vite build` (frontend) clean throughout.
+- Email path confirmed live by the user (received a real alert email from the always-critical server).
+
+### Still pending / not done
+- **Live end-to-end test** of the full stack (agent + ESP32 → bell/toast/email) not yet driven here.
+- **Settings "Alert Thresholds" sliders are still mock** — server bands are hardcoded in
+  `agentService.checkThresholds`; environment thresholds live in the ESP32 firmware. Making them
+  web-configurable is a future task (backend `alert_rules`/`settings` + firmware runtime config).
+- Optional **"view all" history page** (paginated) not built — bell shows latest 100 + clear/dismiss.
+- **Phase 4:** UPS-on-battery / interface-down `raiseAlert` calls land when `router-ups-monitoring`
+  merges (one call each).
+- Branch not yet PR'd into `main`.
+
+---
+
+## SESSION 11 — 2026-06-14
+**Branch:** `email-popup-notifications` (cont.)
+**Developer:** Mark Gregorio
+
+> Turned the **mock/hardcoded alerting** into a real, configurable system, then closed the loop on
+> the alert lifecycle. Three features: (1) **configurable alert thresholds** (`alert_rules`) with a
+> global-default + per-server-override model, (2) **firmware threshold unification** so the ESP32's
+> LED/buzzer follow the dashboard's thresholds live, and (3) the **acknowledge/resolve lifecycle**
+> (the `acknowledged_by`/`acknowledged_at`/`resolved_at` columns that were sitting unused). Directly
+> delivers Session 10's "Alert Thresholds still mock" pending item. Full writeup in
+> **`email-popup-notifications.md` §13**.
+
+### 1) Configurable alert thresholds (`alert_rules`)
+- **Migration `2026-06-14_alert_rules.sql`** — `alert_rules.device_id` made NULLABLE (NULL = global
+  default; a real id = per-server override) + **seeds 12 global rules** from the old hardcoded values
+  (cpu/mem/disk 80/90; temperature 29/32; gas 150/300; humidity 85/95) so day-one behavior is
+  identical. Idempotent seed.
+- **`services/alertRulesService.js`** (new) — in-memory cache (reload on startup + every mutation),
+  `getEffectiveRules(deviceId, metric)` (device override else global), `worstBreach` + `nextBand`
+  (hysteresis-aware band evaluation, 5% clear margin), and admin CRUD with validation.
+- **`routes/alertRules.js`** (new) — `GET/POST/PUT/DELETE /api/alert-rules`, **admin-only**.
+- **Refactors:** `agentService.checkThresholds` (dropped hardcoded `bandFor`; evaluates rules, stamps
+  `alert_rule_id`) and `handlers/sensorHandler.js` (environment alerting is now **per-metric** —
+  `temperature`/`gas`/`humidity` types instead of one `environment` type, fixing a cooldown
+  collision). `notificationService.raiseAlert` accepts + persists `alert_rule_id`.
+- **Fallback = rules-only:** a metric with no active rule raises nothing (seed prevents a blackout).
+- **Frontend:** **Alert Rules** admin page (`pages/AlertRules.tsx`, sidebar nav) — table + add/edit/
+  toggle/delete, global-vs-server scope; `api.ts` CRUD methods.
+
+### 2) Firmware threshold unification (ESP32 ↔ dashboard)
+- The 7 threshold `#define`s in `env_monitor_v2.ino` are now **mutable globals**; new **`envConfig`**
+  socket event pushes the room-level rule thresholds to the device on connect + after any rule
+  change (`connectionHandler` + `routes/alertRules.js` → `io.to("devices")`). The LED/buzzer/reported
+  status all derive from these, so they track the dashboard with **no reflash**.
+- `envConfig` sets `TEMP_DANGER = TEMP_CRITICAL` (collapses temp to warning/critical, matching the
+  two dashboard severities). IR/AC comfort zones + `TEMP_COLD` intentionally **not** rule-driven.
+- ⚠️ Firmware **not compiled here** (no toolchain) — must be flashed + tested on hardware.
+
+### 3) Alert lifecycle — acknowledge / resolve
+- **`services/alertsService.js`** (new) — `list` (`?status=` filter), `acknowledge`, `resolve`, and
+  **`autoResolveMetric`** (auto-resolve open alerts when a metric recovers to normal — wired into
+  `checkThresholds` + `sensorHandler`). Broadcasts **`alertUpdated`**; `init(io)`.
+- **`routes/alerts.js`** — **replaced the mock** with the real lifecycle API (`GET /`,
+  `POST /:id/acknowledge`, `POST /:id/resolve`), **admin + it_staff**.
+- **FK fix `2026-06-14_alerts_rule_fk_setnull.sql`** (applied) — `alerts.alert_rule_id` FK changed
+  `ON DELETE CASCADE → SET NULL` so deleting a rule no longer cascade-wipes historical alerts +
+  bell rows. Verified live (`DELETE_RULE: CASCADE → SET NULL`).
+- **Frontend:** new **Alerts** page (`pages/Alerts.tsx`) — filter tabs, severity/status badges,
+  "by whom/when", Acknowledge/Resolve buttons, live via `alertUpdated`/`notification`. Both roles.
+- **Model:** shared lifecycle (`alerts.status`, one row, same for everyone) — distinct from the
+  per-user bell (`alert_notifications.is_read`). Acknowledge = manual; resolve = manual **or** auto.
+
+### 4) Refinements (same session, post-build)
+- **Sidebar "Alerts" badge** — live count of alerts needing attention (status ≠ resolved).
+  `alertsService.openCount()` + `GET /api/alerts/count`; `NotificationContext.openAlertCount`
+  (fetched on login, +1 on `notification`, refetched on `alertUpdated`, re-synced on reconnect);
+  small red pill on the Alerts nav item in `Sidebar`.
+- **Cooldown resets on resolve** — the de-dup query in `notificationService.raiseAlert` now adds
+  `AND status <> 'resolved'`, so a **resolved** alert no longer suppresses; a genuine recurrence
+  re-alerts immediately (standard incident behavior). Still restart-proof for *open* alerts; flapping
+  is still damped by hysteresis + escalation-only raising.
+- **`resolved_by` — added then reverted (by choice):** built separate resolve attribution
+  (`resolved_by` column → "resolved by Y" / "auto-resolved"), but the user preferred the simpler
+  single-name display, so the **code was reverted** to: resolve folds the handler into
+  `acknowledged_by` and the UI shows one "by {acknowledger}" line. ⚠️ The `resolved_by` **column +
+  its migration `2026-06-14_alerts_resolved_by.sql` remain applied but are now DORMANT** (NULL,
+  unused by code) — kept harmlessly for possible future use, not dropped.
+
+### New socket events
+- `envConfig` (server → ESP32) — room-level thresholds; on connect + every rule change.
+- `alertUpdated` (server → browsers) — broadcast on acknowledge/resolve/auto-resolve.
+
+### Migrations (run in phpMyAdmin; all already applied to the dev DB this session)
+- `2026-06-14_alert_rules.sql` (device_id nullable + seed) — *was already applied by the user.*
+- `2026-06-14_alerts_rule_fk_setnull.sql` (FK → SET NULL) — *applied + verified this session.*
+- `2026-06-14_alerts_resolved_by.sql` (adds `resolved_by`) — *applied, but the feature was reverted →
+  the column is now DORMANT/unused; kept, not dropped.*
+
+### Verified
+- `node --check` (all changed backend files) + `tsc --noEmit` + `vite build` clean throughout.
+- DB readiness confirmed via throwaway scripts (migration applied, 12 seeded rules, FK = SET NULL).
+
+### Still pending / not done
+- **Firmware flash + hardware test** of the `envConfig` unification (can't compile here).
+- **Live end-to-end** of threshold firing + ack/resolve not yet driven here (needs running stack /
+  go-agent). UI + backend verified by build/typecheck only.
+- Minor: humidity-*critical* shows the device LED as **orange** (env_status DANGER), not red — buzzer
+  still escalates; one-line `calcEnvironmentStatus` tweak for exact LED parity if wanted.
+- Optional follow-ups offered, not built: configurable **AC comfort zones**, full alert **history
+  pagination**, device-side "disable metric" sentinel when a rule is deleted.
+- Branch still not PR'd into `main`.
+
+---
+
+## SESSION 12 — 2026-06-14  *(cont. of Session 11)*
+**Branch:** `email-popup-notifications`
+**Developer:** Mark Gregorio
+
+> UI/UX + accountability polish on top of Session 11's alerting work, plus a best-practice
+> hardening of User Management. Five threads: (1) a full Grafana redesign of the **Alert Rules**
+> page with safety guards, (2) **alert-rule accountability** (who last edited a rule), (3) the
+> **last-active-admin** guard (server-enforced) + admin role management in User Management,
+> (4) **acknowledge/resolve now shows on the bell** notifications, and (5) the decision to **keep
+> the two-role model** (no `super_admin`). Notification/alerting detail in
+> `email-popup-notifications.md` §14.
+
+### 1) Alert Rules page — full Grafana redesign (`pages/AlertRules.tsx`)
+- Rebuilt flat table → Grafana dashboard: **stat panels** (Total / Active / Global defaults /
+  Server overrides), a **filter toolbar** (search + metric + severity + scope + Clear), and rules
+  **grouped by scope** into collapsible sections (Global defaults + one per server, globe/server
+  icon, count badge, "Applies to all" / "Override" tag).
+- **Metric icons + color accents** (cpu/mem/disk/temp/gas/humidity) + human-readable conditions
+  ("when value ≥ 90%"). Add/edit moved to a **centered modal** (`--gf-shadow`, Esc/backdrop close)
+  with a **live preview** sentence + severity segmented picker. Friendlier empty states; inline
+  delete confirm with icon buttons. **"Add rule"** restyled Grafana (2px radius, 32px, hover).
+- Removed the redundant per-group "+ Rule" buttons (kept the single header button + empty-state).
+
+### 2) Guards on the Alert Rules page
+- **Last-global-rule coverage guard.** Alerting is rules-only, so removing the last global rule for
+  a metric silently disables it for every server without an override. Editing a global rule so it
+  stops covering its metric (reassign to a server / change metric / pause) shows an amber warning +
+  the Save button becomes **"Save anyway"**; deleting the last global shows an inline warning +
+  **"Delete anyway"**. Coverage-aware (counts *active* globals only).
+- **Server scope hides environment metrics.** temperature/gas/humidity are room-level (the ESP32
+  isn't a `devices` row) → for a per-server scope the metric dropdown only offers cpu/mem/disk
+  (auto-resets to cpu when switching Global→server).
+
+### 3) Alert-rule accountability (who last edited a rule)
+- **Migration `2026-06-14_alert_rules_updated_by.sql`** (NEW — must be run) — adds
+  `alert_rules.updated_by` (FK → users, **ON DELETE SET NULL**) + index.
+- `alertRulesService.create/update` stamp `updated_by` (the acting admin) + bump `updated_at = NOW()`
+  (incl. the activate/pause toggle); `list`/`getById` join users → `updatedByName`; `toClient`
+  exposes `updatedBy`/`updatedByName`. `routes/alertRules.js` passes `req.user.id`.
+- Each rule row shows **"edited by {name} · {when}"** (Manila time) or **"system default"** (seeded).
+
+### 4) User Management — admin role + last-active-admin guard (best practice)
+- **Edit role select** now offers **Admin** (was IT Staff only) → promote/demote via the modal.
+- **Edit enabled for admin rows** (was hidden for all admins): Edit now shows for everyone except
+  yourself (self uses the Profile modal). Demotion is safe via the guard below.
+- **Last-active-admin invariant — server-enforced** (`services/userService.js`): the system must
+  always retain ≥1 active admin. New `countOtherActiveAdmins` + `lastAdminError` (400) back guards in
+  **`deleteUser`**, **`updateUserStatus`** (also blocks **self-disable**; route now passes
+  `req.user.id`), and **`updateUser`** (demote/disable). The UI button-hiding is now just a
+  convenience layer on top.
+- **Removed the `id === 1` hardcode** in `UserManagement.tsx`: `isProtected` = self || last active
+  admin (derived from the live list). Two admins are now **symmetric** (each can manage the other);
+  neither can remove the final admin or themselves. Badge shows **"last admin"/"you"**;
+  `handleDelete` now honors the API result (was assuming success).
+- **Error surfacing fixed** (`src/server.js`): the global handler now includes `error` for **4xx**
+  (the frontend reads `data.error`, so guard messages actually show); **5xx stays generic**.
+
+### 5) Decision — no `super_admin` role
+- `admin` already has full access; a 3rd tier would duplicate it across an ENUM migration + ~25
+  `requireRole` sites + 3 `validRoles` arrays + frontend config for **no distinct capability**.
+  Real-world best practice = the last-admin invariant (thread 4), implemented instead.
+
+### 6) Bell notifications — show acknowledge / resolve  *(detail: email-popup §14.3)*
+- `services/notificationService.js`: the notification payload + both queries (live push +
+  `listForUser`) now carry the shared lifecycle (`status`, `acknowledgedByName`, `acknowledgedAt`,
+  `resolvedAt`) via a users join. **No migration** — `alerts` already has these columns.
+- `context/NotificationContext.tsx`: `AppNotification` gained the fields; the **`alertUpdated`**
+  handler patches matching bell items by `alertId` (live), plus the existing count refresh.
+- `components/notifications/NotificationPanel.tsx`: each item shows **"✓ Resolved by {name}"** (green)
+  or **"● Acknowledged by {name}"** (accent) once past `active`; auto-resolve shows "Resolved".
+
+### 7) Sidebar nav badges — pending approvals (admin)
+- **Server Metrics** nav shows a count badge when servers (agents) await approval; **User
+  Management** nav shows one for new user registrations — styled like the existing **Alerts** badge
+  (accent blue vs the alerts' red). Admin-only (stays 0 / hidden for it_staff).
+- `context/NotificationContext.tsx` gains `pendingAgentCount` + `pendingUserCount` (fetched on login
+  via `getPendingAgents`/`getPendingUsers`, **admin-gated** to avoid 403s; live on `agentPending`/
+  `agentApproved`/`userPending`/`userApproved`; re-synced on reconnect). `Sidebar.tsx` renders them
+  via a shared **`NavBadge`** (the Alerts badge was refactored onto it too).
+- **Burger / reopen-sidebar badge** (`Header.tsx`): when the sidebar is hidden (mobile burger or the
+  desktop collapsed reopen button), the badge now aggregates **alerts + pending agents + pending
+  users** (was alerts-only) so a hidden sidebar still surfaces all of it — red when any alert is
+  open, else accent.
+
+### Migrations (run in phpMyAdmin)
+- `2026-06-14_alert_rules_updated_by.sql` — **NEW, must be run** before restarting the backend (the
+  Alert Rules list query joins `updated_by`).
+
+### Verified
+- Backend `node --check` (all changed files) + frontend `tsc --noEmit` clean throughout.
+
+### Still pending / not done
+- **Phantom `super_admin` bug** flagged but NOT fixed: `pages/Reports.tsx:18`
+  `canGenerate = ["super_admin","it_staff"]` → a plain **admin can't "Generate" reports** in the UI
+  (should be `["admin","it_staff"]`); stale comment at `api.ts:111`. One-line fix when wanted.
+- Live end-to-end of the new guards / bell ack-resolve not driven here (build/typecheck only).
+- Branch still not PR'd into `main`.
+
+---
+
+## SESSION 13 — 2026-06-15
+**Branch:** `email-popup-notifications` (cont.)
+**Developer:** Mark Gregorio
+
+> Polish + UX on the alerting/notification stack, plus a new **configurable auto-cooling (AC IR)
+> thresholds** feature. The alerting-related parts (re-arm on resolve, bell filter, `acConfig`)
+> are also written up to study from in `email-popup-notifications.md §15`.
+
+### 1) Email for critical environment alerts — verified, no code change
+- Code-traced that critical-severity environment alerts (temperature/gas/humidity) ALREADY email
+  via the shared `notificationService.raiseAlert` path — the email gate is **severity-based, not
+  type-based**. "Only server emails seen" was because the room rarely reaches the *critical*
+  threshold (warnings don't email by default; `NOTIFY_EMAIL_MIN_SEVERITY=critical`).
+
+### 2) Per-user personal Settings page (it_staff now included)
+- **Bug:** notification prefs lived only on the Settings page, which it_staff couldn't reach
+  (`"settings"` wasn't in their `roleConfig.pages`) → it_staff had no notification prefs. The
+  backend `/api/notifications/prefs` was already per-user; purely a UI-access gap.
+- `data/users.ts`: added `"settings"` to it_staff. `permissionService.js`: added `view:settings`
+  to it_staff (kept `manage:settings` admin-only).
+- **`pages/Settings.tsx` rebuilt** as a real **per-user personal** settings page (gf-styled):
+  **Profile** (reuses ProfileModal), **Notification Preferences**, **Appearance** (theme). Removed
+  the mock cards (backend connection inputs, alert-threshold sliders, fake Save).
+- `Sidebar.tsx`: moved the **Settings** nav item to the **bottom**.
+
+### 3) Removed the non-working "Reset Password" (Google-only auth)
+- Under Google OAuth the admin reset only wrote a `hash_password` login never checks. Removed end
+  to end: `UserManagement.tsx` (state/handlers/`⟳ Reset PW` button/modal), `api.ts`
+  (`resetPassword`), `routes/users.js` (`PATCH /:id/reset-password`), `userService.js`
+  (`resetPassword()`; kept `bcrypt` — still used by other methods).
+
+### 4) Alerting — re-arm on resolve (still-breaching metric re-alerts)
+- **Problem:** resolving an alert whose metric was *still* critical didn't re-alert. Root cause =
+  the **escalation guard** (raise only on band onset) whose in-memory band tracker wasn't reset on
+  resolve — so the metric "stayed critical" and never re-escalated. (The cooldown's
+  `status <> 'resolved'` was a red herring; `raiseAlert` was never even reached.)
+- **New `services/alertBandState.js`** — shared in-memory band per `(deviceId, metric)`
+  (`getBand`/`setBand`/`resetBand`/`resetDevice`). `agentService.checkThresholds` (dropped its
+  private `alertState` Map) + `handlers/sensorHandler.js` (dropped `envBand`) now use it; the three
+  lifecycle clears (reject / offline-sweep / remove) call `resetDevice`.
+- **`alertsService.resolve` + `autoResolveMetric`** call `resetBand(deviceId, type)` → a still-true
+  condition re-escalates → **one** fresh alert on the next reading (then the cooldown re-engages).
+  PagerDuty/Opsgenie-style. **Acknowledge** still silences (no re-arm).
+
+### 5) Bell notifications — All / Unread filter
+- `NotificationPanel.tsx`: a 2-tab filter (All (N) / Unread (N)) over the loaded feed (client-side,
+  instant). Empty-state adapts. Mark-all-read / Clear-all still act on the whole feed.
+
+### 6) Configurable auto-cooling (AC IR) thresholds — NEW feature
+- The firmware `getIRZone` comfort-zone boundaries (22/24/27/29 °C) are now admin-configurable with
+  **no reflash**, mirroring the `envConfig` pattern. **Decision: kept SEPARATE from Alert Rules** —
+  cooling must ramp *before* the alarm; target temps per zone are fixed (captured IR codes), so only
+  the boundaries are configurable. Detail: `email-popup-notifications.md §15.4`.
+- **Migration `2026-06-15_aircon_ir_config.sql`** (NEW, must run) — single-row `aircon_ir_config`
+  (cold_below/normal_max/acceptable_max/near_crit_max + updated_by/at), seeded with firmware defaults.
+- **Backend:** `airconService` (getIRConfig/saveIRConfig/getDeviceIRConfig); `routes/aircon.js`
+  (`GET /api/aircon/ir-config` both roles, `PUT` admin → push `acConfig`); `connectionHandler`
+  emits `acConfig` on device connect.
+- **Firmware (`env_monitor_v2.ino`):** boundaries → mutable globals + new `acConfig` handler.
+  ⚠️ Must be **re-flashed** to take effect (no toolchain here).
+- **Frontend:** `api.ts` (get/saveAirconIRConfig); `AirConditioner.tsx` **Auto-Cooling Thresholds**
+  panel (zone map + editable boundaries for admin, read-only for it_staff, "edited by" footer).
+
+### New socket event
+- `acConfig` (server → ESP32) — IR zone boundaries; on connect + after any Auto-Cooling change.
+
+### Migrations (run in phpMyAdmin)
+- `2026-06-15_aircon_ir_config.sql` — **NEW, required** for the AC thresholds feature.
+
+### Verified
+- Backend `node --check` (all changed files) + import-resolution; frontend `tsc --noEmit` +
+  `vite build` clean throughout.
+
+### Still pending / not done
+- **Re-flash `env_monitor_v2.ino`** (activates both `acConfig` and the earlier `envConfig`) + run
+  the new migration.
+- Live end-to-end of re-arm-on-resolve and the AC-threshold push not driven here (build/typecheck only).
+- **Phantom `super_admin` bug** (`pages/Reports.tsx:18`) still unfixed — carried over from SESSION 12.
+- Branch still not PR'd into `main`.
+
+---
+

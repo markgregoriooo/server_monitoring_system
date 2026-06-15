@@ -1,5 +1,9 @@
 import crypto from "crypto";
 import db from "../config/mysql.js";
+import notificationService from "./notificationService.js";
+import alertRulesService from "./alertRulesService.js";
+import alertsService from "./alertsService.js";
+import alertBandState from "./alertBandState.js";
 
 // ─── All Go-agent + server-device DB logic (devices + server_specs +
 //     device_network + agent_tokens). Mirrors the airconService pattern. ───────
@@ -227,7 +231,7 @@ async function reject(deviceId) {
   if (!tok) return false;
   await db.query(`DELETE FROM devices WHERE device_id = ?`, [deviceId]);
   latestMetrics.delete(Number(deviceId));
-  alertState.delete(Number(deviceId));
+  alertBandState.resetDevice(deviceId);
   return true;
 }
 
@@ -300,38 +304,50 @@ async function getDeviceLogs(deviceId, limit = 50) {
   return rows;
 }
 
-// Threshold alerting — logs a device event only when a metric CROSSES a band,
-// with a 70–80% hysteresis zone so a value hovering near 80 doesn't spam rows.
-const alertState = new Map(); // device_id -> { cpu, mem, disk }: "normal" | "warning" | "critical"
-
-function bandFor(prev, v) {
-  if (v >= 90) return "critical";
-  if (v >= 80) return "warning";
-  if (v < 70) return "normal";
-  return prev; // 70–80: hold previous band (hysteresis)
-}
+// Threshold alerting — thresholds are now CONFIGURABLE (alert_rules), resolved per
+// server (per-device override else global). We track the last band per device+metric
+// and act only on the ONSET of a worse band; alertRulesService.nextBand applies
+// hysteresis so a value flapping at a boundary doesn't churn device_logs. With no
+// matching rule the band is "normal" (rules-only → silent). See alertRulesService.js.
+const SEV_RANK = alertRulesService.SEV_RANK;
+const METRIC_LABEL = { cpu: "CPU", mem: "Memory", disk: "Disk" };
 
 // Returns the device-log rows created this cycle (for live emit).
 async function checkThresholds(deviceId, metrics) {
   const id = Number(deviceId);
-  const prev = alertState.get(id) ?? { cpu: "normal", mem: "normal", disk: "normal" };
-  const next = { ...prev };
   const events = [];
 
-  for (const [key, label] of [["cpu", "CPU"], ["mem", "Memory"], ["disk", "Disk"]]) {
+  for (const key of ["cpu", "mem", "disk"]) {
     const v = metrics[key];
     if (typeof v !== "number" || Number.isNaN(v)) continue;
-    const band = bandFor(prev[key], v);
-    if (band === prev[key]) continue;
-    next[key] = band; // always track state (so a later breach re-arms)…
-    // …but only LOG the onset of a problem — not recoveries — to keep
-    // device_logs lean (it records what matters: register, approve, incidents).
+    const label = METRIC_LABEL[key];
+
+    // Current band lives in the shared alertBandState so the lifecycle (resolve /
+    // auto-resolve) can re-arm it — a still-breaching metric re-alerts after a resolve.
+    const prevBand = alertBandState.getBand(id, key);
+    const rules = await alertRulesService.getEffectiveRules(id, key);
+    const { band, rule } = alertRulesService.nextBand(rules, v, prevBand);
+    alertBandState.setBand(id, key, band); // always track state (so a later breach re-arms)…
+
+    // Recovery: the metric returned to normal → auto-resolve its open alerts.
+    if (band === "normal" && prevBand !== "normal") {
+      await alertsService.autoResolveMetric(id, key);
+    }
+
+    // …but only LOG + alert the ONSET of a worse band — not steady-state or
+    // recoveries — to keep device_logs lean and the bell quiet.
+    if (SEV_RANK[band] <= SEV_RANK[prevBand]) continue;
+
     const pct = Math.round(v);
-    if (band === "critical") events.push(await logDevice(id, "critical", `${label} critical: ${pct}%`));
-    else if (band === "warning") events.push(await logDevice(id, "warning", `${label} high: ${pct}%`));
+    const word = band === "critical" ? "critical" : band === "warning" ? "high" : band;
+    events.push(await logDevice(id, band, `${label} ${word}: ${pct}%`));
+    await notificationService.raiseAlert({
+      deviceId: id, type: key, severity: band,
+      title: `${label} ${word}`, message: `${label} ${word}: ${pct}%`,
+      metricValue: v, alertRuleId: rule?.alert_rule_id ?? null,
+    });
   }
 
-  alertState.set(id, next);
   return events.filter(Boolean);
 }
 
@@ -364,7 +380,7 @@ async function sweepOffline() {
   const out = [];
   for (const r of stale) {
     latestMetrics.delete(Number(r.id));
-    alertState.delete(Number(r.id)); // re-arm threshold logging for when it returns
+    alertBandState.resetDevice(r.id); // re-arm threshold logging for when it returns
     const log = await logDevice(r.id, "warning", "Server went offline — no metrics received");
     out.push({ id: Number(r.id), name: r.name, log });
   }
@@ -415,7 +431,7 @@ async function removeServer(id) {
   );
   if (result.affectedRows > 0) {
     latestMetrics.delete(Number(id));
-    alertState.delete(Number(id));
+    alertBandState.resetDevice(id);
   }
   return result.affectedRows > 0;
 }
