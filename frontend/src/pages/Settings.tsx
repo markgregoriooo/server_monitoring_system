@@ -5,6 +5,7 @@ import { roleConfig, type Role } from "../data/users";
 import { initials, avatarUrl } from "../utils/format";
 import ProfileModal from "../components/layout/ProfileModal";
 import NotificationPreferences from "../components/notifications/NotificationPreferences";
+import WidgetBuilder from "../pip/WidgetBuilder";
 
 // Personal settings — everything on this page is PER-USER and scoped to the signed-in
 // account: profile (users row), notification prefs (notification_prefs, keyed by user_id,
@@ -82,6 +83,9 @@ export default function Settings() {
 
       {/* ── Notification preferences (per-user, persisted in notification_prefs) ── */}
       <NotificationPreferences />
+
+      {/* ── Customize Widget (per-user, persisted in widget_prefs) ── */}
+      <WidgetBuilder />
 
       {/* ── Appearance (per-user, persisted in localStorage: cspc_theme) ── */}
       <div className="p-5" style={panelStyle}>

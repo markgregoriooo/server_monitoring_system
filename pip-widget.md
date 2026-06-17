@@ -296,9 +296,10 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
       `useWidgetLayout` (localStorage cache + GET/PUT reconcile). Acceptance: a saved layout
       survives reload and another device. ✅ **Run the migration in phpMyAdmin** before the
       cross-device part works; until then it falls back to the localStorage cache.
-- [ ] **Phase 4 — Builder (drag & drop).** `WidgetBuilder` on Settings with @dnd-kit + live
-      preview, wired to `useWidgetLayout`. Acceptance: drag to add/reorder/remove → Save →
-      pop-out reflects it.
+- [x] **Phase 4 — Builder (drag & drop).** `WidgetBuilder` on Settings: @dnd-kit sortable
+      "Your widget" column + grouped "Available tiles" + live `PipWidget` preview, wired to
+      `useWidgetLayout` (Save / Reset to default / Discard). Acceptance: drag to
+      add/reorder/remove → Save → pop-out reflects it. ✅ (added dep: `@dnd-kit/*`)
 - [ ] **Phase 5 — Polish.** Click-through (focus tab + route), connection-lost state, reset to
       default, reduced-motion, a11y/keyboard-drag pass.
 

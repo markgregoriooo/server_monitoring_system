@@ -68,6 +68,7 @@ export function usePictureInPicture(defaultSize?: DocumentPiPOptions): PictureIn
       // Base the body so it reads as one of our panels even before content paints.
       Object.assign(win.document.body.style, {
         margin: "0",
+        height: "100vh", // so the widget's h-full fills the window
         background: "var(--gf-bg)",
         color: "var(--gf-text-primary)",
         fontFamily: "'JetBrains Mono', monospace",

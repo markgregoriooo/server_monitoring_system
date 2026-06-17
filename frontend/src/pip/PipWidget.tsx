@@ -14,7 +14,7 @@ export default function PipWidget({ layout }: { layout?: string[] }) {
     .filter((t): t is TileDef => !!t);
 
   return (
-    <div className="flex flex-col h-screen w-screen" style={{ background: "var(--gf-bg)", fontFamily: "'JetBrains Mono', monospace" }}>
+    <div className="flex flex-col h-full w-full" style={{ background: "var(--gf-bg)", fontFamily: "'JetBrains Mono', monospace" }}>
       {/* header strip */}
       <div
         className="flex items-center gap-2 px-3 h-7 flex-shrink-0"
