@@ -1,0 +1,318 @@
+# Pop-Out Live Widget — Picture-in-Picture, **Customizable** (CSPC-ICTU Monitoring)
+
+> Status: **PLAN** (branch `pip-widget`). Nothing implemented yet — this is the design
+> of record. Update the Status section (§11) as phases land.
+
+---
+
+## 1. What it is (in one paragraph)
+
+A small, always-on-top floating window — the kind Google Meet pops out when you leave the
+tab — that keeps a **compact, user-customizable live status panel** on the desktop while the
+user works in other apps. The user **drags & drops** which tiles to show (room temp,
+humidity, gas, server summary, open-alert count, latest alert, aircon, …) from a builder on
+the dashboard; the floating window renders exactly that, updating in real time. Click it to
+jump back to the dashboard. It is **launched by a button** (a user gesture is mandatory) and
+is **Chromium-only**.
+
+The browser feature is **Picture-in-Picture (PiP)**. There are two APIs; we use the second:
+
+| API | Renders | Why / why not |
+|-----|---------|---------------|
+| **Picture-in-Picture API** | a `<video>` element only | Wrong tool — we have no video |
+| **Document Picture-in-Picture API** | **arbitrary HTML/DOM** | ✅ What Google Meet uses; lets us render our own React widget |
+
+---
+
+## 2. The one decision that drives everything: **same React tree, separate document**
+
+The Document PiP window (`window.documentPictureInPicture.requestWindow()`) returns a real,
+separate `Window` with its own empty `document`. The key architectural move:
+
+- We do **not** spin up a second React root, a second socket, or a second auth session.
+- We render the widget with **`createPortal`** into `pipWindow.document.body`. It stays part
+  of the **main app's React tree**, so it already has `AuthContext`, `NotificationContext`,
+  the shared `socket`, theme, and every hook — for free. Live data "just works."
+- The only thing that does **not** cross the document boundary automatically is **CSS**. The
+  PiP document starts blank, so we must **copy our stylesheets into it** (see §6).
+
+This mirrors how `ToastHost` already works: a shell-level, route-independent overlay fed by
+the existing contexts. The PiP host is the same pattern, just portaled into another window.
+
+---
+
+## 3. Customization model — **tile catalog + ordered layout** (the heart of this feature)
+
+Customization is the user choosing **which tiles** appear and **in what order**. Two concepts:
+
+### 3.1 The tile catalog (the menu of what's available)
+A single registry — `frontend/src/pip/tiles/catalog.tsx` — defines every available tile as a
+small descriptor. Each tile is a self-contained React component that reads live data from the
+**existing hooks** (no new data source):
+
+```ts
+interface TileDef {
+  id: string;            // stable key persisted in the layout, e.g. "env.temp"
+  label: string;         // shown in the builder, e.g. "Temperature"
+  group: string;         // "Environment" | "Servers" | "Alerts" | "Aircon"
+  span?: 1 | 2;          // grid columns it occupies (default 1)
+  Render: React.FC;      // reads useLiveSummary()/useNotifications(), draws the tile
+}
+```
+
+First-cut catalog:
+
+| Tile id | Shows | Live source |
+|---------|-------|-------------|
+| `env.temp` | room temperature, zone-colored | `sensorData` |
+| `env.humidity` | humidity % | `sensorData` |
+| `env.gas` | gas band (NORMAL/WARN/DANGER) | `sensorData` |
+| `servers.summary` | online count + worst CPU/mem | `serverMetrics` / `serverStatus` |
+| `alerts.count` | open-alert badge (red when >0) | `useNotifications().openAlertCount` |
+| `alerts.latest` | most recent alert title + severity | `useNotifications().items[0]` |
+| `aircon.summary` | how many AC units on + mode | `airconStatus` |
+| `meta.clock` | time + connection dot | `socket` connected state |
+
+> Adding a tile later = add one `TileDef` to the catalog. Nothing else changes.
+
+### 3.2 The layout (the user's choice)
+The saved layout is just an **ordered array of tile ids** — small, forward-compatible:
+
+```json
+{ "tiles": ["env.temp", "alerts.count", "servers.summary", "env.humidity"] }
+```
+
+Unknown ids (a tile removed in a future build) are ignored on render, so old layouts never
+break. The widget renders the catalog entries named here, in order, into an auto-flow grid.
+
+### 3.3 The builder (where drag-and-drop happens) — on the main page, not in PiP
+A **"Customize Widget"** panel on the **Settings page** (beside `NotificationPreferences`,
+where per-user prefs already live). Two columns:
+
+```
+Settings → Customize Widget
+┌─ Available tiles ──────┐        ┌─ Your widget ──────────────┐
+│ Environment            │        │ ⠿ Temperature        [×]  │
+│  + Temperature         │  drag  │ ⠿ Open alerts        [×]  │
+│  + Humidity   + Gas    │  ───▶  │ ⠿ Servers summary    [×]  │
+│ Servers  + Summary     │        │ ⠿ Humidity           [×]  │
+│ Alerts + Count +Latest │        │   (drag ⠿ to reorder)     │
+│ Aircon + Summary       │        └────────────────────────────┘
+└────────────────────────┘        [ Reset ]   [ Save layout ]
+                                   [ Pop out ▣ ]  ← live preview/launch
+```
+
+Drag-and-drop = **@dnd-kit** (`@dnd-kit/core` + `@dnd-kit/sortable`) — modern, accessible
+(keyboard-draggable), maintained. (`react-beautiful-dnd` is deprecated; `react-grid-layout`
+is overkill for a compact fixed widget.) The "Your widget" column is a dnd-kit **sortable**
+list; "Available tiles" add on click or drag-in. A **live preview** of the widget renders
+right there so the user sees the result before popping it out.
+
+> Why the builder lives on the main page, not inside the floating window: dragging in a
+> ~320px PiP window is fiddly, and PiP has focus/quirk issues. Build big, render small —
+> this is how Grafana/Datadog dashboards work.
+
+---
+
+## 4. Persistence — **backend per-user, localStorage-cached** (matches `notification_prefs`)
+
+Best practice for a per-user layout: the **server is the source of truth** (so it follows the
+user across machines), with a **localStorage cache** for instant first paint. This mirrors
+the existing `notification_prefs` design exactly (`migrations/2026-06-13_notifications.sql`,
+`notificationService.getPrefs/savePrefs`, `GET/PUT /api/notifications/prefs`).
+
+**New table** (`migrations/2026-06-1X_widget_prefs.sql`) — one row per user, missing row =
+default layout supplied by the backend:
+
+```sql
+CREATE TABLE IF NOT EXISTS `widget_prefs` (
+  `user_id`    INT NOT NULL,
+  `layout_json` JSON NOT NULL,
+  `updated_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `fk_widget_prefs_users1` FOREIGN KEY (`user_id`)
+    REFERENCES `users` (`user_id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE = InnoDB;
+```
+
+**Load flow (optimistic):**
+1. `useWidgetLayout()` reads `localStorage['cspc_pip_layout']` synchronously → instant paint.
+2. In the background it `GET /api/widget-layout`; if the server differs, reconcile + update
+   the cache. Missing row → backend returns a sensible **default layout**.
+
+**Save flow:** builder "Save" → `PUT /api/widget-layout` (server validates ids against the
+catalog, drops unknowns) → on success write the cache. Optimistic UI, reconcile on failure —
+the same pattern as `NotificationContext.markRead`.
+
+> Validation lives server-side too: the backend keeps the canonical tile-id allow-list and
+> strips anything not in it, so a stale/hand-edited layout can't inject junk.
+
+---
+
+## 5. Proposed pieces (new)
+
+### Frontend
+```
+frontend/src/pip/
+  usePictureInPicture.ts    ← API wrapper: feature-detect, open/close, style cloning,
+                              theme sync, lifecycle/cleanup. → { supported, isOpen, open, close, pipWindow }
+  PipHost.tsx               ← shell-level owner (sibling of ToastHost). Holds the PiP
+                              window and createPortal(<PipWidget/>, body).
+  PipWidget.tsx             ← renders the user's layout: maps saved tile ids → catalog
+                              entries → tiles, in an auto-flow grid. Grafana tokens.
+  useLiveSummary.ts         ← one hook owning the live sensor/server summary so Dashboard,
+                              tiles, and the preview share ONE subscription (not many).
+  useWidgetLayout.ts        ← layout state: localStorage cache + GET/PUT reconcile + save.
+  tiles/catalog.tsx         ← the TileDef registry (every available tile).
+  WidgetBuilder.tsx         ← the drag-and-drop builder (dnd-kit) + live preview.
+```
+
+Wiring:
+- Mount `<PipHost />` in `App.tsx` `AppShell`, beside `<ToastHost />` (route-independent).
+- Launch button in `components/layout/Header.tsx` — rendered only when `supported`.
+- `<WidgetBuilder />` rendered on `pages/Settings.tsx`, beside `NotificationPreferences`.
+
+### Backend (mirrors the notification-prefs trio)
+```
+backend/migrations/2026-06-1X_widget_prefs.sql   ← the table above (run in phpMyAdmin)
+backend/services/widgetPrefsService.js           ← getLayout(userId) / saveLayout(userId, layout)
+                                                   + DEFAULT_LAYOUT + tile-id allow-list validation
+backend/routes/widgetLayout.js                   ← GET/PUT /api/widget-layout (authMiddleware,
+                                                   scoped to req.user.id), mounted in server.js
+```
+
+> No new socket events. No firmware changes. The widget is a pure **consumer** of streams the
+> dashboard already subscribes to (`sensorData`, `serverMetrics`, `serverStatus`,
+> `airconStatus`, `notification`) — see §10.
+
+---
+
+## 6. The browser-specific problems and how we solve them
+
+PiP is finicky. These bite, and the plan for each:
+
+1. **Styles don't carry over.** The PiP document is blank. On open, clone every `<style>` and
+   `<link rel="stylesheet">` from the main `document.head` into `pipWindow.document.head`.
+   All theming is **CSS custom properties on `:root`** (`--gf-*`, `index.css:8`) + Tailwind
+   utilities, so cloning the stylesheets makes the whole design system work unchanged.
+2. **Theme (dark/light).** Light mode = a `light` class on `:root` (`index.css:39`
+   `:root.light`). Copy `documentElement.className` onto the PiP doc's root on open, and keep
+   it in sync if `ThemeContext` toggles while the widget is open.
+3. **Fonts.** JetBrains Mono comes via `@import` at `index.css:1`, so cloning the stylesheet
+   pulls it in.
+4. **Lifecycle / cleanup.** The window closes three ways: user closes it, we `close()`, or
+   the tab navigates away. Listen for the PiP window's `pagehide` to reset `isOpen`, tear down
+   the portal, restore the button. Also `close()` on unmount so we never leak a window.
+
+---
+
+## 7. What a tile looks like (glanceable, reused colors)
+
+Compact, ~`320×280`, auto-flow grid of whatever tiles the user picked. Grafana tokens,
+JetBrains Mono, 2px radius. Example with `["env.temp","alerts.count","servers.summary"]`:
+
+```
+┌────────────────────────────────┐
+│ CSPC-ICTU · Live      ● online  │  ← meta.clock (if added)
+├───────────────┬────────────────┤
+│  TEMP         │  ⚠ ALERTS      │
+│  24.5°C       │  2 open        │
+├───────────────┴────────────────┤
+│  Servers   4/5 online          │
+│  worst CPU 82% · mem 61%       │
+└────────────────────────────────┘
+   (click anywhere → focus tab + route)
+```
+
+Color logic is **reused** from the Dashboard helpers (`tempColor`, `loadColor`, severity
+colors) — tiles never re-derive thresholds.
+
+---
+
+## 8. Decisions (locked — best-practice / real-world defaults)
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Document PiP API, not video PiP | We render live HTML, not a video stream |
+| 2 | Portal into the existing React tree | Free access to socket/contexts; one source of truth |
+| 3 | Customization = tile catalog + ordered id list | Small, forward-compatible; unknown ids ignored |
+| 4 | Builder lives on the **main page** (Settings), PiP renders | Dragging in a tiny window is poor UX (Grafana/Datadog model) |
+| 5 | Persist **backend per-user**, localStorage-cached | Layout follows the user across devices; instant first paint |
+| 6 | **@dnd-kit** for drag-and-drop | Modern, accessible, maintained; rbd is deprecated |
+| 7 | Reorderable tile list, not a free resizable grid | Right altitude for a compact widget; lighter dep |
+| 8 | Server validates tile ids against the catalog | Stale/edited layouts can't inject junk |
+| 9 | No new socket / firmware; one new tiny REST pair | Widget is a pure consumer; persistence is the only new I/O |
+| 10 | Launch from a Header button (user gesture); feature-detect | API requires a gesture; Chromium-only → hide elsewhere |
+| 11 | Single widget instance | The API allows only one PiP window per browser |
+
+---
+
+## 9. Constraints & gotchas (know these before building)
+
+- **Chromium only** (Chrome / Edge **116+**). Firefox / Safari: no Document PiP → don't
+  render the launch button (`'documentPictureInPicture' in window`). The **builder still
+  works everywhere** (it's just a normal page) — only the *pop-out* is Chromium-gated.
+- **User gesture required** — cannot auto-open on load or on an alert. An alert can only
+  *update* an already-open widget.
+- **One PiP window** per browser, app-wide. Re-opening focuses/replaces, never stacks.
+- **Secure context** — needs HTTPS or `localhost`. Fine for dev; note for LAN/prod over HTTP.
+- **No persistence of the *window* across reload** — the *layout* persists (backend), but the
+  floating window itself must be re-opened. Acceptable; it's a live view.
+- **Sizing** — some Chromium versions clamp tiny dimensions; pick sane defaults.
+
+---
+
+## 10. Data sources — **all already flowing** (no backend data work)
+
+| Data | Source already in place | File |
+|------|------------------------|------|
+| Room temp / humidity / gas | `socket.on("sensorData")` | `pages/Dashboard.tsx:546` |
+| Server CPU/mem/online | `socket.on("serverMetrics")` + `"serverStatus"` | `pages/Dashboard.tsx:547` |
+| Aircon state | `socket.on("airconStatus")` | `pages/Dashboard.tsx:548` |
+| Open alert count / latest | `useNotifications()` (`openAlertCount`, `items`) | `context/NotificationContext.tsx:48` |
+
+The widget consumes these via the same hooks the Dashboard uses — ideally lifted into
+`useLiveSummary` so Dashboard + tiles + preview share **one** subscription.
+
+---
+
+## 11. Status & next steps (phased)
+
+- [ ] **Phase 1 — PiP plumbing.** `usePictureInPicture.ts` (open/close, feature-detect, style
+      clone, theme sync, cleanup) + `PipHost` in `AppShell` + Header launch button.
+      Acceptance: button opens a blank-but-styled window that closes cleanly.
+- [ ] **Phase 2 — Tiles + live data.** `useLiveSummary` + `tiles/catalog.tsx` + `PipWidget`
+      rendering a **hardcoded default** layout. Acceptance: values tick live, match Dashboard.
+- [ ] **Phase 3 — Persistence.** Migration + `widgetPrefsService` + `routes/widgetLayout.js`
+      + `useWidgetLayout` (cache + reconcile). Acceptance: a saved layout survives reload and
+      another device.
+- [ ] **Phase 4 — Builder (drag & drop).** `WidgetBuilder` on Settings with @dnd-kit + live
+      preview, wired to `useWidgetLayout`. Acceptance: drag to add/reorder/remove → Save →
+      pop-out reflects it.
+- [ ] **Phase 5 — Polish.** Click-through (focus tab + route), connection-lost state, reset to
+      default, reduced-motion, a11y/keyboard-drag pass.
+
+---
+
+## 12. Key files (when building)
+
+| File | Role |
+|------|------|
+| `frontend/src/pip/usePictureInPicture.ts` | PiP API wrapper hook (new) |
+| `frontend/src/pip/PipHost.tsx` | shell-level owner + portal (new) |
+| `frontend/src/pip/PipWidget.tsx` | renders the user's saved layout (new) |
+| `frontend/src/pip/useLiveSummary.ts` | shared live sensor/server summary hook (new) |
+| `frontend/src/pip/useWidgetLayout.ts` | layout state: cache + GET/PUT reconcile (new) |
+| `frontend/src/pip/tiles/catalog.tsx` | the TileDef registry (new) |
+| `frontend/src/pip/WidgetBuilder.tsx` | dnd-kit builder + live preview (new) |
+| `frontend/src/App.tsx` | mount `<PipHost />` in `AppShell` |
+| `frontend/src/components/layout/Header.tsx` | launch button (gated on `supported`) |
+| `frontend/src/pages/Settings.tsx` | host `<WidgetBuilder />` (beside NotificationPreferences) |
+| `backend/routes/widgetLayout.js` | `GET/PUT /api/widget-layout` (new) |
+| `backend/services/widgetPrefsService.js` | getLayout/saveLayout + default + validation (new) |
+| `backend/migrations/2026-06-1X_widget_prefs.sql` | `widget_prefs` table (new) |
+| `frontend/src/socket/socket.ts` | existing shared socket — reused, not changed |
+| `frontend/src/context/NotificationContext.tsx` | `openAlertCount`, `items` — reused |
+| `frontend/src/index.css` | `--gf-*` tokens + `:root.light` + font — cloned into PiP doc |
+| `frontend/src/components/notifications/ToastHost.tsx` | the pattern `PipHost` mirrors |
+| `backend/services/notificationService.js` | the prefs pattern `widgetPrefsService` mirrors |
