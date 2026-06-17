@@ -534,8 +534,12 @@ function AddAirconModal({ usedChannels, channelMap, onAdd, onClose }: {
 // re-pushes "acConfig" to the device live. Kept separate from Alert Rules on purpose:
 // cooling should ramp BEFORE the alarm thresholds, so its thresholds sit at/below them.
 
-function IRZoneConfig({ isAdmin }: { isAdmin: boolean }) {
-  const [form, setForm] = useState({ coldBelow: "", normalMax: "", acceptableMax: "", nearCritMax: "" });
+function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: number | string }) {
+  // Firmware-compiled defaults (CLAUDE.md IR Zone table): <22 / 22–24 / 25–27 / 28–29 / >29.
+  const DEFAULTS = { coldBelow: "22", normalMax: "24", acceptableMax: "27", nearCritMax: "29" };
+
+  const [form, setForm]       = useState({ coldBelow: "", normalMax: "", acceptableMax: "", nearCritMax: "" });
+  const [initial, setInitial] = useState(form); // last saved/loaded snapshot → drives dirty tracking
   const [meta, setMeta] = useState<{ updatedByName: string | null; updatedAt: string | null }>({
     updatedByName: null, updatedAt: null,
   });
@@ -548,10 +552,12 @@ function IRZoneConfig({ isAdmin }: { isAdmin: boolean }) {
     coldBelow: number; normalMax: number; acceptableMax: number; nearCritMax: number;
     updatedByName?: string | null; updatedAt?: string | null;
   }) => {
-    setForm({
+    const next = {
       coldBelow: String(c.coldBelow), normalMax: String(c.normalMax),
       acceptableMax: String(c.acceptableMax), nearCritMax: String(c.nearCritMax),
-    });
+    };
+    setForm(next);
+    setInitial(next);
     setMeta({ updatedByName: c.updatedByName ?? null, updatedAt: c.updatedAt ?? null });
   };
 
@@ -562,11 +568,33 @@ function IRZoneConfig({ isAdmin }: { isAdmin: boolean }) {
     });
   }, []);
 
+  // ── derived: numeric view, validation, dirty state ──
+  const keys = ["coldBelow", "normalMax", "acceptableMax", "nearCritMax"] as const;
+  const n = {
+    coldBelow:     Number(form.coldBelow),
+    normalMax:     Number(form.normalMax),
+    acceptableMax: Number(form.acceptableMax),
+    nearCritMax:   Number(form.nearCritMax),
+  };
+  const filled    = keys.every((k) => form[k] !== "" && !Number.isNaN(n[k]));
+  const ascending = n.coldBelow < n.normalMax && n.normalMax < n.acceptableMax && n.acceptableMax < n.nearCritMax;
+  const valid     = filled && ascending;
+  const dirty     = JSON.stringify(form) !== JSON.stringify(initial);
+
+  // per-field order violations — highlight both sides of a bad boundary
+  const bad = {
+    coldBelow:     filled && !(n.coldBelow < n.normalMax),
+    normalMax:     filled && !(n.coldBelow < n.normalMax && n.normalMax < n.acceptableMax),
+    acceptableMax: filled && !(n.normalMax < n.acceptableMax && n.acceptableMax < n.nearCritMax),
+    nearCritMax:   filled && !(n.acceptableMax < n.nearCritMax),
+  };
+
   const save = async () => {
+    if (!valid) return;
     setSaving(true); setError("");
     const res = await api.saveAirconIRConfig({
-      coldBelow: Number(form.coldBelow), normalMax: Number(form.normalMax),
-      acceptableMax: Number(form.acceptableMax), nearCritMax: Number(form.nearCritMax),
+      coldBelow: n.coldBelow, normalMax: n.normalMax,
+      acceptableMax: n.acceptableMax, nearCritMax: n.nearCritMax,
     });
     setSaving(false);
     if (res.success && res.data?.config) {
@@ -577,60 +605,163 @@ function IRZoneConfig({ isAdmin }: { isAdmin: boolean }) {
     }
   };
 
-  const zones = [
-    { name: "Too Cold",      range: `< ${form.coldBelow || "–"}°C`,                              target: "28°C · Auto", color: BLUE },
-    { name: "Normal",        range: `${form.coldBelow || "–"}–${form.normalMax || "–"}°C`,       target: "26°C · Auto", color: GREEN },
-    { name: "Acceptable",    range: `${form.normalMax || "–"}–${form.acceptableMax || "–"}°C`,   target: "24°C · Auto", color: GREEN },
-    { name: "Near Critical", range: `${form.acceptableMax || "–"}–${form.nearCritMax || "–"}°C`, target: "22°C · High", color: ORANGE },
-    { name: "Critical",      range: `> ${form.nearCritMax || "–"}°C`,                            target: "20°C · High", color: RED },
-  ];
+  const adjust = (key: keyof typeof form, delta: number) =>
+    setForm((p) => {
+      const base = Number(p[key]);
+      const next = Math.max(0, Math.round(((Number.isNaN(base) ? 0 : base) + delta) * 2) / 2);
+      return { ...p, [key]: String(next) };
+    });
 
-  const field = (key: keyof typeof form, label: string) => (
+  // ── zones (target temps are fixed = captured IR codes; only boundaries are editable) ──
+  const ZONES = [
+    { name: "Too Cold",      target: "28°C", fan: "Auto", color: BLUE },
+    { name: "Normal",        target: "26°C", fan: "Auto", color: GREEN },
+    { name: "Acceptable",    target: "24°C", fan: "Auto", color: GREEN },
+    { name: "Near Critical", target: "22°C", fan: "High", color: ORANGE },
+    { name: "Critical",      target: "20°C", fan: "High", color: RED },
+  ];
+  const zoneForTemp = (t: number) =>
+    t < n.coldBelow ? 0 : t <= n.normalMax ? 1 : t <= n.acceptableMax ? 2 : t <= n.nearCritMax ? 3 : 4;
+
+  // ── threshold-bar geometry (pad each open-ended end zone with ~4°C of visual width) ──
+  const lo  = (filled ? n.coldBelow : 22) - 4;
+  const hi  = (filled ? n.nearCritMax : 29) + 4;
+  const dom = hi - lo || 1;
+  const posPct = (v: number) => Math.max(0, Math.min(100, ((v - lo) / dom) * 100));
+  const segPts = [lo, n.coldBelow, n.normalMax, n.acceptableMax, n.nearCritMax, hi];
+  const boundaries = [n.coldBelow, n.normalMax, n.acceptableMax, n.nearCritMax];
+
+  const liveTemp   = typeof roomTemp === "number" ? roomTemp : null;
+  const activeZone = liveTemp != null && valid ? zoneForTemp(liveTemp) : -1;
+
+  const numField = (key: keyof typeof form, label: string) => (
     <div className="flex flex-col gap-1">
-      <label className="text-[9px] tracking-widest uppercase" style={{ color: GF.textMuted }}>{label}</label>
-      <input
-        type="number" step="0.5" value={form[key]} disabled={!isAdmin}
-        onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))}
-        className="w-full px-2 py-1.5 rounded-[2px] text-[12px] focus:outline-none"
-        style={{ background: GF.hover, border: `1px solid ${GF.divider}`, color: GF.textPrimary, fontFamily: "monospace", opacity: isAdmin ? 1 : 0.6 }}
-      />
+      <label className="text-[9px] tracking-widest uppercase" style={{ color: bad[key] ? RED : GF.textMuted }}>{label}</label>
+      <div
+        className="flex items-stretch rounded-[2px] overflow-hidden"
+        style={{ border: `1px solid ${bad[key] ? RED : GF.divider}`, background: GF.hover, opacity: isAdmin ? 1 : 0.6 }}
+      >
+        {isAdmin && (
+          <button type="button" onClick={() => adjust(key, -0.5)} title="−0.5°C"
+            className="w-7 flex items-center justify-center text-[14px] font-bold transition-colors"
+            style={{ color: GF.textMuted, borderRight: `1px solid ${GF.divider}` }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = GF.accent)}
+            onMouseLeave={(e) => (e.currentTarget.style.color = GF.textMuted)}>−</button>
+        )}
+        <input
+          type="number" step="0.5" value={form[key]} disabled={!isAdmin}
+          onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))}
+          className="min-w-0 flex-1 px-2 py-1.5 text-[12px] text-center focus:outline-none"
+          style={{ background: "transparent", border: "none", color: GF.textPrimary, fontFamily: "monospace" }}
+        />
+        <span className="flex items-center px-1.5 text-[10px]" style={{ color: GF.textDim }}>°C</span>
+        {isAdmin && (
+          <button type="button" onClick={() => adjust(key, 0.5)} title="+0.5°C"
+            className="w-7 flex items-center justify-center text-[14px] font-bold transition-colors"
+            style={{ color: GF.textMuted, borderLeft: `1px solid ${GF.divider}` }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = GF.accent)}
+            onMouseLeave={(e) => (e.currentTarget.style.color = GF.textMuted)}>+</button>
+        )}
+      </div>
     </div>
   );
 
-  const title = <span className="text-[12px] font-semibold" style={{ color: GF.textPrimary }}>Auto-Cooling Thresholds</span>;
+  const title = (
+    <>
+      <span className="text-[12px] font-semibold" style={{ color: GF.textPrimary }}>Auto-Cooling Thresholds</span>
+      {dirty && !loading && (
+        <span className="text-[9px] tracking-widest uppercase px-1.5 py-0.5 rounded-[2px]"
+          style={{ color: ORANGE, background: "rgba(255,120,10,0.12)" }}>● Unsaved</span>
+      )}
+    </>
+  );
 
   return (
     <Panel title={title}>
       {loading ? (
         <div className="text-[11px] py-2" style={{ color: GF.textDim }}>Loading…</div>
       ) : (
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-4">
           <p className="text-[10px] leading-relaxed" style={{ color: GF.textMuted }}>
             Room temperature at which the ESP32 fires IR to change the AC setting — target temps per
             zone are fixed (captured IR codes), so these set <span style={{ color: GF.textPrimary }}>when</span> each
-            kicks in. Separate from <span style={{ color: GF.textPrimary }}>Alert Rules</span> (which decide when to
-            alarm); keep these at or below your temperature alert thresholds so the AC ramps up before the room alarms.
+            kicks in. Separate from <span style={{ color: GF.textPrimary }}>Alert Rules</span>; keep them at or below
+            your temperature alerts so the AC ramps up before the room alarms.
           </p>
 
-          {/* Zone map */}
-          <div className="grid grid-cols-1 sm:grid-cols-5 gap-px rounded-[2px] overflow-hidden" style={{ background: GF.divider }}>
-            {zones.map((z) => (
-              <div key={z.name} className="flex flex-col gap-1 px-3 py-2.5" style={{ background: GF.panel }}>
-                <span className="flex items-center gap-1.5 text-[10px] font-semibold" style={{ color: GF.textPrimary }}>
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: z.color }} /> {z.name}
-                </span>
-                <span className="text-[10px]" style={{ color: GF.textMuted }}>{z.range}</span>
-                <span className="text-[10px] font-bold" style={{ color: z.color }}>{z.target}</span>
+          {/* ── Live status line ── */}
+          {liveTemp != null && ZONES[activeZone] && (() => {
+            const az = ZONES[activeZone]!;
+            return (
+              <div className="flex items-center gap-2 flex-wrap text-[11px] px-3 py-2 rounded-[2px]"
+                style={{ background: GF.hover, border: `1px solid ${GF.divider}` }}>
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: az.color, boxShadow: `0 0 6px ${az.color}` }} />
+                <span style={{ color: GF.textMuted }}>Room</span>
+                <span className="font-bold" style={{ color: az.color }}>{liveTemp.toFixed(1)}°C</span>
+                <span style={{ color: GF.textMuted }}>→</span>
+                <span className="font-bold" style={{ color: az.color }}>{az.name}</span>
+                <span style={{ color: GF.textDim }}>· AC holds {az.target} · {az.fan}</span>
               </div>
-            ))}
-          </div>
+            );
+          })()}
 
-          {/* Editable boundaries (admin) */}
+          {/* ── Threshold bar (Grafana bar-gauge style) ── */}
+          {valid ? (
+            <div className="relative" style={{ paddingTop: liveTemp != null ? 20 : 0 }}>
+              {/* live room-temp marker */}
+              {liveTemp != null && (
+                <>
+                  <div className="absolute top-0 -translate-x-1/2 text-[9px] font-bold px-1 py-0.5 rounded-[2px] whitespace-nowrap z-20"
+                    style={{ left: `${posPct(liveTemp)}%`, color: "#fff", background: "rgba(0,0,0,0.75)", border: `1px solid ${GF.border}` }}>
+                    {liveTemp.toFixed(1)}°
+                  </div>
+                  <div className="absolute -translate-x-1/2 z-20"
+                    style={{ left: `${posPct(liveTemp)}%`, top: 20, height: 56, width: 2, background: "#fff", boxShadow: "0 0 4px rgba(0,0,0,0.6)" }} />
+                </>
+              )}
+              {/* zone segments (width ∝ temperature span) */}
+              <div className="flex w-full rounded-[2px] overflow-hidden" style={{ height: 56 }}>
+                {ZONES.map((z, i) => {
+                  const w = (segPts[i + 1] ?? 0) - (segPts[i] ?? 0);
+                  const active = i === activeZone;
+                  return (
+                    <div key={z.name}
+                      className="relative flex flex-col items-center justify-center px-1 text-center overflow-hidden"
+                      style={{
+                        flexGrow: w, flexBasis: 0, minWidth: 0,
+                        background: z.color + (active ? "3a" : "1f"),
+                        borderTop: `2px solid ${z.color}`,
+                        boxShadow: active ? `inset 0 0 0 1px ${z.color}` : "none",
+                      }}>
+                      <span className="text-[9px] font-bold leading-tight truncate max-w-full" style={{ color: z.color }}>{z.name}</span>
+                      <span className="text-[9px] leading-tight" style={{ color: GF.textMuted }}>{z.target}·{z.fan}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              {/* boundary tick labels */}
+              <div className="relative" style={{ height: 16 }}>
+                {boundaries.map((b, i) => (
+                  <span key={i} className="absolute -translate-x-1/2 text-[9px] font-bold pt-0.5"
+                    style={{ left: `${posPct(b)}%`, color: GF.textPrimary }}>
+                    {b}°
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-[10px] px-3 py-2 rounded-[2px]"
+              style={{ color: ORANGE, background: "rgba(255,120,10,0.08)", border: "1px solid rgba(255,120,10,0.2)" }}>
+              Set ascending boundaries (Too&nbsp;Cold &lt; Normal &lt; Acceptable &lt; Near&nbsp;Critical) to preview the zone map.
+            </div>
+          )}
+
+          {/* ── Editable boundaries (admin) ── */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {field("coldBelow", "Too Cold below")}
-            {field("normalMax", "Normal ≤")}
-            {field("acceptableMax", "Acceptable ≤")}
-            {field("nearCritMax", "Near Critical ≤")}
+            {numField("coldBelow", "Too Cold below")}
+            {numField("normalMax", "Normal ≤")}
+            {numField("acceptableMax", "Acceptable ≤")}
+            {numField("nearCritMax", "Near Critical ≤")}
           </div>
 
           {error && (
@@ -639,19 +770,29 @@ function IRZoneConfig({ isAdmin }: { isAdmin: boolean }) {
             </div>
           )}
 
+          {/* ── Footer ── */}
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <span className="text-[9px]" style={{ color: GF.textDim }}>
               {meta.updatedByName ? `Edited by ${meta.updatedByName}` : "System default"}
               {meta.updatedAt ? ` · ${new Date(meta.updatedAt).toLocaleString("en-PH", { timeZone: "Asia/Manila", hour12: false })}` : ""}
             </span>
             {isAdmin ? (
-              <button
-                onClick={save} disabled={saving}
-                className="px-3 py-1.5 rounded-[2px] text-[11px] font-semibold transition-colors disabled:opacity-50"
-                style={{ background: saved ? GREEN : GF.accent, color: "#fff" }}
-              >
-                {saved ? "✓ Saved" : saving ? "Saving…" : "Save thresholds"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setForm(DEFAULTS)} disabled={saving}
+                  className="px-3 py-1.5 rounded-[2px] text-[11px] transition-colors disabled:opacity-50"
+                  style={{ color: GF.textMuted, border: `1px solid ${GF.divider}`, background: "transparent" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = GF.hover)}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                  Reset to defaults
+                </button>
+                <button
+                  onClick={save} disabled={saving || !valid || !dirty}
+                  className="px-3 py-1.5 rounded-[2px] text-[11px] font-semibold transition-colors disabled:opacity-50"
+                  style={{ background: saved ? GREEN : GF.accent, color: "#fff" }}>
+                  {saved ? "✓ Saved" : saving ? "Saving…" : "Save thresholds"}
+                </button>
+              </div>
             ) : (
               <span className="text-[9px] tracking-widest uppercase" style={{ color: GF.textDim }}>Admin only</span>
             )}
@@ -852,7 +993,7 @@ export default function AirConditioner() {
           </div>
 
           {/* ── Auto-cooling thresholds ── */}
-          <IRZoneConfig isAdmin={isAdmin} />
+          <IRZoneConfig isAdmin={isAdmin} roomTemp={roomTemp} />
 
           {/* ── AC unit cards ── */}
           {total === 0 ? (
