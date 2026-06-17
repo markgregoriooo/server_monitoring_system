@@ -283,11 +283,14 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
 
 ## 11. Status & next steps (phased)
 
-- [ ] **Phase 1 — PiP plumbing.** `usePictureInPicture.ts` (open/close, feature-detect, style
+- [x] **Phase 1 — PiP plumbing.** `usePictureInPicture.ts` (open/close, feature-detect, style
       clone, theme sync, cleanup) + `PipHost` in `AppShell` + Header launch button.
-      Acceptance: button opens a blank-but-styled window that closes cleanly.
-- [ ] **Phase 2 — Tiles + live data.** `useLiveSummary` + `tiles/catalog.tsx` + `PipWidget`
-      rendering a **hardcoded default** layout. Acceptance: values tick live, match Dashboard.
+      Acceptance: button opens a blank-but-styled window that closes cleanly. ✅ `c0506da`
+- [x] **Phase 2 — Tiles + live data.** `LiveSummaryContext` (one shared subscription) +
+      `tiles/catalog.tsx` + `PipWidget` rendering the **hardcoded `DEFAULT_LAYOUT`**.
+      Acceptance: values tick live, match Dashboard. ✅
+      (Note: `useLiveSummary` shipped as a context provider, not a bare hook, so all tiles
+      share ONE subscription regardless of count.)
 - [ ] **Phase 3 — Persistence.** Migration + `widgetPrefsService` + `routes/widgetLayout.js`
       + `useWidgetLayout` (cache + reconcile). Acceptance: a saved layout survives reload and
       another device.
