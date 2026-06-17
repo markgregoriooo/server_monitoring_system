@@ -1,13 +1,15 @@
 import { useLiveSummary } from "./LiveSummaryContext";
-import { TILE_BY_ID, DEFAULT_LAYOUT } from "./tiles/catalog";
+import { useWidgetLayout } from "./useWidgetLayout";
+import { TILE_BY_ID } from "./tiles/catalog";
 import type { TileDef } from "./tiles/catalog";
 
-// Renders the user's layout (an ordered list of tile ids) into an auto-flow 2-col grid.
-// Unknown ids are skipped so an old/edited layout never breaks. Phase 2 uses the
-// hardcoded DEFAULT_LAYOUT; Phase 3 feeds it from useWidgetLayout.
-export default function PipWidget({ layout = DEFAULT_LAYOUT }: { layout?: string[] }) {
+// Renders a layout (an ordered list of tile ids) into an auto-flow 2-col grid. Unknown
+// ids are skipped so an old/edited layout never breaks. With no prop it renders the
+// user's saved layout (useWidgetLayout); the Settings builder passes a draft for preview.
+export default function PipWidget({ layout }: { layout?: string[] }) {
   const { connected } = useLiveSummary();
-  const tiles = layout
+  const { layout: saved } = useWidgetLayout();
+  const tiles = (layout ?? saved)
     .map((id) => TILE_BY_ID.get(id))
     .filter((t): t is TileDef => !!t);
 

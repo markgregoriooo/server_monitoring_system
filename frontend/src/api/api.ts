@@ -288,6 +288,25 @@ export const api = {
     }
   },
 
+  // ── PiP widget layout (per-user) ──
+  getWidgetLayout: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/widget-layout");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  saveWidgetLayout: async (tiles: string[]): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put("/widget-layout", { tiles });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   addAircon: async (name: string, ir_channel: number): Promise<ApiResult> => {
     try {
       const res = await apiClient.post("/aircon", { name, ir_channel });

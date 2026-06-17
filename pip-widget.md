@@ -291,9 +291,11 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
       Acceptance: values tick live, match Dashboard. ✅
       (Note: `useLiveSummary` shipped as a context provider, not a bare hook, so all tiles
       share ONE subscription regardless of count.)
-- [ ] **Phase 3 — Persistence.** Migration + `widgetPrefsService` + `routes/widgetLayout.js`
-      + `useWidgetLayout` (cache + reconcile). Acceptance: a saved layout survives reload and
-      another device.
+- [x] **Phase 3 — Persistence.** Migration (`2026-06-17_widget_prefs.sql`) +
+      `widgetPrefsService` + `routes/widgetLayout.js` (mounted `/api/widget-layout`) +
+      `useWidgetLayout` (localStorage cache + GET/PUT reconcile). Acceptance: a saved layout
+      survives reload and another device. ✅ **Run the migration in phpMyAdmin** before the
+      cross-device part works; until then it falls back to the localStorage cache.
 - [ ] **Phase 4 — Builder (drag & drop).** `WidgetBuilder` on Settings with @dnd-kit + live
       preview, wired to `useWidgetLayout`. Acceptance: drag to add/reorder/remove → Save →
       pop-out reflects it.

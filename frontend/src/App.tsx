@@ -12,6 +12,7 @@ import { AuthProvider, useAuth } from "./context/AuthContext";
 import { NotificationProvider } from "./context/NotificationContext";
 import { PipProvider } from "./pip/PipContext";
 import { LiveSummaryProvider } from "./pip/LiveSummaryContext";
+import { WidgetLayoutProvider } from "./pip/useWidgetLayout";
 import PipHost from "./pip/PipHost";
 import { roleConfig } from "./data/users";
 
@@ -205,9 +206,11 @@ export default function App() {
     <AuthProvider>
       <NotificationProvider>
         <LiveSummaryProvider>
-          <PipProvider>
-            <AppShell />
-          </PipProvider>
+          <WidgetLayoutProvider>
+            <PipProvider>
+              <AppShell />
+            </PipProvider>
+          </WidgetLayoutProvider>
         </LiveSummaryProvider>
       </NotificationProvider>
     </AuthProvider>
