@@ -259,6 +259,11 @@ colors) — tiles never re-derive thresholds.
 - **No persistence of the *window* across reload** — the *layout* persists (backend), but the
   floating window itself must be re-opened. Acceptable; it's a live view.
 - **Sizing** — some Chromium versions clamp tiny dimensions; pick sane defaults.
+- **React events across the document boundary** — React 18 attaches its event
+  delegation at the main root container, so `onClick` on portaled nodes living in the
+  *PiP document* may not fire. Phase 1 content is non-interactive, so it's a no-op there;
+  for the click-through (Phase 5) attach a **native** listener on the PiP window/body
+  (e.g. `pipWindow.addEventListener("click", …)`) rather than relying on React `onClick`.
 
 ---
 

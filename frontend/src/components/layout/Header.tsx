@@ -3,6 +3,7 @@ import { useLocation } from "react-router";
 import { useAuth } from "../../context/AuthContext";
 import { useNotifications } from "../../context/NotificationContext";
 import NotificationPanel from "../notifications/NotificationPanel";
+import { usePip } from "../../pip/PipContext";
 import { BRAND } from "../../branding";
 import { avatarUrl } from "../../utils/format";
 
@@ -45,6 +46,7 @@ function LivePing() {
 export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: HeaderProps) {
   const { user }    = useAuth();
   const { unreadCount, openAlertCount, pendingAgentCount, pendingUserCount } = useNotifications();
+  const { supported: pipSupported, isOpen: pipOpen, open: openPip, close: closePip } = usePip();
   const location    = useLocation();
   const [section, page] = breadcrumbs[location.pathname] ?? [BRAND.name, "Dashboard"];
 
@@ -144,6 +146,24 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
           style={{ color: "var(--gf-text-dim)" }}>
           {now}
         </span>
+
+        {/* Pop-out live widget (Picture-in-Picture) — Chromium-only, hidden elsewhere */}
+        {pipSupported && (
+          <button
+            onClick={() => (pipOpen ? closePip() : openPip())}
+            aria-label={pipOpen ? "Close live widget" : "Pop out live widget"}
+            aria-pressed={pipOpen}
+            title={pipOpen ? "Close live widget" : "Pop out live widget"}
+            className="relative transition-colors flex items-center"
+            style={{ color: pipOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)" }}
+            onMouseEnter={e => (e.currentTarget.style.color = "var(--gf-text-primary)")}
+            onMouseLeave={e => (e.currentTarget.style.color = pipOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)")}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+              <rect x="8" y="8" width="5.5" height="4" rx="1" fill="currentColor" />
+            </svg>
+          </button>
+        )}
 
         {/* Notification bell + dropdown */}
         <div className="relative" ref={bellRef}>

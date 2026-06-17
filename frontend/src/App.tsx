@@ -10,6 +10,8 @@ import {
 
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { NotificationProvider } from "./context/NotificationContext";
+import { PipProvider } from "./pip/PipContext";
+import PipHost from "./pip/PipHost";
 import { roleConfig } from "./data/users";
 
 import Login from "./pages/auth/Login";
@@ -190,6 +192,9 @@ function AppShell() {
 
       {/* Live notification toasts — overlay, independent of the current route */}
       <ToastHost />
+
+      {/* Picture-in-Picture live widget — portals into its own window when open */}
+      <PipHost />
     </div>
   );
 }
@@ -198,7 +203,9 @@ export default function App() {
   return (
     <AuthProvider>
       <NotificationProvider>
-        <AppShell />
+        <PipProvider>
+          <AppShell />
+        </PipProvider>
       </NotificationProvider>
     </AuthProvider>
   );
