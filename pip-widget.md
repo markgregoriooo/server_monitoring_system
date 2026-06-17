@@ -300,8 +300,14 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
       "Your widget" column + grouped "Available tiles" + live `PipWidget` preview, wired to
       `useWidgetLayout` (Save / Reset to default / Discard). Acceptance: drag to
       add/reorder/remove → Save → pop-out reflects it. ✅ (added dep: `@dnd-kit/*`)
-- [ ] **Phase 5 — Polish.** Click-through (focus tab + route), connection-lost state, reset to
-      default, reduced-motion, a11y/keyboard-drag pass.
+- [x] **Phase 5 — Polish.** Click-through (native click on the PiP window → `window.focus()`,
+      per the §9 gotcha), connection-lost banner + red dot, reduced-motion on the ping,
+      reset-to-default + discard in the builder, keyboard-draggable list (@dnd-kit
+      KeyboardSensor) + aria labels, theme-toggle-while-open sync (Phase 1 MutationObserver). ✅
+
+> **Feature complete.** Remaining manual step: run `migrations/2026-06-17_widget_prefs.sql`
+> in phpMyAdmin so layouts persist server-side (cross-device). Until then it works off the
+> localStorage cache. Verify the pop-out in Chrome/Edge (see below).
 
 ---
 

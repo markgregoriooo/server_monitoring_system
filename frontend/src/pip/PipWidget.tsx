@@ -14,7 +14,7 @@ export default function PipWidget({ layout }: { layout?: string[] }) {
     .filter((t): t is TileDef => !!t);
 
   return (
-    <div className="flex flex-col h-full w-full" style={{ background: "var(--gf-bg)", fontFamily: "'JetBrains Mono', monospace" }}>
+    <div className="flex flex-col h-full w-full cursor-pointer" style={{ background: "var(--gf-bg)", fontFamily: "'JetBrains Mono', monospace" }}>
       {/* header strip */}
       <div
         className="flex items-center gap-2 px-3 h-7 flex-shrink-0"
@@ -22,7 +22,7 @@ export default function PipWidget({ layout }: { layout?: string[] }) {
       >
         <span className="relative flex h-1.5 w-1.5">
           {connected && (
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ background: "#73BF69" }} />
+            <span className="animate-ping motion-reduce:animate-none absolute inline-flex h-full w-full rounded-full opacity-60" style={{ background: "#73BF69" }} />
           )}
           <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ background: connected ? "#73BF69" : "#F2495C" }} />
         </span>
@@ -30,6 +30,13 @@ export default function PipWidget({ layout }: { layout?: string[] }) {
           CSPC-ICTU · Live
         </span>
       </div>
+
+      {/* connection-lost banner — values may be stale while the socket is down */}
+      {!connected && (
+        <div className="px-3 py-1 text-[9px] flex-shrink-0" style={{ background: "rgba(242,73,92,0.12)", color: "#F2495C" }}>
+          Reconnecting… values may be stale
+        </div>
+      )}
 
       {/* tiles */}
       <div className="flex-1 overflow-y-auto p-1.5">
