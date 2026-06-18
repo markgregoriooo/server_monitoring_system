@@ -125,6 +125,11 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const onRemoved = (d: any) => setServers((prev) => prev.filter((s) => s.id !== Number(d?.id)));
 
+    // Admin renamed a server → update its label live in the widget too.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onRenamed = (d: any) =>
+      setServers((prev) => prev.map((s) => (s.id === Number(d?.id) ? { ...s, name: d.name } : s)));
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const onAircon = (d: any) => {
       const a = d?.aircon;
@@ -144,6 +149,7 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
     socket.on("serverMetrics", onMetrics);
     socket.on("serverStatus", onStatus);
     socket.on("serverRemoved", onRemoved);
+    socket.on("serverRenamed", onRenamed);
     socket.on("airconStatus", onAircon);
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
@@ -155,6 +161,7 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
       socket.off("serverMetrics", onMetrics);
       socket.off("serverStatus", onStatus);
       socket.off("serverRemoved", onRemoved);
+      socket.off("serverRenamed", onRenamed);
       socket.off("airconStatus", onAircon);
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);

@@ -7,7 +7,9 @@ import { useAuth } from "../context/AuthContext";
 
 interface Server {
   id: string;
-  name: string;
+  name: string;        // effective label: display name if set, else hostname
+  hostname: string;    // the real hostname reported by the agent
+  displayName: string | null; // admin-set label (null = none)
   ip: string;
   status: string;
   cpu: number;
@@ -45,6 +47,8 @@ function mapServerRow(r: any): Server {
   return {
     id: String(r.id),
     name: r.name ?? "—",
+    hostname: r.hostname ?? r.name ?? "—",
+    displayName: r.displayName ?? null,
     ip: r.ip ?? "—",
     status: r.status ?? "Offline",
     cpu: Number(r.cpu ?? 0),
@@ -300,14 +304,16 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
 
 // ─── ServerCard (mobile) ──────────────────────────────────────────────────────
 
-function ServerCard({ s, isAdmin, onView, onDelete }: {
-  s: Server; isAdmin: boolean; onView: () => void; onDelete: () => void;
+function ServerCard({ s, isAdmin, onView, onRename, onDelete }: {
+  s: Server; isAdmin: boolean; onView: () => void; onRename: () => void; onDelete: () => void;
 }) {
+  const renamed = !!s.displayName && s.hostname !== s.name;
   return (
     <div className="rounded-lg p-3" style={{ border: `1px solid ${gf.border}` }}>
       <div className="flex items-start justify-between gap-2">
         <button onClick={onView} className="min-w-0 text-left">
           <div className="text-[13px] font-medium truncate" style={{ color: gf.textPrimary }}>{s.name}</div>
+          {renamed && <div className="text-[10px] font-mono truncate" style={{ color: gf.textDim }}>host: {s.hostname}</div>}
           <div className="text-[11px] font-mono truncate" style={{ color: gf.textMuted }}>{s.ip}</div>
         </button>
         <StatusDot status={s.status} />
@@ -321,7 +327,76 @@ function ServerCard({ s, isAdmin, onView, onDelete }: {
         <span className="text-[11px] truncate" style={{ color: gf.textMuted }}>↑ {s.uptime}</span>
         <div className="flex gap-2 shrink-0">
           <GhostButton onClick={onView}>View</GhostButton>
+          {isAdmin && <GhostButton onClick={onRename}>Rename</GhostButton>}
           {isAdmin && <GhostButton onClick={onDelete} danger>Remove</GhostButton>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── RenameModal (admin: set/clear a server's display label) ───────────────────
+
+function RenameModal({ server, onClose }: { server: Server; onClose: () => void }) {
+  const [value, setValue] = useState(server.displayName ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    const r = await api.renameServer(Number(server.id), value.trim());
+    setSaving(false);
+    if (r.success) onClose();             // serverRenamed socket event updates the list
+    else setError(r.error ?? "Failed to rename server.");
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.55)" }}
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-lg p-4"
+        style={{ background: gf.panel, border: `1px solid ${gf.border}`, boxShadow: "var(--gf-shadow)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-[13px] font-semibold mb-1" style={{ color: gf.textPrimary }}>Rename server</h3>
+        <p className="text-[11px] mb-3" style={{ color: gf.textMuted }}>
+          Hostname <span className="font-mono" style={{ color: gf.textPrimary }}>{server.hostname}</span> · {server.ip}
+        </p>
+        <input
+          autoFocus
+          value={value}
+          maxLength={100}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+            if (e.key === "Escape") onClose();
+          }}
+          placeholder={server.hostname}
+          className="w-full text-[13px] px-2.5 py-2 rounded-md outline-none"
+          style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
+        />
+        <p className="text-[10px] mt-1.5" style={{ color: gf.textDim }}>Leave blank to use the hostname.</p>
+        {error && <p className="text-[11px] mt-2" style={{ color: RED }}>{error}</p>}
+        <div className="flex justify-end gap-2 mt-4">
+          <button
+            onClick={onClose}
+            className="text-[11px] px-3 py-1.5 rounded-md transition-colors active:scale-95"
+            style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="text-[11px] font-medium px-3 py-1.5 rounded-md text-white active:scale-95 transition"
+            style={{ background: BLUE, opacity: saving ? 0.6 : 1 }}
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
         </div>
       </div>
     </div>
@@ -437,6 +512,7 @@ export default function ServerMetrics() {
   const [aggCpu, setAggCpu]             = useState<number[]>([]);
   const [aggMem, setAggMem]             = useState<number[]>([]);
   const [openId, setOpenId]             = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<Server | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -499,17 +575,28 @@ export default function ServerMetrics() {
       setDetailServer((d) => (d ? apply(d) : d));
     };
 
+    // Admin renamed a server elsewhere → patch its label live in the list + detail.
+    const onRenamed = (data: { id: number | string; name: string; displayName: string | null; hostname: string }) => {
+      const id = String(data?.id);
+      const apply = (s: Server): Server =>
+        s.id !== id ? s : { ...s, name: data.name, displayName: data.displayName, hostname: data.hostname };
+      setServers((prev) => prev.map(apply));
+      setDetailServer((d) => (d ? apply(d) : d));
+    };
+
     socket.on("serverMetrics", onMetrics);
     socket.on("agentApproved", onApproved);
     socket.on("serverRemoved", onRemoved);
     socket.on("agentPending", onPending);
     socket.on("serverStatus", onStatus);
+    socket.on("serverRenamed", onRenamed);
     return () => {
       socket.off("serverMetrics", onMetrics);
       socket.off("agentApproved", onApproved);
       socket.off("serverRemoved", onRemoved);
       socket.off("agentPending", onPending);
       socket.off("serverStatus", onStatus);
+      socket.off("serverRenamed", onRenamed);
     };
   }, []);
 
@@ -679,6 +766,7 @@ export default function ServerMetrics() {
                   s={s}
                   isAdmin={isAdmin}
                   onView={() => setDetailServer(s)}
+                  onRename={() => setRenameTarget(s)}
                   onDelete={() => handleDelete(s.id, s.name)}
                 />
               ))}
@@ -704,9 +792,14 @@ export default function ServerMetrics() {
                         className="cursor-pointer transition-colors"
                         style={{ borderBottom: `1px solid ${gf.divider}`, background: openId === s.id ? gf.hover : i % 2 ? gf.hover : "transparent" }}
                       >
-                        <td className="px-3 py-2.5 text-[12px] font-medium whitespace-nowrap" style={{ color: gf.textPrimary }}>
-                          {s.name}
-                          <span className="ml-1.5 text-[10px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === s.id ? "rotate(180deg)" : "none" }}>▾</span>
+                        <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: gf.textPrimary }}>
+                          <div className="text-[12px] font-medium">
+                            {s.name}
+                            <span className="ml-1.5 text-[10px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === s.id ? "rotate(180deg)" : "none" }}>▾</span>
+                          </div>
+                          {s.displayName && s.hostname !== s.name && (
+                            <div className="text-[10px] font-mono font-normal" style={{ color: gf.textDim }}>host: {s.hostname}</div>
+                          )}
                         </td>
                         <td className="px-3 py-2.5 text-[11px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{s.ip}</td>
                         <td className="px-3 py-2.5"><StatusDot status={s.status} /></td>
@@ -716,6 +809,11 @@ export default function ServerMetrics() {
                         <td className="px-3 py-2.5 text-[11px] whitespace-nowrap" style={{ color: gf.textMuted }}>{s.uptime}</td>
                         <td className="px-3 py-2.5 whitespace-nowrap text-right">
                           <GhostButton onClick={(e) => { e.stopPropagation(); setDetailServer(s); }}>View</GhostButton>
+                          {isAdmin && (
+                            <span className="ml-2 inline-block">
+                              <GhostButton onClick={(e) => { e.stopPropagation(); setRenameTarget(s); }}>Rename</GhostButton>
+                            </span>
+                          )}
                           {isAdmin && (
                             <span className="ml-2 inline-block">
                               <GhostButton onClick={(e) => { e.stopPropagation(); handleDelete(s.id, s.name); }} danger>Remove</GhostButton>
@@ -732,6 +830,10 @@ export default function ServerMetrics() {
           </>
         )}
       </Panel>
+
+      {renameTarget && (
+        <RenameModal server={renameTarget} onClose={() => setRenameTarget(null)} />
+      )}
     </div>
   );
 }

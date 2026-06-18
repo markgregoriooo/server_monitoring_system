@@ -8,6 +8,8 @@ import { useTheme } from "../context/ThemeContext";
 interface Server {
   id: string;
   name: string;
+  hostname?: string;
+  displayName?: string | null;
   ip: string;
   status: string;
   cpu: number;
@@ -460,6 +462,9 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         <div className="w-1 h-5 rounded-full" style={{ background: barColor(s.cpu) }} />
         <div className="min-w-0">
           <div className="text-base font-semibold text-slate-900 dark:text-white font-mono truncate">{s.name}</div>
+          {s.displayName && s.hostname && s.hostname !== s.name && (
+            <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">host: {s.hostname}</div>
+          )}
           <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">{s.os} · {s.kernel} · {s.cores} cores</div>
         </div>
         <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">

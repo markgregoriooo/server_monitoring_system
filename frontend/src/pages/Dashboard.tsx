@@ -529,6 +529,13 @@ export default function Dashboard() {
       setServers((prev) => prev.filter((s) => s.id !== Number(data?.id)));
     };
 
+    // Admin renamed a server → update its label here too (live, no refresh).
+    const handleRenamed = (data: { id: number | string; name: string }) => {
+      setServers((prev) =>
+        prev.map((s) => (s.id === Number(data?.id) ? { ...s, name: data.name } : s)),
+      );
+    };
+
     // Live status flip from the backend offline sweep. A stopped agent sends no
     // metrics, so this is the only event that can turn a server Offline here.
     const handleStatus = (data: { id: number | string; status: string }) => {
@@ -548,6 +555,7 @@ export default function Dashboard() {
     socket.on("airconStatus", handleAircon);
     socket.on("serverRemoved", handleRemoved);
     socket.on("serverStatus", handleStatus);
+    socket.on("serverRenamed", handleRenamed);
 
     return () => {
       socket.off("sensorData", handleSensor);
@@ -555,6 +563,7 @@ export default function Dashboard() {
       socket.off("airconStatus", handleAircon);
       socket.off("serverRemoved", handleRemoved);
       socket.off("serverStatus", handleStatus);
+      socket.off("serverRenamed", handleRenamed);
     };
   }, []);
 

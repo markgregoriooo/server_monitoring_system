@@ -53,6 +53,7 @@ export default function Alerts() {
   const [filter, setFilter] = useState<Filter>("active");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [ackCount, setAckCount] = useState(0); // acknowledged-but-not-resolved → tab badge
   const { refresh: refreshNotifications } = useNotifications();
   const filterRef = useRef<Filter>(filter);
   filterRef.current = filter;
@@ -63,15 +64,27 @@ export default function Alerts() {
     setLoading(false);
   };
 
+  // Count of currently-acknowledged alerts — tracked separately from `alerts` so the
+  // tab badge is correct even while viewing another filter.
+  const loadAckCount = async () => {
+    const res = await api.getAlerts("acknowledged");
+    if (res.success && res.data) setAckCount((res.data.alerts ?? []).length);
+  };
+
   useEffect(() => {
     setLoading(true);
     load(filter);
   }, [filter]);
 
   // Live: lifecycle changes (alertUpdated) + newly-raised alerts (notification) → reload
-  // the current view so other users' actions and auto-resolves show up immediately.
+  // the current view + the acknowledged count so other users' actions and auto-resolves
+  // show up immediately.
   useEffect(() => {
-    const refresh = () => load();
+    loadAckCount();
+    const refresh = () => {
+      load();
+      loadAckCount();
+    };
     socket.on("alertUpdated", refresh);
     socket.on("notification", refresh);
     return () => {
@@ -86,6 +99,7 @@ export default function Alerts() {
     setBusyId(null);
     if (res.success) {
       load();
+      loadAckCount();
       refreshNotifications(); // your own bell row was auto-marked read server-side
     }
   };
@@ -108,14 +122,22 @@ export default function Alerts() {
             <button
               key={f}
               onClick={() => setFilter(f)}
-              className="text-[10.5px] px-2.5 py-1 rounded-[2px] capitalize transition-colors"
+              className="inline-flex items-center gap-1.5 text-[10.5px] px-2.5 py-1 rounded-[2px] transition-colors"
               style={{
                 color: filter === f ? gf.textPrimary : gf.textMuted,
                 background: filter === f ? gf.accentDim : "transparent",
                 border: `1px solid ${filter === f ? gf.accent : gf.border}`,
               }}
             >
-              {f}
+              <span className="capitalize">{f}</span>
+              {f === "acknowledged" && ackCount > 0 && (
+                <span
+                  className="inline-flex items-center justify-center text-[9px] font-semibold rounded-full px-1 min-w-[15px] h-[15px] leading-none"
+                  style={{ background: gf.accent, color: "#fff" }}
+                >
+                  {ackCount}
+                </span>
+              )}
             </button>
           ))}
         </div>

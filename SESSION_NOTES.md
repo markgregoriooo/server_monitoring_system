@@ -1097,3 +1097,91 @@ enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
 
 ---
 
+## SESSION 14 — 2026-06-18
+**Branch:** `pip-widget`
+**Developer:** Mark Gregorio
+
+> Four threads, mostly server-identity + alerting UX on the side of the PiP work:
+> (1) **admin server rename / display label** — tell apart two boxes that report the same
+> hostname; (2) a PiP **"Server list" tile** so the pop-out widget names servers (not just
+> counts); (3) a **server online/reconnect alert** to match the existing offline alert; and
+> (4) a **blue count badge** on the Alerts page "Acknowledged" tab. The rename keeps the
+> agent-supplied hostname and lets an admin set a friendly label on top of it.
+
+### Server rename / display label (NEW)
+- **Model:** new nullable `devices.display_name`. The agent's hostname stays in `device_name`
+  (never overwritten — still shown for reference). Effective name everywhere =
+  `COALESCE(NULLIF(display_name,''), device_name)`. Blank label → falls back to the hostname.
+  Survives re-registration (`refreshHostInfo` never touches it).
+- **Migration `2026-06-18_server_display_name.sql`** (NEW, must run) — adds the column.
+- **Backend:** `agentService.renameServer(id, displayName)` (existence-checked separately so
+  renaming to the *current* label isn't a false 404 on MySQL `affectedRows = 0`); `SERVER_SELECT`
+  now returns effective `name` + `hostname` + `displayName`; `validateToken` carries
+  `display_name` so the live `serverMetrics` broadcast uses the effective label (InfluxDB
+  `device_name` tag stays the real hostname — no time-series re-keying on rename).
+  **`PATCH /api/servers/:id`** (admin-only) validates (string, ≤100, trimmed), logs a
+  `device_logs` entry, and emits the new **`serverRenamed`** event.
+- **Frontend:** `api.renameServer`; **ServerMetrics** — admin **Rename** action (table + mobile
+  card) opens a gf-styled `RenameModal`; table/card show the real hostname as a subtitle when a
+  custom label is set; live `serverRenamed` handler patches list + open detail. **ServerDetail**
+  shows the hostname subtitle. **Dashboard** patches server labels live via `serverRenamed`.
+- **New socket event:** `serverRenamed` (server → browsers) `{ id, name, displayName, hostname }`.
+
+### PiP widget — new "Server list" tile (shows servers by name)
+- The pop-out widget only summarized servers (counts + worst CPU/mem); it didn't name them.
+  Added a **`servers.list`** tile (`pip/tiles/catalog.tsx`) — each server **by name** + a
+  status dot + CPU/mem. Names use the effective display label and stay live:
+  `LiveSummaryContext` now also handles **`serverRenamed`**.
+- **UI/UX iteration (best-practice glance surface):** settled on **one line per server** (not a
+  3-line block) so the tile stays bounded/glanceable without scrolling — divider between rows,
+  a once-only `CPU·MEM / LOAD` header, exact `cpu·mem` numbers + a single **LOAD bar** = worst of
+  the two (full breakdown is one click away on the Dashboard), and **problem-first sort** (offline
+  on top, then busiest). Rationale: a tiny always-on-top widget answers "is anything down/hot?" at
+  a glance; per-metric dual gauges per server pushed it toward detailed-dashboard altitude + height.
+- Added to `DEFAULT_LAYOUT` (replacing `servers.summary` in the default) + the backend
+  allow-list (`widgetPrefsService.ALLOWED_TILES` + its `DEFAULT_LAYOUT`, kept in sync).
+- ⚠️ Existing users have a **saved** layout, so they must add the tile from
+  **Settings → Customize Widget** ("Server list (names)" under Servers). Only brand-new
+  layouts get it automatically.
+
+### Server online/reconnect alert (symmetry with the offline alert)
+- **Problem:** going offline raised an alert; coming back online (reconnect or a brand-new
+  first connect) raised nothing.
+- **`serverMetricsHandler` (cameOnline path):** now auto-resolves the open `offline` incident,
+  raises an **`info` "Server online"** alert (`type: "online"`), then **immediately
+  auto-resolves it** — it's a point-in-time event, so it lands in the bell feed + Alerts
+  history without inflating the open-alert badge (only the real "offline" condition counts as
+  open). Immediate-resolve also means every reconnect re-fires (the open-alert de-dup no longer
+  suppresses it).
+- **`agentService.approve()`:** now leaves a freshly-approved server **`offline`** (was forced
+  `online`). It only flips online on its first real metric POST → that offline→online
+  transition is what fires the alert, so a **new connect** is announced just like a reconnect.
+  The offline sweep only touches `status='online'` rows, so a not-yet-reporting approved server
+  is never falsely alerted offline. (Trade-off: a just-approved server shows Offline for up to
+  one agent interval until it reports — which is accurate.)
+- `info` severity → no email by default (`NOTIFY_EMAIL_MIN_SEVERITY=critical`); bell + toast only.
+- Known trade-off: a rapidly **flapping** server produces an offline+online alert each cycle
+  (the online auto-resolve clears the offline de-dup). Acceptable — flapping is alert-worthy; a
+  dedicated flap-damper would be a future follow-up.
+
+### Alerts page — blue count badge on the "Acknowledged" filter tab
+- The Alerts page loads only the selected filter, so the acknowledged count is tracked
+  separately (`loadAckCount` → `api.getAlerts("acknowledged").length`), refreshed on mount +
+  `alertUpdated`/`notification` + after acknowledge/resolve. The **Acknowledged** tab shows a
+  blue (`--gf-accent`) pill with the count when > 0.
+
+### Verified
+- Backend `node --check` (agentService / serverMetricsHandler / routes/servers /
+  widgetPrefsService) clean; frontend `tsc --noEmit` exit 0 across all changed files
+  (api.ts, Alerts, Dashboard, ServerDetail, ServerMetrics, LiveSummaryContext, catalog).
+
+### Still pending / not done
+- **Run `migrations/2026-06-18_server_display_name.sql`** in phpMyAdmin before restarting the
+  backend (the server queries select `display_name`).
+- Live end-to-end of the rename round-trip not driven here (build/typecheck only).
+- Rename is **list-only** (Server Metrics list) by design; the detail page shows the hostname
+  read-only. Carry-overs from S13 (PiP migration `2026-06-17_widget_prefs.sql`, firmware
+  re-flash, `super_admin` Reports bug) still open.
+
+---
+

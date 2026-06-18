@@ -214,7 +214,12 @@ async function approve(deviceId) {
   );
   if (result.affectedRows === 0) return null;
 
-  await db.query(`UPDATE devices SET status = 'online' WHERE device_id = ?`, [deviceId]);
+  // Leave the device 'offline' until its agent actually reports. The first metric
+  // POST then transitions offline→online (recordHeartbeat → cameOnline), which fires
+  // the "Server online" alert — so a brand-new connect is announced just like a
+  // reconnect. The offline sweep only touches status='online' rows, so a not-yet-
+  // reporting approved server is never falsely alerted as "offline".
+  await db.query(`UPDATE devices SET status = 'offline' WHERE device_id = ?`, [deviceId]);
   const [[dev]] = await db.query(`SELECT device_name FROM devices WHERE device_id = ?`, [deviceId]);
   return { approvedToken, deviceName: dev?.device_name };
 }
@@ -241,7 +246,7 @@ async function reject(deviceId) {
 // approved token, or null. Best-effort bumps last_used_at without blocking.
 async function validateToken(token) {
   const [[row]] = await db.query(
-    `SELECT t.device_id, d.device_name, d.ip_address, d.location, s.os
+    `SELECT t.device_id, d.device_name, d.display_name, d.ip_address, d.location, s.os
        FROM agent_tokens t
        JOIN devices d ON d.device_id = t.device_id
        LEFT JOIN server_specs s ON s.device_id = t.device_id
@@ -393,7 +398,10 @@ async function sweepOffline() {
 // INNER JOIN on agent_tokens excludes pending (awaiting approval) and rejected
 // enrollments, regardless of the device's online/offline status.
 const SERVER_SELECT = `
-  SELECT d.device_id AS id, d.device_name AS name, d.ip_address AS ip, d.status,
+  SELECT d.device_id AS id,
+         COALESCE(NULLIF(d.display_name, ''), d.device_name) AS name,
+         d.device_name AS hostname, d.display_name AS displayName,
+         d.ip_address AS ip, d.status,
          d.location, s.os, s.kernel, s.cores, s.architecture AS arch,
          s.memory_total_mb AS memoryTotalMB, s.disk_total_gb AS diskTotalGB,
          s.agent_version AS agentVersion, s.uptime, s.last_seen AS lastSeen,
@@ -436,6 +444,35 @@ async function removeServer(id) {
   return result.affectedRows > 0;
 }
 
+// Set (or clear) a server's admin display name. An empty/blank value clears it
+// (display_name → NULL) so the UI falls back to the real hostname. Never touches
+// device_name (the hostname), so it survives agent re-registration. Returns the
+// fresh { name (effective), hostname, displayName } for the live emit, or null if
+// there is no such server. Existence is checked separately so renaming a server to
+// its CURRENT label (MySQL UPDATE affectedRows = 0 on an unchanged value) is not
+// mistaken for "not found".
+async function renameServer(id, displayName) {
+  const [[exists]] = await db.query(
+    `SELECT device_id FROM devices WHERE device_id = ? AND device_type = 'server' LIMIT 1`,
+    [id],
+  );
+  if (!exists) return null;
+
+  const value = typeof displayName === "string" && displayName.trim() ? displayName.trim() : null;
+  await db.query(`UPDATE devices SET display_name = ?, updated_at = NOW() WHERE device_id = ?`, [
+    value,
+    id,
+  ]);
+
+  const [[row]] = await db.query(
+    `SELECT COALESCE(NULLIF(display_name, ''), device_name) AS name,
+            device_name AS hostname, display_name AS displayName
+       FROM devices WHERE device_id = ?`,
+    [id],
+  );
+  return row;
+}
+
 const agentService = {
   register,
   getStatusByPendingToken,
@@ -452,6 +489,7 @@ const agentService = {
   getServers,
   getServerById,
   removeServer,
+  renameServer,
 };
 
 export default agentService;

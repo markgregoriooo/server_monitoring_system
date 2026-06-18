@@ -1,5 +1,7 @@
 import { writeClient, Point } from "../config/influx.js";
 import agentService from "../services/agentService.js";
+import notificationService from "../services/notificationService.js";
+import alertsService from "../services/alertsService.js";
 
 // Float fields every metric POST must carry. process_count is validated
 // separately as an integer. Keep this list in sync with the Go agent's
@@ -95,6 +97,24 @@ export async function serverMetricsHandler(req, res) {
     const events = [];
     if (cameOnline) {
       events.push(await agentService.logDevice(device.device_id, "info", "Server came online"));
+
+      // Symmetric to the offline-sweep alert: notify on a (re)connect. Covers both a
+      // reconnect (offline→online) and a brand-new server's first report (approve()
+      // leaves it offline until it actually reports).
+      const name = device.display_name?.trim() || device.device_name || `Server ${device.device_id}`;
+      // Close the open "offline" incident first so the Alerts page + badge clear.
+      await alertsService.autoResolveMetric(device.device_id, "offline");
+      await notificationService.raiseAlert({
+        deviceId: device.device_id,
+        type: "online",
+        title: "Server online",
+        message: `${name} is online`,
+        severity: "info",
+      });
+      // "Online" is a point-in-time event, not an open incident — resolve it right
+      // away so it stays in the bell feed + Alerts history without inflating the
+      // open-alert badge (only the real "offline" condition should count as open).
+      await alertsService.autoResolveMetric(device.device_id, "online");
     }
     events.push(
       ...(await agentService.checkThresholds(device.device_id, {
@@ -113,7 +133,10 @@ export async function serverMetricsHandler(req, res) {
     req.app.get("io")?.emit("serverMetrics", {
       server: {
         id: device.device_id,
-        name: device.device_name,
+        // Effective label for the UI (admin display name else hostname). The
+        // InfluxDB tag above stays the real hostname so the time-series isn't
+        // re-keyed when a server is renamed.
+        name: device.display_name?.trim() || device.device_name,
         ip: device.ip_address,
         location: device.location,
         os: device.os,

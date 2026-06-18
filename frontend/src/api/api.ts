@@ -260,6 +260,17 @@ export const api = {
     }
   },
 
+  // Rename a server / set its admin display label (admin only). Pass an empty
+  // string to clear the label and fall back to the hostname.
+  renameServer: async (id: number, displayName: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch(`/servers/${id}`, { displayName });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getEnvHistory: async (count: number = 20): Promise<ApiResult> => {
     try {
       const res = await apiClient.get(`/environment/history?count=${count}`);

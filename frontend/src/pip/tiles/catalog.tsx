@@ -106,6 +106,72 @@ const ServersTile: FC = () => {
   );
 };
 
+// Per-server list — ONE line per server so it stays glanceable and bounded (no
+// scrolling at realistic counts): status dot + name + exact cpu·mem + a single LOAD
+// bar = the worst of the two (the signal that matters at a glance; full breakdown is
+// one click away on the Dashboard). Problem-first sort (offline, then busiest) surfaces
+// trouble at the top. Divider between rows; names follow the admin display label.
+const worstLoad = (s: { cpu: number; memory: number }) => Math.max(s.cpu, s.memory);
+
+const ServerListTile: FC = () => {
+  const { servers } = useLiveSummary();
+  const rows = [...servers].sort((a, b) => {
+    const ao = a.status === "Offline";
+    const bo = b.status === "Offline";
+    if (ao !== bo) return ao ? -1 : 1;            // offline first
+    if (!ao && worstLoad(b) !== worstLoad(a)) return worstLoad(b) - worstLoad(a); // busiest first
+    return a.name.localeCompare(b.name);
+  });
+
+  return (
+    <Shell label="Servers">
+      {rows.length === 0 ? (
+        <span className="text-[10px]" style={{ color: T_MUTED }}>No servers</span>
+      ) : (
+        <div className="flex flex-col mt-0.5">
+          {/* column header (once) — kills the per-row labels */}
+          <div className="flex items-center gap-1.5 pb-0.5">
+            <span className="w-1.5 flex-shrink-0" />
+            <span className="flex-1" />
+            <span className="w-11 text-right text-[7px] tracking-wide whitespace-nowrap" style={{ color: T_DIM }}>CPU·MEM</span>
+            <span className="w-12 text-center text-[7px] tracking-wide" style={{ color: T_DIM }}>LOAD</span>
+          </div>
+          {rows.map((s) => {
+            const offline = s.status === "Offline";
+            const worst = Math.min(worstLoad(s), 100);
+            return (
+              <div
+                key={s.id}
+                className="flex items-center gap-1.5 py-1"
+                style={{ borderTop: "1px solid var(--gf-divider)" }}
+              >
+                <span className="h-1.5 w-1.5 rounded-full flex-shrink-0" style={{ background: offline ? RED : GREEN }} />
+                <span className="text-[10px] truncate flex-1" style={{ color: "var(--gf-text-primary)" }} title={s.name}>
+                  {s.name}
+                </span>
+                {offline ? (
+                  <span className="text-[8px]" style={{ color: RED }}>offline</span>
+                ) : (
+                  <>
+                    <span className="w-11 text-right text-[8px] tabular-nums whitespace-nowrap">
+                      <b style={{ color: loadColor(s.cpu) }}>{s.cpu}</b>
+                      <span style={{ color: T_DIM }}>·</span>
+                      <b style={{ color: loadColor(s.memory) }}>{s.memory}</b>
+                    </span>
+                    <div className="w-12 h-1.5 rounded-full overflow-hidden flex-shrink-0" style={{ background: "rgba(127,127,127,0.20)" }}>
+                      <div className="h-full rounded-full transition-all duration-500" style={{ width: `${worst}%`, background: loadColor(worst) }} />
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Shell>
+  );
+};
+
 // ── Alerts ──
 const AlertCountTile: FC = () => {
   const { openAlertCount } = useNotifications();
@@ -176,6 +242,7 @@ export const TILE_CATALOG: TileDef[] = [
   { id: "env.humidity", label: "Humidity", group: "Environment", span: 1, Render: HumidityTile },
   { id: "env.gas", label: "Gas", group: "Environment", span: 1, Render: GasTile },
   { id: "servers.summary", label: "Servers summary", group: "Servers", span: 2, Render: ServersTile },
+  { id: "servers.list", label: "Server list (names)", group: "Servers", span: 2, Render: ServerListTile },
   { id: "alerts.count", label: "Open alerts", group: "Alerts", span: 1, Render: AlertCountTile },
   { id: "alerts.latest", label: "Latest alert", group: "Alerts", span: 2, Render: LatestAlertTile },
   { id: "aircon.summary", label: "Aircon", group: "Aircon", span: 1, Render: AirconTile },
@@ -185,4 +252,4 @@ export const TILE_CATALOG: TileDef[] = [
 export const TILE_BY_ID = new Map(TILE_CATALOG.map((t) => [t.id, t]));
 
 // Sensible default until the user customizes (Phase 4).
-export const DEFAULT_LAYOUT = ["env.temp", "env.humidity", "env.gas", "alerts.count", "servers.summary", "alerts.latest"];
+export const DEFAULT_LAYOUT = ["env.temp", "env.humidity", "env.gas", "alerts.count", "servers.list", "alerts.latest"];

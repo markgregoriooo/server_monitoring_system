@@ -10,6 +10,7 @@ const ALLOWED_TILES = new Set([
   "env.humidity",
   "env.gas",
   "servers.summary",
+  "servers.list",
   "alerts.count",
   "alerts.latest",
   "aircon.summary",
@@ -17,7 +18,7 @@ const ALLOWED_TILES = new Set([
 ]);
 
 // Must match frontend catalog DEFAULT_LAYOUT.
-const DEFAULT_LAYOUT = ["env.temp", "env.humidity", "env.gas", "alerts.count", "servers.summary", "alerts.latest"];
+const DEFAULT_LAYOUT = ["env.temp", "env.humidity", "env.gas", "alerts.count", "servers.list", "alerts.latest"];
 const MAX_TILES = 16;
 
 // Drop non-strings + unknown ids, dedupe, cap length. Returns null if not an array.

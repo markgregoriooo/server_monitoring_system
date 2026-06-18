@@ -68,6 +68,7 @@ First-cut catalog:
 | `env.humidity` | humidity % | `sensorData` |
 | `env.gas` | gas band (NORMAL/WARN/DANGER) | `sensorData` |
 | `servers.summary` | online count + worst CPU/mem | `serverMetrics` / `serverStatus` |
+| `servers.list` | each server **by name** on one divider-separated line, **problem-first sorted** (offline → busiest), with exact `cpu·mem` + a single **LOAD bar gauge** (worst of the two). Names follow the admin display label, live via `serverRenamed` | `serverMetrics` / `serverStatus` / `serverRenamed` |
 | `alerts.count` | open-alert badge (red when >0) | `useNotifications().openAlertCount` |
 | `alerts.latest` | most recent alert title + severity | `useNotifications().items[0]` |
 | `aircon.summary` | how many AC units on + mode | `airconStatus` |
@@ -304,6 +305,11 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
       per the §9 gotcha), connection-lost banner + red dot, reduced-motion on the ping,
       reset-to-default + discard in the builder, keyboard-draggable list (@dnd-kit
       KeyboardSensor) + aria labels, theme-toggle-while-open sync (Phase 1 MutationObserver). ✅
+- [x] **Post-1.0 — `servers.list` tile (S14).** Names each server (not just counts): one
+      glanceable line per server, problem-first sorted (offline → busiest), `cpu·mem` + a single
+      LOAD bar, divider between rows. Names follow the admin display label and stay live
+      (`LiveSummaryContext` now handles `serverRenamed`). Added to `DEFAULT_LAYOUT` + the backend
+      tile allow-list. Existing saved layouts must add it from **Settings → Customize Widget**. ✅
 
 > **Feature complete.** Remaining manual step: run `migrations/2026-06-17_widget_prefs.sql`
 > in phpMyAdmin so layouts persist server-side (cross-device). Until then it works off the

@@ -64,6 +64,46 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
   }
 });
 
+// ── PATCH /api/servers/:id ─ rename a server / set display label (admin) ──────
+// Sets devices.display_name (the friendly label); a blank value clears it so the
+// UI falls back to the real hostname. Leaves device_name (the hostname) untouched.
+// Broadcasts serverRenamed so every dashboard updates the label live.
+router.patch("/:id", authMiddleware, requireRole("admin"), async (req, res, next) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid server id." });
+
+  const raw = req.body?.displayName;
+  if (typeof raw !== "string") return res.status(400).json({ error: "displayName must be a string." });
+  const displayName = raw.trim();
+  if (displayName.length > 100) {
+    return res.status(400).json({ error: "Display name must be 100 characters or fewer." });
+  }
+
+  try {
+    const result = await agentService.renameServer(id, displayName);
+    if (!result) return res.status(404).json({ error: "Server not found." });
+
+    const io = req.app.get("io");
+    const ev = await agentService.logDevice(
+      id,
+      "info",
+      displayName
+        ? `Renamed to "${result.name}" by ${req.user?.name ?? "admin"}`
+        : `Display label cleared by ${req.user?.name ?? "admin"} — using hostname "${result.hostname}"`,
+    );
+    if (ev) io?.emit("deviceLog", ev);
+    io?.emit("serverRenamed", {
+      id,
+      name: result.name,
+      displayName: result.displayName,
+      hostname: result.hostname,
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── DELETE /api/servers/:id ─ remove/decommission a server (admin) ────────────
 // Cascades to server_specs/device_network/agent_tokens and revokes the token.
 router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, next) => {
