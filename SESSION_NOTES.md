@@ -1183,3 +1183,84 @@ enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
 - `router-ups-monitoring` branch still **uncommitted**.
 
 ---
+
+## SESSION 15 — 2026-06-20
+**Branch:** `mikrotik-monitoring` (created off `main`, then re-pointed onto `router-ups-monitoring`)
+**Developer:** Mark Gregorio
+
+> Built **MikroTik network monitoring** (architecture data source **B**) end to end — a RouterOS
+> **pull** collector + a dashboard page — reusing this branch's (`router-ups-monitoring`) network
+> foundation. **Full study guide: `mikrotik-monitoring.md §13`.**
+>
+> Note on numbering: this `SESSION_NOTES.md` is the `router-ups-monitoring` lineage, so it lacks
+> `main`'s SESSION 14 (the `pip-widget` session, 2026-06-18) — that lives on the `main`/`pip-widget`
+> line and will reconcile on merge. This entry is labeled 15 to continue `main`'s sequence.
+
+### Housekeeping (start of session)
+- Pushed `pip-widget` + `router-ups-monitoring` to origin; committed the MySQL Workbench `.mwb`
+  model to `main` (`d1ecc80`).
+
+### Decision — branch base = B (stacked branch)
+- The feature reuses `router-ups-monitoring`'s shared network code (the `network_traffic` /
+  `router_metrics` InfluxDB measurements, `writeNetworkSample`, `networkMetrics`/`networkStatus`,
+  `network_interfaces`, `NetworkMonitoring.tsx`). That branch isn't merge-ready, so merging it to
+  `main` first (option A) was rejected; instead **re-pointed `mikrotik-monitoring` onto
+  `router-ups-monitoring`** (`git branch -f`) and stacked on top. (Option C = duplicate, rejected.)
+
+### Docs (committed `59f5309`)
+- `mikrotik-monitoring.md` — design of record + **§13 study guide** (runtime flow, file map, REST
+  surface, operational flow, what changed from the plan).
+- `mikrotik-feature-questionnaire.md` + `.docx` — client info request (campus MikroTik); `.docx`
+  generated via `python-docx`.
+- `mikrotik-dev-setup.md` + `.docx` — RouterOS dev-box setup (enable API, read-only user, reach test).
+
+### Schema (migration `2026-06-20_mikrotik_device.sql`, NEW — must run)
+- **Key finding:** the V10 schema **already has `mikrotik_devices`** (1:1 detail table off `devices`,
+  same pattern as `server_specs`/`ups_details`) — kept it; did NOT fold into `device_network`.
+- `devices.device_type` is an **ENUM** lacking `'mikrotik'` → migration `ALTER`s to add the value.
+- Adds `mikrotik_devices.use_tls`; drops the unused `firmware_version`. `api_password VARCHAR(255)`
+  holds AES-GCM ciphertext (base64) — no column change. Plus a commented seed template.
+
+### Backend (committed `9ce4108`; `12996ba` removed mock; `de2c251` add-flow)
+- `services/mikrotikCrypto.js` — AES-256-GCM for the API password (`MIKROTIK_ENC_KEY`, 32-byte hex).
+- `services/mikrotikClient.js` — RouterOS API reads (`/system/resource`, `/interface print stats`,
+  `/interface/ethernet`, DHCP lease count) → the **shared sample shape**; lazy-loads `node-routeros`.
+- `services/mikrotikPollerService.js` — the core poller (mirror of `snmpPollerService`): loadDevices
+  (type='mikrotik'), collect + utilization deltas, `setReachable`→`networkStatus`, reuse
+  `writeNetworkSample`, port-down logging, + `getMikrotikDevices` / `createDevice` / `saveConnection`
+  / `testConnection`.
+- `routes/mikrotik.js` — `GET /` list, `POST /` add (admin), `PUT /:id/connection` (admin),
+  `POST /:id/test` (admin), `/:id/history`, `/:id/logs`.
+- `src/server.js` — mount `/api/mikrotik` + a 30s `setInterval` poll (self-gating until a device exists).
+- **Dependency added:** `node-routeros` (required once mock was removed).
+
+### Frontend (committed `8b6c104` page; `12996ba` modal; `de2c251` add)
+- `pages/MikrotikMonitoring.tsx` — single-router dashboard: stat row, throughput history chart,
+  **per-port = per-building** rows (utilization bars + link state), device summary (CPU / mem /
+  clients / RouterOS version / board / uptime). Live via the shared `networkMetrics`/`networkStatus`
+  (filtered to `type=mikrotik`). **AddModal** (+ Add MikroTik) and **ConnectionModal** (Configure +
+  Test) — admin-only.
+- `api.ts` — getMikrotikDevices / addMikrotik / saveMikrotikConnection / testMikrotik / history / logs.
+- Wired route `/mikrotik`, sidebar nav item + icon, `roleConfig` access (admin + it_staff).
+- `NetworkMonitoring.tsx` — ignores `type=mikrotik` in its live merge (kept on separate pages).
+
+### Removed — mock mode
+- `MIKROTIK_MOCK` (synthetic data) was built during scaffolding then **dropped at request** — live
+  RouterOS only. Removed from poller / client / server + the page empty state.
+
+### `.env`
+- Added `MIKROTIK_ENC_KEY` (generated) + `MIKROTIK_POLL_INTERVAL_MS=30000` to `backend/.env`
+  (gitignored — not committed).
+
+### Verified
+- `node --check` + backend import-resolution clean; frontend `tsc --noEmit` exit 0 throughout.
+
+### Still pending / not done
+- **Run the migration** + **restart backend** + a **live end-to-end test** against the dev MikroTik
+  (the RouterOS command words in `mikrotikClient` are best-effort — confirm on hardware).
+- **Port → building labeling UI** (labels come from `network_interfaces`, currently SQL-seeded).
+- Full **alert_rules** wiring (link_util / CPU / mem + bell/email) — today only port-down +
+  offline/online are logged to `device_logs`.
+- PiP `network.summary` tile. Branch `mikrotik-monitoring` not pushed yet.
+
+---
