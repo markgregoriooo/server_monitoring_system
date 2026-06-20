@@ -225,8 +225,7 @@ setInterval(() => {
 
 // MikroTik poller — pulls metrics from the one campus router over the RouterOS API
 // (data source B; pull mirror of the Go agents). Same self-gating as the SNMP poller:
-// a near-no-op (one SELECT) until a device_type='mikrotik' row exists. Set
-// MIKROTIK_MOCK=true to stream synthetic data without a router (mikrotik-monitoring.md).
+// a near-no-op (one SELECT) until a device_type='mikrotik' row with credentials exists.
 const MIKROTIK_POLL_INTERVAL_MS = Number(process.env.MIKROTIK_POLL_INTERVAL_MS) || 30_000;
 setInterval(() => {
   mikrotikPollerService.pollAll(io).catch((err) => console.error("[MIKROTIK_POLLER] error:", err));
