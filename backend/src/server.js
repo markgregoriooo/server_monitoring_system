@@ -12,6 +12,7 @@ import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
 import snmpPollerService from "../services/snmpPollerService.js";
+import mikrotikPollerService from "../services/mikrotikPollerService.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
@@ -19,6 +20,7 @@ import serverRoutes from "../routes/servers.js";
 import agentRoutes from "../routes/agents.js";
 import networkRoutes from "../routes/network.js";
 import upsRoutes from "../routes/ups.js";
+import mikrotikRoutes from "../routes/mikrotik.js";
 import environmentRoutes from "../routes/environment.js";
 import airconRoutes from "../routes/aircon.js";
 import userRoutes from "../routes/users.js";
@@ -137,6 +139,7 @@ app.use("/api/servers", serverRoutes);
 app.use("/api/agents", agentRoutes);
 app.use("/api/network", networkRoutes);
 app.use("/api/ups", upsRoutes);
+app.use("/api/mikrotik", mikrotikRoutes);
 app.use("/api/environment", environmentRoutes);
 app.use("/api/aircon", airconRoutes);
 app.use("/api/users", userRoutes);
@@ -219,3 +222,12 @@ const SNMP_POLL_INTERVAL_MS = Number(process.env.SNMP_POLL_INTERVAL_MS) || 60_00
 setInterval(() => {
   snmpPollerService.pollAll(io).catch((err) => console.error("[SNMP_POLLER] error:", err));
 }, SNMP_POLL_INTERVAL_MS);
+
+// MikroTik poller — pulls metrics from the one campus router over the RouterOS API
+// (data source B; pull mirror of the Go agents). Same self-gating as the SNMP poller:
+// a near-no-op (one SELECT) until a device_type='mikrotik' row exists. Set
+// MIKROTIK_MOCK=true to stream synthetic data without a router (mikrotik-monitoring.md).
+const MIKROTIK_POLL_INTERVAL_MS = Number(process.env.MIKROTIK_POLL_INTERVAL_MS) || 30_000;
+setInterval(() => {
+  mikrotikPollerService.pollAll(io).catch((err) => console.error("[MIKROTIK_POLLER] error:", err));
+}, MIKROTIK_POLL_INTERVAL_MS);
