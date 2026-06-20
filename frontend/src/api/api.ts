@@ -316,6 +316,56 @@ export const api = {
     }
   },
 
+  // MikroTik monitoring — campus router via the RouterOS API (per-port = per-building)
+  getMikrotikDevices: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/mikrotik");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getMikrotikHistory: async (id: number, range: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/mikrotik/${id}/history`, { params: { range } });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getMikrotikLogs: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/mikrotik/${id}/logs`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // admin: set the RouterOS API connection (password is encrypted server-side)
+  saveMikrotikConnection: async (
+    id: number,
+    body: { apiPort?: number; useTls?: boolean; apiUsername?: string; apiPassword?: string },
+  ): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put(`/mikrotik/${id}/connection`, body);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  testMikrotik: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/mikrotik/${id}/test`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getEnvHistory: async (count: number = 20): Promise<ApiResult> => {
     try {
       const res = await apiClient.get(`/environment/history?count=${count}`);
