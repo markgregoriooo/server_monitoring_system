@@ -16,6 +16,18 @@ router.get("/", authMiddleware, async (req, res, next) => {
   }
 });
 
+// ── POST /api/mikrotik ─ register a new MikroTik (admin). Requires the migration
+//    (devices.device_type ENUM must already include 'mikrotik').
+router.post("/", authMiddleware, requireRole("admin"), async (req, res, next) => {
+  try {
+    const r = await mikrotikPollerService.createDevice(req.body ?? {});
+    if (!r.ok) return res.status(400).json({ error: r.error || "Create failed." });
+    res.status(201).json({ id: r.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── GET /api/mikrotik/:id/history ─ total throughput from InfluxDB (JWT).
 //    Reuses the shared network_traffic handler (filters by device_id only).
 router.get("/:id/history", authMiddleware, networkHistoryHandler);

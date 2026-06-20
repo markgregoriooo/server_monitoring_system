@@ -287,9 +287,36 @@ async function testConnection(id) {
   }
 }
 
+// ─── Admin: register a new MikroTik (device + connection rows) ──────────────────
+async function createDevice({ name, ip, location, apiPort, useTls, apiUsername, apiPassword } = {}) {
+  const nm = String(name ?? "").trim();
+  if (!nm) return { ok: false, error: "Name is required." };
+  if (!String(ip ?? "").trim()) return { ok: false, error: "IP address is required." };
+  const loc = String(location ?? "").trim() || "Server Room";
+  const [r] = await db.query(
+    `INSERT INTO devices (ip_address, device_name, device_type, status, location)
+     VALUES (?, ?, 'mikrotik', 'offline', ?)`,
+    [String(ip).trim(), nm, loc],
+  );
+  const id = r.insertId;
+  await db.query(
+    `INSERT INTO mikrotik_devices (device_id, api_port, use_tls, api_username, api_password, api_enabled)
+     VALUES (?, ?, ?, ?, ?, 1)`,
+    [
+      id,
+      apiPort != null ? Number(apiPort) : 8728,
+      useTls ? 1 : 0,
+      apiUsername ? String(apiUsername).trim() : null,
+      apiPassword ? encrypt(String(apiPassword)) : null,
+    ],
+  );
+  return { ok: true, id };
+}
+
 export default {
   pollAll,
   getMikrotikDevices,
+  createDevice,
   saveConnection,
   testConnection,
   loadDevices,

@@ -236,6 +236,104 @@ function BuildingRow({ i }: { i: MkIface }) {
   );
 }
 
+// ─── Admin: add a new MikroTik ────────────────────────────────────────────────
+
+function AddModal({ onClose, onAdded }: { onClose: () => void; onAdded: (msg: string) => void }) {
+  const [name, setName] = useState("Campus MikroTik");
+  const [ip, setIp] = useState("");
+  const [location, setLocation] = useState("Server Room");
+  const [apiPort, setApiPort] = useState<number>(8728);
+  const [useTls, setUseTls] = useState(false);
+  const [apiUsername, setApiUsername] = useState("");
+  const [apiPassword, setApiPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    if (!name.trim() || !ip.trim()) {
+      setErr("Name and IP are required.");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    const body: {
+      name: string; ip: string; location: string;
+      apiPort: number; useTls: boolean; apiUsername: string; apiPassword?: string;
+    } = {
+      name: name.trim(),
+      ip: ip.trim(),
+      location: location.trim(),
+      apiPort: Number(apiPort),
+      useTls,
+      apiUsername: apiUsername.trim(),
+    };
+    if (apiPassword) body.apiPassword = apiPassword;
+    const r = await api.addMikrotik(body);
+    setBusy(false);
+    if (r.success) onAdded("MikroTik added");
+    else setErr(r.error || "Add failed — did you run the migration?");
+  };
+
+  const labelCls = "text-[10px] tracking-widest uppercase mb-1 block";
+  const inputCls = "w-full px-2 py-1.5 text-[12px] rounded-[2px] outline-none";
+  const inputStyle = { background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary } as const;
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
+      <div className="w-full max-w-md rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4" style={{ height: 40, borderBottom: `1px solid ${gf.divider}` }}>
+          <span className="text-[12px] font-semibold" style={{ color: gf.textPrimary }}>Add MikroTik</span>
+          <button onClick={onClose} className="text-[18px] leading-none" style={{ color: gf.textMuted }}>×</button>
+        </div>
+        <div className="p-4 flex flex-col gap-3">
+          <div>
+            <label className={labelCls} style={{ color: gf.textMuted }}>Name</label>
+            <input className={inputCls} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls} style={{ color: gf.textMuted }}>IP address</label>
+              <input className={inputCls} style={inputStyle} value={ip} onChange={(e) => setIp(e.target.value)} placeholder="192.168.88.1" />
+            </div>
+            <div>
+              <label className={labelCls} style={{ color: gf.textMuted }}>Location</label>
+              <input className={inputCls} style={inputStyle} value={location} onChange={(e) => setLocation(e.target.value)} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls} style={{ color: gf.textMuted }}>API Port</label>
+              <input type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
+            </div>
+            <label className="flex items-center gap-2 text-[12px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
+              <input type="checkbox" checked={useTls} onChange={(e) => setUseTls(e.target.checked)} />
+              Use TLS (8729)
+            </label>
+          </div>
+          <div>
+            <label className={labelCls} style={{ color: gf.textMuted }}>Username (read-only RouterOS user)</label>
+            <input className={inputCls} style={inputStyle} value={apiUsername} onChange={(e) => setApiUsername(e.target.value)} placeholder="monitor-ro" autoComplete="off" />
+          </div>
+          <div>
+            <label className={labelCls} style={{ color: gf.textMuted }}>Password</label>
+            <input type="password" className={inputCls} style={inputStyle} value={apiPassword} onChange={(e) => setApiPassword(e.target.value)} placeholder="RouterOS API password" autoComplete="new-password" />
+            <p className="text-[9px] mt-1" style={{ color: gf.textDim }}>Stored encrypted (AES-256-GCM).</p>
+          </div>
+          {err && (
+            <div className="text-[11px] px-2 py-1.5 rounded-[2px]" style={{ color: RED, background: RED + "14", border: `1px solid ${RED}40` }}>{err}</div>
+          )}
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button onClick={onClose} className="text-[11px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted }}>Cancel</button>
+            <button onClick={submit} disabled={busy || !name.trim() || !ip.trim()} className="text-[11px] px-3 py-1.5 rounded-[2px] font-semibold" style={{ background: BLUE, color: "#fff", opacity: busy || !name.trim() || !ip.trim() ? 0.6 : 1 }}>
+              {busy ? "Adding…" : "Add MikroTik"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Admin: RouterOS connection modal ─────────────────────────────────────────
 
 function ConnectionModal({
@@ -346,6 +444,7 @@ export default function MikrotikMonitoring() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [configFor, setConfigFor] = useState<MkDevice | null>(null);
+  const [adding, setAdding] = useState(false);
   const [toast, setToast] = useState("");
 
   const load = () =>
@@ -421,9 +520,16 @@ export default function MikrotikMonitoring() {
           <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>MikroTik Network</h1>
           <span className="text-[11px] hidden sm:inline" style={{ color: gf.textDim }}>per-building traffic · {portsUp}/{allIfaces.length} ports up</span>
         </div>
-        <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textMuted }}>
-          <span className="w-1.5 h-1.5 rounded-full" style={{ background: online > 0 ? GREEN : RED, boxShadow: `0 0 6px ${online > 0 ? GREEN : RED}` }} /> Live
-        </span>
+        <div className="flex items-center gap-3 shrink-0">
+          {isAdmin && (
+            <button onClick={() => setAdding(true)} className="text-[11px] px-2.5 py-1 rounded-[2px] font-medium" style={{ background: BLUE, color: "#fff" }}>
+              + Add MikroTik
+            </button>
+          )}
+          <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: online > 0 ? GREEN : RED, boxShadow: `0 0 6px ${online > 0 ? GREEN : RED}` }} /> Live
+          </span>
+        </div>
       </div>
 
       {/* Stat row */}
@@ -444,9 +550,14 @@ export default function MikrotikMonitoring() {
             </svg>
             <p className="text-[13px] mt-3" style={{ color: gf.textMuted }}>No MikroTik registered yet</p>
             <p className="text-[11px] mt-1 max-w-md" style={{ color: gf.textDim }}>
-              Run <span style={{ color: gf.textMuted }}>migrations/2026-06-20_mikrotik_device.sql</span>, seed the device + its
-              port→building rows, then set the read-only RouterOS login (admin → Configure).
+              Run <span style={{ color: gf.textMuted }}>migrations/2026-06-20_mikrotik_device.sql</span>, then add your router below
+              and set its read-only RouterOS login.
             </p>
+            {isAdmin && (
+              <button onClick={() => setAdding(true)} className="mt-4 text-[12px] px-3 py-1.5 rounded-[2px] font-medium" style={{ background: BLUE, color: "#fff" }}>
+                + Add MikroTik
+              </button>
+            )}
           </div>
         </Panel>
       ) : (
@@ -523,6 +634,18 @@ export default function MikrotikMonitoring() {
             </Panel>
           ))}
         </>
+      )}
+
+      {adding && (
+        <AddModal
+          onClose={() => setAdding(false)}
+          onAdded={(msg) => {
+            setAdding(false);
+            setToast(msg);
+            load();
+            setTimeout(() => setToast(""), 3000);
+          }}
+        />
       )}
 
       {configFor && (

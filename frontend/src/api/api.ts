@@ -326,6 +326,24 @@ export const api = {
     }
   },
 
+  // admin: register a new MikroTik (needs the device_type ENUM migration applied)
+  addMikrotik: async (body: {
+    name: string;
+    ip?: string;
+    location?: string;
+    apiPort?: number;
+    useTls?: boolean;
+    apiUsername?: string;
+    apiPassword?: string;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/mikrotik", body);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getMikrotikHistory: async (id: number, range: string): Promise<ApiResult> => {
     try {
       const res = await apiClient.get(`/mikrotik/${id}/history`, { params: { range } });
