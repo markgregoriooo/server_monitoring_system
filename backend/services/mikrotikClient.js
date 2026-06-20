@@ -1,7 +1,7 @@
 // ─── RouterOS API client (live MikroTik reads) ────────────────────────────────
 //
-// Thin wrapper over `node-routeros`, LAZY-loaded so the app builds and runs (and
-// mock mode works) WITHOUT the dependency installed. For live mode:
+// Thin wrapper over `node-routeros`, LAZY-loaded so the app still starts if the
+// dependency isn't installed yet (the MikroTik just reports offline). Install with:
 //   cd backend && npm install node-routeros
 //
 // Returns the SAME sample shape snmpPollerService.collectRouter() produces, so the
@@ -56,7 +56,7 @@ async function openApi(conn) {
     ({ RouterOSAPI } = await import("node-routeros"));
   } catch {
     throw new Error(
-      "node-routeros not installed — run `npm install node-routeros` in backend/ (or set MIKROTIK_MOCK=true)",
+      "node-routeros not installed — run `npm install node-routeros` in backend/",
     );
   }
   const api = new RouterOSAPI({

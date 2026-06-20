@@ -21,6 +21,7 @@
     "multer": "^2.1.1",
     "mysql2": "^3.22.0",
     "net-snmp": "^3.26.3",
+    "node-routeros": "^1.6.8",
     "resend": "^6.12.4",
     "socket.io": "^4.7.2"
   },

@@ -11,18 +11,13 @@ import { encrypt, decrypt } from "./mikrotikCrypto.js";
 // (router_metrics + network_traffic + the networkMetrics broadcast). Each building
 // is a PORT, labeled via network_interfaces (interface_name → location_label).
 // Because polling IS the heartbeat, there's no separate offline sweep.
-//
-// Set MIKROTIK_MOCK=true in backend/.env to run the whole pipeline with synthetic
-// data (no router, no node-routeros dependency) — see mikrotik-monitoring.md.
 
-const MOCK = String(process.env.MIKROTIK_MOCK || "").toLowerCase() === "true";
 const TIMEOUT_MS = Number(process.env.MIKROTIK_API_TIMEOUT_MS) || 5000;
 
 // ─── In-memory state (resets on restart, repopulates next cycle) ───────────────
 const prevIface = new Map(); // `${id}:${name}` -> { rx(BigInt), tx(BigInt), t(ms) }
 const linkState = new Map(); // `${id}:${name}` -> boolean up (log down-onset once)
 const latest = new Map(); // id -> shaped summary for GET /api/mikrotik
-const mockCounters = new Map(); // `${id}:${name}` -> { rx(BigInt), tx(BigInt) } (mock only)
 
 const STATUS_LABEL = { online: "Online", offline: "Offline", warning: "Warning", maintenance: "Maintenance" };
 const labelStatus = (s) => STATUS_LABEL[s] ?? "Offline";
@@ -46,8 +41,8 @@ async function loadDevices() {
        JOIN mikrotik_devices m ON m.device_id = d.device_id
       WHERE d.device_type = 'mikrotik' AND m.api_enabled = 1`,
   );
-  // Pollable = has an IP, and (mock) OR a username configured.
-  return rows.filter((r) => r.ip && (MOCK || r.apiUser));
+  // Pollable = has an IP + a username configured.
+  return rows.filter((r) => r.ip && r.apiUser);
 }
 
 async function loadInterfaceLabels(deviceId) {
@@ -92,33 +87,8 @@ function withUtilization(deviceId, ifaces) {
   });
 }
 
-// ─── Mock collector (MIKROTIK_MOCK=true) ───────────────────────────────────────
-function collectMock(d, labels) {
-  const names = Object.keys(labels);
-  const ifaceNames = names.length ? names : ["ether1", "ether2", "ether3"];
-  const interfaces = ifaceNames.map((name, idx) => {
-    const key = `${d.id}:${name}`;
-    const st = mockCounters.get(key) ?? { rx: 0n, tx: 0n };
-    const scale = idx === 0 ? 5_000_000 : 1_000_000; // port 0 = busier uplink
-    const rx = st.rx + BigInt(Math.floor(Math.random() * scale) + 100_000);
-    const tx = st.tx + BigInt(Math.floor(Math.random() * scale * 0.8) + 80_000);
-    mockCounters.set(key, { rx, tx });
-    return { name, rxBytes: rx, txBytes: tx, rxErrors: 0, txErrors: 0, linkUp: true, speedMbps: 1000 };
-  });
-  return {
-    reachable: true,
-    uptimeSeconds: Math.floor(process.uptime()) + 3600,
-    cpuPercent: 5 + Math.floor(Math.random() * 35),
-    memPercent: 30 + Math.floor(Math.random() * 30),
-    connectedClients: 10 + Math.floor(Math.random() * 40),
-    version: "7.x (mock)",
-    boardName: "mock",
-    interfaces,
-  };
-}
-
 async function collect(d, labels) {
-  const raw = MOCK ? collectMock(d, labels) : await mikrotikClient.collect(connFor(d));
+  const raw = await mikrotikClient.collect(connFor(d)); // throws if unreachable
   raw.interfaces = withUtilization(d.id, raw.interfaces).map((i) => ({
     ...i,
     locationLabel: labels[i.name] ?? "",
@@ -258,7 +228,7 @@ async function getMikrotikDevices() {
       memPercent: live?.memPercent ?? null,
       connectedClients: live?.connectedClients ?? null,
       interfaces: live?.interfaces ?? [],
-      monitored: MOCK || Boolean(r.apiUser && r.apiEnabled),
+      monitored: Boolean(r.apiUser && r.apiEnabled),
     };
   });
 }
@@ -294,7 +264,6 @@ async function saveConnection(id, { apiPort, useTls, apiUsername, apiPassword } 
 
 // ─── Admin: test connection ──────────────────────────────────────────────────────
 async function testConnection(id) {
-  if (MOCK) return { ok: true, version: "7.x (mock)", boardName: "mock" };
   const [[row]] = await db.query(
     `SELECT d.ip_address AS ip, m.api_port AS apiPort, m.use_tls AS useTls,
             m.api_username AS apiUser, m.api_password AS apiPass

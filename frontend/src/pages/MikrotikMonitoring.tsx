@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
+import { useAuth } from "../context/AuthContext";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,9 @@ interface MkDevice {
   connectedClients: number | null;
   routerosVersion: string | null;
   boardModel: string | null;
+  apiPort: number | null;
+  useTls: boolean;
+  apiUsername: string | null;
   interfaces: MkIface[];
   monitored: boolean;
 }
@@ -103,6 +107,9 @@ function mapMk(r: any): MkDevice {
     connectedClients: r.connectedClients ?? null,
     routerosVersion: r.routerosVersion ?? null,
     boardModel: r.boardModel ?? null,
+    apiPort: r.apiPort ?? null,
+    useTls: Boolean(r.useTls),
+    apiUsername: r.apiUsername ?? null,
     interfaces: (r.interfaces ?? []).map((i: any) => ({
       name: i.name ?? "—",
       locationLabel: i.locationLabel ?? "",
@@ -229,6 +236,106 @@ function BuildingRow({ i }: { i: MkIface }) {
   );
 }
 
+// ─── Admin: RouterOS connection modal ─────────────────────────────────────────
+
+function ConnectionModal({
+  device, onClose, onSaved,
+}: {
+  device: MkDevice;
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+}) {
+  const [apiPort, setApiPort] = useState<number>(device.apiPort ?? 8728);
+  const [useTls, setUseTls] = useState<boolean>(device.useTls);
+  const [apiUsername, setApiUsername] = useState<string>(device.apiUsername ?? "");
+  const [apiPassword, setApiPassword] = useState<string>("");
+  const [busy, setBusy] = useState<"" | "save" | "test">("");
+  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const save = async () => {
+    setBusy("save");
+    setResult(null);
+    const body: { apiPort: number; useTls: boolean; apiUsername: string; apiPassword?: string } = {
+      apiPort: Number(apiPort),
+      useTls,
+      apiUsername: apiUsername.trim(),
+    };
+    if (apiPassword) body.apiPassword = apiPassword;
+    const r = await api.saveMikrotikConnection(Number(device.id), body);
+    setBusy("");
+    if (r.success) onSaved("Connection saved");
+    else setResult({ ok: false, msg: r.error || "Save failed" });
+  };
+
+  const test = async () => {
+    setBusy("test");
+    setResult(null);
+    const r = await api.testMikrotik(Number(device.id));
+    setBusy("");
+    const data: any = r.data ?? {};
+    if (r.success && data.ok) {
+      setResult({ ok: true, msg: `OK — RouterOS ${data.version ?? "?"}${data.boardName ? ` · ${data.boardName}` : ""}` });
+    } else {
+      setResult({ ok: false, msg: data.error || r.error || "Connection failed" });
+    }
+  };
+
+  const labelCls = "text-[10px] tracking-widest uppercase mb-1 block";
+  const inputCls = "w-full px-2 py-1.5 text-[12px] rounded-[2px] outline-none";
+  const inputStyle = { background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary } as const;
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
+      <div className="w-full max-w-md rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4" style={{ height: 40, borderBottom: `1px solid ${gf.divider}` }}>
+          <span className="text-[12px] font-semibold truncate" style={{ color: gf.textPrimary }}>RouterOS connection · {device.name}</span>
+          <button onClick={onClose} className="text-[18px] leading-none" style={{ color: gf.textMuted }}>×</button>
+        </div>
+        <div className="p-4 flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls} style={{ color: gf.textMuted }}>API Port</label>
+              <input type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
+            </div>
+            <label className="flex items-center gap-2 text-[12px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
+              <input type="checkbox" checked={useTls} onChange={(e) => setUseTls(e.target.checked)} />
+              Use TLS (8729)
+            </label>
+          </div>
+          <div>
+            <label className={labelCls} style={{ color: gf.textMuted }}>Username (read-only RouterOS user)</label>
+            <input className={inputCls} style={inputStyle} value={apiUsername} onChange={(e) => setApiUsername(e.target.value)} placeholder="monitor-ro" autoComplete="off" />
+          </div>
+          <div>
+            <label className={labelCls} style={{ color: gf.textMuted }}>Password</label>
+            <input type="password" className={inputCls} style={inputStyle} value={apiPassword} onChange={(e) => setApiPassword(e.target.value)} placeholder="leave blank to keep current" autoComplete="new-password" />
+            <p className="text-[9px] mt-1" style={{ color: gf.textDim }}>Stored encrypted (AES-256-GCM); never shown again.</p>
+          </div>
+
+          {result && (
+            <div className="text-[11px] px-2 py-1.5 rounded-[2px]" style={{ color: result.ok ? GREEN : RED, background: (result.ok ? GREEN : RED) + "14", border: `1px solid ${(result.ok ? GREEN : RED)}40` }}>
+              {result.msg}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <button onClick={test} disabled={busy !== ""} className="text-[11px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, opacity: busy ? 0.6 : 1 }}>
+              {busy === "test" ? "Testing…" : "Test connection"}
+            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={onClose} className="text-[11px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted }}>Cancel</button>
+              <button onClick={save} disabled={busy !== "" || !apiUsername.trim()} className="text-[11px] px-3 py-1.5 rounded-[2px] font-semibold" style={{ background: BLUE, color: "#fff", opacity: busy || !apiUsername.trim() ? 0.6 : 1 }}>
+                {busy === "save" ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+          <p className="text-[9px]" style={{ color: gf.textDim }}>Test uses the saved credentials — Save first, then Test.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function MikrotikMonitoring() {
@@ -236,6 +343,10 @@ export default function MikrotikMonitoring() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [range, setRange] = useState<Range>("-1h");
   const [history, setHistory] = useState<HistPoint[]>([]);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const [configFor, setConfigFor] = useState<MkDevice | null>(null);
+  const [toast, setToast] = useState("");
 
   const load = () =>
     api.getMikrotikDevices().then((r) => {
@@ -333,8 +444,8 @@ export default function MikrotikMonitoring() {
             </svg>
             <p className="text-[13px] mt-3" style={{ color: gf.textMuted }}>No MikroTik registered yet</p>
             <p className="text-[11px] mt-1 max-w-md" style={{ color: gf.textDim }}>
-              Run <span style={{ color: gf.textMuted }}>migrations/2026-06-20_mikrotik_device.sql</span> and seed the device + its
-              port→building rows. For a no-hardware demo set <span style={{ color: gf.textMuted }}>MIKROTIK_MOCK=true</span> in backend/.env.
+              Run <span style={{ color: gf.textMuted }}>migrations/2026-06-20_mikrotik_device.sql</span>, seed the device + its
+              port→building rows, then set the read-only RouterOS login (admin → Configure).
             </p>
           </div>
         </Panel>
@@ -374,13 +485,20 @@ export default function MikrotikMonitoring() {
               title={d.name}
               noPad
               right={
-                <button onClick={() => setSelectedId(d.id)} className="flex items-center gap-2">
-                  <span className="text-[10px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-                    <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
-                  </span>
-                </button>
+                <div className="flex items-center gap-2">
+                  {isAdmin && (
+                    <button onClick={() => setConfigFor(d)} className="text-[10px] px-2 py-0.5 rounded-[2px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
+                      Configure
+                    </button>
+                  )}
+                  <button onClick={() => setSelectedId(d.id)} className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
+                      <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
+                    </span>
+                  </button>
+                </div>
               }
             >
               {/* device summary line */}
@@ -405,6 +523,28 @@ export default function MikrotikMonitoring() {
             </Panel>
           ))}
         </>
+      )}
+
+      {configFor && (
+        <ConnectionModal
+          device={configFor}
+          onClose={() => setConfigFor(null)}
+          onSaved={(msg) => {
+            setConfigFor(null);
+            setToast(msg);
+            load();
+            setTimeout(() => setToast(""), 3000);
+          }}
+        />
+      )}
+
+      {toast && (
+        <div
+          className="fixed top-5 right-5 z-[80] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl"
+          style={{ color: GREEN, background: GREEN + "14", borderColor: GREEN + "40" }}
+        >
+          <span>✓</span> {toast}
+        </div>
       )}
     </div>
   );
