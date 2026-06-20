@@ -1,7 +1,10 @@
 # MikroTik Network Monitoring — CSPC-ICTU Monitoring
 
-> Status: **PLAN** (branch `mikrotik-monitoring`). Nothing implemented yet — this is the
-> design of record. Update §11 as phases land.
+> Status: **IMPLEMENTED** (branch `mikrotik-monitoring`, stacked on `router-ups-monitoring`).
+> Backend poller + RouterOS client + crypto + REST routes, and the dashboard page with admin
+> **Add / Configure / Test**. **Mock removed — live RouterOS only.** Pending: a live test against
+> the dev MikroTik, a port→building labeling UI, and full `alert_rules` wiring.
+> **→ §13 is the study guide for how it actually works (read that with the code open).**
 
 Monitor the **campus network through a single MikroTik router**. The campus has **one large
 MikroTik** that all buildings' networks pass through; it has ~**4–5 ports**, and **each
@@ -330,26 +333,28 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
 
 ## 11. Status & next steps (phased)
 
-- [ ] **Phase 0 — Decisions.** Branch base ✅ **decided: B** (stack on `router-ups-monitoring`;
-      re-point the branch at the start of Phase 1). Still to resolve from the questionnaire:
-      RouterOS version, per-building subnets, API access, port→building map. Confirm
-      `devices.device_type` is `VARCHAR`. Pick `node-routeros` vs REST.
-- [ ] **Phase 1 — Schema + crypto.** ✅ migration written: `migrations/2026-06-20_mikrotik_device.sql`
-      (ENUM `+'mikrotik'` + `use_tls`; `mikrotik_devices` + `network_interfaces` already exist in
-      V10) — run it + fill the seed template. Then `mikrotikCrypto.js` (AES-256-GCM) +
-      `MIKROTIK_ENC_KEY`. Acceptance: the device + encrypted creds round-trip; ports map to buildings.
-- [ ] **Phase 2 — Collector.** `mikrotikClient.js` + `mikrotikPollerService.collectMikrotik()`
-      returning the shared sample shape (per port) → `writeNetworkSample()` → `networkMetrics`
-      broadcast, on `MIKROTIK_POLL_INTERVAL_MS`. Acceptance: the **dev MikroTik** streams live,
-      values match Winbox; offline flip works.
-- [ ] **Phase 3 — Page.** The MikroTik on the Network page with per-building (per-port) rows +
-      admin connection form ("Test connection") + editable port→building labels + nav badge.
-- [ ] **Phase 4 — Detail.** Per-port rx/tx charts + link state + clients + device CPU/mem/uptime
-      + recent events (mirror `ServerDetail`).
-- [ ] **Phase 5 — Alerting.** Port-down / offline-online / link-util / CPU-mem via `alert_rules`
-      + `device_logs`, through the existing notification + Alerts lifecycle.
-- [ ] **Phase 6 — Polish + docs.** PiP `network.summary` tile, MikroTik questionnaire, live test
-      on the dev MikroTik then the campus MikroTik, update `CLAUDE.md` + `SESSION_NOTES.md`.
+- [x] **Phase 0 — Decisions.** Branch base **B** (stacked on `router-ups-monitoring`). RouterOS API
+      via `node-routeros` (works v6 + v7). `devices.device_type` is an **ENUM** → migration adds
+      `'mikrotik'`. `mikrotik_devices` + `network_interfaces` already exist in V10.
+- [x] **Phase 1 — Schema + crypto.** `migrations/2026-06-20_mikrotik_device.sql` (ENUM `+'mikrotik'`,
+      `use_tls`, drops `firmware_version`, seed template) + `mikrotikCrypto.js` (AES-256-GCM) +
+      `MIKROTIK_ENC_KEY`. ⚠️ **Run the migration before adding a router.**
+- [x] **Phase 2 — Collector.** `mikrotikClient.js` (RouterOS API, lazy-loads `node-routeros`) +
+      `mikrotikPollerService` → shared `writeNetworkSample()` → `networkMetrics`/`networkStatus`,
+      on a 30s `setInterval`. ⏳ live test against the dev MikroTik not yet run.
+- [x] **Phase 3 — Page + admin.** `MikrotikMonitoring.tsx` (per-port = per-building rows,
+      CPU/mem/clients, throughput history) + **Add MikroTik** (`POST /api/mikrotik`) + **Configure**
+      + **Test connection** (admin). Route / sidebar / role wired.
+- [~] **Phase 4 — Detail.** The single-router page already shows per-port + throughput + device info
+      (+ a logs endpoint), so a separate drill-down wasn't needed. ⏳ port→building **labeling UI**
+      still TODO (labels live in `network_interfaces`, currently SQL-seeded).
+- [~] **Phase 5 — Alerting.** Port-down + offline/online are logged to `device_logs` + `deviceLog`
+      by the poller. ⏳ full `alert_rules` (link_util / CPU / mem) + `notificationService` (bell/email)
+      not wired yet.
+- [ ] **Phase 6 — Polish.** PiP `network.summary` tile; live test on the dev MikroTik then campus.
+
+> **Removed:** the `MIKROTIK_MOCK` synthetic-data mode (built during scaffolding, dropped at request
+> — live RouterOS only). `node-routeros` is now a required backend dependency.
 
 ---
 
@@ -370,3 +375,94 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
 | `frontend/src/api/api.ts` | MikroTik connection/history calls — **edit** |
 | `frontend/src/components/layout/Sidebar.tsx` | nav item + offline badge — **edit** |
 | `router-ups-monitoring.md` | sibling feature (sources C+D); shared data model — **reference** |
+
+---
+
+## 13. How it works — study guide (the real implementation)
+
+> Read this with the code open. The feature is the **pull mirror** of the Go-agent server pipeline:
+> instead of an agent pushing, our backend connects out to the MikroTik and pulls.
+
+### 13.1 Runtime data flow (one poll cycle, every ~30s)
+
+```
+server.js  setInterval(MIKROTIK_POLL_INTERVAL_MS)
+   │
+   ▼
+mikrotikPollerService.pollAll(io)
+   │  loadDevices() ── SELECT devices(type='mikrotik') JOIN mikrotik_devices
+   │                   (api_enabled=1, has ip + username)
+   │
+   ├─ for the device:
+   │    connFor(d)        decrypt api_password (mikrotikCrypto.decrypt) → {host,port,tls,user,password}
+   │    collect(d,labels) ── mikrotikClient.collect(conn) over the RouterOS API:
+   │                          /system/resource          → cpu, mem, uptime, version, board
+   │                          /interface print stats     → per-port rx/tx bytes, errors, running
+   │                          /interface/ethernet        → link speed (for utilization)
+   │                          /ip/dhcp-server/lease      → bound-lease count = connected clients
+   │                        withUtilization() → (byte delta vs last cycle ÷ link speed) → utilization_pct
+   │                        attach locationLabel from network_interfaces (port → building)
+   │    setReachable(io,d,true)       flip devices.status; log device_logs on transition; emit networkStatus
+   │    writeNetworkSample(io,d,sample)   ← SHARED with the SNMP poller:
+   │         InfluxDB  router_metrics (cpu/mem/uptime/clients) + network_traffic (per port, cumulative)
+   │         emit "networkMetrics" { device:{ …, type:"mikrotik", interfaces:[…] } }
+   │    checkThresholds()             log a port-down transition → device_logs + deviceLog
+   │    cache in `latest` (so GET /api/mikrotik renders instantly) + UPDATE mikrotik_devices.last_seen
+   │
+   └─ on throw (unreachable) → setReachable(io,d,false) → status Offline + networkStatus
+```
+
+Browser: `MikrotikMonitoring.tsx` fetches `GET /api/mikrotik` once, then live-updates from the
+`networkMetrics` / `networkStatus` socket events (filtered to `type==="mikrotik"` — the events are
+**shared** with the SNMP Network page, which ignores `mikrotik`).
+
+### 13.2 The files (read in this order)
+
+| # | File | Role |
+|---|------|------|
+| 1 | `backend/services/mikrotikCrypto.js` | AES-256-GCM encrypt/decrypt of the API password (`MIKROTIK_ENC_KEY`) |
+| 2 | `backend/services/mikrotikClient.js` | RouterOS API reads → the shared sample shape; lazy-loads `node-routeros` |
+| 3 | `backend/services/mikrotikPollerService.js` | the core — loadDevices, collect, utilization, setReachable, pollAll, getMikrotikDevices, createDevice, saveConnection, testConnection |
+| 4 | `backend/handlers/networkMetricsHandler.js` | `writeNetworkSample()` — InfluxDB write + `networkMetrics` (SHARED, from router-ups) |
+| 5 | `backend/routes/mikrotik.js` | REST: list / create / connection / test / history / logs |
+| 6 | `backend/src/server.js` | mounts `/api/mikrotik` + the poll `setInterval` |
+| 7 | `frontend/src/pages/MikrotikMonitoring.tsx` | the page + `AddModal` + `ConnectionModal` |
+| 8 | `frontend/src/api/api.ts` | `getMikrotikDevices` / `addMikrotik` / `saveMikrotikConnection` / `testMikrotik` / history / logs |
+| — | `backend/services/snmpPollerService.js` | the sibling this mirrors — read side-by-side |
+
+### 13.3 REST surface (`/api/mikrotik`, all behind JWT `authMiddleware`)
+
+| Method / Path | Role | Purpose |
+|---|---|---|
+| `GET /` | any | list MikroTik(s) + latest live values (password is **never** returned) |
+| `POST /` | admin | register a router (creates `devices` + `mikrotik_devices` rows; encrypts password) |
+| `PUT /:id/connection` | admin | update port / TLS / username / password |
+| `POST /:id/test` | admin | probe the API with the stored creds → version/board, or an error |
+| `GET /:id/history?range=-1h\|-6h\|-24h` | any | throughput history from InfluxDB (shared handler) |
+| `GET /:id/logs` | any | device event log (`device_logs`) |
+
+### 13.4 Operational flow (how an admin uses it)
+
+1. **Once:** run `migrations/2026-06-20_mikrotik_device.sql`, set `MIKROTIK_ENC_KEY` in `backend/.env`, restart the backend.
+2. **Router:** enable the API + create a read-only user (`mikrotik-dev-setup.md`).
+3. Dashboard → **MikroTik** → **+ Add MikroTik** → name / IP / port / username / password → **Add**.
+4. **Configure** edits creds later; **Test connection** verifies. The poller then streams every ~30s.
+5. **Port → building labels:** add `network_interfaces` rows (`interface_name → location_label`). *(UI for this is the remaining TODO; until then ports show by their RouterOS name.)*
+
+### 13.5 What changed from the original plan (§1–§12)
+
+- **`mikrotik_devices` already existed** in the V10 schema (1:1 detail table, like `server_specs` /
+  `ups_details`) — kept it; the migration only adds `use_tls` + drops the unused `firmware_version`.
+- **`device_type` is an ENUM** (not free-form) — the migration appends `'mikrotik'`.
+- **Add-from-UI** (`POST /api/mikrotik` + `AddModal`) was added so registering a router needs no SQL.
+- **Mock mode removed** — `MIKROTIK_MOCK` was built during scaffolding, then dropped; live only.
+- **`api_password`** stays `VARCHAR(255)`, holding AES-GCM ciphertext (base64) — no column change.
+
+### 13.6 Known gaps / next
+
+- **Live test** against the dev MikroTik — the RouterOS command words in `mikrotikClient` are
+  best-effort and should be confirmed on hardware.
+- **Port → building labeling UI** (currently SQL).
+- **Full `alert_rules`** wiring (link utilization / CPU / mem thresholds + bell/email); today only
+  port-down and offline/online are logged to `device_logs`.
+- **PiP `network.summary` tile.**
