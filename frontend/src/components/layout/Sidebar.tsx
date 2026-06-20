@@ -46,6 +46,13 @@ const Icons: Record<string, React.ReactNode> = {
       <circle cx="3.5" cy="12" r="0.8" fill="currentColor"/>
     </svg>
   ),
+  mikrotik: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <rect x="1.5" y="8.5" width="13" height="5.5" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
+      <path d="M4 11.2h.01M11.5 11.2h.01" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M5.2 5.6a4 4 0 0 1 5.6 0M6.8 7.1a1.7 1.7 0 0 1 2.4 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+    </svg>
+  ),
   ups: (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <rect x="1.5" y="3" width="13" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
@@ -112,6 +119,7 @@ const allNavItems: NavItem[] = [
   { id: "dashboard",        label: "Dashboard",        path: "/",                icon: Icons["dashboard"] },
   { id: "server-metrics",   label: "Server Metrics",   path: "/server-metrics",  icon: Icons["server-metrics"] },
   { id: "network",          label: "Network",          path: "/network",         icon: Icons["network"] },
+  { id: "mikrotik",         label: "MikroTik",         path: "/mikrotik",        icon: Icons["mikrotik"] },
   { id: "ups",              label: "UPS",              path: "/ups",             icon: Icons["ups"] },
   { id: "environment",      label: "Environment",      path: "/environment",     icon: Icons["environment"] },
   { id: "air-conditioner",  label: "Air Conditioner",  path: "/air-conditioner", icon: Icons["air-conditioner"] },
