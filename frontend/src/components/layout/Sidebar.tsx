@@ -91,6 +91,13 @@ const Icons: Record<string, React.ReactNode> = {
       <circle cx="8" cy="11.6" r="0.5" fill="currentColor" stroke="currentColor" strokeWidth="0.6"/>
     </svg>
   ),
+  analytics: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path d="M1.5 14.5V2M14.5 14.5H2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+      <path d="M4 11l3-3 2.5 2L14 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M11 5h3v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  ),
 };
 
 const allNavItems: NavItem[] = [
@@ -99,6 +106,7 @@ const allNavItems: NavItem[] = [
   { id: "environment",      label: "Environment",      path: "/environment",     icon: Icons["environment"] },
   { id: "air-conditioner",  label: "Air Conditioner",  path: "/air-conditioner", icon: Icons["air-conditioner"] },
   { id: "alerts",           label: "Alerts",           path: "/alerts",          icon: Icons["alerts"] },
+  { id: "analytics",        label: "Analytics",        path: "/analytics",       icon: Icons["analytics"] },
   { id: "history",          label: "History",          path: "/history",         icon: Icons["history"] },
   { id: "reports",          label: "Reports",          path: "/reports",         icon: Icons["reports"] },
   { id: "user-management",  label: "User Management",  path: "/user-management", icon: Icons["user-management"] },

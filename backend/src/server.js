@@ -23,6 +23,7 @@ import alertRoutes from "../routes/alerts.js";
 import reportRoutes from "../routes/reports.js";
 import notificationRoutes from "../routes/notifications.js";
 import alertRuleRoutes from "../routes/alertRules.js";
+import analyticsRoutes from "../routes/analytics.js";
 
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, //15 mins
@@ -139,6 +140,7 @@ app.use("/api/alerts", alertRoutes);
 app.use("/api/reports", reportRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/alert-rules", alertRuleRoutes);
+app.use("/api/analytics", analyticsRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" })

@@ -1097,3 +1097,61 @@ enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
 
 ---
 
+## SESSION 14 — 2026-06-22
+**Branch:** `predictive-analytics` (off `origin/main`)
+**Developer:** Mark Gregorio
+
+> New feature: **Predictive Analytics**. Phase 1 built end to end — **disk-full ETA**
+> (supervised linear regression, validated) + **alert analytics**. Branched off `main`
+> on purpose so it's independent of the in-flight `router-ups-monitoring` /
+> `mikrotik-monitoring` work (network/UPS analytics are deferred until those merge).
+> Blueprint + study guide: **`predictive-analytics.md`** (the math is in §2–4).
+
+### Decision / scope
+- **Technique = linear regression** (least squares) as the core — the one method that is
+  both genuinely useful *and* legitimately ML (supervised regression), runs in pure Node
+  (no Python service), and is fully explainable. EWMA/Holt-Winters/z-score (later phases)
+  are statistics, not ML — documented honestly so it isn't oversold for a defense.
+- **Flagship = disk-full ETA.** Scope this phase: servers + environment + alerts (all on
+  `main`). Network/UPS forecasting waits on the router/mikrotik branches (same engine,
+  additive). Phasing/strategy in `predictive-analytics.md` §8.
+
+### Backend (new)
+- **`services/analyticsService.js`** — the engine. `linearRegression()` (slope/intercept +
+  in-sample R²/MAE), `score()` (out-of-sample), `splitTrainTest()` (chronological 80/20 —
+  time series must train on the past). `forecastDiskFull()` pulls hourly-avg `disk_percent`
+  per server from InfluxDB (whitelisted Flux, no injection — mirrors `serverHistoryHandler`),
+  fits the line, computes **ETA to 100%**, validates on a held-out tail, and gates a
+  confidence label on R² (high/medium/low). `alertSummary()` = MTTR, severity mix, per-day
+  volume, noisiest devices/types over the real MySQL `alerts` table.
+- **`routes/analytics.js`** — `GET /api/analytics/forecast/disk`, `/forecast/disk/:id`,
+  `/alerts/summary`; `authMiddleware` + `requireRole("admin","it_staff")` (read-only insight,
+  so both roles, unlike admin-only Alert Rules).
+- **`src/server.js`** — import + `app.use("/api/analytics", analyticsRoutes)`.
+
+### Frontend (new + wiring)
+- **`pages/Analytics.tsx`** — Grafana `--gf-*` styled. **Disk-Full Forecast** table (current %,
+  trend/day, ETA, "full by" date, confidence badge, R²·MAE, 7/14/30-day lookback switch) +
+  **Alert Analytics** (total/open/MTTR tiles, severity & noisiest-source bars, type chips,
+  daily-volume sparkline).
+- **Wiring:** `api.ts` (`getDiskForecast`, `getAlertSummary`), `App.tsx` (route + title),
+  `data/users.ts` (added `"analytics"` to **both** roles), `Sidebar.tsx` (nav item + icon).
+
+### Verified
+- Backend `node --check` (service, route, server.js) clean; frontend **`tsc --noEmit` clean**.
+- Fixed one TS error: `CONF_COLOR` was `Record<string,string>` → under `noUncheckedIndexedAccess`
+  indexing returned `string | undefined`; typed it to the exact `"high"|"medium"|"low"` union.
+- Backend boots + route is mounted: unauthenticated `GET /api/analytics/*` → **401** (not 404).
+
+### Still pending / not done
+- **Forecasts need history to be meaningful** — disk ETA is noisy until ~1–2 weeks of
+  `server_metrics` exist; the R² gate shows "Need more data"/low-confidence until then (by
+  design). Alert analytics is useful immediately.
+- **Phases 2–4 not started:** trend charts + EWMA projection, anomaly detection, threshold
+  **recommendations** → Alert Rules. Network/UPS forecast deferred to after router-ups +
+  mikrotik merge (then rebase). See `predictive-analytics.md` §8.
+- Live end-to-end with real agent data not driven here (build/typecheck + boot/route probe only).
+- Branch not PR'd into `main`.
+
+---
+

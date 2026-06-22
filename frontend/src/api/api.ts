@@ -480,6 +480,27 @@ export const api = {
 
   // Alert rules — configurable thresholds (admin only). deviceId null = global default
   // that applies to every server / the room; a deviceId is a per-server override.
+  // ── Predictive analytics (Phase 1) ──────────────────────────────────────────
+  // Disk-full ETA per server (linear regression). days = lookback window.
+  getDiskForecast: async (days?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/analytics/forecast/disk", days ? { params: { days } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Alert analytics summary (MTTR, severity mix, noisiest devices/types).
+  getAlertSummary: async (days?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/analytics/alerts/summary", days ? { params: { days } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getAlertRules: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/alert-rules");

@@ -27,6 +27,7 @@ import Settings from "./pages/Settings";
 import UserManagement from "./pages/UserManagement";
 import AlertRules from "./pages/AlertRules";
 import Alerts from "./pages/Alerts";
+import Analytics from "./pages/Analytics";
 
 const pageTitles: Record<string, string> = {
   "/": "Server Environment Monitoring & Control System",
@@ -39,6 +40,7 @@ const pageTitles: Record<string, string> = {
   "/user-management": "User Management",
   "/alert-rules": "Alert Rules",
   "/alerts": "Alerts",
+  "/analytics": "Predictive Analytics",
 };
 
 interface ProtectedRouteProps {
@@ -172,6 +174,12 @@ function AppShell() {
             <Route path="/alerts" element={
               <ProtectedRoute>
                 <Alerts />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/analytics" element={
+              <ProtectedRoute>
+                <Analytics />
               </ProtectedRoute>
             } />
 
