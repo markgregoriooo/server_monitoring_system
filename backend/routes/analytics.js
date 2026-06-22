@@ -49,4 +49,58 @@ router.get(
   }),
 );
 
+// metric must be one of the known names (cpu/mem/disk/temperature/humidity/gas).
+const validMetric = (m) => analyticsService.metricMeta(m) != null;
+const parseDeviceId = (q) => {
+  if (q == null || q === "") return null;
+  const n = parseInt(q, 10);
+  return Number.isInteger(n) ? n : null;
+};
+
+// GET /api/analytics/trends/:metric?deviceId=&hours=48&horizon=12  (Phase 2)
+// EWMA-smoothed history + Holt's-linear short-horizon projection for one metric.
+router.get(
+  "/trends/:metric",
+  asyncHandler(async (req, res) => {
+    const { metric } = req.params;
+    if (!validMetric(metric)) return res.status(400).json({ error: "Unknown metric." });
+    const trend = await analyticsService.forecastTrend({
+      metric,
+      deviceId: parseDeviceId(req.query.deviceId),
+      lookbackHours: req.query.hours,
+      horizonHours: req.query.horizon,
+    });
+    res.json({ trend });
+  }),
+);
+
+// GET /api/analytics/anomalies?metric=&deviceId=&days=7&z=3  (Phase 3)
+// Per-hour-of-day z-score anomalies (+ global IQR fences) for one metric.
+router.get(
+  "/anomalies",
+  asyncHandler(async (req, res) => {
+    const metric = req.query.metric;
+    if (!validMetric(metric)) return res.status(400).json({ error: "Unknown metric." });
+    const result = await analyticsService.detectAnomalies({
+      metric,
+      deviceId: parseDeviceId(req.query.deviceId),
+      lookbackDays: req.query.days,
+      z: req.query.z,
+    });
+    res.json({ result });
+  }),
+);
+
+// GET /api/analytics/recommendations?days=14  (Phase 4)
+// Suggested alert-rule thresholds (warn=p95, crit=p99) vs current global rules.
+router.get(
+  "/recommendations",
+  asyncHandler(async (req, res) => {
+    const recommendations = await analyticsService.recommendThresholds({
+      lookbackDays: req.query.days,
+    });
+    res.json({ recommendations });
+  }),
+);
+
 export default router;

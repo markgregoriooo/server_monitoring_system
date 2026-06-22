@@ -30,12 +30,20 @@ data-driven threshold suggestions — instead of only reactive threshold alerts.
 - **Honesty note for a defense:** linear regression *is* ML. Holt-Winters/EWMA
   and z-score are *statistics*, not ML. Don't oversell — see §1.
 
-> **Status (2026-06-22): Phase 1 IMPLEMENTED** on branch `predictive-analytics` —
-> disk-full ETA + alert analytics are live (backend `services/analyticsService.js`
-> + `routes/analytics.js`; frontend `pages/Analytics.tsx`). Verified: backend
-> `node --check`, frontend `tsc --noEmit` clean, route mounted (401 when
-> unauthenticated). Phases 2–4 and the network/UPS forecast are **not** started.
-> See §10 for the checklist and SESSION_NOTES.md (SESSION 14).
+> **Status (2026-06-22): Phases 1–4 IMPLEMENTED** on branch `predictive-analytics` —
+> all server/environment analytics are live (backend `services/analyticsService.js`
+> + `routes/analytics.js`; frontend `pages/Analytics.tsx`). Built so far:
+> - **Phase 1** — disk-full ETA (linear regression, train/test R²/MAE) + alert analytics.
+> - **Phase 2** — `forecastTrend()` (EWMA smoothing + Holt's linear projection) →
+>   `GET /analytics/trends/:metric`; SVG trend chart on the page.
+> - **Phase 3** — `detectAnomalies()` (per-hour-of-day z-score + global IQR fences) →
+>   `GET /analytics/anomalies`.
+> - **Phase 4** — `recommendThresholds()` (p50/p95/p99 → suggested warn/crit vs current
+>   `alert_rules`) → `GET /analytics/recommendations`; admin "Apply" writes global rules.
+>
+> Verified: backend `node --check`, frontend `tsc --noEmit` clean, route mounted.
+> Only the **network/UPS forecast (2b/3b)** remains — deferred until the router/mikrotik
+> branches merge. See §10 for the checklist and SESSION_NOTES.md.
 
 ---
 
@@ -147,6 +155,13 @@ A trend line alone isn't convincing as "machine learning." Validation is:
 4. **Gate the output:** only show an ETA when the fit is trustworthy, e.g.
    `R² ≥ 0.5`. Otherwise display *"trend unclear — need more data."* Honest and
    robust; protects against a confident-looking but garbage prediction.
+
+> **Implemented** in `forecastSeries()`: an ETA is surfaced only when
+> `r2 ≥ MIN_ETA_R2` (0.4 — i.e. not "low" confidence) **and** the projection is
+> within `MAX_ETA_DAYS` (365). A near-flat/noisy disk has a tiny positive slope that
+> is real arithmetic but a meaningless ~660-day forecast — it now reports **"Stable"**
+> with no date/advice, instead of a bogus year-out ETA. (`disk_percent ≥ full` still
+> reports "Full" — a measured fact, not a forecast.)
 
 This is the bit that lets you say, accurately: *"a supervised linear-regression
 model, validated on a held-out test window (R²/MAE reported)."*
@@ -332,6 +347,37 @@ adds its own line; trivial conflicts, not structural.
    (`GET /api/analytics/*` → 401 unauthenticated, i.e. mounted). The R² gate makes
    the page safe to ship before history accrues (shows "Need more data").
 
-> **Next:** Phase 2 (trend charts + EWMA projection), then 3 (anomaly detection),
-> then 4 (threshold recommendations → Alert Rules). Network/UPS forecast after the
-> router-ups / mikrotik branches merge — see §8.
+## 11. Build order checklist (Phases 2–4) — ✅ DONE (2026-06-22)
+
+Shared metric registry (`METRICS` in `analyticsService.js`) maps the `alert_rules`
+metric vocabulary (`cpu`/`mem`/`disk` + `temperature`/`humidity`/`gas`) to its InfluxDB
+source, so server and environment metrics flow through one `fetchMetricSeries()` path.
+
+1. ✅ **Phase 2** — `ewma()`, `holtLinear()`, `forecastTrend()` +
+   `GET /api/analytics/trends/:metric`. Frontend: metric/server selector, inline-SVG
+   `TrendChart` (actual + EWMA + dashed projection, forecast region shaded).
+2. ✅ **Phase 3** — `percentile()`, `detectAnomalies()` (per-hour-of-day z-score, |z|>3
+   default; global IQR fences for context) + `GET /api/analytics/anomalies`. Frontend:
+   anomaly stat tiles + recent-anomaly table (driven by the same metric selector).
+3. ✅ **Phase 4** — `recommendThresholds()` (warn = p95, crit = p99, vs current global
+   rules) + `GET /api/analytics/recommendations`. Frontend: recommendation table; admin
+   **Apply** upserts the global `alert_rules` via the existing create/update API
+   (comparison `>`), per-server overrides untouched.
+4. ✅ **Actionable advisories** — metric-aware remediation copy (`METRIC_ACTION` +
+   `diskAdvice()` / `trendAdvice()`). Disk forecast attaches `advice` from ETA urgency
+   (act-now < 7d / plan-ahead < 30d); trend forecast attaches `advice` when the projection
+   is predicted to cross the metric's effective `alert_rules` threshold within the horizon
+   ("Memory on Server-01 is projected to cross the warning threshold (80%) in ~6h —
+   upgrade the RAM…"). Rendered as `AdviceCallout`s under the Disk and Trend panels.
+   Network/UPS action copy is pre-seeded for the deferred §8 work.
+5. ✅ Verified: backend `node --check`, frontend `tsc --noEmit` clean.
+6. ⏳ Live test matures with history (trend/anomaly need ~1 week; recommendations ~2 weeks).
+
+> **Honesty note (unchanged):** Phase 2's projector is **Holt's linear method**
+> (double-exponential smoothing — the *non-seasonal* case of Holt-Winters). Daily
+> seasonality is captured instead by Phase 3's per-hour-of-day baseline. All of
+> Phases 2–4 are **statistics, not ML** — linear regression (Phase 1) remains the sole ML
+> centerpiece. Phrase accordingly (see §9).
+
+> **Next:** only the network/UPS forecast (§8 row 2b/3b) remains — after the
+> router-ups / mikrotik branches merge to `main`, rebase and reuse this same engine.

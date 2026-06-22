@@ -1155,3 +1155,49 @@ enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
 
 ---
 
+## SESSION 15 — 2026-06-22  *(Predictive Analytics Phases 2–4)*
+
+Built the remaining server/environment analytics phases on top of Session 14's engine.
+
+### Shared engine
+- **`services/analyticsService.js`** — added a `METRICS` registry mapping the `alert_rules`
+  vocabulary (`cpu`/`mem`/`disk`, `temperature`/`humidity`/`gas`) to its InfluxDB source, plus
+  one `fetchMetricSeries()` (server `server_metrics` w/ optional device filter; env
+  `sensor_environment`; `gas` = `max(mq2_1_ppm, mq2_2_ppm)` to match `sensorHandler`). Window +
+  ids clamped before touching Flux (injection-safe, same posture as `serverHistoryHandler`).
+
+### Phase 2 — trend + projection
+- `ewma()`, `holtLinear()` (double-exponential = non-seasonal Holt-Winters), `forecastTrend()`
+  (EWMA-smoothed history + Holt's-linear horizon, bounded for % metrics) → `GET
+  /api/analytics/trends/:metric?deviceId=&hours=&horizon=`.
+- Frontend: metric/server selector + inline-SVG `TrendChart` (actual + EWMA + dashed projection,
+  forecast region shaded, non-scaling strokes).
+
+### Phase 3 — anomaly detection
+- `percentile()`, `mean`/`stddev`, `detectAnomalies()` — 24-bucket per-hour-of-day baseline
+  (local hour, UTC+8), flags `|z| > 3` (configurable 2–5), adds global Tukey IQR fences →
+  `GET /api/analytics/anomalies?metric=&deviceId=&days=&z=`.
+- Frontend: stat tiles + recent-anomaly table (shares the metric selector with Phase 2).
+
+### Phase 4 — threshold recommendations
+- `recommendThresholds()` — p50/p95/p99 per metric (server metrics pooled across all servers =
+  global rule scope) → suggested warn=p95/crit=p99, compared to current global `alert_rules`
+  (via `alertRulesService.getEffectiveRules`) → `GET /api/analytics/recommendations?days=`.
+- Frontend: recommendation table; **admin-only Apply** upserts the global rule (reuses
+  `createAlertRule`/`updateAlertRule`, comparison `>`); read-only note for it_staff.
+
+### Verified
+- Backend `node --check` (service + route) clean; frontend **`tsc --noEmit` clean** (fixed
+  `noUncheckedIndexedAccess` nits in `TrendChart` / device auto-pick).
+- Route already mounted from Session 14 (`app.use("/api/analytics", …)`).
+
+### Still pending / not done
+- **Maturity:** trend/anomaly need ~1 week of history; recommendations ~2 weeks. Until then the
+  panels show "need more data" (by design).
+- **Holt-Winters seasonality** is intentionally *not* a separate seasonal model — the daily
+  cycle is handled by Phase 3's per-hour baseline; Phase 2 is Holt's linear trend only.
+- **Network/UPS forecast (§8 row 2b/3b)** still deferred until router-ups + mikrotik merge.
+- Live end-to-end with real data not driven here (build/typecheck only); branch not PR'd.
+
+---
+
