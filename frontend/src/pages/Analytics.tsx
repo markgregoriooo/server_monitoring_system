@@ -133,6 +133,10 @@ const fmtHour = (h: number): string => {
   const hr = h % 12 === 0 ? 12 : h % 12;
   return `${hr}${ampm}`;
 };
+// Clock label for a forecast point — hour-focused (e.g. "Tue 3:00 PM"), with the weekday
+// so a horizon that crosses midnight stays unambiguous.
+const fmtClock = (ms: number): string =>
+  new Date(ms).toLocaleString("en-PH", { weekday: "short", hour: "numeric", minute: "2-digit" });
 
 const fmtFullBy = (etaDays: number): string => {
   const d = new Date(Date.now() + etaDays * 86_400_000);
@@ -539,6 +543,12 @@ export default function Analytics() {
               </span>
             </div>
             <TrendChart series={trend.series} projection={trend.projection} unit={trend.unit} />
+            <HourlyForecast
+              projection={trend.projection}
+              current={trend.series.at(-1)?.value ?? null}
+              unit={trend.unit}
+              advice={trend.advice}
+            />
             {trend.advice && (
               <AdviceCallout level={trend.advice.level}>
                 {adviceSentence(trend, needsDevice ? selServerName : null)}
@@ -835,6 +845,85 @@ function TrendChart({
       <div className="flex justify-between text-[10px] mt-1" style={{ color: gf.textDim }}>
         <span>{vMin.toFixed(1)}{unit} – {vMax.toFixed(1)}{unit}</span>
         <span>now → +{proj.at(-1) ? Math.round((proj.at(-1)!.t - lastE.t) / 3_600_000) : 0}h</span>
+      </div>
+      {/* time axis: left edge = oldest sample, right edge = forecast end (chart x spans tMin..tMax) */}
+      <div className="flex justify-between text-[10px] mt-0.5" style={{ color: gf.textDim }}>
+        <span>{fmtClock(tMin)}</span>
+        <span>{fmtClock(proj.at(-1)?.t ?? lastE.t)}</span>
+      </div>
+    </div>
+  );
+}
+
+// Per-hour forecast table — turns the projection into explicit "at <clock time> ≈ <value>"
+// rows so an operator reads specific hours, not just a curve ("by 3 PM it reaches ~28°C").
+// The projection is sampled at finer steps (15m/30m/1h); we pick one point per upcoming
+// hour. "Change" is vs the previous hour (first row vs the latest actual reading). Rows
+// whose value reaches the trend's alert threshold are flagged with the severity badge.
+function HourlyForecast({
+  projection, current, unit, advice,
+}: {
+  projection: { t: string; value: number }[];
+  current: number | null;
+  unit: string;
+  advice: MetricTrend["advice"];
+}) {
+  const proj = projection.map((p) => ({ t: Date.parse(p.t), v: p.value }));
+  if (proj.length < 2) return null;
+
+  const intervalMs = (proj[1]!.t - proj[0]!.t) || 3_600_000;
+  const perHour = Math.max(1, Math.round(3_600_000 / intervalMs));
+  const hourly: { t: number; v: number }[] = [];
+  for (let i = perHour - 1; i < proj.length; i += perHour) hourly.push(proj[i]!);
+  if (!hourly.length) hourly.push(proj[proj.length - 1]!);
+
+  const thr = advice?.threshold ?? null;
+  const sevColor = advice ? SEV_COLOR[advice.severity] ?? ORANGE : ORANGE;
+
+  const rows = hourly.slice(0, 24).map((h, i) => {
+    const base = i === 0 ? current : hourly[i - 1]?.v ?? null;
+    const delta = base == null ? null : Math.round((h.v - base) * 100) / 100;
+    return { ...h, delta, crosses: thr != null && h.v >= thr };
+  });
+
+  return (
+    <div>
+      <SectionLabel>Hourly forecast</SectionLabel>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ color: gf.textDim, textAlign: "left" }}>
+              <Th>When</Th><Th>Predicted</Th><Th>Change vs prev. hour</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.t} style={{ borderTop: `1px solid ${gf.divider}` }}>
+                <Td><span style={{ color: gf.textMuted }}>{fmtClock(r.t)}</span></Td>
+                <Td>
+                  <span style={{ color: r.crosses ? sevColor : gf.textPrimary, fontWeight: r.crosses ? 600 : 400 }}>
+                    {r.v}{unit}
+                  </span>
+                  {r.crosses && advice && (
+                    <span className="ml-2"><Badge color={sevColor} label={advice.severity} /></span>
+                  )}
+                </Td>
+                <Td>
+                  {r.delta == null ? (
+                    <span style={{ color: gf.textDim }}>—</span>
+                  ) : (
+                    <span style={{ color: r.delta > 0.05 ? ORANGE : r.delta < -0.05 ? GREEN : gf.textMuted }}>
+                      {r.delta > 0.05 ? "▲" : r.delta < -0.05 ? "▼" : "■"} {r.delta > 0 ? "+" : ""}{r.delta}{unit}
+                    </span>
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="mt-2 text-[10px]" style={{ color: gf.textDim }}>
+          Projected values (Holt’s linear) sampled hourly over the forecast horizon — indicative, not exact.
+        </p>
       </div>
     </div>
   );
