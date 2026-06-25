@@ -107,6 +107,11 @@ const STABLE_EPS = 0.0001;  // %/hour below this magnitude = effectively flat
 // that is real arithmetic but a meaningless forecast (e.g. ~660 days) — show "Stable".
 const MIN_ETA_R2 = 0.4;     // below this = "low" confidence → don't trust an ETA
 const MAX_ETA_DAYS = 365;   // a >1-year projection from a short window isn't a real forecast
+// A device whose newest sample is older than this is offline / decommissioned — or a
+// duplicate "ghost" enrollment an unstable agent MAC left behind in InfluxDB — so it is
+// excluded from the all-servers forecast (you can't forecast a server that stopped
+// reporting). An explicit single-device request is always shown regardless.
+const ACTIVE_WITHIN_MS = 24 * 60 * 60 * 1000;
 
 // Pull hourly-averaged disk_percent per server. Window + device id are whitelisted
 // (clamped int / Number) before they touch Flux — no injection surface, mirroring
@@ -222,8 +227,19 @@ function forecastSeries(entry, full) {
 async function forecastDiskFull({ deviceId = null, lookbackDays = 14, full = 100 } = {}) {
   const fullPct = clampNum(full, 50, 100, 100);
   const byDevice = await fetchDiskSeries(lookbackDays, deviceId);
+  const cutoff = Date.now() - ACTIVE_WITHIN_MS;
   const results = [];
-  for (const entry of byDevice.values()) results.push(forecastSeries(entry, fullPct));
+  for (const entry of byDevice.values()) {
+    // When listing ALL servers, drop dead/superseded enrollments: a series whose newest
+    // sample is stale is an offline or decommissioned device — and exactly the duplicate
+    // "ghost" an unstable agent MAC leaves behind in InfluxDB. A specific deviceId request
+    // is always shown.
+    if (deviceId == null) {
+      const newest = entry.raw.reduce((m, p) => (p.t > m ? p.t : m), 0);
+      if (newest < cutoff) continue;
+    }
+    results.push(forecastSeries(entry, fullPct));
+  }
   results.sort((a, b) => {
     if (a.etaDays == null && b.etaDays == null) return 0;
     if (a.etaDays == null) return 1;
