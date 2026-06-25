@@ -114,6 +114,11 @@ const SEV_COLOR: Record<string, string> = { critical: "#E02F44", warning: "#FF78
 const CONF_COLOR: Record<DiskForecast["confidence"], string> = { high: GREEN, medium: ORANGE, low: GRAY };
 
 const LOOKBACKS = [7, 14, 30];
+// Live updates: server metrics (~10s/host) and environment readings (~3s) stream in over
+// the socket. We coalesce that firehose to at most one analytics refresh per this window —
+// a multi-day regression/percentile barely moves between ticks and each refresh runs
+// several Flux queries.
+const LIVE_REFRESH_MS = 15_000;
 const mono = "'JetBrains Mono', monospace";
 
 const METRIC_OPTIONS = [
@@ -188,13 +193,13 @@ export default function Analytics() {
     if (s.success) setSummary(s.data?.summary ?? null);
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError("");
     const [f] = await Promise.all([api.getDiskForecast(days), loadSummary()]);
     if (f.success) setForecasts(f.data?.forecasts ?? []);
-    else setError(f.error || "Failed to load forecasts.");
-    setLoading(false);
+    else if (!silent) setError(f.error || "Failed to load forecasts.");
+    if (!silent) setLoading(false);
   }, [days, loadSummary]);
 
   useEffect(() => { load(); }, [load]);
@@ -228,9 +233,9 @@ export default function Analytics() {
     if (needsDevice && selDevice == null && servers[0]) setSelDevice(servers[0].id);
   }, [needsDevice, selDevice, servers]);
 
-  const loadFocus = useCallback(async () => {
+  const loadFocus = useCallback(async (silent = false) => {
     if (needsDevice && selDevice == null) { setTrend(null); setAnom(null); return; }
-    setFocusLoading(true);
+    if (!silent) setFocusLoading(true);
     const dev = needsDevice ? selDevice : null;
     const [t, a] = await Promise.all([
       api.getMetricTrend(selMetric, { deviceId: dev, hours: 48, horizon: 12 }),
@@ -238,19 +243,46 @@ export default function Analytics() {
     ]);
     setTrend(t.success ? (t.data?.trend ?? null) : null);
     setAnom(a.success ? (a.data?.result ?? null) : null);
-    setFocusLoading(false);
+    if (!silent) setFocusLoading(false);
   }, [selMetric, selDevice, needsDevice]);
 
   useEffect(() => { loadFocus(); }, [loadFocus]);
 
-  const loadRecs = useCallback(async () => {
-    setRecsLoading(true);
+  const loadRecs = useCallback(async (silent = false) => {
+    if (!silent) setRecsLoading(true);
     const r = await api.getRecommendations(14);
     if (r.success) setRecs(r.data?.recommendations ?? []);
-    setRecsLoading(false);
+    if (!silent) setRecsLoading(false);
   }, []);
 
   useEffect(() => { loadRecs(); }, [loadRecs]);
+
+  // ── Live data: keep the WHOLE page current with no manual refresh ──
+  // `serverMetrics` (server agents) and `sensorData` (ESP32 environment) stream in over the
+  // socket. Re-pull every derived panel — disk forecast, trend/projection, anomalies and
+  // threshold recs (incl. their Fit R²·MAE, ETA, etc.) — whenever fresh data lands, but
+  // COALESCE the stream to ≤1 refresh per LIVE_REFRESH_MS. Silent (no spinners) so values
+  // update in place rather than flashing "Loading…". (Alert Analytics already lives off the
+  // `notification`/`alertUpdated` effect below.)
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const trigger = () => {
+      if (timer) return;                         // a refresh is already queued in this window
+      timer = setTimeout(() => {
+        timer = null;
+        load(true);
+        loadFocus(true);
+        loadRecs(true);
+      }, LIVE_REFRESH_MS);
+    };
+    socket.on("serverMetrics", trigger);
+    socket.on("sensorData", trigger);
+    return () => {
+      socket.off("serverMetrics", trigger);
+      socket.off("sensorData", trigger);
+      if (timer) clearTimeout(timer);
+    };
+  }, [load, loadFocus, loadRecs]);
 
   // Admin only: push the suggested warn (p95) + crit (p99) into the global alert_rules,
   // updating the existing rule if there is one, else creating it (comparison ">").
@@ -297,14 +329,14 @@ export default function Analytics() {
               {d}d
             </button>
           ))}
-          <button
-            onClick={load}
-            className="px-2.5 py-1 text-[11px] rounded-[2px] transition-colors"
-            style={{ background: gf.panel, color: gf.textMuted, border: `1px solid ${gf.border}` }}
-            title="Refresh"
+          <span
+            className="flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-widest rounded-[2px]"
+            style={{ color: GREEN, background: gf.panel, border: `1px solid ${gf.border}` }}
+            title="Auto-updates as new metrics stream in — no refresh needed"
           >
-            ↻
-          </button>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: GREEN, boxShadow: `0 0 0 3px ${GREEN}33` }} />
+            Live
+          </span>
         </div>
       </div>
 
