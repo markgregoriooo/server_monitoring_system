@@ -5,6 +5,7 @@ import { agentAuthMiddleware } from "../middleware/agentAuth.js";
 import { serverMetricsHandler } from "../handlers/serverMetricsHandler.js";
 import { serverHistoryHandler } from "../handlers/serverHistoryHandler.js";
 import agentService from "../services/agentService.js";
+import { audit, clientInfo } from "../services/auditService.js";
 
 const router = express.Router();
 
@@ -68,8 +69,18 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
 // Cascades to server_specs/device_network/agent_tokens and revokes the token.
 router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
-    const removed = await agentService.removeServer(parseInt(req.params.id, 10));
+    const id = parseInt(req.params.id, 10);
+    const existing = await agentService.getServerById(id);
+    const removed = await agentService.removeServer(id);
     if (!removed) return res.status(404).json({ error: "Server not found." });
+    await audit({
+      userId: req.user.id,
+      module: "devices",
+      action: "remove_server",
+      description: `Removed server "${existing?.device_name ?? existing?.name ?? `#${id}`}" from monitoring`,
+      level: "warning",
+      ...clientInfo(req),
+    });
     req.app.get("io")?.emit("serverRemoved", { id: +req.params.id });
     res.json({ success: true });
   } catch (err) {
