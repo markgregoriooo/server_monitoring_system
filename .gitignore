@@ -140,3 +140,6 @@ vite.config.ts.timestamp-*
 
 # user-uploaded files
 backend/uploads/
+
+# generated report files (CSV/PDF) — metadata lives in MySQL
+backend/reports/

@@ -44,12 +44,8 @@ const alerts = [
 ];
 
 // ── REPORTS ───────────────────────────────────────────────────────────────────
-const reports = [
-  { id: 1, title: "Daily Temperature Report", date: "2025-03-12", status: "Generated", type: "Environment" },
-  { id: 2, title: "Weekly Server Metrics",    date: "2025-03-10", status: "Generated", type: "Server"      },
-  { id: 3, title: "Monthly Uptime Summary",   date: "2025-03-01", status: "Generated", type: "Server"      },
-  { id: 4, title: "Alert History Report",     date: "2025-03-12", status: "Pending",   type: "Alerts"      },
-];
+// Reports are now real (MySQL `reports` + on-disk CSV/PDF) — see services/reportService.js.
+// The former in-memory mock array was removed.
 
 // ── AUDIT LOG ─────────────────────────────────────────────────────────────────
 const auditLog = [];
@@ -59,6 +55,5 @@ export {
   generateSensorHistory,
   historyLogs,
   alerts,
-  reports,
   auditLog,
 };

@@ -95,6 +95,8 @@ backend/services/
   alertsService.js              ← alert LIFECYCLE (shared, not per-user): list/acknowledge/resolve/openCount + auto-resolve when a metric recovers (called from checkThresholds + sensorHandler); broadcasts `alertUpdated`; `init(io)` once. Backs the now-real `routes/alerts.js`. Distinct from the per-user bell (`alert_notifications.is_read`)
   alertRulesService.js          ← configurable alert thresholds (`alert_rules`). In-memory cache (reload on startup + every mutation) + `getEffectiveRules(deviceId, metric)` resolver (per-server override else global `device_id=NULL`) + `nextBand()` hysteresis-aware evaluation + admin CRUD. Rules-only: no matching rule = no alert. metric_name: cpu/mem/disk + temperature/gas/humidity. See `email-popup-notifications.md`
   emailService.js               ← Resend wrapper: sendAlertEmail(to, alert) (inline-styled HTML). No-op if RESEND_API_KEY unset. NOTIFY_EMAIL_TO forces all mail to one address (testing)
+  reportService.js              ← REAL reports (MySQL `reports` + on-disk CSV/PDF per report under backend/reports/). generate() builds the dataset live from InfluxDB (sensor_environment / server_metrics) + MySQL (alerts / aircon_logs) per type, writes both files, flips status pending→generated (or failed). list/fileFor(download name = title + period)/remove. Types: environment|server|alerts|aircon. Backs the now-real `routes/reports.js`
+  reportRenderer.js             ← turns a normalized report ({summary, table}) into CSV + PDF (pdfkit). Store-agnostic — layout only
 backend/handlers/
   sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers + raises per-metric room-level alerts (temperature/gas/humidity) on band escalation, evaluated against `alert_rules` (alertRulesService) — replaces the old firmware-status escalation
   querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
@@ -102,7 +104,7 @@ backend/handlers/
   serverMetricsHandler.js       ← agent metric POST → InfluxDB (`server_metrics`) + broadcast `serverMetrics`
   serverHistoryHandler.js       ← Flux query on `server_metrics` for GET /api/servers/:id/history
 backend/sockets/connectionHandler.js  ← all socket events, device vs browser segregation
-backend/data/db.js              ← in-memory mock: alerts, reports, environment history — NOT persisted (servers are now real: MySQL + InfluxDB)
+backend/data/db.js              ← in-memory mock: alerts, environment history — NOT persisted (servers + reports are now real: MySQL + InfluxDB)
 backend/middleware/
   auth.js                       ← authMiddleware, requireRole(...roles), JWT_SECRET export
   agentAuth.js                  ← Bearer `AGT-…` token auth for agent metric POSTs
@@ -141,7 +143,8 @@ SESSION_NOTES.md                ← per-session work log
 | Servers (devices + server_specs + device_network + agent_tokens), device_logs | MySQL | fully implemented — Go-agent enrollment |
 | Environment time-series | InfluxDB | measurement: `sensor_environment`, precision: ms |
 | Server-metric time-series | InfluxDB | measurement: `server_metrics` |
-| **alerts, reports, environment history/logs** | `data/db.js` in-memory | **mock — not persisted**, resets on restart (`/api/alerts`, `/api/reports`, `/api/environment`) |
+| Reports | MySQL `reports` + on-disk CSV/PDF (`backend/reports/`) | fully implemented — built live from InfluxDB + MySQL on generate. See reportService.js |
+| **legacy alerts array, environment history/logs** | `data/db.js` in-memory | **mock — not persisted**, resets on restart (`/api/environment`). NB: real alerting uses the `alerts` table |
 
 ---
 
@@ -163,10 +166,10 @@ SESSION_NOTES.md                ← per-session work log
 
 ### Mock endpoints (still `data/db.js`, not real)
 - `routes/environment.js` GET `/history` + `/logs` return mock random data, **not** InfluxDB — real sensor history comes via Socket.IO `changeRange` → `sensorHistory`
-- `routes/reports.js` (`reports`) still serves an in-memory array that resets on restart, even though a real `reports` table exists. **Note:** the **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) writes the **real** `alerts` + `alert_notifications` tables, and both the bell feed and the **Dashboard "Alerts" panel** render that real per-user feed (via `NotificationContext`). See `email-popup-notifications.md`.
+- **`routes/reports.js` is now REAL** (no longer mock): `services/reportService.js` persists to the `reports` table and writes a CSV **and** PDF per report under `backend/reports/` (git-ignored). `POST /api/reports` (admin + it_staff) builds the dataset **live** from the stores per `type` (environment → InfluxDB `sensor_environment`; server → InfluxDB `server_metrics`; alerts → MySQL `alerts`; aircon → MySQL `aircon_logs`) for the chosen `{periodStart, periodEnd}`, then `GET /api/reports/:id/download?format=csv|pdf` streams the saved file (download name = title + period) and `DELETE /api/reports/:id` (admin) removes the row + files. UI = **Reports** page (`pages/Reports.tsx`, Grafana-styled: type cards + range picker modal, per-row CSV/PDF download). Needs the `pdfkit` dep. **Note:** the **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) writes the **real** `alerts` + `alert_notifications` tables, and both the bell feed and the **Dashboard "Alerts" panel** render that real per-user feed (via `NotificationContext`). See `email-popup-notifications.md`.
 - **`routes/alerts.js` is now REAL** (no longer mock): `services/alertsService.js` backs the shared alert **lifecycle** — `GET /api/alerts` (history, `?status=` filter), `POST /api/alerts/:id/acknowledge`, `POST /api/alerts/:id/resolve`, `GET /api/alerts/count` (open-alert count → sidebar **Alerts badge**), all admin + it_staff. Sets `alerts.status` + `acknowledged_by`/`acknowledged_at`/`resolved_at`. **Auto-resolves** open alerts when the metric recovers to normal (wired into `checkThresholds` + `sensorHandler`). Broadcasts `alertUpdated`. UI = **Alerts** page (`pages/Alerts.tsx`) + live unresolved-count badge on the nav (`NotificationContext.openAlertCount`). Shared incident state, distinct from the per-user bell (`is_read`). **Resolve attribution:** single "by {acknowledger}" (resolve folds into `acknowledged_by`); a `resolved_by` column exists from `migrations/2026-06-14_alerts_resolved_by.sql` but is **DORMANT/unused** (separate-resolver UI was built then reverted — see `email-popup-notifications.md` §13.8).
 
-> The `reports.js` role gate is **fixed** — it now uses `requireRole("admin", "it_staff")` (previously referenced a non-existent `super_admin`, which 403'd admins).
+> The `reports.js` generate gate uses `requireRole("admin", "it_staff")`; the **Reports page** mirrors this (Generate button = admin/it_staff, Delete = admin). The old `super_admin` role check in the page was fixed to `admin`.
 
 > **Configurable alert thresholds (real, not mock).** The previously-unused `alert_rules` table now drives all threshold alerting. `routes/alertRules.js` (`GET/POST/PUT/DELETE /api/alert-rules`, **admin-only**) + `services/alertRulesService.js` manage them; the **Alert Rules** admin page (`pages/AlertRules.tsx`, sidebar nav, admin-only) is the UI. Scope = global default (`device_id=NULL`) + optional per-server override; fallback = rules-only (no rule → silent). Seed/migration: `migrations/2026-06-14_alert_rules.sql` (must be applied or alerting is silent). Old hardcoded 80/90 (servers) + firmware env thresholds are removed in favor of these rules.
 
@@ -285,8 +288,8 @@ Panel border-radius: `2px` (not `rounded-xl`). Font: `'JetBrains Mono', monospac
 ### Page Style Status
 | Page | Style |
 |------|-------|
-| Dashboard, Environment, AirConditioner, ServerMetrics, AlertRules, Alerts, Sidebar, Header | ✅ Grafana tokens |
-| History, Reports, Settings, UserManagement | ⚠️ still use old `slate-*` classes |
+| Dashboard, Environment, AirConditioner, ServerMetrics, AlertRules, Alerts, Reports, Sidebar, Header | ✅ Grafana tokens |
+| History, Settings, UserManagement | ⚠️ still use old `slate-*` classes |
 | ServerDetail | hybrid: `slate-*` base + `dark:` overrides (light/dark adapted, not `--gf-*`) |
 
 ---
