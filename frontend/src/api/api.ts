@@ -498,9 +498,53 @@ export const api = {
     }
   },
 
-  generateReport: async (title: string, type: string): Promise<ApiResult> => {
+  generateReport: async (opts: {
+    type: string;
+    title?: string;
+    periodStart?: string;
+    periodEnd?: string;
+  }): Promise<ApiResult> => {
     try {
-      const res = await apiClient.post("/reports", { title, type });
+      const res = await apiClient.post("/reports", opts);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Streams the stored CSV/PDF and triggers a browser download. `filename` is
+  // supplied by the caller (built from the report title + period) — the backend's
+  // Content-Disposition name isn't readable cross-origin, so we don't rely on it.
+  downloadReport: async (
+    id: number | string,
+    format: "csv" | "pdf",
+    filename?: string,
+  ): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/reports/${id}/download`, {
+        params: { format },
+        responseType: "blob",
+      });
+      const cd = String(res.headers["content-disposition"] || "");
+      const match = /filename="?([^"]+)"?/.exec(cd);
+      const name = filename || match?.[1] || `report-${id}.${format}`;
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      return { success: true };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteReport: async (id: number | string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/reports/${id}`);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
