@@ -1,6 +1,7 @@
 import express from "express";
 import asyncHandler from "../utils/asyncHandler.js";
 import alertsService from "../services/alertsService.js";
+import { audit, clientInfo } from "../services/auditService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -33,6 +34,13 @@ router.post(
   asyncHandler(async (req, res) => {
     const alert = await alertsService.acknowledge(req.params.id, req.user.id);
     if (!alert) return res.status(404).json({ error: "Alert not found." });
+    await audit({
+      userId: req.user.id,
+      module: "alerts",
+      action: "acknowledge_alert",
+      description: `Acknowledged alert: ${alert.title ?? alert.type ?? `#${req.params.id}`}`,
+      ...clientInfo(req),
+    });
     res.json({ success: true, alert });
   }),
 );
@@ -43,6 +51,13 @@ router.post(
   asyncHandler(async (req, res) => {
     const alert = await alertsService.resolve(req.params.id, req.user.id);
     if (!alert) return res.status(404).json({ error: "Alert not found." });
+    await audit({
+      userId: req.user.id,
+      module: "alerts",
+      action: "resolve_alert",
+      description: `Resolved alert: ${alert.title ?? alert.type ?? `#${req.params.id}`}`,
+      ...clientInfo(req),
+    });
     res.json({ success: true, alert });
   }),
 );

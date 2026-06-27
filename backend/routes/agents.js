@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "crypto";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import agentService from "../services/agentService.js";
+import { audit, clientInfo } from "../services/auditService.js";
 
 const router = express.Router();
 
@@ -84,6 +85,13 @@ router.post("/:id/approve", authMiddleware, requireRole("admin"), async (req, re
       `Monitoring approved by ${req.user?.name ?? "admin"}`,
     );
     if (ev) io?.emit("deviceLog", ev);
+    await audit({
+      userId: req.user.id,
+      module: "devices",
+      action: "approve_server",
+      description: `Approved monitoring agent "${result.deviceName ?? `#${req.params.id}`}"`,
+      ...clientInfo(req),
+    });
     io?.emit("agentApproved", { id: +req.params.id, name: result.deviceName });
     res.json({ success: true, device_name: result.deviceName });
   } catch (err) {
@@ -96,6 +104,14 @@ router.post("/:id/reject", authMiddleware, requireRole("admin"), async (req, res
   try {
     const ok = await agentService.reject(parseInt(req.params.id, 10));
     if (!ok) return res.status(404).json({ error: "No pending agent for that device." });
+    await audit({
+      userId: req.user.id,
+      module: "devices",
+      action: "reject_server",
+      description: `Rejected pending monitoring agent #${req.params.id}`,
+      level: "warning",
+      ...clientInfo(req),
+    });
     req.app.get("io")?.emit("agentPending", { id: +req.params.id });
     res.json({ success: true });
   } catch (err) {
