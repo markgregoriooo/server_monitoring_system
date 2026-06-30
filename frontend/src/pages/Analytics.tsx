@@ -24,6 +24,37 @@ interface DiskForecast {
   advice: { level: "critical" | "warning"; message: string } | null;
 }
 
+interface UpsBatteryForecast {
+  deviceId: number;
+  name: string;
+  floorMinutes: number;
+  currentRuntimeMin: number | null;
+  slopePerDay: number | null;
+  etaDays: number | null;
+  fitR2: number | null;
+  mae: number | null;
+  confidence: "high" | "medium" | "low";
+  sampleCount: number;
+  status: "declining" | "stable" | "reached" | "insufficient_data";
+  advice: { level: "critical" | "warning"; message: string } | null;
+}
+
+interface LinkForecast {
+  deviceId: number;
+  name: string;
+  interface: string;
+  ceiling: number;
+  currentUtil: number | null;
+  slopePerDay: number | null;
+  etaDays: number | null;
+  fitR2: number | null;
+  mae: number | null;
+  confidence: "high" | "medium" | "low";
+  sampleCount: number;
+  status: "rising" | "stable" | "reached" | "insufficient_data";
+  advice: { level: "critical" | "warning"; message: string } | null;
+}
+
 interface AlertSummary {
   days: number;
   total: number;
@@ -128,8 +159,20 @@ const METRIC_OPTIONS = [
   { key: "cpu", label: "CPU", scope: "server" },
   { key: "mem", label: "Memory", scope: "server" },
   { key: "disk", label: "Disk", scope: "server" },
+  { key: "router_cpu", label: "MikroTik CPU", scope: "router" },
+  { key: "router_mem", label: "MikroTik Memory", scope: "router" },
+  { key: "router_clients", label: "MikroTik Clients", scope: "router" },
 ] as const;
 const SERVER_METRICS = new Set(["cpu", "mem", "disk"]);
+const ROUTER_METRICS = new Set(["router_cpu", "router_mem", "router_clients"]);
+
+const TABS = [
+  { key: "forecasts", label: "Forecasts" },
+  { key: "trends", label: "Trends & Anomalies" },
+  { key: "alerts", label: "Alerts" },
+  { key: "recs", label: "Recommendations" },
+] as const;
+type TabKey = (typeof TABS)[number]["key"];
 
 const fmtTime = (iso: string): string =>
   new Date(iso).toLocaleString("en-PH", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -163,13 +206,22 @@ const STATUS_LABEL: Record<DiskForecast["status"], string> = {
   full: "Full",
   insufficient_data: "Need more data",
 };
+const UPS_STATUS_LABEL: Record<UpsBatteryForecast["status"], string> = {
+  declining: "Declining", stable: "Stable", reached: "Critical now", insufficient_data: "Need more data",
+};
+const LINK_STATUS_LABEL: Record<LinkForecast["status"], string> = {
+  rising: "Rising", stable: "Stable", reached: "Saturated", insufficient_data: "Need more data",
+};
 
 export default function Analytics() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
   const [days, setDays] = useState(14);
+  const [tab, setTab] = useState<TabKey>("forecasts");
   const [forecasts, setForecasts] = useState<DiskForecast[]>([]);
+  const [upsForecasts, setUpsForecasts] = useState<UpsBatteryForecast[]>([]);
+  const [linkForecasts, setLinkForecasts] = useState<LinkForecast[]>([]);
   const [summary, setSummary] = useState<AlertSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -193,16 +245,25 @@ export default function Analytics() {
     if (s.success) setSummary(s.data?.summary ?? null);
   }, []);
 
-  const load = useCallback(async (silent = false) => {
+  const loadForecasts = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError("");
-    const [f] = await Promise.all([api.getDiskForecast(days), loadSummary()]);
+    const [f, ups, link] = await Promise.all([
+      api.getDiskForecast(days),
+      api.getUpsBatteryForecast(days),
+      api.getLinkSaturationForecast(days),
+    ]);
     if (f.success) setForecasts(f.data?.forecasts ?? []);
     else if (!silent) setError(f.error || "Failed to load forecasts.");
+    if (ups.success) setUpsForecasts(ups.data?.forecasts ?? []);
+    if (link.success) setLinkForecasts(link.data?.forecasts ?? []);
     if (!silent) setLoading(false);
-  }, [days, loadSummary]);
+  }, [days]);
 
-  useEffect(() => { load(); }, [load]);
+  // Forecasts load on mount + lookback change (also the source of the device lists the
+  // Trends tab's selector needs). The other tabs load lazily when first activated.
+  useEffect(() => { loadForecasts(); }, [loadForecasts]);
+  useEffect(() => { if (tab === "alerts") loadSummary(); }, [tab, loadSummary]);
 
   // Live alert analytics: re-pull the summary whenever an alert is raised
   // (`notification`) or its lifecycle changes (`alertUpdated` — acknowledge / resolve /
@@ -222,16 +283,23 @@ export default function Analytics() {
     () => forecasts.map((f) => ({ id: f.deviceId, name: f.name })),
     [forecasts],
   );
-  const needsDevice = SERVER_METRICS.has(selMetric);
+  // Router/MikroTik devices come from the link-saturation forecast (unique device_ids).
+  const routers = useMemo(() => {
+    const seen = new Map<number, string>();
+    for (const l of linkForecasts) if (!seen.has(l.deviceId)) seen.set(l.deviceId, l.name);
+    return [...seen.entries()].map(([id, name]) => ({ id, name }));
+  }, [linkForecasts]);
+  const needsDevice = SERVER_METRICS.has(selMetric) || ROUTER_METRICS.has(selMetric);
+  const deviceOptions = ROUTER_METRICS.has(selMetric) ? routers : servers;
   const selServerName = useMemo(
-    () => servers.find((s) => s.id === selDevice)?.name ?? null,
-    [servers, selDevice],
+    () => deviceOptions.find((s) => s.id === selDevice)?.name ?? null,
+    [deviceOptions, selDevice],
   );
 
   // A server metric needs a server picked — default to the first one once forecasts load.
   useEffect(() => {
-    if (needsDevice && selDevice == null && servers[0]) setSelDevice(servers[0].id);
-  }, [needsDevice, selDevice, servers]);
+    if (needsDevice && selDevice == null && deviceOptions[0]) setSelDevice(deviceOptions[0].id);
+  }, [needsDevice, selDevice, deviceOptions]);
 
   const loadFocus = useCallback(async (silent = false) => {
     if (needsDevice && selDevice == null) { setTrend(null); setAnom(null); return; }
@@ -246,7 +314,7 @@ export default function Analytics() {
     if (!silent) setFocusLoading(false);
   }, [selMetric, selDevice, needsDevice]);
 
-  useEffect(() => { loadFocus(); }, [loadFocus]);
+  useEffect(() => { if (tab === "trends") loadFocus(); }, [tab, loadFocus]);
 
   const loadRecs = useCallback(async (silent = false) => {
     if (!silent) setRecsLoading(true);
@@ -255,7 +323,7 @@ export default function Analytics() {
     if (!silent) setRecsLoading(false);
   }, []);
 
-  useEffect(() => { loadRecs(); }, [loadRecs]);
+  useEffect(() => { if (tab === "recs") loadRecs(); }, [tab, loadRecs]);
 
   // ── Live data: keep the WHOLE page current with no manual refresh ──
   // `serverMetrics` (server agents) and `sensorData` (ESP32 environment) stream in over the
@@ -270,9 +338,10 @@ export default function Analytics() {
       if (timer) return;                         // a refresh is already queued in this window
       timer = setTimeout(() => {
         timer = null;
-        load(true);
-        loadFocus(true);
-        loadRecs(true);
+        // Refresh only the active tab (Alerts is refreshed by the alert-socket effect).
+        if (tab === "forecasts") loadForecasts(true);
+        else if (tab === "trends") loadFocus(true);
+        else if (tab === "recs") loadRecs(true);
       }, LIVE_REFRESH_MS);
     };
     socket.on("serverMetrics", trigger);
@@ -282,7 +351,7 @@ export default function Analytics() {
       socket.off("sensorData", trigger);
       if (timer) clearTimeout(timer);
     };
-  }, [load, loadFocus, loadRecs]);
+  }, [tab, loadForecasts, loadFocus, loadRecs]);
 
   // Admin only: push the suggested warn (p95) + crit (p99) into the global alert_rules,
   // updating the existing rule if there is one, else creating it (comparison ">").
@@ -314,21 +383,26 @@ export default function Analytics() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-widest" style={{ color: gf.textDim }}>Lookback</span>
-          {LOOKBACKS.map((d) => (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className="px-2.5 py-1 text-[11px] rounded-[2px] transition-colors"
-              style={{
-                background: days === d ? gf.accent : gf.panel,
-                color: days === d ? "#fff" : gf.textMuted,
-                border: `1px solid ${days === d ? gf.accent : gf.border}`,
-              }}
-            >
-              {d}d
-            </button>
-          ))}
+          {/* Lookback only drives the regression forecast tables, so show it only there. */}
+          {tab === "forecasts" && (
+            <>
+              <span className="text-[10px] uppercase tracking-widest" style={{ color: gf.textDim }}>Lookback</span>
+              {LOOKBACKS.map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setDays(d)}
+                  className="px-2.5 py-1 text-[11px] rounded-[2px] transition-colors"
+                  style={{
+                    background: days === d ? gf.accent : gf.panel,
+                    color: days === d ? "#fff" : gf.textMuted,
+                    border: `1px solid ${days === d ? gf.accent : gf.border}`,
+                  }}
+                >
+                  {d}d
+                </button>
+              ))}
+            </>
+          )}
           <span
             className="flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-widest rounded-[2px]"
             style={{ color: GREEN, background: gf.panel, border: `1px solid ${gf.border}` }}
@@ -340,12 +414,33 @@ export default function Analytics() {
         </div>
       </div>
 
+      {/* ── Tabs — each tab lazy-loads its own data (see the load effects above) ── */}
+      <div className="flex flex-wrap items-center gap-1" style={{ borderBottom: `1px solid ${gf.divider}` }}>
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className="px-3 py-2 text-[11px] transition-colors"
+            style={{
+              marginBottom: -1,
+              color: tab === t.key ? gf.textPrimary : gf.textMuted,
+              borderBottom: `2px solid ${tab === t.key ? gf.accent : "transparent"}`,
+              fontWeight: tab === t.key ? 600 : 400,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {error && (
         <div className="px-3 py-2 text-[11px] rounded-[2px]" style={{ color: RED, background: `${RED}14`, border: `1px solid ${RED}40` }}>
           {error}
         </div>
       )}
 
+      {tab === "forecasts" && (
+        <>
       {/* ── Disk-full forecast ── */}
       <Panel
         title="Disk-Full Forecast"
@@ -431,7 +526,142 @@ export default function Analytics() {
         )}
       </Panel>
 
+      {/* ── UPS battery degradation forecast ── */}
+      <Panel
+        title="UPS Battery Forecast"
+        subtitle={`Linear regression on ${days}-day runtime trend → estimated time until runtime drops to the critical floor (battery replacement)`}
+      >
+        {loading ? (
+          <Empty>Loading forecasts…</Empty>
+        ) : upsForecasts.length === 0 ? (
+          <Empty>No UPS history yet. Seed dev data with backend/scripts/seed-analytics-history.js, or wait for real ups_metrics to accrue.</Empty>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ color: gf.textDim, textAlign: "left" }}>
+                  <Th>UPS</Th>
+                  <Th>Current runtime</Th>
+                  <Th>Trend / day</Th>
+                  <Th>ETA to critical</Th>
+                  <Th>Replace by</Th>
+                  <Th>Confidence</Th>
+                  <Th title="Out-of-sample R² · mean abs. error">Fit (R² · MAE)</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {upsForecasts.map((u) => (
+                  <tr key={u.deviceId} style={{ borderTop: `1px solid ${gf.divider}` }}>
+                    <Td><span style={{ color: gf.textPrimary }}>{u.name}</span></Td>
+                    <Td>{u.currentRuntimeMin == null ? "—" : `${u.currentRuntimeMin} min`}</Td>
+                    <Td>
+                      {u.slopePerDay == null ? "—" : (
+                        <span style={{ color: u.slopePerDay < 0 ? ORANGE : u.slopePerDay > 0 ? GREEN : gf.textMuted }}>
+                          {u.slopePerDay < 0 ? "▼" : u.slopePerDay > 0 ? "▲" : "■"} {Math.abs(u.slopePerDay)} min
+                        </span>
+                      )}
+                    </Td>
+                    <Td>
+                      {u.status === "declining" && u.etaDays != null ? (
+                        <span style={{ color: etaColor(u.etaDays), fontWeight: 600 }}>
+                          {u.etaDays < 1 ? "< 1 day" : `${u.etaDays} day${u.etaDays >= 2 ? "s" : ""}`}
+                        </span>
+                      ) : (
+                        <span style={{ color: gf.textMuted }}>{UPS_STATUS_LABEL[u.status]}</span>
+                      )}
+                    </Td>
+                    <Td><span style={{ color: gf.textMuted }}>{u.status === "declining" && u.etaDays != null ? fmtFullBy(u.etaDays) : "—"}</span></Td>
+                    <Td><Badge color={CONF_COLOR[u.confidence]} label={u.confidence} /></Td>
+                    <Td><span style={{ color: gf.textDim }}>{u.fitR2 == null ? "—" : `R²=${u.fitR2}`}{u.mae == null ? "" : ` · ±${u.mae}`}</span></Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {upsForecasts.some((u) => u.advice) && (
+              <div className="mt-4 space-y-1.5">
+                <SectionLabel>Action needed</SectionLabel>
+                {upsForecasts.filter((u) => u.advice).map((u) => (
+                  <AdviceCallout key={u.deviceId} level={u.advice!.level}>{u.advice!.message}</AdviceCallout>
+                ))}
+              </div>
+            )}
+            <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>
+              Runtime depends on load, so this is most reliable when load is steady. Low confidence (R² &lt; 0.4) shows "Stable" instead of a date.
+            </p>
+          </div>
+        )}
+      </Panel>
+
+      {/* ── Link saturation forecast ── */}
+      <Panel
+        title="Link Saturation Forecast"
+        subtitle={`Linear regression on ${days}-day utilization trend → estimated time to ${linkForecasts[0]?.ceiling ?? 90}% utilization`}
+      >
+        {loading ? (
+          <Empty>Loading forecasts…</Empty>
+        ) : linkForecasts.length === 0 ? (
+          <Empty>No interface history yet. Seed dev data, or wait for real network_traffic to accrue.</Empty>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ color: gf.textDim, textAlign: "left" }}>
+                  <Th>Interface</Th>
+                  <Th>Current</Th>
+                  <Th>Trend / day</Th>
+                  <Th>ETA to {linkForecasts[0]?.ceiling ?? 90}%</Th>
+                  <Th>Saturates by</Th>
+                  <Th>Confidence</Th>
+                  <Th title="Out-of-sample R² · mean abs. error">Fit (R² · MAE)</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {linkForecasts.map((l) => (
+                  <tr key={`${l.deviceId}-${l.interface}`} style={{ borderTop: `1px solid ${gf.divider}` }}>
+                    <Td><span style={{ color: gf.textPrimary }}>{l.name}</span> <span style={{ color: gf.textDim }}>{l.interface}</span></Td>
+                    <Td>{l.currentUtil == null ? "—" : `${l.currentUtil}%`}</Td>
+                    <Td>
+                      {l.slopePerDay == null ? "—" : (
+                        <span style={{ color: l.slopePerDay > 0 ? ORANGE : l.slopePerDay < 0 ? GREEN : gf.textMuted }}>
+                          {l.slopePerDay > 0 ? "▲" : l.slopePerDay < 0 ? "▼" : "■"} {Math.abs(l.slopePerDay)}%
+                        </span>
+                      )}
+                    </Td>
+                    <Td>
+                      {l.status === "rising" && l.etaDays != null ? (
+                        <span style={{ color: etaColor(l.etaDays), fontWeight: 600 }}>
+                          {l.etaDays < 1 ? "< 1 day" : `${l.etaDays} day${l.etaDays >= 2 ? "s" : ""}`}
+                        </span>
+                      ) : (
+                        <span style={{ color: gf.textMuted }}>{LINK_STATUS_LABEL[l.status]}</span>
+                      )}
+                    </Td>
+                    <Td><span style={{ color: gf.textMuted }}>{l.status === "rising" && l.etaDays != null ? fmtFullBy(l.etaDays) : "—"}</span></Td>
+                    <Td><Badge color={CONF_COLOR[l.confidence]} label={l.confidence} /></Td>
+                    <Td><span style={{ color: gf.textDim }}>{l.fitR2 == null ? "—" : `R²=${l.fitR2}`}{l.mae == null ? "" : ` · ±${l.mae}%`}</span></Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {linkForecasts.some((l) => l.advice) && (
+              <div className="mt-4 space-y-1.5">
+                <SectionLabel>Action needed</SectionLabel>
+                {linkForecasts.filter((l) => l.advice).map((l) => (
+                  <AdviceCallout key={`${l.deviceId}-${l.interface}`} level={l.advice!.level}>{l.advice!.message}</AdviceCallout>
+                ))}
+              </div>
+            )}
+            <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>
+              ETA is shown only for a rising trend. Low confidence (R² &lt; 0.4) means the trend is noisy — treat the date as indicative.
+            </p>
+          </div>
+        )}
+      </Panel>
+        </>
+      )}
+
       {/* ── Alert analytics ── */}
+      {tab === "alerts" && (
       <Panel title="Alert Analytics" subtitle={summary ? `Last ${summary.days} days` : "Last 30 days"}>
         {loading ? (
           <Empty>Loading…</Empty>
@@ -514,13 +744,16 @@ export default function Analytics() {
           </div>
         )}
       </Panel>
+      )}
 
+      {tab === "trends" && (
+        <>
       {/* ── Metric focus: selector drives Trend + Anomaly panels ── */}
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[10px] uppercase tracking-widest" style={{ color: gf.textDim }}>Metric</span>
         <select
           value={selMetric}
-          onChange={(e) => { setSelMetric(e.target.value); }}
+          onChange={(e) => { setSelMetric(e.target.value); setSelDevice(null); }}
           className="px-2 py-1 text-[11px] rounded-[2px] outline-none"
           style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
         >
@@ -534,10 +767,15 @@ export default function Analytics() {
               <option key={m.key} value={m.key}>{m.label}</option>
             ))}
           </optgroup>
+          <optgroup label="MikroTik / Network">
+            {METRIC_OPTIONS.filter((m) => m.scope === "router").map((m) => (
+              <option key={m.key} value={m.key}>{m.label}</option>
+            ))}
+          </optgroup>
         </select>
         {needsDevice && (
-          servers.length === 0 ? (
-            <span className="text-[10px]" style={{ color: gf.textDim }}>no servers with data</span>
+          deviceOptions.length === 0 ? (
+            <span className="text-[10px]" style={{ color: gf.textDim }}>no devices with data</span>
           ) : (
             <select
               value={selDevice ?? ""}
@@ -545,7 +783,7 @@ export default function Analytics() {
               className="px-2 py-1 text-[11px] rounded-[2px] outline-none"
               style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
             >
-              {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {deviceOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           )
         )}
@@ -643,8 +881,11 @@ export default function Analytics() {
           </div>
         )}
       </Panel>
+        </>
+      )}
 
       {/* ── Threshold recommendations ── */}
+      {tab === "recs" && (
       <Panel
         title="Threshold Recommendations"
         subtitle="Suggested alert-rule values from the last 14 days — warn = p95, critical = p99"
@@ -724,6 +965,7 @@ export default function Analytics() {
           </div>
         )}
       </Panel>
+      )}
     </div>
   );
 }
