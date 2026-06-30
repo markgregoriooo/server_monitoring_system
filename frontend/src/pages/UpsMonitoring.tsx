@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
+import UpsDetail from "./UpsDetail";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,14 +24,6 @@ interface UpsDevice {
   temperature: number | null;
   monitored: boolean;
 }
-interface HistPoint {
-  time: string;
-  batteryChargePct: number | null;
-  loadPct: number | null;
-  runtimeRemainingMin: number | null;
-  inputVoltage: number | null;
-  outputVoltage: number | null;
-}
 
 // ─── Grafana tokens ───────────────────────────────────────────────────────────
 
@@ -51,10 +44,6 @@ const RED = "#F2495C";
 const BLUE = "#5794F2";
 const TRACK = "rgba(127,127,127,0.18)";
 const BAR_GRADIENT = "linear-gradient(90deg,#73BF69 0%,#73BF69 55%,#FF780A 78%,#F2495C 95%)";
-
-const RANGES = ["-1h", "-6h", "-24h"] as const;
-type Range = (typeof RANGES)[number];
-const rangeLabel: Record<Range, string> = { "-1h": "1h", "-6h": "6h", "-24h": "24h" };
 
 function loadColor(v: number) {
   if (v >= 85) return RED;
@@ -144,55 +133,31 @@ function Bar({ value, color }: { value: number; color?: string }) {
   );
 }
 
-// ─── History chart (battery % + load %) ───────────────────────────────────────
+// ─── Ghost button (matches ServerMetrics "View") ──────────────────────────────
 
-function UpsHistoryChart({ history }: { history: HistPoint[] }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const c = ref.current;
-    if (!c) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    const W = (c.width = c.clientWidth * 2);
-    const H = (c.height = 160 * 2);
-    ctx.clearRect(0, 0, W, H);
-    const batt = history.map((p) => p.batteryChargePct ?? 0);
-    const load = history.map((p) => p.loadPct ?? 0);
-    if (batt.length < 2) {
-      ctx.fillStyle = "#6B7280";
-      ctx.font = "24px 'JetBrains Mono', monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("No data in range", W / 2, H / 2);
-      return;
-    }
-    const pad = 12 * 2;
-    const x = (i: number, len: number) => pad + (i / (len - 1)) * (W - pad * 2);
-    const y = (v: number) => H - pad - (v / 100) * (H - pad * 2); // both are percentages → fixed 0..100
-    const line = (data: number[], color: string) => {
-      ctx.beginPath();
-      data.forEach((v, i) => (i ? ctx.lineTo(x(i, data.length), y(v)) : ctx.moveTo(x(i, data.length), y(v))));
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.lineJoin = "round";
-      ctx.stroke();
-    };
-    line(batt, GREEN);
-    line(load, ORANGE);
-  }, [history]);
-  return <canvas ref={ref} style={{ width: "100%", height: 160, display: "block" }} />;
+function GhostButton({ children, onClick }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
+      style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
+    >
+      {children}
+    </button>
+  );
 }
 
 // ─── UPS card ─────────────────────────────────────────────────────────────────
 
-function UpsCard({ u, selected, onSelect }: { u: UpsDevice; selected: boolean; onSelect: () => void }) {
+function UpsCard({ u, onView }: { u: UpsDevice; onView: () => void }) {
   const charge = u.batteryChargePct ?? 0;
   const load = u.loadPct ?? 0;
   const onBattery = u.onBattery === true;
   return (
     <div
-      onClick={onSelect}
+      onClick={onView}
       className="flex flex-col rounded-lg overflow-hidden cursor-pointer transition-colors"
-      style={{ background: gf.panel, border: `1px solid ${selected ? BLUE : gf.border}` }}
+      style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
     >
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
@@ -205,6 +170,7 @@ function UpsCard({ u, selected, onSelect }: { u: UpsDevice; selected: boolean; o
         <span className="inline-flex items-center gap-1.5 shrink-0">
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(u.status), boxShadow: `0 0 5px ${statusColor(u.status)}` }} />
           <span className="text-[11px]" style={{ color: gf.textMuted }}>{u.status}</span>
+          <GhostButton onClick={(e) => { e.stopPropagation(); onView(); }}>View</GhostButton>
         </span>
       </div>
 
@@ -264,17 +230,11 @@ function Detail({ label, value }: { label: string; value: string }) {
 
 export default function UpsMonitoring() {
   const [devices, setDevices] = useState<UpsDevice[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [range, setRange] = useState<Range>("-1h");
-  const [history, setHistory] = useState<HistPoint[]>([]);
+  const [detail, setDetail] = useState<UpsDevice | null>(null);
 
   const load = () =>
     api.getUpsDevices().then((r) => {
-      if (r.success && r.data) {
-        const list: UpsDevice[] = (r.data.devices ?? []).map(mapUps);
-        setDevices(list);
-        setSelectedId((cur) => cur ?? (list[0]?.id ?? null));
-      }
+      if (r.success && r.data) setDevices((r.data.devices ?? []).map(mapUps));
     });
 
   useEffect(() => {
@@ -310,23 +270,19 @@ export default function UpsMonitoring() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!selectedId) {
-      setHistory([]);
-      return;
-    }
-    api.getUpsHistory(Number(selectedId), range).then((r) => {
-      if (r.success && r.data) setHistory(r.data.history ?? []);
-    });
-  }, [selectedId, range]);
-
   const total = devices.length;
   const online = devices.filter((d) => d.status === "Online").length;
   const onBatteryCount = devices.filter((d) => d.onBattery === true).length;
   const loads = devices.filter((d) => d.loadPct != null).map((d) => d.loadPct as number);
   const avgLoad = loads.length ? Math.round(loads.reduce((a, b) => a + b, 0) / loads.length) : 0;
   const onlineColor = total === 0 ? gf.textMuted : online === total ? GREEN : online === 0 ? RED : ORANGE;
-  const selected = devices.find((d) => d.id === selectedId) ?? null;
+
+  // Drill-down: render the per-UPS detail in place (Back returns to the list),
+  // mirroring ServerMetrics ↔ ServerDetail. Pass the live row so it opens current.
+  if (detail) {
+    const live = devices.find((x) => x.id === detail.id) ?? detail;
+    return <UpsDetail device={live} onBack={() => setDetail(null)} />;
+  }
 
   return (
     <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
@@ -370,41 +326,12 @@ export default function UpsMonitoring() {
           </div>
         </Panel>
       ) : (
-        <>
-          {/* Selected UPS history */}
-          {selected && selected.monitored && (
-            <Panel
-              title={`History · ${selected.name}`}
-              right={
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px]" style={{ color: GREEN }}>● Battery %</span>
-                  <span className="text-[10px]" style={{ color: ORANGE }}>● Load %</span>
-                  <div className="flex rounded-md overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
-                    {RANGES.map((rg) => (
-                      <button
-                        key={rg}
-                        onClick={() => setRange(rg)}
-                        className="text-[10px] px-2 py-0.5 transition-colors"
-                        style={{ background: range === rg ? gf.hover : "transparent", color: range === rg ? gf.textPrimary : gf.textMuted }}
-                      >
-                        {rangeLabel[rg]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              }
-            >
-              <UpsHistoryChart history={history} />
-            </Panel>
-          )}
-
-          {/* UPS cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {devices.map((u) => (
-              <UpsCard key={u.id} u={u} selected={u.id === selectedId} onSelect={() => setSelectedId(u.id)} />
-            ))}
-          </div>
-        </>
+        /* UPS cards — click any card (or "View →") to open its full detail */
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+          {devices.map((u) => (
+            <UpsCard key={u.id} u={u} onView={() => setDetail(u)} />
+          ))}
+        </div>
       )}
     </div>
   );

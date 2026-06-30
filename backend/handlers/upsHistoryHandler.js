@@ -30,7 +30,8 @@ export function upsHistoryHandler(req, res) {
           r._field == "load_pct" or
           r._field == "runtime_remaining_min" or
           r._field == "input_voltage" or
-          r._field == "output_voltage")
+          r._field == "output_voltage" or
+          r._field == "temperature")
       |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
       |> sort(columns: ["_time"], desc: false)
@@ -47,6 +48,7 @@ export function upsHistoryHandler(req, res) {
         runtimeRemainingMin: d.runtime_remaining_min ?? null,
         inputVoltage: d.input_voltage ?? null,
         outputVoltage: d.output_voltage ?? null,
+        temperature: d.temperature ?? null,
       });
     },
     error(error) {

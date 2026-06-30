@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
+import NetworkDetail from "./NetworkDetail";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,11 +24,6 @@ interface NetDevice {
   interfaces: NetIface[];
   monitored: boolean;
 }
-interface HistPoint {
-  time: string;
-  rxBytesPerSec: number | null;
-  txBytesPerSec: number | null;
-}
 
 // ─── Grafana tokens (match ServerMetrics.tsx) ─────────────────────────────────
 
@@ -49,10 +45,6 @@ const BLUE = "#5794F2";
 const TRACK = "rgba(127,127,127,0.18)";
 const BAR_GRADIENT = "linear-gradient(90deg,#73BF69 0%,#73BF69 55%,#FF780A 78%,#F2495C 95%)";
 
-const RANGES = ["-1h", "-6h", "-24h"] as const;
-type Range = (typeof RANGES)[number];
-const rangeLabel: Record<Range, string> = { "-1h": "1h", "-6h": "6h", "-24h": "24h" };
-
 function loadColor(v: number) {
   if (v >= 85) return RED;
   if (v >= 65) return ORANGE;
@@ -62,14 +54,6 @@ function statusColor(s: string) {
   if (s === "Online") return GREEN;
   if (s === "Warning") return ORANGE;
   return RED;
-}
-function formatBps(n: number | null): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  const bits = n * 8;
-  if (bits >= 1e9) return `${(bits / 1e9).toFixed(2)} Gb/s`;
-  if (bits >= 1e6) return `${(bits / 1e6).toFixed(2)} Mb/s`;
-  if (bits >= 1e3) return `${(bits / 1e3).toFixed(1)} kb/s`;
-  return `${Math.round(bits)} b/s`;
 }
 function formatUptime(sec: number | null): string {
   if (sec == null || !Number.isFinite(sec)) return "—";
@@ -118,15 +102,20 @@ function mergeNetLive(prev: NetDevice | undefined, p: any): NetDevice {
 // ─── Panel ────────────────────────────────────────────────────────────────────
 
 function Panel({
-  title, right, children, noPad,
+  title, right, children, noPad, onClick,
 }: {
   title?: string;
   right?: React.ReactNode;
   children: React.ReactNode;
   noPad?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="flex flex-col rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+    <div
+      onClick={onClick}
+      className={`flex flex-col rounded-lg overflow-hidden${onClick ? " cursor-pointer" : ""}`}
+      style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
+    >
       {title !== undefined && (
         <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
           <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
@@ -154,43 +143,18 @@ function StatPanel({ label, value, unit, color, sub }: { label: string; value: s
   );
 }
 
-// ─── Throughput history chart (rx/tx, dual line canvas) ───────────────────────
+// ─── Ghost button (matches ServerMetrics "View") ──────────────────────────────
 
-function ThroughputChart({ history }: { history: HistPoint[] }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const c = ref.current;
-    if (!c) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    const W = (c.width = c.clientWidth * 2);
-    const H = (c.height = 160 * 2);
-    ctx.clearRect(0, 0, W, H);
-    const rx = history.map((p) => p.rxBytesPerSec ?? 0);
-    const tx = history.map((p) => p.txBytesPerSec ?? 0);
-    if (rx.length < 2) {
-      ctx.fillStyle = "#6B7280";
-      ctx.font = "24px 'JetBrains Mono', monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("No data in range", W / 2, H / 2);
-      return;
-    }
-    const max = Math.max(1, ...rx, ...tx);
-    const pad = 12 * 2;
-    const x = (i: number, len: number) => pad + (i / (len - 1)) * (W - pad * 2);
-    const y = (v: number) => H - pad - (v / max) * (H - pad * 2);
-    const line = (data: number[], color: string) => {
-      ctx.beginPath();
-      data.forEach((v, i) => (i ? ctx.lineTo(x(i, data.length), y(v)) : ctx.moveTo(x(i, data.length), y(v))));
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.lineJoin = "round";
-      ctx.stroke();
-    };
-    line(rx, BLUE);
-    line(tx, GREEN);
-  }, [history]);
-  return <canvas ref={ref} style={{ width: "100%", height: 160, display: "block" }} />;
+function GhostButton({ children, onClick }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
+      style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
+    >
+      {children}
+    </button>
+  );
 }
 
 // ─── Interface row ────────────────────────────────────────────────────────────
@@ -218,17 +182,11 @@ function IfaceRow({ i }: { i: NetIface }) {
 
 export default function NetworkMonitoring() {
   const [devices, setDevices] = useState<NetDevice[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [range, setRange] = useState<Range>("-1h");
-  const [history, setHistory] = useState<HistPoint[]>([]);
+  const [detail, setDetail] = useState<NetDevice | null>(null);
 
   const load = () =>
     api.getNetworkDevices().then((r) => {
-      if (r.success && r.data) {
-        const list: NetDevice[] = (r.data.devices ?? []).map(mapNet);
-        setDevices(list);
-        setSelectedId((cur) => cur ?? (list[0]?.id ?? null));
-      }
+      if (r.success && r.data) setDevices((r.data.devices ?? []).map(mapNet));
     });
 
   useEffect(() => {
@@ -264,17 +222,6 @@ export default function NetworkMonitoring() {
     };
   }, []);
 
-  // Fetch throughput history for the selected router whenever it / the range changes.
-  useEffect(() => {
-    if (!selectedId) {
-      setHistory([]);
-      return;
-    }
-    api.getNetworkHistory(Number(selectedId), range).then((r) => {
-      if (r.success && r.data) setHistory(r.data.history ?? []);
-    });
-  }, [selectedId, range]);
-
   const total = devices.length;
   const online = devices.filter((d) => d.status === "Online").length;
   const allIfaces = devices.flatMap((d) => d.interfaces);
@@ -282,8 +229,13 @@ export default function NetworkMonitoring() {
   const upUtil = allIfaces.filter((i) => i.linkUp && i.utilizationPct != null).map((i) => i.utilizationPct as number);
   const avgUtil = upUtil.length ? Math.round(upUtil.reduce((a, b) => a + b, 0) / upUtil.length) : 0;
   const onlineColor = total === 0 ? gf.textMuted : online === total ? GREEN : online === 0 ? RED : ORANGE;
-  const selected = devices.find((d) => d.id === selectedId) ?? null;
-  const latest = history.length ? history[history.length - 1] : undefined;
+
+  // Drill-down: render the per-router detail in place (Back returns to the list),
+  // mirroring ServerMetrics ↔ ServerDetail. Pass the live row so it opens current.
+  if (detail) {
+    const live = devices.find((x) => x.id === detail.id) ?? detail;
+    return <NetworkDetail device={live} onBack={() => setDetail(null)} />;
+  }
 
   return (
     <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
@@ -321,68 +273,41 @@ export default function NetworkMonitoring() {
           </div>
         </Panel>
       ) : (
-        <>
-          {/* Selected device throughput history */}
-          {selected && (
+        /* Per-device interface panels — click a panel (or "View →") to open its full detail */
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+          {devices.map((d) => (
             <Panel
-              title={`Throughput · ${selected.name}`}
+              key={d.id}
+              title={d.name}
+              noPad
+              onClick={() => setDetail(d)}
               right={
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px]" style={{ color: BLUE }}>↓ {formatBps(latest?.rxBytesPerSec ?? null)}</span>
-                  <span className="text-[10px]" style={{ color: GREEN }}>↑ {formatBps(latest?.txBytesPerSec ?? null)}</span>
-                  <div className="flex rounded-md overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
-                    {RANGES.map((rg) => (
-                      <button
-                        key={rg}
-                        onClick={() => setRange(rg)}
-                        className="text-[10px] px-2 py-0.5 transition-colors"
-                        style={{ background: range === rg ? gf.hover : "transparent", color: range === rg ? gf.textPrimary : gf.textMuted }}
-                      >
-                        {rangeLabel[rg]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <span className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
+                    <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
+                  </span>
+                  <GhostButton onClick={(e) => { e.stopPropagation(); setDetail(d); }}>View</GhostButton>
+                </span>
               }
             >
-              <ThroughputChart history={history} />
-            </Panel>
-          )}
-
-          {/* Per-device interface panels */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
-            {devices.map((d) => (
-              <Panel
-                key={d.id}
-                title={d.name}
-                noPad
-                right={
-                  <button onClick={() => setSelectedId(d.id)} className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-                      <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
-                    </span>
-                  </button>
-                }
-              >
-                <div className="flex items-center justify-between px-3 py-1.5 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
-                  <span>{d.location}</span>
-                  <span>↑ {formatUptime(d.uptimeSeconds)}</span>
+              <div className="flex items-center justify-between px-3 py-1.5 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
+                <span>{d.location}</span>
+                <span>↑ {formatUptime(d.uptimeSeconds)}</span>
+              </div>
+              {!d.monitored ? (
+                <div className="px-3 py-4 text-[11px]" style={{ color: ORANGE }}>SNMP not configured — reachability only (ping fallback pending).</div>
+              ) : d.interfaces.length === 0 ? (
+                <div className="px-3 py-4 text-[11px]" style={{ color: gf.textDim }}>
+                  {d.status === "Online" ? "No interfaces reported." : "Offline — awaiting next poll."}
                 </div>
-                {!d.monitored ? (
-                  <div className="px-3 py-4 text-[11px]" style={{ color: ORANGE }}>SNMP not configured — reachability only (ping fallback pending).</div>
-                ) : d.interfaces.length === 0 ? (
-                  <div className="px-3 py-4 text-[11px]" style={{ color: gf.textDim }}>
-                    {d.status === "Online" ? "No interfaces reported." : "Offline — awaiting next poll."}
-                  </div>
-                ) : (
-                  d.interfaces.map((i) => <IfaceRow key={`${d.id}:${i.name}`} i={i} />)
-                )}
-              </Panel>
-            ))}
-          </div>
-        </>
+              ) : (
+                d.interfaces.map((i) => <IfaceRow key={`${d.id}:${i.name}`} i={i} />)
+              )}
+            </Panel>
+          ))}
+        </div>
       )}
     </div>
   );

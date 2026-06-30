@@ -17,12 +17,16 @@ type HeaderProps = {
 const breadcrumbs: Record<string, [string, string]> = {
   "/":                [BRAND.name, "Dashboard"],
   "/server-metrics":  [BRAND.name, "Server Metrics"],
+  "/network":         [BRAND.name, "Network Monitoring"],
+  "/ups":             [BRAND.name, "UPS Monitoring"],
   "/environment":     [BRAND.name, "Environment Monitoring"],
   "/air-conditioner": [BRAND.name, "Air Conditioner"],
   "/history":         [BRAND.name, "History Logs"],
   "/reports":         [BRAND.name, "Reports"],
   "/settings":        [BRAND.name, "Settings"],
   "/user-management": [BRAND.name, "User Management"],
+  "/alerts":          [BRAND.name, "Alerts"],
+  "/alert-rules":     [BRAND.name, "Alert Rules"],
 };
 
 function LivePing() {
