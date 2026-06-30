@@ -27,6 +27,46 @@ What the monitoring backend needs from the router, and what each step here provi
 - **WinBox** (easiest) — download from <https://mikrotik.com/download> (Windows). You can also use
   **WebFig** (browser) or **SSH** / the terminal — every step below shows the **CLI command**, which
   works the same in WinBox's *New Terminal*, WebFig's *Terminal*, or SSH.
+  > **Prefer clicking to typing?** The next section is the **GUI equivalent** of every step — do
+  > **either** the click‑path **or** the CLI, not both.
+
+---
+
+## WinBox / WebFig walkthrough (the GUI / click path)
+
+> **WinBox** (desktop app) and **WebFig** (just browse to the router's IP, e.g.
+> `http://192.168.88.1`) share the **same left‑hand menu tree**, so every click path here works in
+> both. WebFig also has a **Terminal** link if you'd rather paste the CLI from the steps below.
+> This mirrors **Steps 1–8** — pick one path.
+
+**Connect — WinBox:** open WinBox → **Neighbors** tab → it lists the router → click its **MAC
+address** (works even when the IP is unknown) → user `admin`, password blank → **Connect**. Newer
+units may force you to set an admin password on first login, and may pop a *"RouterOS Default
+Configuration"* notice (click **OK** to keep it). That admin password is **not** the monitoring
+account — we make a separate read‑only user in Step 4.
+
+**Connect — WebFig:** browse to **`http://192.168.88.1`** → log in as `admin`. You land on WebFig
+with the same menus as below. (If asked to upgrade RouterOS, **skip** it for a dev box.)
+
+| Step | Goal | Click path (WinBox / WebFig) | What to do |
+|---|---|---|---|
+| 2 | Version & identity | **System → Resources** | Read **Version** (v6/v7), **Board Name**, CPU, Memory, Uptime |
+| 2 | Name the router | **System → Identity** | Set **Name** = `dev-mikrotik` → **OK/Apply** |
+| 2 | See its IP | **IP → Addresses** | Note the address (e.g. `192.168.88.1`) |
+| 3 | Enable the API | **IP → Services** | Select the **`api`** row → click the **✓ (Enable)** toolbar button. Double‑click `api` to confirm **Port = 8728** |
+| 4 | Read‑only group | **System → Users → Groups** tab → **+** | Name `monitoring`; tick policies **read, api, rest-api, test, winbox** → **OK** |
+| 4 | Read‑only user | **System → Users → Users** tab → **+** | Name `monitor-ro`; **Group** = `monitoring`; set a strong **Password** → **OK** |
+| 5 | Lock API to backend | **IP → Services** → double‑click **`api`** | **Available From** → add `192.168.88.0/24` (or your backend host as `/32`) → **OK** |
+| 6 | List interfaces | **Interfaces** | The `ether1…etherN` names = your test "buildings". Double‑click one → **Status** tab shows link **Rate** & state |
+| 6 | Bridge check *(see prior note)* | **Bridge → Ports** tab | See which `etherN` sit in the factory **bridge**. Fine to leave for basic monitoring; **per‑building client counts** need separate subnets/DHCP (see *Optional* below) |
+| — | DHCP leases (clients) | **IP → DHCP Server → Leases** tab | Bound leases = the "connected clients" the poller counts |
+
+> **Step 7 (reachability)** is **not** done in WinBox — run it from the **backend PC**
+> (`Test-NetConnection … 8728`, Step 7 below). **Step 8** is just writing down the values you read
+> above for the DB seed + `.env`.
+
+✅ **Sanity check after Steps 3 & 5:** in **IP → Services**, the `api` row shows **no `X`
+(disabled) flag**, **Port 8728**, and your **Available From** address.
 
 ---
 
