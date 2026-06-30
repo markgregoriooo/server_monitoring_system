@@ -21,7 +21,7 @@ const authService = {
       tv: user.token_version ?? 0,   // F-02: session-revocation version
     };
 
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "1h" });
+    const token = jwt.sign(payload, JWT_SECRET, { algorithm: "HS256", expiresIn: "1h" });
 
     await db.query(`UPDATE users SET last_login = NOW() WHERE user_id = ?`, [user.user_id]);
     await db.query(

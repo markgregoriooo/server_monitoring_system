@@ -69,7 +69,9 @@ const io = new Server(server, {
 });
 
 app.use("/uploads", express.static("uploads"));
-app.use(cors({ origin: CORS_ORIGIN }));
+// exposedHeaders lets the browser READ our sliding-session renewal header
+// (cross-origin responses hide custom headers from JS unless listed here).
+app.use(cors({ origin: CORS_ORIGIN, exposedHeaders: ["X-Renewed-Token"] }));
 app.use(express.json());
 app.set("trust proxy", 1);
 app.use(globalLimiter);
@@ -96,7 +98,7 @@ io.use(async (socket, next) => {
   if (!token) return next(new Error("Unauthorized"));
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
     //  reject sockets whose session has since been revoked/disabled.
     const [[user]] = await db.query(
       "SELECT status, token_version FROM users WHERE user_id = ? LIMIT 1",
