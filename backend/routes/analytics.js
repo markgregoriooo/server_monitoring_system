@@ -103,4 +103,32 @@ router.get(
   }),
 );
 
+// GET /api/analytics/forecast/ups-battery?deviceId=&days=30&floor=5  (Phase 2b)
+// Battery-degradation ETA (linear regression on runtime) for every UPS, or one.
+router.get(
+  "/forecast/ups-battery",
+  asyncHandler(async (req, res) => {
+    const forecasts = await analyticsService.forecastUpsBattery({
+      deviceId: parseDeviceId(req.query.deviceId),
+      lookbackDays: req.query.days,
+      floorMinutes: req.query.floor,
+    });
+    res.json({ forecasts });
+  }),
+);
+
+// GET /api/analytics/forecast/link-saturation?deviceId=&days=30&ceiling=90  (Phase 2b)
+// Link-saturation ETA (linear regression on utilization) per router interface.
+router.get(
+  "/forecast/link-saturation",
+  asyncHandler(async (req, res) => {
+    const forecasts = await analyticsService.forecastLinkSaturation({
+      deviceId: parseDeviceId(req.query.deviceId),
+      lookbackDays: req.query.days,
+      ceiling: req.query.ceiling,
+    });
+    res.json({ forecasts });
+  }),
+);
+
 export default router;

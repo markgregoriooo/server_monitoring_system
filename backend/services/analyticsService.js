@@ -315,6 +315,12 @@ const METRICS = {
   temperature: { source: "env", field: "temperature", unit: "°C", label: "Temperature" },
   humidity:    { source: "env", field: "humidity",    unit: "%",  label: "Humidity"   },
   gas:         { source: "env", field: "__gas__",     unit: "ppm", label: "Gas"       },
+  // Router/MikroTik device-level (router_metrics — MikroTik fills CPU/mem/clients the SNMP
+  // path leaves null). recommend:false keeps them out of the server/env threshold
+  // recommendations, but they still get Trend + Anomaly via the generic endpoints.
+  router_cpu:     { source: "router", field: "cpu_percent",       unit: "%", label: "MikroTik CPU",     bounded: 100, recommend: false },
+  router_mem:     { source: "router", field: "mem_percent",       unit: "%", label: "MikroTik Memory",  bounded: 100, recommend: false },
+  router_clients: { source: "router", field: "connected_clients", unit: "",  label: "MikroTik Clients", recommend: false },
 };
 export function metricMeta(metric) {
   return Object.prototype.hasOwnProperty.call(METRICS, metric) ? METRICS[metric] : null;
@@ -333,7 +339,8 @@ async function fetchMetricSeries(metric, { deviceId = null, rangeExpr = "-14d", 
   const meta = METRICS[metric];
   if (!meta) return [];
 
-  if (meta.source === "server") {
+  if (meta.source === "server" || meta.source === "router") {
+    const measurement = meta.source === "router" ? "router_metrics" : "server_metrics";
     const idFilter =
       deviceId != null
         ? `|> filter(fn: (r) => r.device_id == "${Number(deviceId)}")`
@@ -341,7 +348,7 @@ async function fetchMetricSeries(metric, { deviceId = null, rangeExpr = "-14d", 
     const flux = `
       from(bucket: "${bucket}")
         |> range(start: ${rangeExpr})
-        |> filter(fn: (r) => r._measurement == "server_metrics")
+        |> filter(fn: (r) => r._measurement == "${measurement}")
         |> filter(fn: (r) => r._field == "${meta.field}")
         ${idFilter}
         |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)
@@ -595,6 +602,7 @@ async function recommendThresholds({ lookbackDays = 14 } = {}) {
   const days = clampInt(lookbackDays, 1, 90, 14);
   const out = [];
   for (const [metric, meta] of Object.entries(METRICS)) {
+    if (meta.recommend === false) continue; // device-class metrics opt out of threshold recs
     const series = await fetchMetricSeries(metric, { rangeExpr: `-${days}d`, every: "30m" });
     const rules = await alertRulesService.getEffectiveRules(null, metric);
     const cw = rules.find((r) => r.severity === "warning");
@@ -630,6 +638,156 @@ async function recommendThresholds({ lookbackDays = 14 } = {}) {
   return out;
 }
 
+// ─── Phase 2b/3b: UPS battery degradation + link saturation ───────────────────
+// The router/UPS data this engine forecasts on (ups_metrics / network_traffic). Same
+// regression core as disk-full ETA, but projected DOWN to a runtime floor (battery
+// aging) or UP to a utilization ceiling (link saturation). See predictive-analytics.md
+// §8. Additive — no change to the server/environment paths above.
+
+// Hourly-averaged field grouped by device (+ optional extra tag, e.g. interface_name).
+async function fetchSeriesGrouped(measurement, field, { deviceId = null, days = 30, keys = [] } = {}) {
+  const d = clampInt(days, 1, 90, 30);
+  const idFilter = deviceId != null ? `|> filter(fn: (r) => r.device_id == "${Number(deviceId)}")` : "";
+  const cols = ["_time", "_value", "device_id", "device_name", ...keys];
+  const flux = `
+    from(bucket: "${bucket}")
+      |> range(start: -${d}d)
+      |> filter(fn: (r) => r._measurement == "${measurement}")
+      |> filter(fn: (r) => r._field == "${field}")
+      ${idFilter}
+      |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+      |> keep(columns: [${cols.map((c) => `"${c}"`).join(", ")}])
+  `;
+  const rows = await queryClient.collectRows(flux);
+  const map = new Map();
+  for (const r of rows) {
+    if (r._value == null) continue;
+    const sub = keys.map((k) => r[k]).filter(Boolean).join(" ");
+    const gkey = keys.length ? `${r.device_id}|${sub}` : String(r.device_id);
+    if (!map.has(gkey)) {
+      map.set(gkey, { deviceId: Number(r.device_id), name: r.device_name ?? `Device ${r.device_id}`, sub, raw: [] });
+    }
+    map.get(gkey).raw.push({ t: Date.parse(r._time), y: Number(r._value) });
+  }
+  return map;
+}
+
+// Linear projection of a series to a bound. direction "down" = value falling to a floor
+// (UPS runtime); "up" = value rising to a ceiling (link utilization). Mirrors
+// forecastSeries() gating (R² ≥ MIN_ETA_R2, horizon ≤ MAX_ETA_DAYS) so a noisy/flat
+// series reports "stable" rather than a bogus date.
+function projectToBound(raw, { bound, direction }) {
+  const sorted = [...raw].sort((a, b) => a.t - b.t);
+  const current = sorted.length ? sorted[sorted.length - 1].y : null;
+  const out = {
+    current: current == null ? null : round1(current),
+    slopePerDay: null, etaDays: null, fitR2: null, mae: null,
+    confidence: "low", sampleCount: sorted.length, status: "insufficient_data",
+  };
+  if (sorted.length < MIN_POINTS) return out;
+
+  const t0 = sorted[0].t;
+  const points = sorted.map((p) => ({ x: (p.t - t0) / 3_600_000, y: p.y }));
+  const model = linearRegression(points);
+  if (!model) return out;
+
+  let r2 = model.r2, mae = model.mae;
+  if (points.length >= 10) {
+    const { train, test } = splitTrainTest(points, 0.8);
+    const tm = linearRegression(train);
+    if (tm && test.length >= 2) ({ r2, mae } = score(tm, test));
+  }
+  out.slopePerDay = round2(model.slope * 24);
+  out.fitR2 = r2 == null ? null : round2(r2);
+  out.mae = mae == null ? null : round2(mae);
+  out.confidence = confidenceLabel(r2);
+
+  const lastX = points[points.length - 1].x;
+  const trustworthy = r2 != null && r2 >= MIN_ETA_R2;
+  const projectDays = () => Math.max(0, ((bound - model.intercept) / model.slope - lastX) / 24);
+
+  if (direction === "down") {
+    if (current <= bound) { out.status = "reached"; out.etaDays = 0; }
+    else if (model.slope < -STABLE_EPS) {
+      const days = projectDays();
+      if (trustworthy && days <= MAX_ETA_DAYS) { out.status = "declining"; out.etaDays = round1(days); }
+      else out.status = "stable";
+    } else out.status = "stable";
+  } else {
+    if (current >= bound) { out.status = "reached"; out.etaDays = 0; }
+    else if (model.slope > STABLE_EPS) {
+      const days = projectDays();
+      if (trustworthy && days <= MAX_ETA_DAYS) { out.status = "rising"; out.etaDays = round1(days); }
+      else out.status = "stable";
+    } else out.status = "stable";
+  }
+  return out;
+}
+
+const byEtaAsc = (a, b) => {
+  if (a.etaDays == null && b.etaDays == null) return 0;
+  if (a.etaDays == null) return 1;
+  if (b.etaDays == null) return -1;
+  return a.etaDays - b.etaDays;
+};
+
+// UPS battery degradation: regress runtime_remaining_min down to a critical floor →
+// "replace battery in ~N days" (the UPS analogue of disk-full ETA). Runtime depends on
+// load, so this is most reliable when load is steady; the R² gate guards the rest.
+async function forecastUpsBattery({ deviceId = null, lookbackDays = 30, floorMinutes = 5 } = {}) {
+  const floor = clampNum(floorMinutes, 1, 60, 5);
+  const grouped = await fetchSeriesGrouped("ups_metrics", "runtime_remaining_min", { deviceId, days: lookbackDays });
+  const results = [];
+  for (const e of grouped.values()) {
+    const p = projectToBound(e.raw, { bound: floor, direction: "down" });
+    const eta = p.etaDays;
+    const advice =
+      p.status === "reached"
+        ? { level: "critical", message: `${e.name}: runtime at/below ${floor} min — replace the battery now.` }
+        : p.status === "declining" && eta != null && eta < 14
+          ? { level: "critical", message: `${e.name}: battery runtime projected below ${floor} min in ~${eta} days — schedule replacement.` }
+          : p.status === "declining" && eta != null && eta < 60
+            ? { level: "warning", message: `${e.name}: battery runtime declining — projected critical in ~${eta} days. Plan a replacement.` }
+            : null;
+    results.push({
+      deviceId: e.deviceId, name: e.name, floorMinutes: floor,
+      currentRuntimeMin: p.current, slopePerDay: p.slopePerDay, etaDays: eta,
+      fitR2: p.fitR2, mae: p.mae, confidence: p.confidence,
+      sampleCount: p.sampleCount, status: p.status, advice,
+    });
+  }
+  results.sort(byEtaAsc);
+  return results;
+}
+
+// Link saturation: regress per-interface utilization_pct UP to a ceiling →
+// "uplink hits 90% in ~N days". Network capacity planning.
+async function forecastLinkSaturation({ deviceId = null, lookbackDays = 30, ceiling = 90 } = {}) {
+  const cap = clampNum(ceiling, 50, 100, 90);
+  const grouped = await fetchSeriesGrouped("network_traffic", "utilization_pct", { deviceId, days: lookbackDays, keys: ["interface_name"] });
+  const results = [];
+  for (const e of grouped.values()) {
+    const p = projectToBound(e.raw, { bound: cap, direction: "up" });
+    const eta = p.etaDays;
+    const advice =
+      p.status === "reached"
+        ? { level: "critical", message: `${e.name} ${e.sub}: link at/above ${cap}% — upgrade the uplink or rebalance traffic.` }
+        : p.status === "rising" && eta != null && eta < 14
+          ? { level: "critical", message: `${e.name} ${e.sub}: projected to reach ${cap}% in ~${eta} days — plan an uplink upgrade.` }
+          : p.status === "rising" && eta != null && eta < 60
+            ? { level: "warning", message: `${e.name} ${e.sub}: utilization trending up — projected to hit ${cap}% in ~${eta} days.` }
+            : null;
+    results.push({
+      deviceId: e.deviceId, name: e.name, interface: e.sub, ceiling: cap,
+      currentUtil: p.current, slopePerDay: p.slopePerDay, etaDays: eta,
+      fitR2: p.fitR2, mae: p.mae, confidence: p.confidence,
+      sampleCount: p.sampleCount, status: p.status, advice,
+    });
+  }
+  results.sort(byEtaAsc);
+  return results;
+}
+
 export default {
   linearRegression,
   score,
@@ -643,4 +801,6 @@ export default {
   forecastTrend,
   detectAnomalies,
   recommendThresholds,
+  forecastUpsBattery,
+  forecastLinkSaturation,
 };

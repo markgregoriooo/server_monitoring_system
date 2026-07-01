@@ -491,6 +491,26 @@ export const api = {
     }
   },
 
+  // UPS battery-degradation ETA (linear regression on runtime). days = lookback.
+  getUpsBatteryForecast: async (days?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/analytics/forecast/ups-battery", days ? { params: { days } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Link-saturation ETA per router interface (linear regression on utilization).
+  getLinkSaturationForecast: async (days?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/analytics/forecast/link-saturation", days ? { params: { days } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   // Alert analytics summary (MTTR, severity mix, noisiest devices/types).
   getAlertSummary: async (days?: number): Promise<ApiResult> => {
     try {
