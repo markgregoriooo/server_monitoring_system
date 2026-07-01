@@ -277,8 +277,15 @@ network/SNMP card can't be monitored — it needs an SNMP card added first.)*
    string + port (no v3 auth/priv columns), so the implementation is **v2c**. v3 would need a
    follow-up migration to add credential columns + the `snmpClient` v3 branch. (Use a read-only
    community on a trusted management LAN.)
-4. **Alerting** — reuse the existing `device_logs` / `deviceLog` threshold path, or build proper
-   `alert_rules` rows for "UPS on battery" / "interface down"?
+4. **Alerting — ✅ DECIDED & IMPLEMENTED: configurable `alert_rules`.** Router/UPS threshold
+   alerting now runs through `services/deviceAlerts.js` (shared with the MikroTik poller):
+   numeric metrics (`router_cpu`/`router_mem`/`router_clients`/`link_util`/`ups_charge`/
+   `ups_runtime`/`ups_load`) are evaluated against the configurable `alert_rules`
+   (alertRulesService, hysteresis-aware) and raise REAL alerts via `notificationService.raiseAlert`
+   (bell/email/Alerts page), auto-resolving on recovery; boolean events (interface down, UPS
+   on-battery, device offline) raise directly like server 'offline'. Global defaults are seeded by
+   `migrations/2026-06-30_router_ups_alert_rules.sql`, tunable from the **Alert Rules** admin page.
+   This replaced the earlier hardcoded per-condition checks in `snmpPollerService`.
 
 > 📋 **Collecting these from the client:** Q1/Q2 (UPS SNMP cards), Q6-equivalent (managed routers),
 > Q9 (firewall/UDP 161), plus per-device IP/model/community, are gathered via

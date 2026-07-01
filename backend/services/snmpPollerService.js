@@ -1,8 +1,7 @@
 import db from "../config/mysql.js";
 import client, { SYS_OID, IF_OID, IF_OPER_STATUS, UPS_OID, isOnBattery } from "./snmpClient.js";
 import agentService from "./agentService.js";
-import notificationService from "./notificationService.js";
-import alertsService from "./alertsService.js";
+import deviceAlerts from "./deviceAlerts.js";
 import { writeNetworkSample } from "../handlers/networkMetricsHandler.js";
 import { writeUpsSample } from "../handlers/upsMetricsHandler.js";
 
@@ -27,15 +26,6 @@ const SNMP_RETRIES = 1;
 // Previous per-interface byte counters, for utilization_pct (rate ÷ link speed).
 // key `${deviceId}:${ifIndex}` -> { rxBytes(BigInt), txBytes(BigInt), t(ms) }
 const prevIface = new Map();
-// Per-condition active state, for alert onset/recovery transitions (drives both the
-// device_logs entry and the alert lifecycle). key `${deviceId}:${type}` -> boolean
-const condState = new Map();
-// Router alert helpers: consecutive over-ceiling polls (sustained-utilization), the
-// last error counters (error-burst delta), and last uptime (reboot detection).
-const utilHighCount = new Map(); // `${id}:${name}` -> consecutive polls over the ceiling
-const prevErrors = new Map();    // `${id}:${name}` -> { rx, tx } cumulative error counters
-const prevUptime = new Map();    // deviceId -> last uptimeSeconds
-
 // Latest live values per device, so GET /api/network and GET /api/ups render
 // current numbers immediately (mirrors agentService.latestMetrics for servers).
 // Resets on restart, repopulates on the next poll cycle.
@@ -236,171 +226,26 @@ async function setReachable(io, d, online) {
     status: online ? "Online" : "Offline",
   });
 
-  // Bell + email: raise on the offline transition, auto-resolve on recovery. Router
-  // down is critical (carries traffic); a UPS that stops answering is a warning.
-  if (online) {
-    await alertsService.autoResolveMetric(d.id, "device_offline");
-  } else {
-    await notificationService.raiseAlert({
-      deviceId: d.id,
-      type: "device_offline",
-      severity: d.type === "ups" ? "warning" : "critical",
-      title: `${typeLabel(d)} offline`,
-      message: `${typeLabel(d)} "${d.name}" is unreachable over SNMP.`,
-    });
-  }
+  // Real alert (bell/email/Alerts page): raise on the offline transition, auto-resolve
+  // on recovery. Severity is derived from device type (router critical, UPS warning).
+  await deviceAlerts.checkReachability(d, online);
 }
 
-// ─── Alert conditions (bell + email via raiseAlert, lifecycle via autoResolveMetric) ──
-//
-// applyConditions() drives BOTH the per-device event log (device_logs, once per
-// onset/recovery) AND the operator alert pipeline. On a condition's onset it raises
-// an alert (notificationService de-dups, so calling every poll is safe); on recovery
-// it auto-resolves the open alert. `active === null` (metric unavailable) is skipped —
-// neither raised nor resolved. `transient` conditions (reboot, error burst) raise on
-// each occurrence but are never auto-resolved (point-in-time events, not states).
-// Thresholds are hardcoded here (with hysteresis to stop flapping); they could move to
-// alert_rules later for admin tuning.
+// --- Threshold + event alerting -------------------------------------------------
+// Router (link utilization + interface-down) and UPS (charge/runtime/load + on-battery)
+// alerting now lives in deviceAlerts.js: each metric is evaluated against the
+// configurable alert_rules (alertRulesService) and raised through the real notification
+// pipeline (bell/email/Alerts page), shared with the MikroTik poller. This replaced the
+// old hardcoded per-condition checks that used to live here.
 
-const pct = (v) => (v == null ? "—" : `${Math.round(v)}%`);
-const mins = (v) => (v == null ? "—" : `${Math.round(v)} min`);
-const degC = (v) => (v == null ? "—" : `${Math.round(v)}°C`);
-const volts = (v) => (v == null ? "—" : `${Math.round(v)} V`);
-
-async function applyConditions(io, device, conditions) {
-  for (const c of conditions) {
-    if (c.active === null || c.active === undefined) continue;
-    const key = `${device.id}:${c.type}`;
-    const prev = condState.get(key) ?? false;
-    if (c.active) {
-      await notificationService.raiseAlert({
-        deviceId: device.id, type: c.type, title: c.title,
-        message: c.message, severity: c.severity, metricValue: c.metricValue ?? null,
-      });
-      if (!prev) {
-        const log = await agentService.logDevice(device.id, c.severity, c.message);
-        if (log) io?.emit("deviceLog", log);
-      }
-    } else if (prev && !c.transient) {
-      await alertsService.autoResolveMetric(device.id, c.type);
-      const log = await agentService.logDevice(device.id, "info", c.recover ?? `${c.title} recovered`);
-      if (log) io?.emit("deviceLog", log);
-    }
-    condState.set(key, c.active);
-  }
-}
-
-// Router/switch: per-interface down + sustained high utilization + error bursts,
-// plus an unexpected-reboot event (uptime went backwards vs the last poll).
-async function checkRouterThresholds(io, d, sample) {
-  const conditions = [];
-
-  const up = sample.uptimeSeconds;
-  const lastUp = prevUptime.get(d.id);
-  if (up != null) {
-    if (lastUp != null && up < lastUp - 60) {
-      conditions.push({
-        type: "router_reboot", severity: "warning", transient: true, active: true,
-        title: "Router rebooted", message: `${d.name} restarted unexpectedly (uptime reset).`,
-      });
-    }
-    prevUptime.set(d.id, up);
-  }
-
-  for (const i of sample.interfaces) {
-    conditions.push({
-      type: `iface_down:${i.name}`, severity: "warning", active: !i.linkUp,
-      title: `Interface ${i.name} down`,
-      message: `Interface ${i.name}${i.locationLabel ? ` (${i.locationLabel})` : ""} on ${d.name} is down.`,
-      recover: `Interface ${i.name} is back up.`,
-    });
-
-    // Sustained high utilization — over the ceiling for ≥3 consecutive polls.
-    const ukey = `${d.id}:${i.name}`;
-    const util = i.linkUp ? (i.utilizationPct ?? null) : 0;
-    if (util != null) {
-      const n = util > 90 ? (utilHighCount.get(ukey) ?? 0) + 1 : 0;
-      utilHighCount.set(ukey, n);
-      conditions.push({
-        type: `iface_util:${i.name}`, severity: "warning", metricValue: util, active: n >= 3,
-        title: `Interface ${i.name} congested`,
-        message: `Interface ${i.name} on ${d.name} sustained high utilization (${pct(util)}).`,
-        recover: `Interface ${i.name} utilization back to normal.`,
-      });
-    }
-
-    // Error burst — a jump in interface error counters since the last poll.
-    const ekey = `${d.id}:${i.name}`;
-    const cur = { rx: Number(i.rxErrors ?? 0), tx: Number(i.txErrors ?? 0) };
-    const pe = prevErrors.get(ekey);
-    prevErrors.set(ekey, cur);
-    if (pe) {
-      const dErr = (cur.rx >= pe.rx ? cur.rx - pe.rx : 0) + (cur.tx >= pe.tx ? cur.tx - pe.tx : 0);
-      conditions.push({
-        type: `iface_errors:${i.name}`, severity: "warning", transient: true,
-        active: dErr > 100, metricValue: dErr,
-        title: `Interface ${i.name} errors`,
-        message: `Interface ${i.name} on ${d.name} logged ${dErr} new errors.`,
-      });
-    }
-  }
-
-  await applyConditions(io, d, conditions);
-}
-
-// UPS: power state + battery health + load + power quality. `below`/`above` apply
-// hysteresis (trip at `on`, clear at `off`) using the prior condState to stop flapping.
-async function checkUpsThresholds(io, d, sample) {
-  const below = (type, v, on, off) => (v == null ? null : condState.get(`${d.id}:${type}`) ? v < off : v < on);
-  const above = (type, v, on, off) => (v == null ? null : condState.get(`${d.id}:${type}`) ? v > off : v > on);
-  const st = sample.batteryStatus; // RFC 1628: 2 normal, 3 low, 4 depleted
-
-  await applyConditions(io, d, [
-    { type: "ups_on_battery", severity: "critical",
-      active: sample.onBattery == null ? null : sample.onBattery === true,
-      title: "UPS on battery",
-      message: `${d.name} switched to battery power — mains may be down.`,
-      recover: `${d.name} returned to mains power.` },
-    { type: "ups_battery_low", severity: "warning", metricValue: sample.batteryChargePct,
-      active: below("ups_battery_low", sample.batteryChargePct, 20, 25),
-      title: "UPS battery low", message: `${d.name} battery low: ${pct(sample.batteryChargePct)}.`,
-      recover: `${d.name} battery charge recovered.` },
-    { type: "ups_runtime_low", severity: "critical", metricValue: sample.runtimeRemainingMin,
-      active: below("ups_runtime_low", sample.runtimeRemainingMin, 5, 8),
-      title: "UPS runtime critical", message: `${d.name} runtime critically low: ${mins(sample.runtimeRemainingMin)}.`,
-      recover: `${d.name} runtime recovered.` },
-    { type: "ups_overload", severity: "warning", metricValue: sample.loadPct,
-      active: above("ups_overload", sample.loadPct, 90, 85),
-      title: "UPS overloaded", message: `${d.name} output overloaded: ${pct(sample.loadPct)} load.`,
-      recover: `${d.name} load back to normal.` },
-    { type: "ups_replace_battery", severity: "warning",
-      active: st == null ? null : st === 3 || st === 4,
-      title: "UPS battery fault",
-      message: st === 4 ? `${d.name} battery depleted — replace battery.` : `${d.name} reports battery needs replacing.`,
-      recover: `${d.name} battery status normal.` },
-    { type: "ups_high_temp", severity: "warning", metricValue: sample.temperature,
-      active: above("ups_high_temp", sample.temperature, 40, 37),
-      title: "UPS temperature high", message: `${d.name} battery temperature high: ${degC(sample.temperature)}.`,
-      recover: `${d.name} battery temperature normal.` },
-    { type: "ups_input_voltage", severity: "warning", metricValue: sample.inputVoltage,
-      active: !sample.inputVoltage ? null
-        : condState.get(`${d.id}:ups_input_voltage`)
-          ? sample.inputVoltage < 185 || sample.inputVoltage > 255
-          : sample.inputVoltage < 180 || sample.inputVoltage > 260,
-      title: "UPS input voltage abnormal",
-      message: `${d.name} input voltage out of range: ${volts(sample.inputVoltage)} (nominal ~230 V).`,
-      recover: `${d.name} input voltage normal.` },
-  ]);
-}
-
-// ─── Per-device poll ────────────────────────────────────────────────────────────
+// --- Per-device poll ------------------------------------------------------------
 
 async function pollRouter(io, d) {
   const labels = await loadInterfaceLabels(d.id);
   const sample = await collectRouter(d.id, connFor(d), labels); // throws if unreachable
   await setReachable(io, d, true);
   await writeNetworkSample(io, d, sample);
-  await checkRouterThresholds(io, d, sample);
+  await deviceAlerts.checkRouter(io, d, sample);
   latestNetwork.set(Number(d.id), {
     status: "Online",
     reachable: true,
@@ -422,7 +267,7 @@ async function pollUps(io, d) {
   const sample = await collectUps(connFor(d)); // throws if unreachable
   await setReachable(io, d, true);
   await writeUpsSample(io, d, sample);
-  await checkUpsThresholds(io, d, sample);
+  await deviceAlerts.checkUps(io, d, sample);
   latestUps.set(Number(d.id), {
     status: "Online",
     batteryChargePct: sample.batteryChargePct,

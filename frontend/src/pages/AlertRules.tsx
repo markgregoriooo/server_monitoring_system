@@ -38,6 +38,8 @@ interface MetricMeta {
   unit: string;
   color: string;
   env?: boolean; // room-level (ESP32) metric — global only, never per-server
+  globalOnly?: boolean; // non-server device metric (router / UPS) — global only in this UI (the scope dropdown lists servers only)
+  lowerIsWorse?: boolean; // smaller value = worse (battery charge / runtime) → default the condition to '<='
 }
 
 const METRICS: MetricMeta[] = [
@@ -47,6 +49,16 @@ const METRICS: MetricMeta[] = [
   { value: "temperature", label: "Temperature", unit: "°C", color: "#FF6B6B", env: true },
   { value: "gas", label: "Gas / smoke", unit: "ppm", color: "#9AA0A6", env: true },
   { value: "humidity", label: "Humidity", unit: "%", color: "#3CC8E8", env: true },
+  // Router / UPS metrics (SNMP + MikroTik pollers → services/deviceAlerts.js). Seeded
+  // as GLOBAL defaults (device_id NULL) by migrations/2026-06-30_router_ups_alert_rules.sql;
+  // per-device overrides for these devices are a future enhancement (scope lists servers only).
+  { value: "router_cpu", label: "Router CPU", unit: "%", color: "#5794F2", globalOnly: true },
+  { value: "router_mem", label: "Router memory", unit: "%", color: "#B877D9", globalOnly: true },
+  { value: "router_clients", label: "Connected clients", unit: "", color: "#73BF69", globalOnly: true },
+  { value: "link_util", label: "Link utilization", unit: "%", color: "#FF9830", globalOnly: true },
+  { value: "ups_charge", label: "UPS battery", unit: "%", color: "#73BF69", globalOnly: true, lowerIsWorse: true },
+  { value: "ups_runtime", label: "UPS runtime", unit: "min", color: "#5794F2", globalOnly: true, lowerIsWorse: true },
+  { value: "ups_load", label: "UPS load", unit: "%", color: "#FF780A", globalOnly: true },
 ];
 const COMPARISONS = [">=", ">", "<=", "<"];
 const SEVERITIES = ["info", "warning", "critical"];
@@ -161,6 +173,27 @@ function MetricIcon({ name, size = 15 }: { name: string; size?: number }) {
       return (
         <svg {...p}>
           <path d="M12 2.7s6 6.3 6 10.3a6 6 0 0 1-12 0c0-4 6-10.3 6-10.3z" />
+        </svg>
+      );
+    case "router_cpu":
+    case "router_mem":
+    case "router_clients":
+    case "link_util":
+      return (
+        <svg {...p}>
+          <rect x="3" y="13" width="18" height="7" rx="1.5" />
+          <path d="M7 16.5h.01M10.5 16.5h.01" />
+          <path d="M12 10V6M9 8a4 4 0 0 1 6 0" />
+        </svg>
+      );
+    case "ups_charge":
+    case "ups_runtime":
+    case "ups_load":
+      return (
+        <svg {...p}>
+          <rect x="2" y="8" width="18" height="9" rx="1.5" />
+          <path d="M22 11v3" />
+          <path d="M10 9.5l-2 3.5h3l-2 3" />
         </svg>
       );
     default:
@@ -410,7 +443,7 @@ export default function AlertRules() {
   // Per-server scope only exposes server metrics — temperature/gas/humidity are
   // room-level (the ESP32 isn't a `devices` row) and can only be global.
   const isServerScope = form.deviceId !== "";
-  const metricOptions = isServerScope ? METRICS.filter((m) => !m.env) : METRICS;
+  const metricOptions = isServerScope ? METRICS.filter((m) => !m.env && !m.globalOnly) : METRICS;
 
   return (
     <div className="p-4 lg:p-6" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
@@ -747,9 +780,11 @@ export default function AlertRules() {
                     onChange={(e) => {
                       const deviceId = e.target.value;
                       setForm((f) => {
-                        // switching to a server scope: drop room-level env metrics
+                        // switching to a server scope: drop metrics that can only be global
+                        // (room-level env + non-server device metrics like router / UPS)
+                        const m = metricMeta(f.metricName);
                         const metricName =
-                          deviceId !== "" && metricMeta(f.metricName).env ? "cpu" : f.metricName;
+                          deviceId !== "" && (m.env || m.globalOnly) ? "cpu" : f.metricName;
                         return { ...f, deviceId, metricName };
                       });
                     }}
@@ -766,7 +801,16 @@ export default function AlertRules() {
                 </Field>
 
                 <Field label="Metric">
-                  <select value={form.metricName} onChange={(e) => setForm((f) => ({ ...f, metricName: e.target.value }))} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
+                  <select value={form.metricName} onChange={(e) => setForm((f) => {
+                    const metricName = e.target.value;
+                    // Point the condition the sensible way for the chosen metric: lower-is-worse
+                    // metrics (battery / runtime) want '<='; keep the user's operator if it
+                    // already matches the metric's direction.
+                    const isLt = f.comparison.startsWith("<");
+                    const lw = metricMeta(metricName).lowerIsWorse;
+                    const comparison = lw ? (isLt ? f.comparison : "<=") : (isLt ? ">=" : f.comparison);
+                    return { ...f, metricName, comparison };
+                  })} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
                     {metricOptions.map((m) => (
                       <option key={m.value} value={m.value}>
                         {m.label} ({m.unit})
