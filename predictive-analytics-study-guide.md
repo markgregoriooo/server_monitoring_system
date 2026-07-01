@@ -139,6 +139,59 @@ where an admin can apply the suggestion straight into the Alert Rules.
 
 ---
 
+## 6. Network & UPS forecasts — Phase 2b/3b (BUILT, no new math)
+
+The newest additions (`predictive-analytics.md` §8 row "2b/3b"): **UPS battery
+degradation**, **link saturation**, and **MikroTik/router** trend + anomaly
+metrics. Data now comes from the router/UPS branches (`ups_metrics`,
+`network_traffic`, `router_metrics`).
+
+> **Key point for a defense: there is NO new statistics or ML to learn here.**
+> These features reuse the *exact same* linear-regression engine from §1–§2 and
+> the same trend/anomaly code from §3–§4. If you understand disk-full ETA, you
+> already understand all three. What's new is **domain knowledge** (where the
+> data comes from and why the forecast can be wrong) — not math.
+
+**How each new feature maps to what you already studied:**
+
+| New feature | What it does | Same technique as |
+|---|---|---|
+| **UPS battery forecast** | regress `runtime_remaining_min` **down** to a 5-min floor → "replace battery in ~N days" | Linear regression + R²/MAE + train/test gate (§1–§2) |
+| **Link saturation** | regress per-interface `utilization_pct` **up** to a 90% ceiling → "uplink hits 90% in ~N days" | Same as disk-full ETA (project to a bound) |
+| **MikroTik CPU / Mem / Clients** | trend projection + anomaly flagging on router metrics | EWMA/Holt (§3) + z-score/IQR (§4) |
+
+**In our code:** `backend/services/analyticsService.js`
+- `projectToBound()` (line ~679) — the shared projector. `direction: "down"`
+  falls to a floor (UPS runtime), `direction: "up"` rises to a ceiling (link %).
+  It mirrors `forecastSeries()`'s gating exactly (R² ≥ `MIN_ETA_R2`, horizon cap),
+  so a noisy/flat series reports "stable" instead of a bogus date.
+- `forecastUpsBattery()` (line ~737) — UPS analogue of disk-full ETA.
+- `forecastLinkSaturation()` (line ~765) — per-interface capacity forecast.
+- `METRICS` registry `router_cpu` / `router_mem` / `router_clients` entries —
+  route MikroTik data through the existing `forecastTrend()` / `detectAnomalies()`.
+- Endpoints: `GET /api/analytics/forecast/ups-battery`,
+  `GET /api/analytics/forecast/link-saturation`; UI = "UPS Battery Forecast" and
+  "Link Saturation Forecast" panels on the Analytics page.
+
+**The one conceptual wrinkle (not a new video):** disk-full projects *up* to
+100%; UPS battery projects *down* to a floor. It's the same `bound = m·x + b`
+algebra solved for a lower bound with `slope < 0` instead of `slope > 0`. Same
+line, mirrored.
+
+**What's actually worth studying here = domain, not math.** You only need a video
+or two each — enough to explain where the numbers come from and, crucially, **why
+a forecast can be wrong** (the honest caveats a panel will ask about):
+- **SNMP** (how router/UPS metrics are collected — the snmpsim dev data):
+  `SNMP OID MIB explained`, `SNMP polling monitoring basics`.
+- **UPS runtime & battery** — the key caveat: **runtime depends on load**, so the
+  ETA is only reliable when load is steady (this is noted right in the code):
+  `UPS runtime vs load`, `UPS battery degradation`.
+- **Network link utilization** — it's capacity planning, per interface:
+  `network link utilization capacity planning`, `interface bandwidth saturation`.
+- **MikroTik / RouterOS** (light — just what the device is): `MikroTik RouterOS overview`.
+
+---
+
 ## Channels to bookmark
 
 | Channel | Best for |
@@ -158,6 +211,9 @@ where an admin can apply the suggestion straight into the Alert Rules.
 4. **Re-read `analyticsService.js`** — every formula should now be recognizable.
 5. **Phases 2–4 as you reach them:** EWMA → Holt-Winters → z-score/IQR →
    percentiles (ritvikmath + StatQuest).
+6. **Network & UPS (§6) — no new math.** Skip the stats videos; instead skim the
+   domain reading (SNMP, UPS runtime-vs-load, link utilization) so you can explain
+   *where the data comes from* and *why the forecast can be wrong*. ~½ day.
 
 > Cross-references: `predictive-analytics.md` (blueprint + the math in §2–§4),
 > `server-metrics.md` (the `server_metrics` data we forecast on).

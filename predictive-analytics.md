@@ -23,10 +23,12 @@ data-driven threshold suggestions — instead of only reactive threshold alerts.
   regression), and it runs in pure Node — no Python service, fully explainable.
 - **Flagship feature:** **disk-full ETA** — "Server X reaches 100% disk in ~9
   days." The single most useful prediction for a server room.
-- **Scope now:** servers + environment + alerts (all already on `main`).
-  Network/UPS analytics are **deferred** until the `router-ups-monitoring` /
-  `mikrotik-monitoring` branches merge — they reuse the same engine, so it's
-  additive, not a rewrite. See §8.
+- **Scope now:** servers + environment + alerts (all already on `main`), **plus
+  network/UPS/MikroTik analytics** — now built on this branch ahead of the merge
+  (they reuse the same engine, so it was additive, not a rewrite). The **live SNMP
+  ingestion** they read still lives on the `router-ups-monitoring` /
+  `mikrotik-monitoring` branches, so real ETAs await that merge; until then it's
+  dev-verified against seeded/simulated data. See §8.
 - **Honesty note for a defense:** linear regression *is* ML. Holt-Winters/EWMA
   and z-score are *statistics*, not ML. Don't oversell — see §1.
 
@@ -42,8 +44,21 @@ data-driven threshold suggestions — instead of only reactive threshold alerts.
 >   `alert_rules`) → `GET /analytics/recommendations`; admin "Apply" writes global rules.
 >
 > Verified: backend `node --check`, frontend `tsc --noEmit` clean, route mounted.
-> Only the **network/UPS forecast (2b/3b)** remains — deferred until the router/mikrotik
-> branches merge. See §10 for the checklist and SESSION_NOTES.md.
+> See §10 for the Phase-1 checklist and SESSION_NOTES.md.
+>
+> **Update (2026-07-01): Phase 2b/3b (network/UPS/MikroTik analytics) now BUILT**
+> on this branch, ahead of the router/mikrotik merge — `forecastUpsBattery()`
+> (runtime → battery-replacement ETA) + `forecastLinkSaturation()` (interface
+> utilization → uplink-saturation ETA) + MikroTik `router_cpu`/`router_mem`/`router_clients`
+> trend & anomaly metrics; exposed at `GET /api/analytics/forecast/ups-battery` and
+> `/forecast/link-saturation`, with matching Analytics-page panels. Reuses the same
+> regression core via `projectToBound()` (project *down* to a floor for battery,
+> *up* to a ceiling for link) — additive, no rewrite.
+> **Caveat:** only the *analytics* is here. Live **SNMP ingestion** (writing
+> `ups_metrics` / `network_traffic` / `router_metrics` to InfluxDB) still lives on the
+> router-ups / mikrotik branches, so **real** ETAs await that merge. For now it's
+> dev-verified against the `dev-snmpsim` simulator + `backend/scripts/seed-analytics-history.js`
+> (synthetic trending history). See §8 and §12.
 
 ---
 
@@ -60,10 +75,10 @@ Where each technique in this plan lands:
 
 | Technique | Used for | Is it ML? |
 |---|---|---|
-| **Linear regression** | disk-full ETA, UPS degradation | ✅ Yes — textbook supervised ML (also "just statistics") |
-| Holt-Winters / EWMA smoothing | temp/CPU short-horizon projection | ⚠️ Time-series **statistics**, not ML by most definitions |
-| z-score / IQR / EWMA bands | anomaly detection | ❌ Statistics |
-| Percentiles (p50/p95/p99) | threshold recommendations | ❌ Descriptive statistics |
+| **Linear regression** | disk-full ETA, UPS battery degradation, link saturation | ✅ Yes — textbook supervised ML (also "just statistics") |
+| Holt-Winters / EWMA smoothing | temp/CPU + MikroTik CPU/mem/clients short-horizon projection | ⚠️ Time-series **statistics**, not ML by most definitions |
+| z-score / IQR / EWMA bands | anomaly detection (servers, environment, MikroTik) | ❌ Statistics |
+| Percentiles (p50/p95/p99) | threshold recommendations (servers, environment) | ❌ Descriptive statistics |
 
 **Takeaway:** linear regression is the legitimate ML centerpiece; the rest are
 supporting statistics. To make the ML claim *unambiguous* to a panel, we add a
@@ -200,9 +215,11 @@ loop: analytics → better config → fewer false alarms.
 Read via the shared InfluxDB clients in `backend/config/influx.js`
 (`queryClient`, `bucket`) — same path `serverHistoryHandler.js` already uses.
 
-> **Deferred (not on `main` yet):** `router_metrics` / `network_traffic`
-> (throughput forecasting) and `ups_metrics` (battery degradation) live on the
-> router/mikrotik branches. See §8.
+> **Network/UPS (`router_metrics` / `network_traffic` / `ups_metrics`):** the
+> analytics that forecasts on these is now **built** (§8 row 2b/3b, §12), but the
+> **live ingestion** that writes them still lives on the router/mikrotik branches —
+> not on `main` yet. Until that merges, they're fed by the `dev-snmpsim` simulator
+> and `backend/scripts/seed-analytics-history.js` (dev/test only). See §8.
 
 ---
 
@@ -300,7 +317,7 @@ Build off `main` (this branch). Each phase is shippable on its own.
 | **2** | Trend charts (rolling mean, hour/day heatmaps) + EWMA temp/CPU projection | `server_metrics`, `sensor_environment` | Phase 1 |
 | **3** | Anomaly detection (z-score / per-hour baseline) | same | Phase 1 |
 | **4** | Threshold **recommendations** → Alert Rules page | history + `alert_rules` | Phase 1 + `alertRulesService` |
-| **2b/3b** | **Network throughput forecast** + **UPS battery degradation** | `router_metrics`, `ups_metrics` | **router-ups + mikrotik merged to `main`**, then rebase this branch |
+| **2b/3b** | **Network throughput forecast** + **UPS battery degradation** + MikroTik trend/anomaly — **analytics ✅ BUILT (2026-07-01)**; live SNMP ingestion ⏳ | `router_metrics`, `ups_metrics`, `network_traffic` | engine already built off `main`; **real data** needs router-ups + mikrotik merged, then rebase |
 
 **Why not wait for the other branches:** the flagship and ~half the scope need
 only data already on `main`. Building on top of unfinished, still-rebasing
@@ -311,6 +328,11 @@ and add §8 row "2b/3b" — same engine, additive code.
 **Merge-time overlap** will only be a few shared files (`App.tsx`,
 `Sidebar.tsx`, `api.ts`, `data/users.ts`, `server.js` route list) — each feature
 adds its own line; trivial conflicts, not structural.
+
+> **Done ahead of schedule:** the 2b/3b **analytics** (engine + endpoints + UI)
+> was actually built on this branch before the router/mikrotik merge, validated
+> against seeded/simulated history. Only the **live SNMP data pipeline** now
+> depends on that merge — see the §12 checklist.
 
 ---
 
@@ -379,5 +401,162 @@ source, so server and environment metrics flow through one `fetchMetricSeries()`
 > Phases 2–4 are **statistics, not ML** — linear regression (Phase 1) remains the sole ML
 > centerpiece. Phrase accordingly (see §9).
 
-> **Next:** only the network/UPS forecast (§8 row 2b/3b) remains — after the
-> router-ups / mikrotik branches merge to `main`, rebase and reuse this same engine.
+> **Next:** the network/UPS/MikroTik **forecast code is now built too** (§12) — what
+> remains is the **live SNMP ingestion**: after the router-ups / mikrotik branches
+> merge to `main`, rebase and point these same forecasts at real `ups_metrics` /
+> `network_traffic` / `router_metrics` instead of seeded data.
+
+## 12. Build order checklist (Phase 2b/3b) — analytics ✅ DONE (2026-07-01)
+
+Built on this branch **ahead of** the router-ups / mikrotik merge, so the same
+engine is proven before the data lands. All additive — the server/environment
+paths (§10, §11) are untouched.
+
+1. ✅ `analyticsService.js` — `fetchSeriesGrouped()` (hourly-averaged field grouped
+   by device + optional tag, e.g. `interface_name`) and `projectToBound()` — the
+   shared projector that mirrors `forecastSeries()`'s gating (R² ≥ `MIN_ETA_R2`,
+   horizon ≤ `MAX_ETA_DAYS`). `direction: "down"` → falls to a floor; `"up"` → rises
+   to a ceiling.
+2. ✅ `forecastUpsBattery()` — regress `runtime_remaining_min` (`ups_metrics`) down
+   to a critical floor (default 5 min) → battery-replacement ETA + severity advice.
+3. ✅ `forecastLinkSaturation()` — regress per-interface `utilization_pct`
+   (`network_traffic`) up to a ceiling (default 90%) → uplink-saturation ETA.
+4. ✅ MikroTik `router_cpu` / `router_mem` / `router_clients` in the `METRICS`
+   registry (`router_metrics`) → flow through the existing `forecastTrend()` /
+   `detectAnomalies()`.
+5. ✅ `routes/analytics.js` — `GET /api/analytics/forecast/ups-battery` +
+   `/forecast/link-saturation` (same `requireRole("admin", "it_staff")` gate).
+6. ✅ Frontend `pages/Analytics.tsx` — "UPS Battery Forecast" + "Link Saturation
+   Forecast" panels + MikroTik/Network options in the trend/anomaly selector;
+   `api.getUpsBatteryForecast()` / `getLinkSaturationForecast()`.
+7. ✅ Dev data: `dev-snmpsim/data/*.snmprec` (flat live values) +
+   `backend/scripts/seed-analytics-history.js` (synthetic **trending** ~30-day
+   history so ETAs are meaningful without hardware). Test device_ids 9001/9002/9101.
+8. ⏳ **Remaining = live ingestion, not analytics.** Real `ups_metrics` /
+   `network_traffic` / `router_metrics` writers (SNMP pollers) merge in with the
+   router-ups / mikrotik branches; then rebase and the forecasts light up on real data.
+
+> **Honesty note:** this is still the §9 caveat — the forecasts are validated
+> against *seeded* trends today. They become *real* predictions only once live
+> SNMP data has accrued (~1–2 weeks post-merge). No new math vs Phase 1: UPS/link
+> reuse the linear-regression core; MikroTik reuses the Phase 2–3 trend/anomaly code.
+
+---
+
+## 13. Network / UPS / MikroTik — how each technique applies (2b/3b reference)
+
+Ground truth for the MikroTik side comes from `mikrotik-monitoring.md`. Read this
+before presenting the network metrics so the labels are accurate.
+
+### 13.1 Topology reframe — one router, interfaces = buildings
+
+The campus has **one large MikroTik** that all buildings route through (~4–5
+Ethernet interfaces); **each interface (port) = one building**. Development uses a
+**small MikroTik** as a stand-in — same code, different IP/credentials. So:
+
+- **"per-building" means per-interface**, not per-router. We monitor **one device**
+  and label its interfaces with building names (`network_interfaces.interface_name
+  → location_label`).
+- **Interface-level** (`utilization_pct`, throughput, link up/down — `network_traffic`):
+  on the **MikroTik** this is **per building** (interface = building); the field is
+  written by **both** the MikroTik and the non-MikroTik SNMP collectors (see §13.2).
+- **Device-level** (the **MikroTik** router as a whole, one number): `cpu_percent`,
+  `mem_percent`, `connected_clients` (`router_metrics`) — filled by the MikroTik
+  RouterOS poller; the non-MikroTik SNMP poller leaves these `null` (see the note in
+  §13.2), so in practice they are **MikroTik** values.
+
+### 13.2 Metric glossary (what the analytics actually reads)
+
+| Analytics metric | InfluxDB field / measurement | Scope | Technique |
+|---|---|---|---|
+| `router_cpu` | `cpu_percent` / `router_metrics` | **MikroTik router** (device-level) | Trend (EWMA+Holt) + Anomaly |
+| `router_mem` | `mem_percent` / `router_metrics` | **MikroTik router** (device-level) | Trend + Anomaly |
+| `router_clients` | `connected_clients` / `router_metrics` | **MikroTik router — campus-wide total** | Trend + Anomaly |
+| link saturation | `utilization_pct` / `network_traffic` | **any interface — both collectors** (MikroTik iface = building; non-MikroTik = a port) | Regression ETA (→ ceiling) |
+| UPS battery | `runtime_remaining_min` / `ups_metrics` | UPS device | Regression ETA (→ floor) |
+
+> **Which router? The MikroTik — always.** `router_metrics` is a *shared* measurement
+> written by **both** collectors: the **MikroTik** RouterOS poller (source **B**) *and*
+> the **non-MikroTik** SNMP poller (source **C** — other routers/switches). But
+> `cpu_percent` / `mem_percent` / `connected_clients` are populated **only by the
+> MikroTik** path; the SNMP path leaves them `null` (vendor CPU/mem MIBs are hard).
+> So these three `router_*` metrics are, in practice, **the MikroTik router** — the code
+> labels them "**MikroTik CPU / Memory / Clients**." A non-MikroTik router contributes
+> only `uptime_seconds` / `reachable` to `router_metrics` (plus its per-interface
+> `network_traffic`), so it has no CPU/mem/clients series to forecast.
+
+> **Link saturation is the exception — it comes from BOTH routers.** Unlike
+> CPU/mem/clients, per-interface `utilization_pct` (`network_traffic`) is written by
+> **both** collectors: the MikroTik RouterOS poller **and** the non-MikroTik SNMP
+> poller (IF-MIB provides per-interface byte counters + link speed, so utilization is
+> derivable for any router/switch). `forecastLinkSaturation()` groups by `device_id` +
+> `interface_name` with **no device-type filter**, so it forecasts **every** interface
+> on **every** network device that reports traffic. The "**= building**" equivalence is
+> **MikroTik-only**: the one campus MikroTik's interfaces are labeled by building; on a
+> non-MikroTik router/switch an interface is just a port (labeled by its own
+> `location_label`, not necessarily a building).
+
+> **`router_clients` is the campus-wide total, NOT per-building.** It's counted from
+> the MikroTik's **DHCP leases** (bound leases), i.e. *all* end devices across *all*
+> interfaces, as one trend line. It can only be split per building if each building
+> is its own subnet / DHCP server / VLAN (`mikrotik-monitoring.md` §10 Q3) — and even
+> then that split lives in the per-interface data, not this device-level field.
+> It's a device *count* (not people; one user = phone + laptop = 2), and it excludes
+> static-IP devices. Label it "**total connected devices on the campus network**."
+
+### 13.3 The regression ETAs (UPS battery, link saturation) — X/Y axes
+
+Same least-squares line as disk-full ETA (§2), via `projectToBound()`. **X is always
+time; Y is the metric; the `bound` is a horizontal target line, and the ETA is where
+the line crosses it minus "now."** Only Y and the bound change:
+
+| Forecast | X axis | Y axis | Bound (target line) | Slope |
+|---|---|---|---|---|
+| Disk-full (ref.) | hours since first sample | `disk_percent` (%) | 100% ceiling | rising `+` |
+| **UPS battery** | hours since first sample | `runtime_remaining_min` (min of backup left) | **5 min floor** | falling `−` |
+| **Link saturation** | hours since first sample | `utilization_pct` (% of link capacity) | **90% ceiling** | rising `+` |
+
+- **UPS battery** (`forecastUpsBattery`, `direction:"down"`): runtime trends down as
+  the battery ages → solve `5 = m·x + b` → "replace battery in ~N days."
+- **Link saturation** (`forecastLinkSaturation`, `direction:"up"`): utilization
+  trends up as traffic grows → solve `90 = m·x + b` → "uplink saturates in ~N days."
+  Most useful on the **ISP-uplink interface** — the shared pipe all buildings pass through.
+- Both reuse the R² gate + `MAX_ETA_DAYS` horizon: a noisy/flat series reports
+  **"stable"** instead of a bogus date. Network traffic is bursty, so the gate matters.
+
+### 13.4 Trend (EWMA + Holt's linear) on `router_cpu` / `router_mem` / `router_clients`
+
+Runs through the generic `forecastTrend()` (`GET /api/analytics/trends/:metric`),
+48h lookback → 12h horizon:
+
+1. **EWMA (`α=0.3`) smooths the noisy history** — the router's per-poll CPU/mem/clients
+   are spiky; this is the smoothed line drawn over the raw data.
+2. **Holt's linear (`α=0.5, β=0.2`) projects forward** — run on the smoothed series
+   (level + trend), extrapolated to the 12h horizon; CPU/mem clamp to `[0,100]`,
+   clients unbounded.
+3. **Advisory** if the projection is predicted to cross the metric's effective
+   `alert_rules` threshold within the horizon (e.g. "MikroTik CPU projected to cross
+   the warning threshold (80%) in ~4h").
+
+Reads as: router CPU creeping up (heavy routing/NAT load), a slow memory climb/leak,
+or connected-device count trending up over the week. **Short-horizon nudge, not an ETA.**
+
+### 13.5 Anomaly detection on `router_cpu` / `router_mem` / `router_clients`
+
+Runs through the generic `detectAnomalies()` (`GET /api/analytics/anomalies`), 7-day
+lookback — **device-level only** (no per-interface anomaly path):
+
+- **Per-hour-of-day z-score** (primary): 24 hourly buckets (local UTC+8), mean μ / σ
+  per hour, flag `|z| > 3`. Catches what static thresholds miss — a **2 AM router-CPU
+  spike still under the 80% alarm** is abnormal *for 2 AM*.
+- **Global IQR fences** (Tukey 1.5·IQR): context tag (`iqrOutlier`), not the trigger.
+
+Useful signals: CPU anomaly (runaway process / attack / scan), mem anomaly
+(leak/spike), **clients anomaly** (many devices at 3 AM on an empty campus → rogue
+devices; a sharp daytime drop → outage).
+
+> **Honesty note — "EWMA bands" is generous.** The *implemented* anomaly detector is
+> **per-hour-of-day z-score + IQR fences**. EWMA in this codebase is the Phase 2
+> *trend smoothing* (§13.4), **not** anomaly bands. Describe it as "per-hour z-score
+> with IQR context." And per §9: only the regression ETAs (disk/UPS/link) are ML —
+> the MikroTik trend + anomaly are **statistics**.
