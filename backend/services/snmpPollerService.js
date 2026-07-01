@@ -225,6 +225,9 @@ async function setReachable(io, d, online) {
     id: d.id,
     status: online ? "Online" : "Offline",
   });
+  // Real alert (bell/email/Alerts page): raise on the offline transition, auto-resolve
+  // on recovery. Severity is derived from device type (router critical, UPS warning).
+  await deviceAlerts.checkReachability(d, online);
 }
 
 // Threshold + event alerting (router CPU/mem/clients, link utilization + interface

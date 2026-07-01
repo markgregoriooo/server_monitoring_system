@@ -114,6 +114,9 @@ async function setReachable(io, d, online) {
   );
   if (log) io?.emit("deviceLog", log);
   io?.emit("networkStatus", { id: d.id, status: online ? "Online" : "Offline" });
+  // Real alert (bell/email/Alerts page): raise on the offline transition, auto-resolve
+  // on recovery. The campus MikroTik carries all building traffic → critical.
+  await deviceAlerts.checkReachability(d, online, { label: "MikroTik", severity: "critical" });
 }
 
 // Router CPU/mem + per-interface link utilization & interface-down alerting now

@@ -355,7 +355,7 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
       charge/runtime/load are evaluated against the configurable `alert_rules` (band + hysteresis via
       `alertRulesService.nextBand`) and raise real alerts through `notificationService.raiseAlert`
       (bell + toast + email + the Alerts page), auto-resolving on recovery (`alertsService`). Boolean
-      events (interface down, UPS on-battery) raise directly, like server 'offline'. Global default
+      events (interface down, UPS on-battery, and device offline/unreachable via checkReachability) raise directly, like server 'offline'. Global default
       thresholds are seeded by `migrations/2026-06-30_router_ups_alert_rules.sql` (⚠️ run it, or
       rules-only means silent), and the **Alert Rules** admin page now lists these metrics.
       ⏳ per-device (per-router/UPS) overrides in the UI still TODO — the scope picker lists servers
