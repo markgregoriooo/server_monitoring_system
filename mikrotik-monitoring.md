@@ -2,8 +2,10 @@
 
 > Status: **IMPLEMENTED** (branch `mikrotik-monitoring`, stacked on `router-ups-monitoring`).
 > Backend poller + RouterOS client + crypto + REST routes, and the dashboard page with admin
-> **Add / Configure / Test**. **Mock removed — live RouterOS only.** Pending: a live test against
-> the dev MikroTik, a port→building labeling UI, and full `alert_rules` wiring.
+> **Add / Configure / Test**. **Mock removed — live RouterOS only.** **Real alerts (bell / email /
+> Alerts page) via configurable `alert_rules` are now wired** (`services/deviceAlerts.js`, shared by
+> the MikroTik + SNMP pollers). Pending: a live test against the dev MikroTik, and a port→building
+> labeling UI.
 > **→ §13 is the study guide for how it actually works (read that with the code open).**
 
 Monitor the **campus network through a single MikroTik router**. The campus has **one large
@@ -348,9 +350,16 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
 - [~] **Phase 4 — Detail.** The single-router page already shows per-port + throughput + device info
       (+ a logs endpoint), so a separate drill-down wasn't needed. ⏳ port→building **labeling UI**
       still TODO (labels live in `network_interfaces`, currently SQL-seeded).
-- [~] **Phase 5 — Alerting.** Port-down + offline/online are logged to `device_logs` + `deviceLog`
-      by the poller. ⏳ full `alert_rules` (link_util / CPU / mem) + `notificationService` (bell/email)
-      not wired yet.
+- [x] **Phase 5 — Alerting.** **Real alerts wired** via `services/deviceAlerts.js` (shared by the
+      MikroTik + SNMP pollers): router CPU/mem/clients, per-interface link utilization, and UPS
+      charge/runtime/load are evaluated against the configurable `alert_rules` (band + hysteresis via
+      `alertRulesService.nextBand`) and raise real alerts through `notificationService.raiseAlert`
+      (bell + toast + email + the Alerts page), auto-resolving on recovery (`alertsService`). Boolean
+      events (interface down, UPS on-battery) raise directly, like server 'offline'. Global default
+      thresholds are seeded by `migrations/2026-06-30_router_ups_alert_rules.sql` (⚠️ run it, or
+      rules-only means silent), and the **Alert Rules** admin page now lists these metrics.
+      ⏳ per-device (per-router/UPS) overrides in the UI still TODO — the scope picker lists servers
+      only, so these metrics are global-only there for now.
 - [ ] **Phase 6 — Polish.** PiP `network.summary` tile; live test on the dev MikroTik then campus.
 
 > **Removed:** the `MIKROTIK_MOCK` synthetic-data mode (built during scaffolding, dropped at request
@@ -463,6 +472,8 @@ Browser: `MikrotikMonitoring.tsx` fetches `GET /api/mikrotik` once, then live-up
 - **Live test** against the dev MikroTik — the RouterOS command words in `mikrotikClient` are
   best-effort and should be confirmed on hardware.
 - **Port → building labeling UI** (currently SQL).
-- **Full `alert_rules`** wiring (link utilization / CPU / mem thresholds + bell/email); today only
-  port-down and offline/online are logged to `device_logs`.
+- **Per-device (per-router/UPS) alert-rule overrides in the UI** — the Alert Rules scope picker
+  lists servers only, so `router_*` / `link_util` / `ups_*` metrics are global-only there for now
+  (global covers every device of that type; per-device tuning needs SQL until the picker includes
+  network/UPS/MikroTik devices). Threshold *alerting itself* is fully wired (see Phase 5).
 - **PiP `network.summary` tile.**
