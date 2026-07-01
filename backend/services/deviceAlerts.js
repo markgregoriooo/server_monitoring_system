@@ -135,4 +135,29 @@ async function checkUps(io, device, sample) {
   return events.filter(Boolean);
 }
 
-export default { checkRouter, checkUps };
+// Device reachability as a REAL alert (offline = open incident, online = auto-resolve),
+// mirroring the server 'offline' pattern. Called from each poller's setReachable ON the
+// status transition — the poller already guards on a real change, so this fires once per
+// flip; raiseAlert's restart-proof cooldown is a backstop against any repeat. Router /
+// MikroTik down is critical (carries campus traffic); a UPS that stops answering is a
+// warning. type "device_offline" is distinct from the metric/event types and auto-resolves.
+async function checkReachability(device, online, opts = {}) {
+  const id = Number(device.id);
+  if (online) {
+    await alertsService.autoResolveMetric(id, "device_offline");
+    return;
+  }
+  const label =
+    opts.label ?? (device.type === "ups" ? "UPS" : device.type === "mikrotik" ? "MikroTik" : "Router");
+  const severity = opts.severity ?? (device.type === "ups" ? "warning" : "critical");
+  const name = device.name ?? label;
+  await notificationService.raiseAlert({
+    deviceId: id,
+    type: "device_offline",
+    severity,
+    title: `${label} offline`,
+    message: `${label} "${name}" is unreachable.`,
+  });
+}
+
+export default { checkRouter, checkUps, checkReachability };
