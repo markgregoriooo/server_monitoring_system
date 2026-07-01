@@ -3,6 +3,7 @@ import client, { SYS_OID, IF_OID, IF_OPER_STATUS, UPS_OID, isOnBattery } from ".
 import agentService from "./agentService.js";
 import { writeNetworkSample } from "../handlers/networkMetricsHandler.js";
 import { writeUpsSample } from "../handlers/upsMetricsHandler.js";
+import deviceAlerts from "./deviceAlerts.js";
 
 // ─── SNMP poller: routers (IF-MIB) + UPS (UPS-MIB), pull-based ─────────────────
 //
@@ -25,13 +26,6 @@ const SNMP_RETRIES = 1;
 // Previous per-interface byte counters, for utilization_pct (rate ÷ link speed).
 // key `${deviceId}:${ifIndex}` -> { rxBytes(BigInt), txBytes(BigInt), t(ms) }
 const prevIface = new Map();
-// Per-interface link state, so an interface-down event logs once (on the down
-// transition), not every cycle. key `${deviceId}:${ifName}` -> boolean up
-const linkState = new Map();
-// Per-UPS incident state, so on-battery / low-battery log once on onset.
-// key deviceId -> { onBattery: bool, low: bool }
-const upsState = new Map();
-
 // Latest live values per device, so GET /api/network and GET /api/ups render
 // current numbers immediately (mirrors agentService.latestMetrics for servers).
 // Resets on restart, repopulates on the next poll cycle.
@@ -233,42 +227,10 @@ async function setReachable(io, d, online) {
   });
 }
 
-// Log interface-down onsets once (recoveries tracked but not logged — keeps
-// device_logs lean, same policy as the server thresholds).
-async function checkRouterThresholds(io, d, sample) {
-  for (const i of sample.interfaces) {
-    const key = `${d.id}:${i.name}`;
-    const prevUp = linkState.get(key);
-    linkState.set(key, i.linkUp);
-    if (prevUp === undefined) continue; // first observation — establish baseline, don't log
-    if (prevUp && !i.linkUp) {
-      const log = await agentService.logDevice(d.id, "warning", `Interface ${i.name} is down`);
-      if (log) io?.emit("deviceLog", log);
-    }
-  }
-}
-
-// Log UPS on-battery (critical) + low-battery (warning) onsets once each.
-async function checkUpsThresholds(io, d, sample) {
-  const prev = upsState.get(d.id) ?? { onBattery: false, low: false };
-  const next = { ...prev };
-
-  if (sample.onBattery === true && !prev.onBattery) {
-    const log = await agentService.logDevice(d.id, "critical", "UPS switched to battery power");
-    if (log) io?.emit("deviceLog", log);
-  }
-  next.onBattery = sample.onBattery === true;
-
-  if (typeof sample.batteryChargePct === "number") {
-    const low = sample.batteryChargePct < 20;
-    if (low && !prev.low) {
-      const log = await agentService.logDevice(d.id, "warning", `UPS battery low: ${Math.round(sample.batteryChargePct)}%`);
-      if (log) io?.emit("deviceLog", log);
-    }
-    next.low = low;
-  }
-  upsState.set(d.id, next);
-}
+// Threshold + event alerting (router CPU/mem/clients, link utilization + interface
+// down, UPS charge/runtime/load + on-battery) now lives in deviceAlerts.js, which
+// drives the configurable alert_rules + raises REAL alerts (bell / email / Alerts
+// page) instead of the device-log-only checks that used to be here.
 
 // ─── Per-device poll ────────────────────────────────────────────────────────────
 
@@ -277,7 +239,7 @@ async function pollRouter(io, d) {
   const sample = await collectRouter(d.id, connFor(d), labels); // throws if unreachable
   await setReachable(io, d, true);
   await writeNetworkSample(io, d, sample);
-  await checkRouterThresholds(io, d, sample);
+  await deviceAlerts.checkRouter(io, d, sample);
   latestNetwork.set(Number(d.id), {
     status: "Online",
     reachable: true,
@@ -299,7 +261,7 @@ async function pollUps(io, d) {
   const sample = await collectUps(connFor(d)); // throws if unreachable
   await setReachable(io, d, true);
   await writeUpsSample(io, d, sample);
-  await checkUpsThresholds(io, d, sample);
+  await deviceAlerts.checkUps(io, d, sample);
   latestUps.set(Number(d.id), {
     status: "Online",
     batteryChargePct: sample.batteryChargePct,

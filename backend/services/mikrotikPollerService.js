@@ -3,6 +3,7 @@ import agentService from "./agentService.js";
 import mikrotikClient from "./mikrotikClient.js";
 import { writeNetworkSample } from "../handlers/networkMetricsHandler.js";
 import { encrypt, decrypt } from "./mikrotikCrypto.js";
+import deviceAlerts from "./deviceAlerts.js";
 
 // ─── MikroTik poller: ONE campus router via the RouterOS API, pull-based ───────
 //
@@ -16,7 +17,6 @@ const TIMEOUT_MS = Number(process.env.MIKROTIK_API_TIMEOUT_MS) || 5000;
 
 // ─── In-memory state (resets on restart, repopulates next cycle) ───────────────
 const prevIface = new Map(); // `${id}:${name}` -> { rx(BigInt), tx(BigInt), t(ms) }
-const linkState = new Map(); // `${id}:${name}` -> boolean up (log down-onset once)
 const latest = new Map(); // id -> shaped summary for GET /api/mikrotik
 
 const STATUS_LABEL = { online: "Online", offline: "Offline", warning: "Warning", maintenance: "Maintenance" };
@@ -116,19 +116,10 @@ async function setReachable(io, d, online) {
   io?.emit("networkStatus", { id: d.id, status: online ? "Online" : "Offline" });
 }
 
-async function checkThresholds(io, d, sample) {
-  for (const i of sample.interfaces) {
-    const key = `${d.id}:${i.name}`;
-    const prevUp = linkState.get(key);
-    linkState.set(key, i.linkUp);
-    if (prevUp === undefined) continue; // baseline — don't log first observation
-    if (prevUp && !i.linkUp) {
-      const label = i.locationLabel ? ` (${i.locationLabel})` : "";
-      const log = await agentService.logDevice(d.id, "warning", `Interface ${i.name}${label} is down`);
-      if (log) io?.emit("deviceLog", log);
-    }
-  }
-}
+// Router CPU/mem + per-interface link utilization & interface-down alerting now
+// lives in deviceAlerts.js (configurable alert_rules + REAL alerts: bell / email /
+// Alerts page), shared with the generic SNMP poller — replacing the device-log-only
+// interface-down check that used to be here.
 
 // ─── Per-device poll ────────────────────────────────────────────────────────────
 async function pollDevice(io, d) {
@@ -140,7 +131,7 @@ async function pollDevice(io, d) {
     { id: d.id, name: d.name, ip: d.ip, type: d.type, location: d.location },
     sample,
   );
-  await checkThresholds(io, d, sample);
+  await deviceAlerts.checkRouter(io, d, sample);
 
   latest.set(Number(d.id), {
     status: "Online",
