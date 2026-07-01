@@ -24,8 +24,10 @@ import agentService from "./agentService.js";
 //   router_cpu, router_mem, router_clients   (router_metrics, per device)
 //   link_util                                (network_traffic, per interface)
 //   ups_charge, ups_runtime, ups_load        (ups_metrics, per device)
-// Boolean events that aren't numeric thresholds (interface down, UPS on battery) are
-// raised directly — like server 'offline' — not via alert_rules.
+// Events that aren't single numeric thresholds are raised directly — like server
+// 'offline' — not via alert_rules: interface down, UPS on-battery, UPS battery-replace
+// (status enum), UPS high-temp & abnormal input-voltage (hysteresis), plus fire-once
+// transient events (router reboot, interface error burst).
 
 const SEV_RANK = alertRulesService.SEV_RANK;
 const num = (v) => (v == null || !Number.isFinite(Number(v)) ? NaN : Number(v));
@@ -34,6 +36,12 @@ const num = (v) => (v == null || !Number.isFinite(Number(v)) ? NaN : Number(v));
 // establishes a baseline instead of alerting out of the blue (matches the old
 // behavior); a genuine up→down transition still alerts.
 const seenLink = new Set();
+
+// Transient router events (reboot, error burst) have no persistent state to auto-resolve
+// — they fire once per occurrence, detected by comparing against the previous poll.
+// Reset on restart (repopulated next cycle).
+const prevUptime = new Map(); // deviceId -> last uptimeSeconds (reboot = it went backwards)
+const prevErrors = new Map(); // `${id}:${name}` -> { rx, tx } cumulative error counters
 
 // Evaluate one numeric metric against its rules. Returns the device_log row created
 // on a fresh escalation (else null). `low` flips the wording for lower-is-worse
@@ -85,6 +93,14 @@ async function evalEvent({ deviceId, type, active, severity, title, message, bas
   return log;
 }
 
+// Point-in-time event (router reboot, interface error burst): raise once on occurrence,
+// never auto-resolved (it's not a persistent state). raiseAlert's restart-proof DB cooldown
+// dedups repeats. Returns the device_log row for the caller's batch emit.
+async function raiseTransient(deviceId, { type, severity, title, message, metricValue = null }) {
+  await notificationService.raiseAlert({ deviceId, type, severity, title, message, metricValue });
+  return agentService.logDevice(deviceId, severity, message);
+}
+
 // sample: { cpuPercent, memPercent, connectedClients,
 //           interfaces: [{ name, locationLabel, linkUp, utilizationPct }] }
 async function checkRouter(io, device, sample) {
@@ -94,6 +110,19 @@ async function checkRouter(io, device, sample) {
   events.push(await evalMetric({ deviceId: id, metricName: "router_cpu", type: "router_cpu", value: num(sample.cpuPercent), label: "Router CPU", unit: "%" }));
   events.push(await evalMetric({ deviceId: id, metricName: "router_mem", type: "router_mem", value: num(sample.memPercent), label: "Router memory", unit: "%" }));
   events.push(await evalMetric({ deviceId: id, metricName: "router_clients", type: "router_clients", value: num(sample.connectedClients), label: "Connected clients" }));
+
+  // Unexpected reboot — uptime went backwards vs the last poll (point-in-time event).
+  const up = num(sample.uptimeSeconds);
+  if (!Number.isNaN(up)) {
+    const lastUp = prevUptime.get(id);
+    if (lastUp != null && up < lastUp - 60) {
+      events.push(await raiseTransient(id, {
+        type: "router_reboot", severity: "warning", title: "Router rebooted",
+        message: "Router restarted unexpectedly (uptime reset)",
+      }));
+    }
+    prevUptime.set(id, up);
+  }
 
   for (const i of sample.interfaces ?? []) {
     const ifaceLabel = i.locationLabel ? `${i.name} (${i.locationLabel})` : i.name;
@@ -109,6 +138,21 @@ async function checkRouter(io, device, sample) {
       severity: "warning", title: "Interface down",
       message: `Interface ${ifaceLabel} is down`, baselineKey: `${id}:${i.name}`,
     }));
+
+    // Error burst — a jump in the interface's error counters since the last poll.
+    const ekey = `${id}:${i.name}`;
+    const cur = { rx: Number(i.rxErrors ?? 0), tx: Number(i.txErrors ?? 0) };
+    const pe = prevErrors.get(ekey);
+    prevErrors.set(ekey, cur);
+    if (pe) {
+      const dErr = (cur.rx >= pe.rx ? cur.rx - pe.rx : 0) + (cur.tx >= pe.tx ? cur.tx - pe.tx : 0);
+      if (dErr > 100) {
+        events.push(await raiseTransient(id, {
+          type: `iface_errors:${i.name}`, severity: "warning", metricValue: dErr,
+          title: "Interface errors", message: `Interface ${ifaceLabel} logged ${dErr} new errors`,
+        }));
+      }
+    }
   }
 
   for (const e of events) if (e) io?.emit("deviceLog", e);
@@ -130,6 +174,40 @@ async function checkUps(io, device, sample) {
   events.push(await evalMetric({ deviceId: id, metricName: "ups_charge", type: "ups_charge", value: num(sample.batteryChargePct), label: "UPS battery", unit: "%", low: true }));
   events.push(await evalMetric({ deviceId: id, metricName: "ups_runtime", type: "ups_runtime", value: num(sample.runtimeRemainingMin), label: "UPS runtime", unit: " min", low: true }));
   events.push(await evalMetric({ deviceId: id, metricName: "ups_load", type: "ups_load", value: num(sample.loadPct), label: "UPS load", unit: "%" }));
+
+  // Battery needs replacing — RFC 1628 upsBatteryStatus: 2 normal, 3 low, 4 depleted.
+  const st = num(sample.batteryStatus);
+  if (!Number.isNaN(st)) {
+    events.push(await evalEvent({
+      deviceId: id, type: "ups_replace_battery", active: st === 3 || st === 4,
+      severity: "warning", title: "UPS battery fault",
+      message: st === 4 ? "UPS battery depleted — replace battery" : "UPS battery needs replacing",
+    }));
+  }
+
+  // High battery temperature — direct event with hysteresis (trip >40°C, clear <37°C).
+  const t = num(sample.temperature);
+  if (!Number.isNaN(t)) {
+    const hot = alertBandState.getBand(id, "ups_temp") !== "normal" ? t > 37 : t > 40;
+    events.push(await evalEvent({
+      deviceId: id, type: "ups_temp", active: hot, severity: "warning",
+      title: "UPS temperature high", message: `UPS battery temperature high: ${Math.round(t)}°C`,
+    }));
+  }
+
+  // Abnormal input voltage — direct event with hysteresis (trip outside 180–260 V,
+  // clear back inside 185–255 V; nominal ~230 V).
+  const v = num(sample.inputVoltage);
+  if (!Number.isNaN(v) && v > 0) {
+    const bad = alertBandState.getBand(id, "ups_input_voltage") !== "normal"
+      ? (v < 185 || v > 255)
+      : (v < 180 || v > 260);
+    events.push(await evalEvent({
+      deviceId: id, type: "ups_input_voltage", active: bad, severity: "warning",
+      title: "UPS input voltage abnormal",
+      message: `UPS input voltage out of range: ${Math.round(v)} V (nominal ~230 V)`,
+    }));
+  }
 
   for (const e of events) if (e) io?.emit("deviceLog", e);
   return events.filter(Boolean);
