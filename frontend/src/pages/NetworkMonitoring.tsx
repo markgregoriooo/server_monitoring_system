@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
+import { useAuth } from "../context/AuthContext";
 import NetworkDetail from "./NetworkDetail";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -42,8 +43,32 @@ const GREEN = "#73BF69";
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
+const BLUE_HOVER = "#4A82DD";
 const TRACK = "rgba(127,127,127,0.18)";
 const BAR_GRADIENT = "linear-gradient(90deg,#73BF69 0%,#73BF69 55%,#FF780A 78%,#F2495C 95%)";
+
+const inputStyle: React.CSSProperties = {
+  background: gf.bg,
+  border: `1px solid ${gf.border}`,
+  color: gf.textPrimary,
+  fontFamily: "'JetBrains Mono', monospace",
+};
+
+// Blank form for "Add router". Community defaults to the ubiquitous read-only "public".
+interface NetForm {
+  name: string;
+  ip: string;
+  community: string;
+  snmpPort: string;
+  location: string;
+}
+const EMPTY_NET_FORM: NetForm = {
+  name: "",
+  ip: "",
+  community: "public",
+  snmpPort: "161",
+  location: "CSPC-ICTU Server Room",
+};
 
 function loadColor(v: number) {
   if (v >= 85) return RED;
@@ -145,15 +170,24 @@ function StatPanel({ label, value, unit, color, sub }: { label: string; value: s
 
 // ─── Ghost button (matches ServerMetrics "View") ──────────────────────────────
 
-function GhostButton({ children, onClick }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void }) {
+function GhostButton({ children, onClick, danger }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void; danger?: boolean }) {
   return (
     <button
       onClick={onClick}
       className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
-      style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
+      style={{ color: danger ? RED : gf.textMuted, border: `1px solid ${danger ? `${RED}55` : gf.border}`, background: "transparent" }}
     >
       {children}
     </button>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[9px] tracking-wider uppercase" style={{ color: gf.textDim }}>{label}</span>
+      {children}
+    </div>
   );
 }
 
@@ -181,8 +215,73 @@ function IfaceRow({ i }: { i: NetIface }) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function NetworkMonitoring() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
   const [devices, setDevices] = useState<NetDevice[]>([]);
   const [detail, setDetail] = useState<NetDevice | null>(null);
+
+  // Add-router modal + inline remove-confirm + toast (admin only).
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState<NetForm>(EMPTY_NET_FORM);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [toast, setToast] = useState("");
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 3000);
+  };
+
+  const openAdd = () => {
+    setForm(EMPTY_NET_FORM);
+    setFormError("");
+    setFormOpen(true);
+  };
+
+  const save = async () => {
+    if (!form.name.trim()) return setFormError("Device name is required.");
+    if (!form.ip.trim()) return setFormError("IP address is required.");
+    if (!form.community.trim()) return setFormError("SNMP community is required.");
+    setSaving(true);
+    setFormError("");
+    const res = await api.addNetworkDevice({
+      name: form.name.trim(),
+      ip: form.ip.trim(),
+      community: form.community.trim(),
+      snmpPort: form.snmpPort.trim() || undefined,
+      location: form.location.trim() || undefined,
+    });
+    setSaving(false);
+    if (res.success && res.data?.device) {
+      const added = mapNet(res.data.device);
+      setDevices((prev) => (prev.some((d) => d.id === added.id) ? prev : [...prev, added]));
+      setFormOpen(false);
+      showToast("Router added — polling starts within a minute.");
+    } else {
+      setFormError(res.error || "Could not add router.");
+    }
+  };
+
+  const remove = async (id: string) => {
+    setConfirmId(null);
+    const res = await api.deleteNetworkDevice(Number(id));
+    if (res.success) {
+      setDevices((prev) => prev.filter((d) => d.id !== id));
+      setDetail((prev) => (prev?.id === id ? null : prev));
+      showToast("Router removed.");
+    } else {
+      showToast(res.error || "Could not remove router.");
+    }
+  };
+
+  // Escape closes the add modal.
+  useEffect(() => {
+    if (!formOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFormOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [formOpen]);
 
   const load = () =>
     api.getNetworkDevices().then((r) => {
@@ -214,11 +313,18 @@ export default function NetworkMonitoring() {
         ),
       );
     };
+    const onRemoved = (data: { id: number | string }) => {
+      const id = String(data?.id);
+      setDevices((prev) => prev.filter((d) => d.id !== id));
+      setDetail((prev) => (prev?.id === id ? null : prev));
+    };
     socket.on("networkMetrics", onMetrics);
     socket.on("networkStatus", onStatus);
+    socket.on("networkRemoved", onRemoved);
     return () => {
       socket.off("networkMetrics", onMetrics);
       socket.off("networkStatus", onStatus);
+      socket.off("networkRemoved", onRemoved);
     };
   }, []);
 
@@ -245,9 +351,23 @@ export default function NetworkMonitoring() {
           <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>Network Monitoring</h1>
           <span className="text-[11px] hidden sm:inline" style={{ color: gf.textDim }}>{total} devices · {online} online</span>
         </div>
-        <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textMuted }}>
-          <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN, boxShadow: `0 0 6px ${GREEN}` }} /> Live
-        </span>
+        <div className="flex items-center gap-2.5 shrink-0">
+          {isAdmin && (
+            <button
+              onClick={openAdd}
+              className="inline-flex items-center gap-1.5 text-[11px] font-medium transition-colors active:translate-y-px"
+              style={{ height: 28, padding: "0 10px", color: "#fff", background: BLUE, border: `1px solid ${BLUE}`, borderRadius: 2 }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = BLUE_HOVER; e.currentTarget.style.borderColor = BLUE_HOVER; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = BLUE; e.currentTarget.style.borderColor = BLUE; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              Add router
+            </button>
+          )}
+          <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN, boxShadow: `0 0 6px ${GREEN}` }} /> Live
+          </span>
+        </div>
       </div>
 
       {/* Stat row */}
@@ -268,8 +388,15 @@ export default function NetworkMonitoring() {
             </svg>
             <p className="text-[13px] mt-3" style={{ color: gf.textMuted }}>No routers or switches monitored yet</p>
             <p className="text-[11px] mt-1 max-w-md" style={{ color: gf.textDim }}>
-              Register a managed router (with SNMP enabled) in the database to see live interface metrics here.
+              {isAdmin
+                ? "Click “Add router” to register a managed router (with SNMP enabled) — it starts polling within a minute."
+                : "A managed router (with SNMP enabled) must be registered by an admin to see live interface metrics here."}
             </p>
+            {isAdmin && (
+              <button onClick={openAdd} className="mt-4 text-[11px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: BLUE }}>
+                + Add router
+              </button>
+            )}
           </div>
         </Panel>
       ) : (
@@ -288,7 +415,18 @@ export default function NetworkMonitoring() {
                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
                     <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
                   </span>
-                  <GhostButton onClick={(e) => { e.stopPropagation(); setDetail(d); }}>View</GhostButton>
+                  {confirmId === d.id ? (
+                    <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      <span className="text-[10px]" style={{ color: gf.textMuted }}>Remove?</span>
+                      <button onClick={(e) => { e.stopPropagation(); remove(d.id); }} className="px-2 py-1 rounded-md text-[10px] font-medium" style={{ color: "#fff", background: RED }}>Yes</button>
+                      <button onClick={(e) => { e.stopPropagation(); setConfirmId(null); }} className="px-2 py-1 rounded-md text-[10px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>No</button>
+                    </span>
+                  ) : (
+                    <>
+                      <GhostButton onClick={(e) => { e.stopPropagation(); setDetail(d); }}>View</GhostButton>
+                      {isAdmin && <GhostButton danger onClick={(e) => { e.stopPropagation(); setConfirmId(d.id); }}>Remove</GhostButton>}
+                    </>
+                  )}
                 </span>
               }
             >
@@ -307,6 +445,58 @@ export default function NetworkMonitoring() {
               )}
             </Panel>
           ))}
+        </div>
+      )}
+
+      {/* Add-router modal (admin) */}
+      {formOpen && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setFormOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+            <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.panel }}>
+              <span className="text-[12px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router / switch</span>
+              <button onClick={() => setFormOpen(false)} className="grid place-items-center w-7 h-7 rounded-md" style={{ color: gf.textMuted }} title="Close (Esc)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="p-4 flex flex-col gap-3">
+              <Field label="Name">
+                <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Core switch" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="IP address">
+                  <input value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.1" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                </Field>
+                <Field label="SNMP port">
+                  <input value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                </Field>
+              </div>
+              <Field label="SNMP community (read-only, v2c)">
+                <input value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+              </Field>
+              <Field label="Location">
+                <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+              </Field>
+              <p className="text-[10px] leading-relaxed" style={{ color: gf.textDim }}>
+                Uses SNMP v2c with a read-only community. Confirm UDP {form.snmpPort || "161"} is reachable from the backend host. Polling begins on the next cycle (≤60s) — no restart needed.
+              </p>
+              {formError && <div className="text-[10.5px]" style={{ color: RED }}>{formError}</div>}
+              <div className="flex gap-2 mt-1">
+                <button onClick={save} disabled={saving} className="text-[11px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: BLUE }}>
+                  {saving ? "Adding…" : "Add router"}
+                </button>
+                <button onClick={() => setFormOpen(false)} className="text-[11px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-5 right-5 z-[100] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl" style={{ color: GREEN, background: `${GREEN}14`, borderColor: `${GREEN}40`, fontFamily: "'JetBrains Mono', monospace" }}>
+          <span>✓</span> {toast}
         </div>
       )}
     </div>

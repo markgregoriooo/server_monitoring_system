@@ -2,6 +2,7 @@ import db from "../config/mysql.js";
 import client, { SYS_OID, IF_OID, IF_OPER_STATUS, UPS_OID, isOnBattery } from "./snmpClient.js";
 import agentService from "./agentService.js";
 import deviceAlerts from "./deviceAlerts.js";
+import alertBandState from "./alertBandState.js";
 import { writeNetworkSample } from "../handlers/networkMetricsHandler.js";
 import { writeUpsSample } from "../handlers/upsMetricsHandler.js";
 
@@ -377,6 +378,191 @@ async function getUpsDevices() {
   });
 }
 
+// ─── Device registration (add / remove) — admin, from the dashboard ─────────────
+//
+// The poller is data-driven: loadDevices() runs every cycle, so a device added here
+// starts being polled within one interval (≤ SNMP_POLL_INTERVAL_MS) with NO restart.
+// These mirror the manual `migrations/2026-06-12_router_ups_devices.sql` seed, so the
+// dashboard's "Add router / Add UPS" replaces hand-writing SQL. A community string is
+// REQUIRED: SNMP-only scope means a device without one can't be polled at all (the
+// ICMP-ping fallback for unmanaged routers isn't built yet).
+
+function badRequest(msg) {
+  const e = new Error(msg);
+  e.status = 400;
+  return e;
+}
+
+const trimOrNull = (v) => {
+  const s = v == null ? "" : String(v).trim();
+  return s === "" ? null : s;
+};
+
+// SNMP port: default 161; reject anything that isn't a valid port number.
+function normalizePort(v) {
+  if (v == null || v === "") return 161;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 161;
+}
+
+function isValidIp(ip) {
+  if (typeof ip !== "string") return false;
+  const m = ip.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  return Boolean(m) && m.slice(1).every((o) => Number(o) >= 0 && Number(o) <= 255);
+}
+
+// Derive a /24 segment string from an IPv4 address ("" if unknown) — mirrors
+// agentService.networkSegment so device_network.network_segment stays consistent.
+function networkSegment(ip) {
+  const m = typeof ip === "string" && ip.match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
+  return m ? `${m[1]}.${m[2]}.${m[3]}.0/24` : "";
+}
+
+// Validate the fields shared by both device classes, or throw a 400.
+function parseCommon(input) {
+  const name = String(input?.name ?? "").trim();
+  const ip = String(input?.ip ?? "").trim();
+  const community = String(input?.community ?? "").trim();
+  if (!name) throw badRequest("Device name is required.");
+  if (!isValidIp(ip)) throw badRequest("A valid IPv4 address is required.");
+  if (!community) throw badRequest("SNMP community string is required (SNMP-only monitoring).");
+  return {
+    name,
+    ip,
+    community,
+    location: String(input?.location ?? "").trim() || "CSPC-ICTU Server Room",
+    snmpPort: normalizePort(input?.snmpPort),
+  };
+}
+
+// Register a router/switch: devices (type router) + its device_network row, in one
+// transaction. Returns the row shaped exactly like a getNetworkDevices() item so the
+// caller can broadcast/return it directly.
+async function addNetworkDevice(input) {
+  const { name, ip, community, location, snmpPort } = parseCommon(input);
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [dev] = await conn.query(
+      `INSERT INTO devices (ip_address, device_name, device_type, status, location)
+       VALUES (?, ?, 'router', 'offline', ?)`,
+      [ip, name, location],
+    );
+    const deviceId = dev.insertId;
+    await conn.query(
+      `INSERT INTO device_network (device_id, gateway, dns, network_segment, snmp_port, snmp_community)
+       VALUES (?, '', '', ?, ?, ?)`,
+      [deviceId, networkSegment(ip), snmpPort, community],
+    );
+    await conn.commit();
+    await agentService.logDevice(deviceId, "info", "Router registered for SNMP monitoring");
+    return {
+      id: deviceId,
+      name,
+      ip,
+      type: "router",
+      location,
+      status: "Offline",
+      reachable: null,
+      uptimeSeconds: null,
+      cpuPercent: null,
+      memPercent: null,
+      interfaces: [],
+      monitored: true,
+    };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+// Register a UPS: devices (type ups) + device_network + ups_details, in one
+// transaction. communication_type must be snmp/network (the poller only reads those).
+// Returns the row shaped like a getUpsDevices() item.
+async function addUpsDevice(input) {
+  const { name, ip, community, location, snmpPort } = parseCommon(input);
+  const commType = ["snmp", "network"].includes(input?.commType) ? input.commType : "snmp";
+  const brand = trimOrNull(input?.brand);
+  const model = trimOrNull(input?.model);
+  const batteryCapacity = trimOrNull(input?.batteryCapacity);
+  const serialNumber = trimOrNull(input?.serialNumber);
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [dev] = await conn.query(
+      `INSERT INTO devices (ip_address, device_name, device_type, status, location)
+       VALUES (?, ?, 'ups', 'offline', ?)`,
+      [ip, name, location],
+    );
+    const deviceId = dev.insertId;
+    await conn.query(
+      `INSERT INTO device_network (device_id, gateway, dns, network_segment, snmp_port, snmp_community)
+       VALUES (?, '', '', ?, ?, ?)`,
+      [deviceId, networkSegment(ip), snmpPort, community],
+    );
+    await conn.query(
+      `INSERT INTO ups_details (device_id, brand, model, battery_capacity, communication_type, serial_number)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [deviceId, brand, model, batteryCapacity, commType, serialNumber],
+    );
+    await conn.commit();
+    await agentService.logDevice(deviceId, "info", "UPS registered for SNMP monitoring");
+    return {
+      id: deviceId,
+      name,
+      ip,
+      location,
+      brand,
+      model,
+      commType,
+      batteryCapacity,
+      status: "Offline",
+      batteryChargePct: null,
+      runtimeRemainingMin: null,
+      loadPct: null,
+      inputVoltage: null,
+      outputVoltage: null,
+      batteryVoltage: null,
+      onBattery: null,
+      temperature: null,
+      monitored: true,
+    };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+// Decommission a router/UPS: delete the devices row (device_network / ups_details /
+// network_interfaces cascade via their FKs). Also drops this device's in-memory poll
+// state so a later id reuse can't inherit stale counters/bands. Returns false if no
+// such device of that type. InfluxDB history is left intact.
+async function removeDevice(id, type) {
+  const deviceId = Number(id);
+  if (!Number.isInteger(deviceId)) throw badRequest("Invalid device id.");
+  const [result] = await db.query(
+    `DELETE FROM devices WHERE device_id = ? AND device_type = ?`,
+    [deviceId, type],
+  );
+  if (result.affectedRows === 0) return false;
+
+  if (type === "ups") {
+    latestUps.delete(deviceId);
+  } else {
+    latestNetwork.delete(deviceId);
+    for (const key of prevIface.keys()) {
+      if (key.startsWith(`${deviceId}:`)) prevIface.delete(key);
+    }
+  }
+  alertBandState.resetDevice(deviceId);
+  return true;
+}
+
 export default {
   pollAll,
   collectRouter,
@@ -384,4 +570,7 @@ export default {
   loadDevices,
   getNetworkDevices,
   getUpsDevices,
+  addNetworkDevice,
+  addUpsDevice,
+  removeDevice,
 };

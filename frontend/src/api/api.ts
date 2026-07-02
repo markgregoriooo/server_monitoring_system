@@ -288,6 +288,32 @@ export const api = {
     }
   },
 
+  // Register a router/switch for SNMP monitoring (admin). Picked up by the poller
+  // on its next cycle — no backend restart needed.
+  addNetworkDevice: async (payload: {
+    name: string;
+    ip: string;
+    community: string;
+    snmpPort?: number | string | undefined;
+    location?: string | undefined;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/network", payload);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteNetworkDevice: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/network/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   // UPS monitoring — battery/load via SNMP (UPS-MIB / RFC 1628)
   getUpsDevices: async (): Promise<ApiResult> => {
     try {
@@ -310,6 +336,37 @@ export const api = {
   getUpsLogs: async (id: number): Promise<ApiResult> => {
     try {
       const res = await apiClient.get(`/ups/${id}/logs`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Register a UPS (with an SNMP/network card) for monitoring (admin). Picked up by
+  // the poller on its next cycle — no backend restart needed.
+  addUpsDevice: async (payload: {
+    name: string;
+    ip: string;
+    community: string;
+    snmpPort?: number | string | undefined;
+    location?: string | undefined;
+    brand?: string | undefined;
+    model?: string | undefined;
+    batteryCapacity?: string | undefined;
+    commType?: string | undefined;
+    serialNumber?: string | undefined;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/ups", payload);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteUpsDevice: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/ups/${id}`);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
