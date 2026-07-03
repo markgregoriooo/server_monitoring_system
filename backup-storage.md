@@ -210,11 +210,57 @@ Two takeaways this design depends on:
 
 ---
 
-## 11. Operating & reading the backup
+## 11. Setup — deploy on the backend
 
-**Deploy:** mount the micro SD / USB on the backend, set `BACKUP_DIR` to its path in
-`backend/.env`, restart the backend. Confirm the startup log:
-`[BACKUP] on-site backup → <path> (flush 5000ms, retain 30d)`.
+The folder, file naming, rotation, and cleanup are all **automatic** — on startup the
+service runs `mkdir` (recursive) on `BACKUP_DIR`, so you never create the folder by hand.
+You only tell it *where* to write; otherwise it defaults to the backend's own disk
+(`backend/backups/`), which works but defeats the "independent copy" purpose.
+
+**Step 1 — plug in and mount the USB / micro SD on the backend server.**
+- **Windows:** it gets a drive letter, e.g. `E:`
+- **Linux:** mount it, e.g. `sudo mount /dev/sda1 /mnt/backup`, then add it to `/etc/fstab`
+  so it re-mounts automatically after a reboot (see gotcha below).
+
+**Step 2 — point the backend at that drive** in `backend/.env`:
+```ini
+# Windows
+BACKUP_DIR=E:/backups
+```
+```ini
+# Linux
+BACKUP_DIR=/mnt/backup/backups
+```
+> Use forward slashes even on Windows — Node accepts them and it avoids backslash-escaping
+> confusion in `.env`. Point at a **subfolder** on the drive, not the drive root.
+
+**Step 3 — restart the backend** so it re-reads `.env`.
+
+**Step 4 — done. The folder + files appear automatically.** Confirm the startup log:
+```
+[BACKUP] on-site backup → E:/backups (flush 5000ms, retain 30d)
+```
+Within ~a minute of live data the folder fills with `env-*.ndjson`, `server-*.ndjson`,
+`network-*.ndjson`, `ups-*.ndjson` (one file per stream per day).
+
+**Verify:** `dir E:\backups` (Windows) or `ls -la /mnt/backup/backups` (Linux) — the
+`.ndjson` files should be growing.
+
+### Setup gotchas
+- **Skip Step 2 → it lands on the backend's own disk** (`backend/backups/`), i.e. the same
+  disk as the app/DB. Fine for a quick test, wrong for a real backup — always point at the
+  USB/SD (see §13).
+- **The drive must re-mount after a reboot.** After an outage the server reboots; if the
+  USB/SD isn't mounted then, backup writes fail. Windows usually re-assigns the same drive
+  letter automatically; **Linux needs an `/etc/fstab` entry** or it won't mount on boot.
+- **Graceful-shutdown flush on Windows:** a UPS/OS-initiated shutdown doesn't raise
+  `SIGTERM` on Windows, so the synchronous shutdown flush won't fire there — you fall back
+  to the timer flush (≤ `BACKUP_FLUSH_MS`). Lower `BACKUP_FLUSH_MS` or run under a service
+  wrapper (NSSM/PM2) that stops cleanly. On Linux `SIGTERM` works, so this is a non-issue.
+
+---
+
+## 12. Reading the backup
 
 **Inspect a day of UPS data:**
 ```bash
@@ -236,7 +282,7 @@ InfluxDB, loaded into pandas/Excel, or diffed against the live DB with no schema
 
 ---
 
-## 12. Gotchas / known limits
+## 13. Gotchas / known limits
 
 - **Backend must be on the UPS.** The backup only survives an outage if the backend (and
   its card) stay powered — that is the linchpin of the whole design (§2, §8).
