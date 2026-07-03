@@ -2,7 +2,7 @@
  * ============================================================
  *  ESP32 Environment & Smoke Monitoring System v2
  *  Components: 2x MQ-2, DHT11, Piezo Buzzer, WS2812B RGB LED,
- *              RTC (DS3231), SD Card (SPI), 2x IR Transmitter
+ *              RTC (DS3231), 2x IR Transmitter
  *
  *  ─── PIN ASSIGNMENTS ────────────────────────────────────────
  *  MQ-2 #1 AOUT  : GPIO 34  (ADC, via 10kΩ/20kΩ divider)
@@ -13,13 +13,6 @@
  *  IR TX #1      : GPIO 25  ← NEW (AC unit 1)
  *  IR TX #2      : GPIO 33  ← NEW (AC unit 2)
  *  RTC DS3231    : SDA=21, SCL=22  (I2C, shared bus OK)
- *  SD Card       : MOSI=23, MISO=19, CLK=18, CS=5  (SPI default)
- *
- *  ─── SD CARD OFFLINE BUFFER LOGIC ───────────────────────────
- *  • When WiFi is DOWN  → log every reading to /log.csv on SD
- *  • When WiFi restores → flush all buffered rows to server
- *                         via Socket.IO "offlineData" event,
- *                         then delete /log.csv
  *
  *  ─── IR TRANSMITTER LOGIC ────────────────────────────────────
  *  Both transmitters send identical signals simultaneously.
@@ -51,7 +44,6 @@
  *  - ArduinoJson              (Benoit Blanchon) v6
  *  - WebSockets               (Markus Sattler)  — provides SocketIOclient
  *  - RTClib                   (Adafruit)
- *  - SD                       (built-in Arduino/ESP32 core)
  *  - Adafruit NeoPixel        (Adafruit)
  *  - IRremoteESP8266          (crankyoldgit) — IRsend
  * ─────────────────────────────────────────────────────────── */
@@ -62,8 +54,6 @@
 #include <ArduinoJson.h>
 #include <math.h>
 #include <RTClib.h>
-#include <SD.h>
-#include <SPI.h>
 #include <Adafruit_NeoPixel.h>
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
@@ -75,7 +65,6 @@
 #define BUZZER_PIN 26
 #define DHTPIN      4
 #define RGB_PIN    27    // WS2812B data
-#define SD_CS_PIN   5    // SD card chip select
 
 /* =========== IR CHANNEL ARRAY ===============
  * Each index = ir_channel value stored in DB (0-based here).
@@ -155,10 +144,6 @@ float TEMP_CRITICAL = 35.0;
 float HUM_DANGER    = 95.0;
 float HUM_WARNING   = 85.0;
 
-/* ================= SD LOG FILE ============== */
-#define SD_ENABLED false   // set to true when SD module is connected
-#define LOG_FILE "/log.csv"
-
 /* ================= IR ZONES ================= */
 // Zone IDs for change detection
 #define IR_ZONE_NONE -1
@@ -205,9 +190,7 @@ String lastTempStatus = "NORMAL";
 int lastBuzzerPriority = -1;
 bool warmupDone = false;
 unsigned long warmupStart = 0;
-bool sdAvailable = false;
 bool rtcAvailable = false;
-bool wifiWasConnected = false;  // tracks WiFi restore event
 int lastIRZone = IR_ZONE_NONE;
 
 /* ─────────────────────────────────────────────────────────────
@@ -491,108 +474,6 @@ String getTimestamp() {
   char buf[16];
   sprintf(buf, "UP %02lu:%02lu:%02lu", h, m, s);
   return String(buf);
-}
-
-/* ─────────────────────────────────────────────
- *  SD CARD — append one CSV row
- *  Header: timestamp,temp,humidity,ppm1,ppm2,
- *          smoke_status,temp_status,env_status,heat_index
- * ─────────────────────────────────────────────*/
-void sdAppendRow(const String& ts, float temp, float hum,
-                 float ppm1, float ppm2,
-                 const String& smokeStatus,
-                 const String& tempStatus,
-                 const String& envStatus,
-                 float heatIndex) {
-  if (!sdAvailable) return;
-
-  File f = SD.open(LOG_FILE, FILE_APPEND);
-  if (!f) {
-    Serial.println("[SD] Failed to open log for append.");
-    return;
-  }
-
-  // Write CSV header if file is new / empty
-  if (f.size() == 0) {
-    f.println("timestamp,temperature,humidity,ppm1,ppm2,"
-              "smoke_status,temp_status,env_status,heat_index");
-  }
-
-  f.printf("%s,%.1f,%.1f,%.1f,%.1f,%s,%s,%s,%.1f\n",
-           ts.c_str(), temp, hum, ppm1, ppm2,
-           smokeStatus.c_str(), tempStatus.c_str(),
-           envStatus.c_str(), heatIndex);
-  f.close();
-  Serial.println("[SD] Row saved to " LOG_FILE);
-}
-
-/* ─────────────────────────────────────────────
- *  SD CARD — flush buffered rows to server
- *  Reads log.csv line by line, emits each as
- *  "offlineData" Socket.IO event, then deletes file.
- * ─────────────────────────────────────────────*/
-void sdFlushToServer() {
-  if (!sdAvailable || !socketIO.isConnected()) return;
-  if (!SD.exists(LOG_FILE)) return;
-
-  Serial.println("[SD] WiFi restored — flushing offline log to server...");
-
-  File f = SD.open(LOG_FILE, FILE_READ);
-  if (!f) {
-    Serial.println("[SD] Cannot open log for reading.");
-    return;
-  }
-
-  bool headerSkipped = false;
-  int rowCount = 0;
-
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.isEmpty()) continue;
-
-    // Skip CSV header row
-    if (!headerSkipped) {
-      headerSkipped = true;
-      continue;
-    }
-
-    // Parse CSV: timestamp,temp,hum,ppm1,ppm2,smoke,temp_st,env_st,hi
-    int fi = 0;
-    String fields[9];
-    int start = 0;
-    for (int i = 0; i <= line.length(); i++) {
-      if (i == (int)line.length() || line[i] == ',') {
-        if (fi < 9) fields[fi++] = line.substring(start, i);
-        start = i + 1;
-      }
-    }
-    if (fi < 9) continue;  // malformed row
-
-    StaticJsonDocument<400> doc;
-    JsonArray array = doc.to<JsonArray>();
-    array.add("offlineData");
-    JsonObject p = array.createNestedObject();
-    p["timestamp"] = fields[0];
-    p["temperature"] = fields[1].toFloat();
-    p["humidity"] = fields[2].toFloat();
-    p["mq2_1_ppm"] = fields[3].toFloat();
-    p["mq2_2_ppm"] = fields[4].toFloat();
-    p["smoke_status"] = fields[5];
-    p["temp_status"] = fields[6];
-    p["environment_status"] = fields[7];
-    p["heat_index"] = fields[8].toFloat();
-
-    String output;
-    serializeJson(doc, output);
-    socketIO.sendEVENT(output);
-    rowCount++;
-    delay(30);  // small gap to avoid flooding
-  }
-
-  f.close();
-  SD.remove(LOG_FILE);
-  Serial.printf("[SD] Flushed %d rows. Log deleted.\n", rowCount);
 }
 
 /* ─────────────────────────────────────────────
@@ -916,33 +797,6 @@ void setup() {
     rtcAvailable = false;
   }
 
-#if SD_ENABLED
-  /* SD Card */
-  Serial.println("[SD] Initializing...");
-  SPI.begin(18, 19, 23, SD_CS_PIN);  // SCK=18, MISO=19, MOSI=23, CS=5
-  delay(2000);
-
-  Serial.printf("[SD] SCK=18 MISO=19 MOSI=23 CS=%d\n", SD_CS_PIN);
-
-  uint32_t speeds[] = {25000000, 4000000, 1000000, 400000};
-  const char* labels[] = {"25MHz", "4MHz", "1MHz", "400kHz"};
-  for (int i = 0; i < 4; i++) {
-    SD.end();
-    delay(100);
-    if (SD.begin(SD_CS_PIN, SPI, speeds[i])) {
-      Serial.printf("[SD] OK at %s\n", labels[i]);
-      sdAvailable = true;
-      break;
-    }
-    Serial.printf("[SD] Failed at %s\n", labels[i]);
-  }
-  if (!sdAvailable) {
-    Serial.println("[WARN] SD card not found — offline logging disabled.");
-  }
-#else
-  Serial.println("[SD] Disabled — offline logging skipped.");
-  sdAvailable = false;
-#endif
   /* WiFi */
   Serial.print("[WiFi] Connecting");
   WiFi.begin(ssid, password);
@@ -955,7 +809,6 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.print("\n[WiFi] IP: ");
     Serial.println(WiFi.localIP());
-    wifiWasConnected = true;
 
     // Sync time via NTP — Philippines is UTC+8, no DST
     configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
@@ -975,7 +828,6 @@ void setup() {
     }
   } else {
     Serial.println("\n[WiFi] Not connected — offline mode.");
-    wifiWasConnected = false;
   }
 
   /* Socket.IO — pass device key as query param for server auth */
@@ -1000,14 +852,7 @@ void loop() {
   socketIO.loop();
   unsigned long now_ms = millis();
 
-  /* ── Detect WiFi restore → flush SD buffer ── */
   bool wifiNow = (WiFi.status() == WL_CONNECTED);
-#if SD_ENABLED
-  if (wifiNow && !wifiWasConnected && socketIO.isConnected()) {
-    sdFlushToServer();
-  }
-#endif
-  wifiWasConnected = wifiNow;
 
   /* ── Non-blocking warmup ── */
   if (!warmupDone) {
@@ -1109,13 +954,7 @@ void loop() {
         Serial.println("[IO] Sent: " + output);
 
       } else {
-#if SD_ENABLED
-        /* ── Offline: buffer to SD card ── */
-        sdAppendRow(timestamp, temperature, humidity,
-                    ppm1, ppm2, smokeStatus, tempStatus, envStatus, heatIndex);
-#else
-        Serial.println("[WARN] WiFi down — offline logging disabled (SD not enabled).");
-#endif
+        Serial.println("[WARN] WiFi down — reading not sent (offline).");
       }
     }
   }
