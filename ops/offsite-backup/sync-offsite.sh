@@ -29,7 +29,8 @@ echo "[$(ts)] offsite sync start → $RCLONE_REMOTE" >> "$LOG"
 rc=0
 rclone --config "$RCLONE_CONFIG" copy "$BACKUP_DIR" "$RCLONE_REMOTE" \
   --exclude ".last_offsite_sync" \
-  --exclude "offsite-sync.log" \
+  --exclude "*.log" \
+  --exclude "*.tmp" \
   --transfers 4 --checkers 8 \
   --log-file "$LOG" --log-level INFO || rc=$?
 

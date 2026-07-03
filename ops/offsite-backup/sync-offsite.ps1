@@ -27,7 +27,8 @@ Add-Content -Path $Log -Value "[$(Ts)] offsite sync start -> $Remote"
 
 & rclone --config $RcloneConf copy $BackupDir $Remote `
     --exclude ".last_offsite_sync" `
-    --exclude "offsite-sync.log" `
+    --exclude "*.log" `
+    --exclude "*.tmp" `
     --transfers 4 --checkers 8 `
     --log-file $Log --log-level INFO
 
