@@ -42,6 +42,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const FLUSH_ERROR_THRESHOLD = 3; // consecutive failed flushes before raising a health alert
 const MAX_BUFFER_LINES = 100_000; // per-file safety cap so a long write outage can't OOM the process
 const MANIFEST_FILE = "checksums.sha256"; // integrity manifest (sha256sum -c compatible)
+// Dated backup files this service owns for retention + integrity: the NDJSON metric
+// streams AND the MySQL dumps dropped in by ops/db-backup (mysql-YYYY-MM-DD.sql.gz).
+const DATED_FILE_RE = /-(\d{4}-\d{2}-\d{2})\.(?:ndjson|sql\.gz)$/;
 // Offsite (cloud) sync health — a SEPARATE rclone job (ops/offsite-backup) stamps a marker
 // on each successful upload; the backend only READS that local marker (no cloud dependency).
 const OFFSITE_ENABLED = (process.env.BACKUP_OFFSITE_ENABLED ?? "false").toLowerCase() === "true";
@@ -167,7 +170,7 @@ async function purgeOld() {
     const cutoff = Date.now() - RETENTION_DAYS * DAY_MS;
     const files = await fsp.readdir(BACKUP_DIR);
     for (const f of files) {
-      const m = f.match(/-(\d{4}-\d{2}-\d{2})\.ndjson$/);
+      const m = f.match(DATED_FILE_RE);
       if (!m) continue;
       const when = new Date(`${m[1]}T23:59:59`).getTime();
       if (Number.isFinite(when) && when < cutoff) {
@@ -231,7 +234,7 @@ async function updateChecksums() {
     return { added: 0, rotted: [] };
   }
   const sealed = files.filter((f) => {
-    const m = f.match(/-(\d{4}-\d{2}-\d{2})\.ndjson$/);
+    const m = f.match(DATED_FILE_RE);
     return m && m[1] < today; // date strictly before today = immutable
   });
   const present = new Set(files);

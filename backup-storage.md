@@ -117,13 +117,20 @@ BACKUP_DIR/
   ups-2026-07-03.ndjson
   env-2026-07-04.ndjson
   ...
-  checksums.sha256      # SHA-256 of every sealed (past-day) file — integrity manifest, see §6
+  mysql-2026-07-03.sql.gz   # nightly MySQL dump (relational data) — see ops/db-backup/
+  checksums.sha256          # SHA-256 of every sealed (past-day) file — integrity manifest, §6
 ```
 
 Example line (`ups-2026-07-03.ndjson`):
 ```json
 {"ts":"2026-07-03T03:58:16.613Z","stream":"ups","device_id":5,"battery_charge_pct":88,"on_battery":false}
 ```
+
+The `.ndjson` files are the **time-series** (InfluxDB). The **relational** data — users,
+devices, `alert_rules`, and the history/log tables (`alerts`, `device_logs`, `aircon_logs`,
+`system_logs`) — is captured by a nightly **`mysql-YYYY-MM-DD.sql.gz`** dump
+(`ops/db-backup/`) that lands in the same folder, so it inherits the same retention,
+integrity manifest, and offsite sync.
 
 ---
 
