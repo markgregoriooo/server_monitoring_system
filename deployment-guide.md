@@ -9,7 +9,7 @@ firmware. For *how each part works internally* see `CLAUDE.md`, `server-metrics.
 > **Scope.** This covers everything currently on `main` / `predictive-analytics`:
 > backend API, React dashboard, MySQL + InfluxDB, the Go server agents, and the ESP32
 > environment node. The **router / UPS / MikroTik** monitoring lives on separate,
-> unmerged branches and is **not deployable from here yet** — see [§13](#13-not-yet-deployable-roadmap-features).
+> unmerged branches and is **not deployable from here yet** — see [§14](#14-not-yet-deployable-roadmap-features).
 
 > **Deployment model (decided):** **on-premise at CSPC** — the backend, databases, and
 > dashboard all run on one **campus server**, and staff reach it from home through a
@@ -504,14 +504,93 @@ captured from the real remote (see `CLAUDE.md` → Air Conditioner System).
 - **`trust proxy`** is already enabled (`app.set("trust proxy", 1)`) so rate limiting
   sees the real client IP behind one proxy hop (nginx).
 - **DB user:** least-privilege app user ([§2.1](#21-mysql)), not root.
-- **Backups:** `mysqldump` the MySQL DB; snapshot the InfluxDB bucket; both stores hold
-  distinct data (relational vs time-series).
+- **Backups:** a full on-site + offsite (cloud) backup runbook is in
+  [§11](#11-backups--on-site--offsite-cloud) — an NDJSON stream mirror, a nightly
+  `mysqldump`, and an encrypted **Backblaze B2** offsite copy (3-2-1).
 - **OS-popup notifications** require a secure context — they work once the dashboard is
   served over the HTTPS tunnel URL (not over plain-HTTP LAN IP).
 
 ---
 
-## 11. Post-deploy verification checklist
+## 11. Backups — on-site + offsite (cloud)
+
+> **Branch scope.** The automated backup subsystem (the NDJSON stream mirror written by
+> `backupService`, plus `ops/db-backup/` and `ops/offsite-backup/`) ships with the backup
+> work on the **`mikrotik-monitoring`** branch, not this one — deploy it once that branch
+> is merged (or if you deploy from it). The **full step-by-step for the cloud copy** is in
+> **`ops/backblaze-guide.md`**; this section is the deploy-time summary.
+
+Three copies, **3-2-1** style — so the data survives a DB wipe, a dead disk, *and* a lost
+building:
+
+| # | Copy | Where | Set up in |
+|---|---|---|---|
+| 1 | Live databases | MySQL + InfluxDB on the campus server | [§2](#2-databases) |
+| 2 | On-site backup | NDJSON stream mirror + nightly `mysqldump`, on a **USB / micro-SD** (`BACKUP_DIR`) | 11.1 |
+| 3 | **Offsite (cloud)** | **Backblaze B2**, client-side **encrypted** | 11.2 |
+
+### 11.1 On-site copy (local drive)
+
+The backend automatically mirrors **every ingested sample** (env / server / router / UPS)
+to rotating NDJSON files under `BACKUP_DIR` — an independent copy that survives a DB wipe.
+Add the relational half with the nightly MySQL dump. Env vars in `backend/.env`:
+
+```dotenv
+BACKUP_DIR=/mnt/backup/backups     # a mounted USB stick / micro-SD — NOT the same disk as the DB
+BACKUP_RETENTION_DAYS=30           # local files older than this are purged daily
+```
+
+Schedule the DB dump a few minutes **before** the offsite sync (Linux cron shown; Windows
+Task Scheduler in `ops/db-backup/README.md`):
+
+```cron
+15 2 * * *  BACKUP_DIR=/mnt/backup/backups /opt/cspc/ops/db-backup/dump-mysql.sh
+```
+
+The dump lands in `BACKUP_DIR` as `mysql-YYYY-MM-DD.sql.gz`, so the offsite job **and** the
+retention + SHA-256 integrity manifest cover it automatically — no extra plumbing.
+
+### 11.2 Offsite copy (Backblaze B2, encrypted)
+
+A scheduled `rclone` job copies `BACKUP_DIR` to a Backblaze B2 bucket, **encrypted
+client-side** (data *and* filenames) before it leaves campus. It uses `rclone copy` (never
+`sync`) so the cloud keeps full history even after local retention purges.
+
+1. **Account:** sign up at backblaze.com with a **CSPC institution email** (ideally a shared
+   ICTU mailbox), choose **Application storage (B2 Cloud Storage)**, create a **Private**
+   bucket + an application key scoped to it. The sign-up email owns the backups + billing
+   forever — keep it CSPC's, not personal. Cost is a few cents/month (telemetry is tiny).
+2. **Install `rclone`** on the campus server and configure two remotes — a raw `b2` and a
+   `crypt` layer on top (template: `ops/offsite-backup/rclone.conf.example`).
+3. **Schedule** the sync just after the dump:
+
+```cron
+30 2 * * *  BACKUP_DIR=/mnt/backup/backups /opt/cspc/ops/offsite-backup/sync-offsite.sh
+```
+
+4. **Backend offsite-health alert** — each successful sync stamps
+   `BACKUP_DIR/.last_offsite_sync`; point the backend at it:
+
+```dotenv
+BACKUP_OFFSITE_ENABLED=true
+BACKUP_OFFSITE_MAX_AGE_HOURS=26    # warn if no successful sync within this window
+```
+
+If the sync stalls, the backend raises a `backup_offsite` warning on the normal bell/email
+pipeline and auto-resolves it once a fresh sync lands. Leave `BACKUP_OFFSITE_ENABLED` unset
+until the sync is actually running, so it never false-alerts.
+
+> ⚠️ **Keep offline + safe** (they are **not** in any backup): the rclone **encryption
+> passphrase**, `rclone.conf`, and `backend/.env`. Without the passphrase the cloud copy is
+> unrecoverable — that's the point of client-side encryption. Store them with CSPC,
+> separately from the server.
+
+Full walkthrough — bucket, keys, rclone config, connection test, restore, and verification:
+**`ops/backblaze-guide.md`**.
+
+---
+
+## 12. Post-deploy verification checklist
 
 - [ ] `node src/server.js` logs `Server running on port 3000` with no DB/Influx errors.
 - [ ] `https://<tunnel-host>/` loads the dashboard from **off the campus network** (test on phone data).
@@ -526,7 +605,7 @@ captured from the real remote (see `CLAUDE.md` → Air Conditioner System).
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
@@ -544,7 +623,7 @@ captured from the real remote (see `CLAUDE.md` → Air Conditioner System).
 
 ---
 
-## 13. Not-yet-deployable (roadmap features)
+## 14. Not-yet-deployable (roadmap features)
 
 These are **not on this branch** and cannot be deployed yet:
 
