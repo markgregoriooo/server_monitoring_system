@@ -1,4 +1,5 @@
 import { writeClient, Point } from "../config/influx.js";
+import backupService from "../services/backupService.js";
 
 // ─── Router/switch sample → InfluxDB + Socket.IO ──────────────────────────────
 //
@@ -56,6 +57,33 @@ export async function writeNetworkSample(io, device, sample) {
     console.error("[NETWORK_METRICS] InfluxDB error:", err);
     // fall through — still broadcast so the UI stays live
   }
+
+  // ---- On-site backup copy (both non-MikroTik SNMP + MikroTik land here; the
+  //      device_type field distinguishes them) ----
+  backupService.record("network", {
+    device_id: device.id,
+    device_name: device.name,
+    device_type: device.type ?? "router",
+    ip: device.ip,
+    location: device.location,
+    reachable: sample.reachable !== false,
+    uptime_seconds: sample.uptimeSeconds ?? null,
+    cpu_percent: sample.cpuPercent ?? null,
+    mem_percent: sample.memPercent ?? null,
+    latency_ms: sample.latencyMs ?? null,
+    packet_loss_pct: sample.packetLossPct ?? null,
+    connected_clients: sample.connectedClients ?? null,
+    interfaces: (sample.interfaces ?? []).map((i) => ({
+      name: i.name,
+      location_label: i.locationLabel ?? "",
+      rx_bytes: i.rxBytes ?? null, // BigInt → string via backup's replacer
+      tx_bytes: i.txBytes ?? null,
+      rx_errors: i.rxErrors ?? 0,
+      tx_errors: i.txErrors ?? 0,
+      link_up: Boolean(i.linkUp),
+      utilization_pct: i.utilizationPct ?? null,
+    })),
+  });
 
   // ---- Broadcast camelCase to dashboards (BigInts → strings: JSON can't carry BigInt) ----
   try {

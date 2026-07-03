@@ -13,6 +13,7 @@ import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
 import snmpPollerService from "../services/snmpPollerService.js";
 import mikrotikPollerService from "../services/mikrotikPollerService.js";
+import backupService from "../services/backupService.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
@@ -123,6 +124,11 @@ app.set("io", io);
 // threading `io` through every call.
 notificationService.init(io);
 alertsService.init(io); // so acknowledge/resolve + auto-resolve can broadcast alertUpdated
+
+// On-site backup writer — mirrors every ingested sample (env/server/router/UPS) to
+// rotating NDJSON files on BACKUP_DIR (a micro SD / USB drive on the backend, or a
+// local folder). An independent copy that survives a DB wipe + a power outage.
+backupService.init();
 
 // Warm the configurable-threshold cache so the first metric POST evaluates against
 // rules without a cold DB read (getEffectiveRules also lazy-loads as a fallback).
