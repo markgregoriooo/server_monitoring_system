@@ -42,6 +42,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const FLUSH_ERROR_THRESHOLD = 3; // consecutive failed flushes before raising a health alert
 const MAX_BUFFER_LINES = 100_000; // per-file safety cap so a long write outage can't OOM the process
 const MANIFEST_FILE = "checksums.sha256"; // integrity manifest (sha256sum -c compatible)
+// Offsite (cloud) sync health — a SEPARATE rclone job (ops/offsite-backup) stamps a marker
+// on each successful upload; the backend only READS that local marker (no cloud dependency).
+const OFFSITE_ENABLED = (process.env.BACKUP_OFFSITE_ENABLED ?? "false").toLowerCase() === "true";
+const OFFSITE_MAX_AGE_HOURS = Number(process.env.BACKUP_OFFSITE_MAX_AGE_HOURS) || 26;
+const OFFSITE_MARKER =
+  (process.env.BACKUP_OFFSITE_MARKER ?? "").trim() || path.join(BACKUP_DIR, ".last_offsite_sync");
+const OFFSITE_CHECK_MS = 6 * 60 * 60 * 1000; // re-check offsite freshness every 6h
 
 // JSON can't serialize BigInt (router rx/tx byte counters are BigInt) → stringify.
 const bigIntSafe = (_k, v) => (typeof v === "bigint" ? v.toString() : v);
@@ -275,6 +282,37 @@ async function dailyMaintenance() {
   await updateChecksums();
 }
 
+// Offsite-sync health. The standalone rclone job (ops/offsite-backup) writes OFFSITE_MARKER
+// with an ISO timestamp on each successful cloud upload. If that stamp is missing or older
+// than OFFSITE_MAX_AGE_HOURS, the "1 offsite" copy of 3-2-1 has stalled → warn. Opt-in
+// (BACKUP_OFFSITE_ENABLED) so it never false-fires before cloud sync is configured. Reads
+// ONLY a local file, so the backend keeps zero runtime dependency on the cloud.
+async function checkOffsite() {
+  if (!OFFSITE_ENABLED) return;
+  let stampMs = null;
+  try {
+    const t = Date.parse((await fsp.readFile(OFFSITE_MARKER, "utf8")).trim());
+    if (Number.isFinite(t)) stampMs = t;
+  } catch (err) {
+    if (err.code !== "ENOENT") console.error("[BACKUP] offsite marker read error:", err.message);
+  }
+  const stale = stampMs == null || Date.now() - stampMs > OFFSITE_MAX_AGE_HOURS * 60 * 60 * 1000;
+  if (stale) {
+    const when = stampMs == null ? "never" : new Date(stampMs).toISOString();
+    notificationService
+      .raiseAlert({
+        deviceId: null,
+        type: "backup_offsite",
+        severity: "warning",
+        title: "Offsite backup stale",
+        message: `No successful offsite (cloud) backup within ${OFFSITE_MAX_AGE_HOURS}h (last: ${when}). Check the rclone sync job.`,
+      })
+      .catch(() => {});
+  } else {
+    alertsService.autoResolveMetric(null, "backup_offsite").catch(() => {});
+  }
+}
+
 // Call once at startup (server.js). Creates the dir, starts the flush + maintenance
 // timers, and wires a shutdown flush so nothing buffered is lost on a clean stop.
 function init() {
@@ -301,6 +339,15 @@ function init() {
   const maintTimer = setInterval(dailyMaintenance, DAY_MS);
   maintTimer.unref?.();
 
+  if (OFFSITE_ENABLED) {
+    console.log(
+      `[BACKUP] offsite health watch on ${OFFSITE_MARKER} (max age ${OFFSITE_MAX_AGE_HOURS}h)`,
+    );
+    checkOffsite();
+    const offsiteTimer = setInterval(checkOffsite, OFFSITE_CHECK_MS);
+    offsiteTimer.unref?.();
+  }
+
   // Flush the last buffered samples on shutdown. A UPS low-battery event typically
   // triggers an OS shutdown (SIGTERM); Ctrl+C sends SIGINT. Node does NOT emit
   // 'exit' for an unhandled signal, so we must catch the signals ourselves.
@@ -314,4 +361,4 @@ function init() {
   process.on("exit", flushSync); // final safety net for a normal event-loop exit
 }
 
-export default { init, record, flush, flushSync, purgeOld, updateChecksums, BACKUP_DIR };
+export default { init, record, flush, flushSync, purgeOld, updateChecksums, checkOffsite, BACKUP_DIR };
