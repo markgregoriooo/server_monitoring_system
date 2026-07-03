@@ -1,4 +1,5 @@
 import { writeClient, Point } from "../config/influx.js";
+import backupService from "../services/backupService.js";
 
 // ─── UPS sample → InfluxDB + Socket.IO ────────────────────────────────────────
 //
@@ -41,6 +42,23 @@ export async function writeUpsSample(io, device, sample) {
   } catch (err) {
     console.error("[UPS_METRICS] InfluxDB error:", err);
   }
+
+  // ---- On-site backup copy (the most important stream during an outage) ----
+  backupService.record("ups", {
+    device_id: device.id,
+    device_name: device.name,
+    ip: device.ip,
+    location: device.location,
+    battery_charge_pct: sample.batteryChargePct ?? null,
+    runtime_remaining_min: sample.runtimeRemainingMin ?? null,
+    load_pct: sample.loadPct ?? null,
+    input_voltage: sample.inputVoltage ?? null,
+    output_voltage: sample.outputVoltage ?? null,
+    battery_voltage: sample.batteryVoltage ?? null,
+    on_battery: sample.onBattery ?? null,
+    battery_status: sample.batteryStatus ?? null,
+    temperature: sample.temperature ?? null,
+  });
 
   try {
     io?.emit("upsMetrics", {
