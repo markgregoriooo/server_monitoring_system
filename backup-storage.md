@@ -159,8 +159,20 @@ system-level):
   alert (type `backup_integrity`). The manifest is `sha256sum -c checksums.sha256`-compatible,
   so you can also verify the whole card from a shell.
 
-> These are the **local tier** of health monitoring. The remaining enterprise steps —
-> **offsite copy (3-2-1)** and encryption — are still recommended for full coverage.
+### Offsite copy (3-2-1) — Backblaze B2
+
+The **offsite leg** is a SEPARATE, scheduled `rclone` job (`ops/offsite-backup/`) that copies
+the NDJSON files to an **encrypted Backblaze B2** bucket. It does **not** change the on-prem
+backend — the backend only reads a local success-marker for a `backup_offsite` staleness
+alert and has **zero cloud runtime dependency** (internet/cloud down → monitoring is fine,
+only the offsite copy lags). It uses `rclone copy` (never deletes remotely) so the cloud keeps
+full history after local retention purges, and encrypts client-side (rclone `crypt`).
+
+Full setup (install, B2 bucket/key, encryption, schedule, restore): **`ops/offsite-backup/README.md`**.
+Enable the backend staleness alert with `BACKUP_OFFSITE_ENABLED=true` once the sync is running.
+
+> Remaining enterprise hardening beyond this: B2 **Object Lock / lifecycle** for immutability
+> (ransomware/WORM), and a documented **restore drill**.
 
 ---
 
