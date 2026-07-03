@@ -1,6 +1,9 @@
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
+import crypto from "crypto";
+import notificationService from "./notificationService.js";
+import alertsService from "./alertsService.js";
 
 // ─── On-site backup writer ────────────────────────────────────────────────────
 //
@@ -23,6 +26,12 @@ import path from "path";
 // One JSON object per line — append-only, robust to partial writes, trivial to replay.
 //
 // Never throws: a backup failure must never break metric ingestion.
+//
+// HEALTH + INTEGRITY: a silently-failing backup is worse than none. Repeated flush
+// failures raise a `backup` alert on the normal bell/email pipeline and auto-resolve on
+// recovery. A daily SHA-256 manifest of "sealed" (past-day, immutable) files detects
+// silent corruption — a later re-hash that differs = card rot → `backup_integrity` alert.
+// The manifest is `sha256sum -c`-compatible.
 
 const ENABLED = (process.env.BACKUP_ENABLED ?? "true").toLowerCase() !== "false";
 const BACKUP_DIR =
@@ -30,6 +39,9 @@ const BACKUP_DIR =
 const RETENTION_DAYS = Number(process.env.BACKUP_RETENTION_DAYS) || 30;
 const FLUSH_MS = Number(process.env.BACKUP_FLUSH_MS) || 5_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const FLUSH_ERROR_THRESHOLD = 3; // consecutive failed flushes before raising a health alert
+const MAX_BUFFER_LINES = 100_000; // per-file safety cap so a long write outage can't OOM the process
+const MANIFEST_FILE = "checksums.sha256"; // integrity manifest (sha256sum -c compatible)
 
 // JSON can't serialize BigInt (router rx/tx byte counters are BigInt) → stringify.
 const bigIntSafe = (_k, v) => (typeof v === "bigint" ? v.toString() : v);
@@ -37,6 +49,8 @@ const bigIntSafe = (_k, v) => (typeof v === "bigint" ? v.toString() : v);
 // In-memory buffer: absolute filename → array of serialized lines awaiting flush.
 const buffer = new Map();
 let started = false;
+let healthFailing = false; // true while writes keep failing — drives the backup health alert
+let consecutiveFlushErrors = 0;
 
 function dayStamp(d = new Date()) {
   const y = d.getFullYear();
@@ -68,20 +82,63 @@ function record(stream, payload) {
 }
 
 // Async flush (timer-driven). Drains the buffer to disk; re-queues on failure so a
-// transient I/O error (card busy) retries next tick instead of dropping rows.
+// transient I/O error (card busy) retries next tick instead of dropping rows. Tracks
+// consecutive failures so a genuinely failing drive raises a health alert (and clears
+// it on recovery). A per-file cap bounds memory if the drive is gone for a long time.
 async function flush() {
   if (buffer.size === 0) return;
   const pending = new Map(buffer);
   buffer.clear();
+  let failed = null;
   for (const [file, lines] of pending) {
     try {
       await fsp.appendFile(file, lines.join("\n") + "\n");
     } catch (err) {
+      failed = err;
       console.error("[BACKUP] flush error:", err.message);
       const remaining = buffer.get(file);
-      buffer.set(file, remaining ? lines.concat(remaining) : lines);
+      let merged = remaining ? lines.concat(remaining) : lines;
+      // Keep the NEWEST rows if we've backed up past the cap (drop oldest to avoid OOM).
+      if (merged.length > MAX_BUFFER_LINES) merged = merged.slice(-MAX_BUFFER_LINES);
+      buffer.set(file, merged);
     }
   }
+  // Health transition: alert once on the ok→failing edge, auto-resolve on recovery.
+  if (failed) {
+    consecutiveFlushErrors++;
+    if (!healthFailing && consecutiveFlushErrors >= FLUSH_ERROR_THRESHOLD) {
+      healthFailing = true;
+      reportUnhealthy(failed.code || failed.message);
+    }
+  } else if (healthFailing || consecutiveFlushErrors) {
+    consecutiveFlushErrors = 0;
+    if (healthFailing) {
+      healthFailing = false;
+      console.log("[BACKUP] writes recovered");
+      reportHealthy();
+    }
+  }
+}
+
+// ─── Backup-health alerting ───────────────────────────────────────────────────
+// A backup that silently stops writing is worse than none, so surface it on the same
+// bell/email pipeline as every other alert. Fired fire-and-forget (raiseAlert de-dups
+// while the alert is open, so this never spams). deviceId null = a system-level alert.
+function reportUnhealthy(detail) {
+  notificationService
+    .raiseAlert({
+      deviceId: null,
+      type: "backup",
+      severity: "critical",
+      title: "Backup storage failing",
+      message: `On-site backup can't write to ${BACKUP_DIR} — ${detail}. Check the drive (unmounted / full / read-only).`,
+    })
+    .catch(() => {});
+}
+
+function reportHealthy() {
+  // Recovery → auto-resolve the open backup alert (same path metric-recovery uses).
+  alertsService.autoResolveMetric(null, "backup").catch(() => {});
 }
 
 // Synchronous flush for shutdown handlers (can't rely on the event loop then).
@@ -115,7 +172,110 @@ async function purgeOld() {
   }
 }
 
-// Call once at startup (server.js). Creates the dir, starts the flush + retention
+// ─── Integrity: SHA-256 manifest for rot detection ────────────────────────────
+// A "sealed" file is one whose day-stamp has passed → it's never appended to again, so
+// its bytes are immutable. We hash each sealed file once (the known-good hash) into a
+// manifest; a later re-hash that differs means the bytes changed on disk with no writer
+// touching them = silent corruption (card rot). Manifest lines are `<hash>  <filename>`
+// so `sha256sum -c checksums.sha256` verifies the whole card from a shell.
+
+function sha256File(absPath) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash("sha256");
+    const s = fs.createReadStream(absPath);
+    s.on("error", reject);
+    s.on("data", (d) => h.update(d));
+    s.on("end", () => resolve(h.digest("hex")));
+  });
+}
+
+async function readManifest() {
+  const map = new Map();
+  try {
+    const txt = await fsp.readFile(path.join(BACKUP_DIR, MANIFEST_FILE), "utf8");
+    for (const line of txt.split("\n")) {
+      const m = line.match(/^([0-9a-f]{64})\s+(.+)$/);
+      if (m) map.set(m[2], m[1]);
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") console.error("[BACKUP] manifest read error:", err.message);
+  }
+  return map;
+}
+
+async function writeManifest(map) {
+  const lines = [...map.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([file, hash]) => `${hash}  ${file}`);
+  await fsp
+    .writeFile(path.join(BACKUP_DIR, MANIFEST_FILE), lines.length ? lines.join("\n") + "\n" : "")
+    .catch((e) => console.error("[BACKUP] manifest write error:", e.message));
+}
+
+// Hash newly-sealed files, prune manifest entries for purged files, and verify existing
+// entries against current bytes. A mismatch → `backup_integrity` alert. Returns counts.
+async function updateChecksums() {
+  const today = dayStamp();
+  let files;
+  try {
+    files = await fsp.readdir(BACKUP_DIR);
+  } catch (err) {
+    if (err.code !== "ENOENT") console.error("[BACKUP] checksum readdir error:", err.message);
+    return { added: 0, rotted: [] };
+  }
+  const sealed = files.filter((f) => {
+    const m = f.match(/-(\d{4}-\d{2}-\d{2})\.ndjson$/);
+    return m && m[1] < today; // date strictly before today = immutable
+  });
+  const present = new Set(files);
+  const manifest = await readManifest();
+
+  // Prune entries whose file was purged by retention.
+  for (const name of [...manifest.keys()]) if (!present.has(name)) manifest.delete(name);
+
+  const rotted = [];
+  let added = 0;
+  for (const name of sealed) {
+    let hash;
+    try {
+      hash = await sha256File(path.join(BACKUP_DIR, name));
+    } catch {
+      continue;
+    }
+    const known = manifest.get(name);
+    if (known == null) {
+      manifest.set(name, hash); // first seal → record known-good hash
+      added++;
+    } else if (known !== hash) {
+      rotted.push(name); // sealed bytes changed = corruption; KEEP the known-good hash
+    }
+  }
+
+  await writeManifest(manifest);
+
+  if (rotted.length) {
+    console.error("[BACKUP] integrity mismatch:", rotted.join(", "));
+    notificationService
+      .raiseAlert({
+        deviceId: null,
+        type: "backup_integrity",
+        severity: "critical",
+        title: "Backup integrity check failed",
+        message: `Checksum mismatch on ${rotted.join(", ")} in ${BACKUP_DIR} — file(s) may be corrupted (card rot). Replace the drive and restore from another copy.`,
+      })
+      .catch(() => {});
+  }
+  if (added) console.log(`[BACKUP] checksummed ${added} sealed file(s)`);
+  return { added, rotted };
+}
+
+// Daily maintenance: drop expired files, then refresh + verify the integrity manifest.
+async function dailyMaintenance() {
+  await purgeOld();
+  await updateChecksums();
+}
+
+// Call once at startup (server.js). Creates the dir, starts the flush + maintenance
 // timers, and wires a shutdown flush so nothing buffered is lost on a clean stop.
 function init() {
   if (!ENABLED) {
@@ -137,9 +297,9 @@ function init() {
   const flushTimer = setInterval(() => flush().catch(() => {}), FLUSH_MS);
   flushTimer.unref?.(); // the HTTP server keeps the process alive, not this timer
 
-  purgeOld();
-  const purgeTimer = setInterval(purgeOld, DAY_MS);
-  purgeTimer.unref?.();
+  dailyMaintenance();
+  const maintTimer = setInterval(dailyMaintenance, DAY_MS);
+  maintTimer.unref?.();
 
   // Flush the last buffered samples on shutdown. A UPS low-battery event typically
   // triggers an OS shutdown (SIGTERM); Ctrl+C sends SIGINT. Node does NOT emit
@@ -154,4 +314,4 @@ function init() {
   process.on("exit", flushSync); // final safety net for a normal event-loop exit
 }
 
-export default { init, record, flush, flushSync, purgeOld, BACKUP_DIR };
+export default { init, record, flush, flushSync, purgeOld, updateChecksums, BACKUP_DIR };
