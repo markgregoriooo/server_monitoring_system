@@ -117,6 +117,7 @@ BACKUP_DIR/
   ups-2026-07-03.ndjson
   env-2026-07-04.ndjson
   ...
+  checksums.sha256      # SHA-256 of every sealed (past-day) file — integrity manifest, see §6
 ```
 
 Example line (`ups-2026-07-03.ndjson`):
@@ -140,6 +141,26 @@ spares micro-SD **write endurance** (constant tiny writes are what wear flash ca
 
 **Worst-case data loss** on a hard, un-graceful power cut = one flush window (≤ 5 s).
 A graceful shutdown (see §8) loses nothing.
+
+### Health alerts & integrity checks
+
+The writer is self-monitoring — a backup that silently stops or rots is worse than none.
+Both surface on the **same bell + email pipeline** as every other alert (`deviceId` null =
+system-level):
+
+- **Write-failure alert.** After 3 consecutive failed flushes (drive unmounted / full /
+  read-only) it raises a **`critical` "Backup storage failing"** alert (type `backup`) and
+  **auto-resolves** it once writes recover. While the drive is unreachable the buffer keeps
+  the newest samples, capped (`MAX_BUFFER_LINES`) so a long outage can't exhaust memory.
+- **Integrity manifest (rot detection).** Once a day's file is *sealed* (its date has
+  passed, so it is never appended to again), its SHA-256 is recorded in
+  `BACKUP_DIR/checksums.sha256`. The daily pass re-hashes sealed files and, on any mismatch
+  (silent corruption / card rot), raises a **`critical` "Backup integrity check failed"**
+  alert (type `backup_integrity`). The manifest is `sha256sum -c checksums.sha256`-compatible,
+  so you can also verify the whole card from a shell.
+
+> These are the **local tier** of health monitoring. The remaining enterprise steps —
+> **offsite copy (3-2-1)** and encryption — are still recommended for full coverage.
 
 ---
 
@@ -201,7 +222,7 @@ Two takeaways this design depends on:
 
 | File | Responsibility |
 |------|----------------|
-| `backend/services/backupService.js` | The writer: buffer, timer flush, `flushSync`, retention, BigInt-safe serialize |
+| `backend/services/backupService.js` | The writer: buffer, timer flush, `flushSync`, retention, BigInt-safe serialize, **health alert** on write failure, **SHA-256 integrity manifest** + rot detection |
 | `backend/handlers/sensorHandler.js` | `record("env", …)` after the InfluxDB write |
 | `backend/handlers/serverMetricsHandler.js` | `record("server", …)` |
 | `backend/handlers/networkMetricsHandler.js` | `record("network", …)` — covers SNMP **and** MikroTik (shared `writeNetworkSample`) |
