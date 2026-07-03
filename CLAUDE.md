@@ -102,6 +102,7 @@ backend/services/
   snmpPollerService.js          ← router/UPS poll loop (load devices → SNMP collect → counter diff → handlers → status/threshold logs); + getNetworkDevices/getUpsDevices reads
   deviceAlerts.js               ← shared router/UPS/MikroTik threshold + event alerting (checkRouter/checkUps), called by the SNMP **and** MikroTik pollers. Evaluates metrics against configurable `alert_rules` (alertRulesService.nextBand, band tracked in alertBandState) → raises REAL alerts via notificationService.raiseAlert (bell/email/Alerts page) + device_logs; auto-resolves on recovery (alertsService). Boolean events (interface down, UPS on-battery, device offline/unreachable via checkReachability) raise directly like server offline. Replaced the old device-log-only poller checks
   alertBandState.js             ← in-memory per-(device,metric) severity band tracker shared by deviceAlerts (onset-only escalation + recovery)
+  backupService.js              ← on-site backup writer: mirrors EVERY ingested sample (env/server/router/MikroTik/UPS) to rotating NDJSON files on `BACKUP_DIR` (a micro SD / USB drive on the backend) — an independent copy that survives a DB wipe + a power outage. Buffered flush + synchronous flush on shutdown (UPS low-battery SIGTERM) + daily retention purge. `init()` once at startup. See `backup-storage.md`
 backend/handlers/
   sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers + raises per-metric room-level alerts (temperature/gas/humidity) on band escalation, evaluated against `alert_rules` (alertRulesService) — replaces the old firmware-status escalation
   querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
@@ -154,6 +155,7 @@ SESSION_NOTES.md                ← per-session work log
 | Environment time-series | InfluxDB | measurement: `sensor_environment`, precision: ms |
 | Server-metric time-series | InfluxDB | measurement: `server_metrics` |
 | Router/UPS time-series | InfluxDB | measurements: `network_traffic` (per-iface, cumulative uint counters), `router_metrics`, `ups_metrics` — tagged by `device_id` |
+| **On-site backup copy (all streams)** | flat files under `BACKUP_DIR` | independent NDJSON backup of every sample (env/server/router/MikroTik/UPS), one file per stream per day, on a micro SD / USB drive on the backend. Survives DB wipe + power outage. See `backup-storage.md` |
 | **alerts, reports, environment history/logs** | `data/db.js` in-memory | **mock — not persisted**, resets on restart (`/api/alerts`, `/api/reports`, `/api/environment`) |
 
 ---
