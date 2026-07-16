@@ -105,14 +105,14 @@ function shape(res, ifaces, speeds, connectedClients) {
 export async function collect(conn) {
   const api = await openApi(conn);
   try {
-    const resArr = await api.write("/system/resource/print");
+    const resArr = await api.write("/system/resource/print"); // it gets cpu, mem, version, board, uptime
     const res = Array.isArray(resArr) ? resArr[0] : resArr;
-    const ifaces = await api.write("/interface/print", ["=stats="]);
+    const ifaces = await api.write("/interface/print", ["=stats="]);  // " " all interfcae, RX bytes, TX bytes, Errors
 
     // Best-effort per-port link speed (for utilization_pct).
     const speeds = {};
     try {
-      const eth = await api.write("/interface/ethernet/print");
+      const eth = await api.write("/interface/ethernet/print"); // it gets port speeds, e.g. Ether1 1Gbps -> 1000mbps
       for (const e of Array.isArray(eth) ? eth : []) speeds[e.name] = parseSpeed(e.rate || e.speed);
     } catch {
       /* not all interfaces are ethernet */
@@ -121,7 +121,7 @@ export async function collect(conn) {
     // Connected clients = bound DHCP leases (only if the MikroTik runs DHCP).
     let connectedClients = null;
     try {
-      const leases = await api.write("/ip/dhcp-server/lease/print", ["?status=bound", "=count-only="]);
+      const leases = await api.write("/ip/dhcp-server/lease/print", ["?status=bound", "=count-only="]); // it counts connected DHCP clients
       connectedClients = parseCount(leases);
     } catch {
       /* DHCP not on this router → leave null */
