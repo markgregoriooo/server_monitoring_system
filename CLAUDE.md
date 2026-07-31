@@ -200,7 +200,7 @@ SESSION_NOTES.md                ← per-session work log
 | `deviceLog` | new `device_logs` entry (lifecycle + CPU/Mem/Disk threshold crossings) |
 | `notification` | new alert raised → pushed to **one user's** room (`user:<id>`) → bell feed + badge + corner **toast** (`ToastHost`) + opt-in **OS popup** (Web Notifications API, tab-backgrounded only). Persisted (`alerts` + `alert_notifications`). See `email-popup-notifications.md` |
 | `alertUpdated` | an alert's lifecycle changed (manual acknowledge/resolve, or auto-resolve on metric recovery) → Alerts page refreshes live |
-| `airconStatus` | manual toggle/mode/temp change |
+| `airconStatus` | manual toggle/mode/temp change, or a **rename** (`{ aircon: { id, name }, entry }`) |
 | `airconAutoUpdate` | ESP32 auto IR zone change |
 | `irChannelMap` | forwarded from ESP32 on connect |
 
@@ -247,6 +247,16 @@ Each AC unit is a row in `devices` (type=`'aircon'`) with a linked row in `airco
 > temperature of units that are **currently ON** — it never changes `is_on`. A unit a user
 > turned OFF stays OFF when IR fires. It returns/emits the affected `deviceIds` so the
 > dashboard updates exactly those units (`airconAutoUpdate` no longer force-enables all).
+
+> **Power-on re-sync.** Because auto IR fires **only on a zone change**, a unit that was
+> OFF at that moment is skipped by both `applyAutoIR` (DB) and the firmware blast (its
+> channel is disabled via `irConfig`) — and would then stay stale until the room next
+> crossed a zone boundary. Switching a unit back ON therefore re-applies the current
+> zone: the firmware sends the zone's IR code right after `IR_POWER_ON` (`irCommand`
+> handler, using the shared `zoneIRData()`), and `airconService.toggle` writes the
+> matching `set_temperature` + an `auto` `aircon_logs` row ("Re-synced to N°C"). The
+> backend's zone comes from `lastZone`, cached in-memory from `irFired`; if the backend
+> restarted since the last zone change it is null and only the hardware re-syncs.
 
 > **All IR raw data is currently mock NEC.** Replace `IR_28C_AUTO`, `IR_26C_AUTO`, `IR_24C_AUTO`, `IR_22C_HIGH`, `IR_20C_HIGH`, `IR_POWER_ON`, `IR_POWER_OFF` with real captures from the Carrier remote using `IRrecvDumpV2`.
 

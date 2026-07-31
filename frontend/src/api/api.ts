@@ -315,6 +315,15 @@ export const api = {
     }
   },
 
+  renameAircon: async (id: number, name: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch(`/aircon/${id}/name`, { name });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   setAirconMode: async (id: number, mode: string): Promise<ApiResult> => {
     try {
       const res = await apiClient.patch(`/aircon/${id}/mode`, { mode });

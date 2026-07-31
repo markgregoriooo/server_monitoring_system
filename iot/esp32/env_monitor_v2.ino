@@ -384,6 +384,40 @@ int getIRZone(float t) {
  *  SEND IR TO BOTH AC UNITS
  *  Only fires when zone changes.
  * ─────────────────────────────────────────────*/
+/* Map an IR zone → its captured raw code. Shared by handleIR (auto, all enabled
+ * channels) and the "irCommand" on-handler (re-sync one unit that was switched back
+ * on). Returns false when the zone has no code (IR_ZONE_NONE). */
+bool zoneIRData(int zone, const uint16_t** irData, uint16_t* irLen, String* irLabel) {
+  switch (zone) {
+    case IR_ZONE_TOO_COLD:
+      *irData = IR_28C_AUTO;
+      *irLen = sizeof(IR_28C_AUTO) / sizeof(IR_28C_AUTO[0]);
+      *irLabel = "28C_AUTO";
+      return true;
+    case IR_ZONE_NORMAL:
+      *irData = IR_26C_AUTO;
+      *irLen = sizeof(IR_26C_AUTO) / sizeof(IR_26C_AUTO[0]);
+      *irLabel = "26C_AUTO";
+      return true;
+    case IR_ZONE_ACCEPTABLE:
+      *irData = IR_24C_AUTO;
+      *irLen = sizeof(IR_24C_AUTO) / sizeof(IR_24C_AUTO[0]);
+      *irLabel = "24C_AUTO";
+      return true;
+    case IR_ZONE_NEAR_CRIT:
+      *irData = IR_22C_HIGH;
+      *irLen = sizeof(IR_22C_HIGH) / sizeof(IR_22C_HIGH[0]);
+      *irLabel = "22C_HIGH";
+      return true;
+    case IR_ZONE_CRITICAL:
+      *irData = IR_20C_HIGH;
+      *irLen = sizeof(IR_20C_HIGH) / sizeof(IR_20C_HIGH[0]);
+      *irLabel = "20C_HIGH";
+      return true;
+  }
+  return false;
+}
+
 void handleIR(float temperature) {
   int zone = getIRZone(temperature);
   if (zone == lastIRZone) return;  // no change — skip
@@ -392,34 +426,7 @@ void handleIR(float temperature) {
   const uint16_t* irData = nullptr;
   uint16_t irLen = 0;
   String irLabel = "";
-
-  switch (zone) {
-    case IR_ZONE_TOO_COLD:
-      irData = IR_28C_AUTO;
-      irLen = sizeof(IR_28C_AUTO) / sizeof(IR_28C_AUTO[0]);
-      irLabel = "28C_AUTO";
-      break;
-    case IR_ZONE_NORMAL:
-      irData = IR_26C_AUTO;
-      irLen = sizeof(IR_26C_AUTO) / sizeof(IR_26C_AUTO[0]);
-      irLabel = "26C_AUTO";
-      break;
-    case IR_ZONE_ACCEPTABLE:
-      irData = IR_24C_AUTO;
-      irLen = sizeof(IR_24C_AUTO) / sizeof(IR_24C_AUTO[0]);
-      irLabel = "24C_AUTO";
-      break;
-    case IR_ZONE_NEAR_CRIT:
-      irData = IR_22C_HIGH;
-      irLen = sizeof(IR_22C_HIGH) / sizeof(IR_22C_HIGH[0]);
-      irLabel = "22C_HIGH";
-      break;
-    case IR_ZONE_CRITICAL:
-      irData = IR_20C_HIGH;
-      irLen = sizeof(IR_20C_HIGH) / sizeof(IR_20C_HIGH[0]);
-      irLabel = "20C_HIGH";
-      break;
-  }
+  zoneIRData(zone, &irData, &irLen, &irLabel);
 
   if (irData && irLen > 0) {
     int fired = 0;
@@ -701,6 +708,23 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
             irChannels[channel].sendRaw(irData, irLen, 38);
             Serial.printf("[IR] Manual %s fired on CH%d (GPIO%d).\n",
                           action, channel + 1, IR_CHANNEL_PINS[channel]);
+          }
+
+          // Re-sync a unit that was just switched back ON. Auto IR fires only on a
+          // ZONE CHANGE, and a unit that was off at that moment is skipped entirely
+          // (its channel is disabled) — so without this it keeps whatever setting it
+          // had before, possibly for hours, until the room crosses into another zone.
+          // Power-on only carries IR_POWER_ON, so follow it with the current zone's code.
+          if (strcmp(action, "on") == 0 && lastIRZone != IR_ZONE_NONE) {
+            const uint16_t* zoneData = nullptr;
+            uint16_t zoneLen = 0;
+            String zoneLabel = "";
+            if (zoneIRData(lastIRZone, &zoneData, &zoneLen, &zoneLabel)) {
+              delay(300);  // let the unit finish powering on before re-targeting it
+              irChannels[channel].sendRaw(zoneData, zoneLen, 38);
+              Serial.printf("[IR] Re-synced CH%d to %s (current zone).\n",
+                            channel + 1, zoneLabel.c_str());
+            }
           }
         }
         break;

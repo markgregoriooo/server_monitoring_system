@@ -201,7 +201,7 @@ function StatPanel({
 // ─── AirconCard ───────────────────────────────────────────────────────────────
 
 function AirconCard({
-  ac, log, canDelete, canManage, onDelete, onToggle,
+  ac, log, canDelete, canManage, onDelete, onToggle, onRename, siblingNames,
 }: {
   ac: Aircon;
   log: LogEntry[];
@@ -209,9 +209,47 @@ function AirconCard({
   canManage: boolean;
   onDelete: (id: number) => void;
   onToggle: (id: number, enabled: boolean) => void;
+  onRename: (id: number, name: string) => void;
+  siblingNames: string[]; // every OTHER unit's name — for the duplicate pre-check
 }) {
   const [toggling, setToggling] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editing, setEditing]   = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft]       = useState(ac.name);
+
+  // Inline rename: click the name, Enter or blur commits, Esc cancels. `session.done`
+  // makes the commit idempotent — Enter sets editing=false, which can also fire blur,
+  // and without the guard the rename would be submitted twice.
+  const session = useRef({ done: false });
+
+  const startEdit = () => {
+    if (!canManage) return;
+    session.current.done = false;
+    setDraft(ac.name);
+    setEditing(true);
+  };
+
+  const finishEdit = async (commit: boolean) => {
+    if (session.current.done) return;
+    session.current.done = true;
+    setEditing(false);
+
+    const next = draft.trim();
+    if (!commit || !next || next === ac.name) return; // cancelled, empty, or unchanged
+
+    // Instant feedback; the server enforces the same rule authoritatively (409).
+    if (siblingNames.some((s) => s.toLowerCase() === next.toLowerCase())) {
+      alert(`An AC unit named "${next}" already exists.`);
+      return;
+    }
+
+    setRenaming(true);
+    const result = await api.renameAircon(ac.id, next);
+    setRenaming(false);
+    if (result.success) onRename(ac.id, result.data?.name ?? next);
+    else alert(result.error ?? "Failed to rename unit.");
+  };
 
   const handleToggle = async () => {
     setToggling(true);
@@ -246,7 +284,52 @@ function AirconCard({
         )}
         <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: dotColor }} />
       </span>
-      <span className="text-[12px] font-semibold truncate" style={{ color: GF.textPrimary }}>{ac.name}</span>
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          maxLength={100}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => finishEdit(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter")  { e.preventDefault(); finishEdit(true); }
+            if (e.key === "Escape") { e.preventDefault(); finishEdit(false); }
+          }}
+          className="min-w-0 flex-1 px-1.5 py-0.5 text-[12px] font-semibold rounded-[2px] focus:outline-none"
+          style={{ background: GF.bg, color: GF.textPrimary, border: `1px solid ${GF.accent}` }}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={startEdit}
+          disabled={!canManage || renaming}
+          title={canManage ? "Rename this unit" : undefined}
+          className="group flex items-center gap-1.5 min-w-0 text-left rounded-[2px] px-1 -mx-1 transition-colors"
+          style={{
+            background: "transparent", border: "none",
+            cursor: canManage ? "pointer" : "default",
+          }}
+          onMouseEnter={(e) => { if (canManage && !renaming) e.currentTarget.style.background = GF.hover; }}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        >
+          <span className="text-[12px] font-semibold truncate" style={{ color: GF.textPrimary }}>
+            {renaming ? "Saving…" : ac.name}
+          </span>
+          {/* Visible affordance — without it the name reads as plain text and nobody
+              discovers that it's editable. Dim at rest, full strength on hover. */}
+          {canManage && !renaming && (
+            <svg
+              width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+              className="shrink-0 opacity-40 group-hover:opacity-100 transition-opacity"
+              style={{ color: GF.accent }}
+            >
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+            </svg>
+          )}
+        </button>
+      )}
       <span
         className="text-[9px] px-1.5 py-0.5 rounded-[2px] tracking-widest shrink-0"
         style={{ color: GF.textDim, background: GF.hover, border: `1px solid ${GF.divider}` }}
@@ -349,8 +432,9 @@ function AirconCard({
 
 // ─── AddAirconModal ───────────────────────────────────────────────────────────
 
-function AddAirconModal({ usedChannels, channelMap, onAdd, onClose }: {
+function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }: {
   usedChannels: number[];
+  usedNames: string[];
   channelMap: ChannelEntry[];
   onAdd: (ac: Aircon, logs: LogEntry[]) => void;
   onClose: () => void;
@@ -372,6 +456,9 @@ function AddAirconModal({ usedChannels, channelMap, onAdd, onClose }: {
     if (!name.trim())              return setError("Name is required.");
     if (!ch || ch < 1 || ch > 8)   return setError("Select a valid IR channel.");
     if (usedChannels.includes(ch)) return setError(`Channel ${ch} is already assigned.`);
+    // Names must be unique so two cards can't look identical; server enforces it too.
+    if (usedNames.some(u => u.toLowerCase() === name.trim().toLowerCase()))
+      return setError(`An AC unit named "${name.trim()}" already exists.`);
 
     setSaving(true);
     const result = await api.addAircon(name.trim(), ch);
@@ -547,6 +634,12 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
   const [error, setError]     = useState("");
+  const [showHelp, setShowHelp] = useState(false);
+
+  // Mirrors the backend guard rail (airconService.saveIRConfig) so an out-of-range
+  // value is caught inline as you type, instead of as a red error after saving.
+  const MIN_C = 10;
+  const MAX_C = 40;
 
   const apply = (c: {
     coldBelow: number; normalMax: number; acceptableMax: number; nearCritMax: number;
@@ -578,7 +671,8 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
   };
   const filled    = keys.every((k) => form[k] !== "" && !Number.isNaN(n[k]));
   const ascending = n.coldBelow < n.normalMax && n.normalMax < n.acceptableMax && n.acceptableMax < n.nearCritMax;
-  const valid     = filled && ascending;
+  const inRange   = keys.every((k) => n[k] >= MIN_C && n[k] <= MAX_C);
+  const valid     = filled && ascending && inRange;
   const dirty     = JSON.stringify(form) !== JSON.stringify(initial);
 
   // per-field order violations — highlight both sides of a bad boundary
@@ -588,6 +682,17 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
     acceptableMax: filled && !(n.normalMax < n.acceptableMax && n.acceptableMax < n.nearCritMax),
     nearCritMax:   filled && !(n.acceptableMax < n.nearCritMax),
   };
+  const oor = (k: (typeof keys)[number]) => filled && (n[k] < MIN_C || n[k] > MAX_C);
+
+  // Which dividing line each boundary controls — used by the "unsaved changes" recap
+  // so saving states plainly what is about to change, rather than just "● Unsaved".
+  const LINE_LABEL: Record<(typeof keys)[number], string> = {
+    coldBelow:     "Too Cold → Normal",
+    normalMax:     "Normal → Acceptable",
+    acceptableMax: "Acceptable → Near Critical",
+    nearCritMax:   "Near Critical → Critical",
+  };
+  const changes = keys.filter((k) => form[k] !== initial[k]);
 
   const save = async () => {
     if (!valid) return;
@@ -613,12 +718,14 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
     });
 
   // ── zones (target temps are fixed = captured IR codes; only boundaries are editable) ──
+  // `meaning` turns the internal zone name into something an operator can act on —
+  // the names alone ("Acceptable", "Near Critical") don't say what the AC is doing.
   const ZONES = [
-    { name: "Too Cold",      target: "28°C", fan: "Auto", color: BLUE },
-    { name: "Normal",        target: "26°C", fan: "Auto", color: GREEN },
-    { name: "Acceptable",    target: "24°C", fan: "Auto", color: GREEN },
-    { name: "Near Critical", target: "22°C", fan: "High", color: ORANGE },
-    { name: "Critical",      target: "20°C", fan: "High", color: RED },
+    { name: "Too Cold",      meaning: "over-cooled — ease off",     target: "28°C", fan: "Auto", color: BLUE },
+    { name: "Normal",        meaning: "comfortable — gentle cooling", target: "26°C", fan: "Auto", color: GREEN },
+    { name: "Acceptable",    meaning: "warming up — cool harder",   target: "24°C", fan: "Auto", color: GREEN },
+    { name: "Near Critical", meaning: "too warm — strong cooling",  target: "22°C", fan: "High", color: ORANGE },
+    { name: "Critical",      meaning: "overheating — max cooling",  target: "20°C", fan: "High", color: RED },
   ];
   const zoneForTemp = (t: number) =>
     t < n.coldBelow ? 0 : t <= n.normalMax ? 1 : t <= n.acceptableMax ? 2 : t <= n.nearCritMax ? 3 : 4;
@@ -634,16 +741,65 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
   const liveTemp   = typeof roomTemp === "number" ? roomTemp : null;
   const activeZone = liveTemp != null && valid ? zoneForTemp(liveTemp) : -1;
 
-  const numField = (key: keyof typeof form, label: string) => (
-    <div className="flex flex-col gap-1">
-      <label className="text-[9px] tracking-widest uppercase" style={{ color: bad[key] ? RED : GF.textMuted }}>{label}</label>
-      <div
-        className="flex items-stretch rounded-[2px] overflow-hidden"
-        style={{ border: `1px solid ${bad[key] ? RED : GF.divider}`, background: GF.hover, opacity: isAdmin ? 1 : 0.6 }}
-      >
+  // ── Plain-language helpers ────────────────────────────────────────────────────
+  const fmt = (v: number) =>
+    !Number.isFinite(v) ? "—" : Number.isInteger(v) ? String(v) : v.toFixed(1);
+
+  // The ROOM-temperature span a zone covers, derived from the surrounding boundaries.
+  // Spelling this out per zone is what makes "4 numbers → 5 zones" self-evident.
+  const zoneRange = (i: number) => {
+    if (i === 0) return `room below ${fmt(n.coldBelow)}°C`;
+    if (i === 4) return `room above ${fmt(n.nearCritMax)}°C`;
+    const lo = [0, n.coldBelow, n.normalMax, n.acceptableMax][i]!;
+    const hi = [0, n.normalMax, n.acceptableMax, n.nearCritMax][i]!;
+    return `room ${fmt(lo)} – ${fmt(hi)}°C`;
+  };
+
+  // One zone = one complete rule ("when the room is X, the AC is set to Y").
+  const zoneRow = (i: number) => {
+    const z = ZONES[i]!;
+    const active = i === activeZone;
+    return (
+      <div className="flex items-center gap-3 px-3 py-2.5"
+        style={{
+          background: active ? z.color + "1f" : "transparent",
+          boxShadow: active ? `inset 3px 0 0 ${z.color}` : "none",
+        }}>
+        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: z.color }} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="text-[11px] font-semibold shrink-0" style={{ color: z.color }}>{z.name}</span>
+            <span className="text-[9px] truncate" style={{ color: GF.textDim }}>{z.meaning}</span>
+          </div>
+          <div className="text-[10px] tabular-nums" style={{ color: GF.textMuted }}>
+            {valid ? zoneRange(i) : "—"}
+          </div>
+        </div>
+        {active && (
+          <span className="text-[8px] tracking-widest uppercase shrink-0 px-1.5 py-0.5 rounded-[2px]"
+            style={{ color: z.color, background: z.color + "22" }}>now</span>
+        )}
+        <div className="flex items-baseline gap-1.5 shrink-0">
+          <span className="text-[10px]" style={{ color: GF.textDim }}>set AC to</span>
+          <span className="text-[14px] font-bold tabular-nums" style={{ color: GF.textPrimary }}>{z.target}</span>
+          <span className="text-[9px] px-1.5 py-0.5 rounded-[2px]"
+            style={{ color: GF.textMuted, background: GF.hover }}>{z.fan}</span>
+        </div>
+      </div>
+    );
+  };
+
+  // One editable dividing line, rendered BETWEEN the two zone rows it separates — so it
+  // reads as the temperature where the AC switches setting, not an abstract number.
+  const boundaryInput = (key: keyof typeof form) => (
+    <div className="flex items-center gap-2 px-3 py-1.5 flex-wrap"
+      style={{ background: GF.bg, borderTop: `1px solid ${GF.divider}`, borderBottom: `1px solid ${GF.divider}` }}>
+      <span className="text-[10px] shrink-0" style={{ color: GF.textMuted }}>when the room reaches</span>
+      <div className="flex items-stretch rounded-[2px] overflow-hidden"
+        style={{ border: `1px solid ${bad[key] || oor(key) ? RED : GF.divider}`, background: GF.panel, opacity: isAdmin ? 1 : 0.6 }}>
         {isAdmin && (
           <button type="button" onClick={() => adjust(key, -0.5)} title="−0.5°C"
-            className="w-7 flex items-center justify-center text-[14px] font-bold transition-colors"
+            className="w-6 flex items-center justify-center text-[13px] font-bold transition-colors"
             style={{ color: GF.textMuted, borderRight: `1px solid ${GF.divider}` }}
             onMouseEnter={(e) => (e.currentTarget.style.color = GF.accent)}
             onMouseLeave={(e) => (e.currentTarget.style.color = GF.textMuted)}>−</button>
@@ -651,18 +807,27 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
         <input
           type="number" step="0.5" value={form[key]} disabled={!isAdmin}
           onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))}
-          className="min-w-0 flex-1 px-2 py-1.5 text-[12px] text-center focus:outline-none"
+          className="w-14 px-1 py-1 text-[12px] text-center focus:outline-none"
           style={{ background: "transparent", border: "none", color: GF.textPrimary, fontFamily: "monospace" }}
         />
-        <span className="flex items-center px-1.5 text-[10px]" style={{ color: GF.textDim }}>°C</span>
+        <span className="flex items-center pr-1.5 text-[10px]" style={{ color: GF.textDim }}>°C</span>
         {isAdmin && (
           <button type="button" onClick={() => adjust(key, 0.5)} title="+0.5°C"
-            className="w-7 flex items-center justify-center text-[14px] font-bold transition-colors"
+            className="w-6 flex items-center justify-center text-[13px] font-bold transition-colors"
             style={{ color: GF.textMuted, borderLeft: `1px solid ${GF.divider}` }}
             onMouseEnter={(e) => (e.currentTarget.style.color = GF.accent)}
             onMouseLeave={(e) => (e.currentTarget.style.color = GF.textMuted)}>+</button>
         )}
       </div>
+      {oor(key) ? (
+        <span className="text-[9px]" style={{ color: RED }}>
+          must be between {MIN_C}°C and {MAX_C}°C
+        </span>
+      ) : bad[key] ? (
+        <span className="text-[9px]" style={{ color: RED }}>
+          each step must be warmer than the one above it
+        </span>
+      ) : null}
     </div>
   );
 
@@ -682,12 +847,40 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
         <div className="text-[11px] py-2" style={{ color: GF.textDim }}>Loading…</div>
       ) : (
         <div className="flex flex-col gap-4">
-          <p className="text-[10px] leading-relaxed" style={{ color: GF.textMuted }}>
-            Room temperature at which the ESP32 fires IR to change the AC setting — target temps per
-            zone are fixed (captured IR codes), so these set <span style={{ color: GF.textPrimary }}>when</span> each
-            kicks in. Separate from <span style={{ color: GF.textPrimary }}>Alert Rules</span>; keep them at or below
-            your temperature alerts so the AC ramps up before the room alarms.
-          </p>
+          {/* One plain sentence is always visible; the rest is opt-in, so the card no
+              longer opens as a wall of small text. */}
+          <div className="flex flex-col gap-2 px-3 py-2 rounded-[2px]"
+            style={{ background: GF.hover, border: `1px solid ${GF.divider}` }}>
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-[10px] leading-relaxed" style={{ color: GF.textMuted }}>
+                As the room warms up, the AC is automatically set colder. You choose
+                {" "}<span style={{ color: GF.textPrimary }}>at which room temperature</span> each step kicks in.
+              </p>
+              <button type="button" onClick={() => setShowHelp((s) => !s)}
+                className="text-[10px] shrink-0 underline underline-offset-2"
+                style={{ color: GF.accent, background: "none", border: "none", cursor: "pointer" }}>
+                {showHelp ? "Hide details" : "How this works"}
+              </button>
+            </div>
+            {showHelp && (
+              <div className="flex flex-col gap-1.5 pt-1.5" style={{ borderTop: `1px solid ${GF.divider}` }}>
+                <p className="text-[10px] leading-relaxed" style={{ color: GF.textDim }}>
+                  <span style={{ color: GREEN }}>You can change</span> the room temperature at which each
+                  step starts. Saving pushes it to the ESP32 straight away — no reflashing.
+                </p>
+                <p className="text-[10px] leading-relaxed" style={{ color: GF.textDim }}>
+                  <span style={{ color: ORANGE }}>You can't change</span> what the AC gets set to
+                  (28 / 26 / 24 / 22 / 20°C). Each one is a recorded button-press from the physical
+                  remote, so a different value needs a new recording and a firmware update.
+                </p>
+                <p className="text-[10px] leading-relaxed" style={{ color: GF.textDim }}>
+                  <span style={{ color: GF.textMuted }}>Tip:</span> keep these at or below your{" "}
+                  <span style={{ color: GF.textMuted }}>Alert Rules</span> temperatures, so cooling ramps
+                  up before the room raises an alarm.
+                </p>
+              </div>
+            )}
+          </div>
 
           {/* ── Live status line ── */}
           {liveTemp != null && ZONES[activeZone] && (() => {
@@ -734,7 +927,7 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
                         boxShadow: active ? `inset 0 0 0 1px ${z.color}` : "none",
                       }}>
                       <span className="text-[9px] font-bold leading-tight truncate max-w-full" style={{ color: z.color }}>{z.name}</span>
-                      <span className="text-[9px] leading-tight" style={{ color: GF.textMuted }}>{z.target}·{z.fan}</span>
+                      <span className="text-[9px] leading-tight whitespace-nowrap" style={{ color: GF.textDim }}>AC → {z.target}</span>
                     </div>
                   );
                 })}
@@ -742,27 +935,68 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
               {/* boundary tick labels */}
               <div className="relative" style={{ height: 16 }}>
                 {boundaries.map((b, i) => (
-                  <span key={i} className="absolute -translate-x-1/2 text-[9px] font-bold pt-0.5"
+                  <span key={i} className="absolute -translate-x-1/2 text-[9px] font-bold pt-0.5 tabular-nums"
                     style={{ left: `${posPct(b)}%`, color: GF.textPrimary }}>
                     {b}°
                   </span>
                 ))}
               </div>
+              {/* Name the axis explicitly — the bar is ROOM temperature, while the
+                  "AC →" figure inside each block is what the unit gets set to. */}
+              <div className="text-[9px] tracking-widest uppercase text-center pt-0.5"
+                style={{ color: GF.textDim }}>
+                room temperature →
+              </div>
             </div>
           ) : (
             <div className="text-[10px] px-3 py-2 rounded-[2px]"
               style={{ color: ORANGE, background: "rgba(255,120,10,0.08)", border: "1px solid rgba(255,120,10,0.2)" }}>
-              Set ascending boundaries (Too&nbsp;Cold &lt; Normal &lt; Acceptable &lt; Near&nbsp;Critical) to preview the zone map.
+              Each switching temperature must be warmer than the one above it. Fix the highlighted values below to preview the zone map.
             </div>
           )}
 
-          {/* ── Editable boundaries (admin) ── */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {numField("coldBelow", "Too Cold below")}
-            {numField("normalMax", "Normal ≤")}
-            {numField("acceptableMax", "Acceptable ≤")}
-            {numField("nearCritMax", "Near Critical ≤")}
+          {/* ── Rule ladder: 5 zones separated by the 4 editable boundaries ──
+              Each row is a full sentence ("when the room is X, the AC is set to Y"),
+              and each input sits on the line it actually divides — so the 4-numbers →
+              5-zones relationship needs no explaining. */}
+          <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${GF.divider}` }}>
+            <div className="flex items-center gap-3 px-3 py-1.5"
+              style={{ background: GF.header, borderBottom: `1px solid ${GF.divider}` }}>
+              <span className="flex-1 text-[9px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
+                When the room is
+              </span>
+              <span className="text-[9px] tracking-widest uppercase shrink-0" style={{ color: GF.textMuted }}>
+                The AC is set to
+              </span>
+            </div>
+            {zoneRow(0)}
+            {boundaryInput("coldBelow")}
+            {zoneRow(1)}
+            {boundaryInput("normalMax")}
+            {zoneRow(2)}
+            {boundaryInput("acceptableMax")}
+            {zoneRow(3)}
+            {boundaryInput("nearCritMax")}
+            {zoneRow(4)}
           </div>
+
+          {/* Say plainly what saving will change, old → new, so editing feels reversible. */}
+          {dirty && changes.length > 0 && (
+            <div className="flex flex-col gap-1 px-3 py-2 rounded-[2px]"
+              style={{ background: "rgba(255,120,10,0.08)", border: "1px solid rgba(255,120,10,0.2)" }}>
+              <span className="text-[9px] tracking-widest uppercase" style={{ color: ORANGE }}>
+                Unsaved changes
+              </span>
+              {changes.map((k) => (
+                <span key={k} className="text-[10px] tabular-nums" style={{ color: GF.textMuted }}>
+                  {LINE_LABEL[k]}:{" "}
+                  <span style={{ color: GF.textDim }}>{initial[k] || "—"}°C</span>
+                  {" → "}
+                  <span style={{ color: GF.textPrimary }}>{form[k] || "—"}°C</span>
+                </span>
+              ))}
+            </div>
+          )}
 
           {error && (
             <div className="text-[11px] px-3 py-2 rounded-[2px]" style={{ color: RED, background: "rgba(242,73,92,0.08)", border: "1px solid rgba(242,73,92,0.2)" }}>
@@ -907,6 +1141,11 @@ export default function AirConditioner() {
     setAircons(prev => prev.map(a =>
       a.id === id ? { ...a, enabled, uptime: enabled ? "just now" : "offline" } : a));
   };
+  // Apply the new name locally for instant feedback. The activity-log entry arrives via
+  // the `airconStatus` broadcast (same as toggle), so it isn't appended twice here.
+  const handleUnitRenamed = (id: number, name: string) => {
+    setAircons(prev => prev.map(a => (a.id === id ? { ...a, name } : a)));
+  };
 
   const usedChannels = aircons.map(a => a.ir_channel);
   const online       = aircons.filter(a => a.enabled).length;
@@ -1024,6 +1263,8 @@ export default function AirConditioner() {
                   canDelete={isAdmin}
                   onToggle={handleUnitToggled}
                   onDelete={handleUnitDeleted}
+                  onRename={handleUnitRenamed}
+                  siblingNames={aircons.filter(a => a.id !== ac.id).map(a => a.name)}
                 />
               ))}
             </div>
@@ -1034,6 +1275,7 @@ export default function AirConditioner() {
       {showModal && (
         <AddAirconModal
           usedChannels={usedChannels}
+          usedNames={aircons.map(a => a.name)}
           channelMap={channelMap}
           onAdd={handleUnitAdded}
           onClose={() => setShowModal(false)}

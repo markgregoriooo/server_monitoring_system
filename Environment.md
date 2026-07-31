@@ -214,6 +214,15 @@ Other manual endpoints (`PATCH /:id/mode`, `/:id/temp`) update MySQL + broadcast
 `airconStatus` only — they do **not** send IR (firmware has no per-degree manual code yet;
 only `IR_POWER_ON` / `IR_POWER_OFF` and the auto-zone temps exist).
 
+**Power-on re-sync.** Auto IR fires only on a zone *change* (§5.2), and a unit that is OFF
+at that moment is skipped by both `applyAutoIR` and the firmware blast — so it would come
+back with a stale setting and never catch up while the room stays in that zone. Turning a
+unit ON therefore re-applies the current zone: the firmware follows `IR_POWER_ON` with the
+zone's code (shared `zoneIRData()`), and `airconService.toggle` writes the matching
+`set_temperature` plus an `auto` log row. The backend's zone comes from an in-memory
+`lastZone` cached on `irFired`; after a backend restart it is null, so only the hardware
+re-syncs until the next zone change.
+
 ### 5.4 `aircon_state` semantics
 
 | Scenario | `last_trigger` | `triggered_by_user_id` |
