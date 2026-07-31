@@ -65,6 +65,16 @@ const registerEvents = (io, socket) => {
     }
   });
 
+  // ESP32 device only — result of a clean-air (Ro) calibration. Forwarded to browsers so
+  // the Recalibrate button can report whether the new baseline was accepted, instead of
+  // being fire-and-forget. `ok:false` means the device measured an out-of-range value and
+  // kept its previous baseline.
+  socket.on("gasCalibrated", (data) => {
+    if (!socket.isDevice) return;
+    console.log("[CAL] ESP32 reported:", data);
+    io.emit("gasCalibrated", data);
+  });
+
   // ESP32 device only — live sensor data
   socket.on("sensorData", (data) => {
     if (!socket.isDevice) return;

@@ -31,9 +31,14 @@
  *  Orange = DANGER
  *  Red    = CRITICAL (Temp or Smoke)
  *
- *  ─── CALIBRATION ─────────────────────────────────────────────
- *  Calibrated: 2026-05-25, clean air, Bicol PH
- *  Sensor 1 Ro = 6.98 kΩ  |  Sensor 2 Ro = 6.76 kΩ
+ *  ─── CALIBRATION (self-calibrating since 2026-07-31) ─────────
+ *  The MQ-2 clean-air baseline (Ro) is measured on the FIRST boot in a
+ *  location and saved to NVS flash, then reused on every boot after.
+ *  Moving the box to a new room no longer needs a code edit + reflash —
+ *  send the "calibrateGas" socket event from the dashboard instead.
+ *  Ro is NOT re-measured on every boot on purpose: a reboot during a gas
+ *  event would otherwise record polluted air as "clean" and permanently
+ *  under-report smoke.
  * ============================================================
  */
 
@@ -58,6 +63,7 @@
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
 #include <time.h>          // NTP via ESP32 built-in
+#include <Preferences.h>   // NVS flash — persists the MQ-2 clean-air baseline
 
 /* =================== PINS =================== */
 #define MQ2_PIN_1  34
@@ -113,15 +119,44 @@ const char* ssid = "GREGORIO WIFI 2.4G";
 const char* password = "REDACTED-ROTATED-WIFI-PASSWORD";
 
 /* ================= Socket.IO ================ */
-const char* host = "192.168.100.9";
+const char* host = "192.168.100.39";
 const uint16_t port = 3000;
 // Must match DEVICE_SECRET in backend/.env
 const char* deviceSecret = "REDACTED-ROTATED-DEVICE-SECRET";
 
 /* ================= MQ-2 CONFIG ============== */
 #define RL_VALUE 10.0
-#define RO_CLEAN_AIR_1 9.15
-#define RO_CLEAN_AIR_2  7.28
+
+/* ---- Clean-air baseline (Ro) — SELF-CALIBRATING, stored in flash -------------
+ * Ro is what the sensor reads in CLEAN air. It differs per sensor AND per location
+ * (temperature, humidity, altitude, sensor age), which is why it used to need a manual
+ * edit + reflash every time the box moved.
+ *
+ * These are now MUTABLE fallbacks, used only until a baseline is loaded or measured:
+ *   • boot  → loadRo() restores the stored baseline from NVS flash
+ *   • none stored → calibrateRo() measures one after a settle period, and SAVES it
+ *   • moved location → trigger the "calibrateGas" socket event; no reflash needed
+ *
+ * ⚠️ Deliberately NOT recalibrated on every boot. Ro means "clean air" — if the ESP32
+ * rebooted during a gas event (brownout, power blip) it would record polluted air as
+ * the baseline and then under-report smoke permanently. Stored once, reused after that.
+ * ---------------------------------------------------------------------------- */
+float roClean1 = 9.15;   // fallback until calibrated
+float roClean2 = 7.28;
+
+#define MQ2_CLEAN_AIR_RATIO 9.83  // Rs/Ro in clean air, from the MQ-2 datasheet curve
+
+// A result outside this window is REJECTED rather than stored — an open circuit, a
+// shorted sensor, or calibrating in smoky air would otherwise poison the baseline for good.
+#define RO_MIN_VALID 1.0
+#define RO_MAX_VALID 50.0
+
+// The heater must settle before Ro means anything. 20s (WARMUP_DURATION) is fine for
+// readings against a KNOWN baseline, but not for establishing one.
+// NOTE: a brand-new MQ-2 also wants a 24–48 h burn-in per the datasheet. That is a
+// one-off per sensor and no amount of firmware delay substitutes for it.
+#define CAL_SETTLE_MS 180000UL   // 3 min settle before measuring a first baseline
+
 #define ADC_MAX 4095.0
 #define ADC_VREF 3.3
 #define MQ2_VCC 5.0
@@ -196,6 +231,14 @@ bool warmupDone = false;
 unsigned long warmupStart = 0;
 bool rtcAvailable = false;
 int lastIRZone = IR_ZONE_NONE;
+
+/* MQ-2 clean-air baseline persistence + deferred calibration. Scheduling rather than
+ * calibrating inline keeps loop() non-blocking — a 3-minute settle must not stall
+ * sensor reads, the socket, or the IR loop. */
+Preferences prefs;
+#define NVS_NAMESPACE "mq2cal"
+bool pendingCalibration = false;
+unsigned long calibrationDueAt = 0;
 
 /* ─────────────────────────────────────────────────────────────
  *  CAPTURED RAW IR DATA  (Carrier remote, 38 kHz)
@@ -683,26 +726,95 @@ void handleBuzzer(const String& smokeStatus, const String& tempStatus,
   buzzerOff();
 }
 
-/* ---- Calibrate Ro ---- */
-void calibrateRo() {
+/* ─────────────────────────────────────────────
+ *  MQ-2 clean-air baseline (Ro) — persisted in NVS
+ * ─────────────────────────────────────────────*/
+
+// Restore a previously measured baseline. Returns false when nothing valid is stored,
+// which is the signal to measure one (first boot, or first boot in a new location).
+bool loadRo() {
+  prefs.begin(NVS_NAMESPACE, true); // read-only
+  float r1 = prefs.getFloat("ro1", 0.0f);
+  float r2 = prefs.getFloat("ro2", 0.0f);
+  prefs.end();
+
+  bool ok = r1 >= RO_MIN_VALID && r1 <= RO_MAX_VALID &&
+            r2 >= RO_MIN_VALID && r2 <= RO_MAX_VALID;
+  if (!ok) {
+    Serial.println("[CAL] No stored baseline — will calibrate once the sensor settles.");
+    return false;
+  }
+  roClean1 = r1;
+  roClean2 = r2;
+  Serial.printf("[CAL] Loaded stored baseline: Ro1 %.2f kΩ  Ro2 %.2f kΩ\n", roClean1, roClean2);
+  return true;
+}
+
+void saveRo() {
+  prefs.begin(NVS_NAMESPACE, false); // read-write
+  prefs.putFloat("ro1", roClean1);
+  prefs.putFloat("ro2", roClean2);
+  prefs.end();
+  Serial.printf("[CAL] Baseline saved to flash: Ro1 %.2f kΩ  Ro2 %.2f kΩ\n", roClean1, roClean2);
+}
+
+// Measure the clean-air baseline and STORE it. Only meaningful when the air is actually
+// clean — a bad result is rejected rather than written, so one dubious calibration can't
+// silently blind the smoke detector.
+bool calibrateRo() {
   const int samples = 50;
   float rsSum1 = 0, rsSum2 = 0;
-  int adcSum1 = 0, adcSum2 = 0;
   for (int i = 0; i < samples; i++) {
-    int raw1 = analogRead(MQ2_PIN_1);
-    int raw2 = analogRead(MQ2_PIN_2);
-    adcSum1 += raw1;
-    adcSum2 += raw2;
-    rsSum1 += adcToRs(raw1);
-    rsSum2 += adcToRs(raw2);
+    rsSum1 += adcToRs(analogRead(MQ2_PIN_1));
+    rsSum2 += adcToRs(analogRead(MQ2_PIN_2));
     delay(50);
   }
-  float avgRs1 = rsSum1 / samples, ro1 = avgRs1 / 9.83;
-  float avgRs2 = rsSum2 / samples, ro2 = avgRs2 / 9.83;
-  Serial.printf("[CAL] Sensor 1 → Avg Rs: %.2f kΩ  Ro: %.2f kΩ%s\n",
-                avgRs1, ro1, abs(ro1 - RO_CLEAN_AIR_1) > 5.0 ? " *** UPDATE RO_CLEAN_AIR_1 ***" : " (OK)");
-  Serial.printf("[CAL] Sensor 2 → Avg Rs: %.2f kΩ  Ro: %.2f kΩ%s\n",
-                avgRs2, ro2, abs(ro2 - RO_CLEAN_AIR_2) > 5.0 ? " *** UPDATE RO_CLEAN_AIR_2 ***" : " (OK)");
+  float avgRs1 = rsSum1 / samples, ro1 = avgRs1 / MQ2_CLEAN_AIR_RATIO;
+  float avgRs2 = rsSum2 / samples, ro2 = avgRs2 / MQ2_CLEAN_AIR_RATIO;
+
+  bool ok1 = ro1 >= RO_MIN_VALID && ro1 <= RO_MAX_VALID;
+  bool ok2 = ro2 >= RO_MIN_VALID && ro2 <= RO_MAX_VALID;
+  if (!ok1 || !ok2) {
+    Serial.printf("[CAL] REJECTED — Ro1 %.2f%s  Ro2 %.2f%s (valid %.1f–%.1f kΩ). "
+                  "Check the wiring, or the air was not clean. Keeping the previous baseline.\n",
+                  ro1, ok1 ? "" : " BAD", ro2, ok2 ? "" : " BAD",
+                  (double)RO_MIN_VALID, (double)RO_MAX_VALID);
+    return false;
+  }
+
+  Serial.printf("[CAL] Sensor 1 → Avg Rs %.2f kΩ  Ro %.2f kΩ\n", avgRs1, ro1);
+  Serial.printf("[CAL] Sensor 2 → Avg Rs %.2f kΩ  Ro %.2f kΩ\n", avgRs2, ro2);
+  roClean1 = ro1;
+  roClean2 = ro2;
+  saveRo();
+  return true;
+}
+
+// Schedule a calibration `settleMs` from now. Used for the first-boot case (long settle)
+// and for an on-demand recalibration from the dashboard (short — the heater is already hot).
+void scheduleCalibration(unsigned long settleMs) {
+  pendingCalibration = true;
+  calibrationDueAt = millis() + settleMs;
+  Serial.printf("[CAL] Calibration scheduled in %lus — keep the air CLEAN until then.\n",
+                settleMs / 1000);
+}
+
+/* Report the outcome back to the dashboard. Without this the Recalibrate button would be
+ * fire-and-forget — you'd have no way to know whether the new baseline was accepted, or
+ * silently rejected for being out of range. Payload: ["gasCalibrated", {ok, ro1, ro2}] */
+void sendCalibrationResult(bool ok) {
+  if (!socketIO.isConnected()) return;
+  StaticJsonDocument<192> doc;
+  JsonArray arr   = doc.to<JsonArray>();
+  arr.add("gasCalibrated");
+  JsonObject data = arr.createNestedObject();
+  data["ok"]  = ok;
+  data["ro1"] = roClean1;
+  data["ro2"] = roClean2;
+  String out;
+  serializeJson(doc, out);
+  socketIO.sendEVENT(out);
+  Serial.printf("[IO] gasCalibrated sent → ok=%d ro1=%.2f ro2=%.2f\n", ok, roClean1, roClean2);
 }
 
 /* ─────────────────────────────────────────────
@@ -848,6 +960,16 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
 
       // Auto-cooling IR zone boundaries from the dashboard (Aircon thresholds). Target
       // temps per zone stay fixed (captured IR codes); only the boundaries change here.
+      // Re-measure the MQ-2 clean-air baseline on demand — this is what replaces
+      // editing RO_CLEAN_AIR_* and reflashing when the box moves to a new room.
+      // A short settle is enough here: the heater has been running since boot.
+      // The air MUST be clean when this is triggered.
+      if (strcmp(eventName, "calibrateGas") == 0) {
+        Serial.println("[CAL] Recalibration requested from the dashboard.");
+        scheduleCalibration(warmupDone ? 5000UL : CAL_SETTLE_MS);
+        break;
+      }
+
       if (strcmp(eventName, "acConfig") == 0) {
         JsonObject cfg = doc[1];
         if (cfg.containsKey("coldBelow"))     IR_TEMP_COLD_BELOW   = cfg["coldBelow"].as<float>();
@@ -944,6 +1066,13 @@ void setup() {
   socketIO.onEvent(socketIOEvent);
   socketIO.setReconnectInterval(5000);
 
+  /* MQ-2 clean-air baseline: reuse the stored one, or schedule a first calibration.
+     Deliberately NOT recalibrated every boot — see the note at RO_MIN_VALID. */
+  if (!loadRo()) {
+    Serial.println("[CAL] First run here. Using fallback values until calibration completes.");
+    scheduleCalibration(CAL_SETTLE_MS);
+  }
+
   /* MQ-2 warmup */
   Serial.println("[INFO] MQ-2 warming up for 20 seconds...");
   warmupStart = millis();
@@ -971,8 +1100,9 @@ void loop() {
       }
       return;
     }
-    Serial.println("[OK] Warm-up complete. Calibrating Ro...");
-    calibrateRo();
+    Serial.println("[OK] Warm-up complete.");
+    Serial.printf("[CAL] Active baseline: Ro1 %.2f kΩ  Ro2 %.2f kΩ%s\n",
+                  roClean1, roClean2, pendingCalibration ? " (provisional — calibration pending)" : "");
     Serial.println("=== System Ready ===\n");
     warmupDone = true;
     lastLogTime = millis();
@@ -980,11 +1110,20 @@ void loop() {
     return;
   }
 
+  /* ── Deferred clean-air calibration ──
+     Runs once its settle window elapses, without blocking the loop. Triggered either by
+     a first boot with no stored baseline, or on demand via the "calibrateGas" event. */
+  if (pendingCalibration && (long)(now_ms - calibrationDueAt) >= 0) {
+    pendingCalibration = false;
+    Serial.println("[CAL] Measuring clean-air baseline now...");
+    sendCalibrationResult(calibrateRo());
+  }
+
   /* ── Read MQ-2 (every loop tick) ── */
   int rawSmoke1 = analogRead(MQ2_PIN_1);
   int rawSmoke2 = analogRead(MQ2_PIN_2);
-  float ppm1 = rsToPPM(adcToRs(rawSmoke1), RO_CLEAN_AIR_1);
-  float ppm2 = rsToPPM(adcToRs(rawSmoke2), RO_CLEAN_AIR_2);
+  float ppm1 = rsToPPM(adcToRs(rawSmoke1), roClean1);
+  float ppm2 = rsToPPM(adcToRs(rawSmoke2), roClean2);
   String smokeStatus = calcSmokeStatus(ppm1, ppm2);
 
   /* ── Read DHT11 (every loop tick, cached internally) ── */

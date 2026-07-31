@@ -5,8 +5,86 @@ import { Chart, registerables } from "chart.js";
 import "../chart/ChartConfig";
 import type { ChartOptions, ChartData, ScriptableContext } from "chart.js";
 import { socket } from "../socket/socket";
+import { api } from "../api/api";
+import { useAuth } from "../context/AuthContext";
 
 Chart.register(...registerables);
+
+// ─── Gas sensor recalibration ─────────────────────────────────────────────────
+// The MQ-2 needs a "clean air" reference (Ro) that differs per sensor and per room.
+// It used to require editing RO_CLEAN_AIR_* in the firmware and reflashing on every
+// move; the ESP32 now measures and stores it itself, and this button asks it to
+// re-measure. Admin-only, confirmed, because the device records whatever it smells
+// AT THAT MOMENT as clean — calibrating in poor air makes it under-report smoke.
+
+function RecalibrateGas({ isDark }: { isDark: boolean }) {
+  const { user } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    const onDone = (d: { ok?: boolean; ro1?: number; ro2?: number }) => {
+      setBusy(false);
+      setResult(
+        d?.ok
+          ? { ok: true, msg: `Calibrated — Ro1 ${Number(d.ro1).toFixed(2)} kΩ · Ro2 ${Number(d.ro2).toFixed(2)} kΩ` }
+          : { ok: false, msg: "Rejected — reading out of range. Previous baseline kept." },
+      );
+      setTimeout(() => setResult(null), 8000);
+    };
+    socket.on("gasCalibrated", onDone);
+    return () => { socket.off("gasCalibrated", onDone); };
+  }, []);
+
+  if (user?.role !== "admin") return null;
+
+  const run = async () => {
+    if (!confirm(
+      "Re-measure the gas sensor's clean-air baseline?\n\n" +
+      "The ESP32 will treat the air RIGHT NOW as clean. Only do this when the room is " +
+      "well ventilated and nothing is burning, soldering or smoking nearby.\n\n" +
+      "Calibrating in poor air makes the sensor under-report real smoke.",
+    )) return;
+
+    setBusy(true);
+    setResult(null);
+    const r = await api.calibrateGasSensor();
+    if (!r.success) {
+      setBusy(false);
+      setResult({ ok: false, msg: r.error ?? "Could not request calibration." });
+      setTimeout(() => setResult(null), 8000);
+    }
+    // On success we stay "busy" until the ESP32 reports back via `gasCalibrated`.
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      {result && (
+        <span className="text-[10px] px-2 py-1 rounded-[2px] whitespace-nowrap"
+          style={{
+            color: result.ok ? "#73BF69" : "#F2495C",
+            background: (result.ok ? "#73BF69" : "#F2495C") + "14",
+            border: `1px solid ${(result.ok ? "#73BF69" : "#F2495C")}40`,
+          }}>
+          {result.msg}
+        </span>
+      )}
+      <button
+        onClick={run}
+        disabled={busy}
+        title="Re-measure the MQ-2 clean-air baseline (admin) — use after moving the sensor"
+        className="text-[11px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-60"
+        style={{
+          color: "var(--gf-text-muted)",
+          border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"}`,
+          background: "transparent",
+        }}
+      >
+        {busy ? "Calibrating…" : "Recalibrate gas"}
+      </button>
+    </div>
+  );
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1241,6 +1319,7 @@ export default function Environment() {
       {/* ── Toolbar (range picker) — page title comes from the global Header ── */}
       <div className="flex items-center justify-end px-4 py-2.5 flex-wrap gap-3"
         style={{ background: GF.header, borderBottom: `1px solid ${GF.panelBorder}` }}>
+        <RecalibrateGas isDark={isDark} />
         <RangePicker range={range} customLabel={customLabel} onChange={changeRange} onCustom={() => setShowCustom(true)} onRefresh={handleRefresh} isRefreshing={isRefreshing} />
       </div>
 
