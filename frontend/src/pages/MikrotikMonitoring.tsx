@@ -343,7 +343,19 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
               <input type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
             </div>
             <label className="flex items-center gap-2 text-[12px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
-              <input type="checkbox" checked={useTls} onChange={(e) => setUseTls(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={useTls}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setUseTls(on);
+                  // Move the port with the toggle. The label promises 8729, but the port
+                  // is a separate field — leaving it at 8728 means speaking TLS to a
+                  // plain port, which just hangs until the socket times out. Only the
+                  // two default ports are auto-switched; a custom port is left alone.
+                  setApiPort((p) => (on ? (p === 8728 ? 8729 : p) : p === 8729 ? 8728 : p));
+                }}
+              />
               Use TLS (8729)
             </label>
           </div>
@@ -451,7 +463,19 @@ function ConnectionModal({
               <input type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
             </div>
             <label className="flex items-center gap-2 text-[12px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
-              <input type="checkbox" checked={useTls} onChange={(e) => setUseTls(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={useTls}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setUseTls(on);
+                  // Move the port with the toggle. The label promises 8729, but the port
+                  // is a separate field — leaving it at 8728 means speaking TLS to a
+                  // plain port, which just hangs until the socket times out. Only the
+                  // two default ports are auto-switched; a custom port is left alone.
+                  setApiPort((p) => (on ? (p === 8728 ? 8729 : p) : p === 8729 ? 8728 : p));
+                }}
+              />
               Use TLS (8729)
             </label>
           </div>

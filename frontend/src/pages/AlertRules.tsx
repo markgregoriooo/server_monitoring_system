@@ -9,6 +9,7 @@ interface Rule {
   id: number;
   deviceId: number | null;
   deviceName: string | null;
+  interfaceName: string | null; // null = every port on the device
   metricName: string;
   thresholdValue: number;
   comparison: string;
@@ -26,10 +27,16 @@ interface ServerOpt {
   id: number;
   name: string;
   kind: DeviceKind;
+  // Physical ports, for network devices only — populates the per-port scope dropdown.
+  interfaces?: string[];
 }
+
+// Metrics measured per PORT rather than per device. Only these offer an interface scope.
+const PER_PORT_METRICS = new Set(["link_util", "link_errors"]);
 
 interface FormState {
   deviceId: string; // "" = global default, else the device id
+  interfaceName: string; // "" = whole device; else one port on that device
   metricName: string;
   thresholdValue: string;
   comparison: string;
@@ -112,6 +119,7 @@ const gf = {
 
 const EMPTY_FORM: FormState = {
   deviceId: "",
+  interfaceName: "",
   metricName: "cpu",
   thresholdValue: "",
   comparison: ">=",
@@ -270,7 +278,13 @@ export default function AlertRules() {
 
     const opts: ServerOpt[] = [];
     const push = (rows: any[] | undefined, kind: DeviceKind) => {
-      for (const r of rows ?? []) opts.push({ id: Number(r.id), name: r.name, kind });
+      for (const r of rows ?? []) {
+        const entry: ServerOpt = { id: Number(r.id), name: r.name, kind };
+        // Network devices carry their ports so a rule can target one of them.
+        const ports = (r.interfaces ?? []).map((i: any) => i?.name).filter(Boolean);
+        if (kind === "network" && ports.length) entry.interfaces = ports;
+        opts.push(entry);
+      }
     };
     if (serversRes.success) push(serversRes.data?.servers, "server");
     // Routers and MikroTiks share the router_* / link_* metric vocabulary.
@@ -306,6 +320,7 @@ export default function AlertRules() {
     setEditingId(r.id);
     setForm({
       deviceId: r.deviceId == null ? "" : String(r.deviceId),
+      interfaceName: r.interfaceName ?? "",
       metricName: r.metricName,
       thresholdValue: String(r.thresholdValue),
       comparison: r.comparison,
@@ -332,6 +347,9 @@ export default function AlertRules() {
       comparison: form.comparison,
       severity: form.severity,
       isActive: form.isActive,
+      // "" → null so the rule applies to the whole device. Always sent, so clearing a
+      // port on an existing rule actually clears it rather than being ignored.
+      interfaceName: form.interfaceName || null,
     };
     const res = editingId
       ? await api.updateAlertRule(editingId, payload)
@@ -425,7 +443,7 @@ export default function AlertRules() {
         const meta = metricMeta(r.metricName);
         const scopeName = r.deviceId == null ? "global" : r.deviceName ?? `device ${r.deviceId}`;
         const hay =
-          `${meta.label} ${r.metricName} ${r.severity} ${scopeName} ${r.comparison}${r.thresholdValue}`.toLowerCase();
+          `${meta.label} ${r.metricName} ${r.severity} ${scopeName} ${r.interfaceName ?? ""} ${r.comparison}${r.thresholdValue}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -677,8 +695,20 @@ export default function AlertRules() {
                             <MetricIcon name={r.metricName} />
                           </span>
                           <div className="min-w-0">
-                            <div className="text-[12px] font-medium truncate" style={{ color: gf.textPrimary }}>
-                              {meta.label}
+                            <div className="flex items-baseline gap-1.5 min-w-0">
+                              <span className="text-[12px] font-medium truncate" style={{ color: gf.textPrimary }}>
+                                {meta.label}
+                              </span>
+                              {/* Port-scoped rules look identical to device-wide ones
+                                  without this — same metric, same device, different reach. */}
+                              {r.interfaceName && (
+                                <span
+                                  className="text-[9px] px-1.5 py-0.5 rounded-[2px] shrink-0"
+                                  style={{ color: gf.textMuted, background: gf.hover, border: `1px solid ${gf.divider}` }}
+                                >
+                                  {r.interfaceName}
+                                </span>
+                              )}
                             </div>
                             <div className="text-[10.5px] truncate" style={{ color: gf.textMuted }}>
                               when value{" "}
@@ -829,11 +859,13 @@ export default function AlertRules() {
                         // selected device's kind (or is room-level), fall back to that
                         // kind's default metric.
                         const dev = deviceId === "" ? null : servers.find((s) => String(s.id) === deviceId);
-                        if (!dev) return { ...f, deviceId };
+                        // Global scope, or a different device: a port from the old
+                        // device is meaningless, so drop it.
+                        if (!dev) return { ...f, deviceId, interfaceName: "" };
                         const m = metricMeta(f.metricName);
                         const metricName =
                           m.env || m.scope !== dev.kind ? KIND_DEFAULT_METRIC[dev.kind] : f.metricName;
-                        return { ...f, deviceId, metricName };
+                        return { ...f, deviceId, metricName, interfaceName: "" };
                       });
                     }}
                     className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none"
@@ -867,7 +899,9 @@ export default function AlertRules() {
                     const isLt = f.comparison.startsWith("<");
                     const lw = metricMeta(metricName).lowerIsWorse;
                     const comparison = lw ? (isLt ? f.comparison : "<=") : (isLt ? ">=" : f.comparison);
-                    return { ...f, metricName, comparison };
+                    // Only per-port metrics can carry a port scope — drop it otherwise.
+                    const interfaceName = PER_PORT_METRICS.has(metricName) ? f.interfaceName : "";
+                    return { ...f, metricName, comparison, interfaceName };
                   })} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
                     {metricOptions.map((m) => (
                       <option key={m.value} value={m.value}>
@@ -876,6 +910,28 @@ export default function AlertRules() {
                     ))}
                   </select>
                 </Field>
+
+                {/* Per-port scope. link_util / link_errors are measured per interface, so
+                    an ISP uplink that normally sits at 70% and an access port that should
+                    never exceed 5% can each carry their own threshold. Only shown when a
+                    network device is scoped and it reported its ports. */}
+                {selectedDevice?.kind === "network"
+                  && PER_PORT_METRICS.has(form.metricName)
+                  && (selectedDevice.interfaces?.length ?? 0) > 0 && (
+                  <Field label="Port">
+                    <select
+                      value={form.interfaceName}
+                      onChange={(e) => setForm((f) => ({ ...f, interfaceName: e.target.value }))}
+                      className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none"
+                      style={inputStyle}
+                    >
+                      <option value="">All ports on this device</option>
+                      {selectedDevice.interfaces!.map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
 
                 <Field label="Condition">
                   <select value={form.comparison} onChange={(e) => setForm((f) => ({ ...f, comparison: e.target.value }))} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
@@ -1013,7 +1069,9 @@ function StatCard({ label, value, color, sub }: { label: string; value: number; 
 function RulePreview({ form, servers }: { form: FormState; servers: ServerOpt[] }) {
   const meta = metricMeta(form.metricName);
   const sev = SEV_COLOR[form.severity] ?? gf.textMuted;
-  const scope = form.deviceId === "" ? "all devices / the room" : servers.find((s) => String(s.id) === form.deviceId)?.name ?? "the selected device";
+  const deviceName = form.deviceId === "" ? "all devices / the room" : servers.find((s) => String(s.id) === form.deviceId)?.name ?? "the selected device";
+  // Name the port when one is chosen, so the sentence reads as the rule actually behaves.
+  const scope = form.interfaceName ? `${deviceName} · ${form.interfaceName}` : deviceName;
   const threshold = form.thresholdValue.trim() === "" ? "…" : form.thresholdValue;
   return (
     <div className="flex items-center gap-2.5 flex-wrap text-[11px]" style={{ color: gf.textPrimary }}>

@@ -90,7 +90,34 @@ async function openApi(conn) {
     timeout: Math.max(1, Math.ceil((conn.timeout || 5000) / 1000)), // node-routeros uses seconds
     tls: conn.tls ? tlsOptions() : undefined,
   });
-  await api.connect();
+  // ⚠️ Crash guard — see the sequence below. Without this, a router that can't be
+  // reached over TLS takes down the WHOLE backend process rather than failing one poll.
+  //
+  // node-routeros registers only `once` listeners for 'error', and its Connector.onError
+  // does: emit('error') → destroy(). destroy() calls socket.destroy() AND
+  // removeAllListeners() — so:
+  //
+  //   1. socket errors        → emit('error')        → handled, promise rejects ✓
+  //   2. destroy()            → removeAllListeners() → every 'error' handler is gone
+  //   3. destroy's own socket error → emit('error')  → NOBODY LISTENING → process dies
+  //
+  // An unhandled 'error' event doesn't reject a promise, it throws out of the event
+  // loop, so no try/catch at the call site can stop it. Simply attaching a listener
+  // isn't enough either, because step 2 removes it — it has to be re-armed afterwards.
+  api.on("error", () => {});
+  const connecting = api.connect(); // creates api.connector synchronously
+  const connector = api.connector;
+  if (connector) {
+    const keepAlive = () => {};
+    connector.on("error", keepAlive);
+    const originalRemoveAll = connector.removeAllListeners.bind(connector);
+    connector.removeAllListeners = (...args) => {
+      const result = originalRemoveAll(...args);
+      connector.on("error", keepAlive); // re-arm so step 3 always has a listener
+      return result;
+    };
+  }
+  await connecting;
   return api;
 }
 
