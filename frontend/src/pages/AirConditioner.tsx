@@ -444,17 +444,21 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
   const [error,   setError]   = useState("");
   const [saving,  setSaving]  = useState(false);
 
+  // Only 2 IR transmitters are physically wired (GPIO 25 / 33), so the fallback list
+  // when the ESP32 is offline must match MAX_IR_CHANNELS in the firmware — offering 8
+  // let you register a unit on a channel that could never actuate anything.
+  const MAX_IR_CHANNELS = 2;
   const esp32Online  = channelMap.length > 0;
   const allChannels  = esp32Online
     ? channelMap
-    : Array.from({ length: 8 }, (_, i) => ({ channel: i + 1, gpio: 0 }));
+    : Array.from({ length: MAX_IR_CHANNELS }, (_, i) => ({ channel: i + 1, gpio: 0 }));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     const ch = parseInt(channel);
     if (!name.trim())              return setError("Name is required.");
-    if (!ch || ch < 1 || ch > 8)   return setError("Select a valid IR channel.");
+    if (!ch || ch < 1 || ch > MAX_IR_CHANNELS) return setError("Select a valid IR channel.");
     if (usedChannels.includes(ch)) return setError(`Channel ${ch} is already assigned.`);
     // Names must be unique so two cards can't look identical; server enforces it too.
     if (usedNames.some(u => u.toLowerCase() === name.trim().toLowerCase()))

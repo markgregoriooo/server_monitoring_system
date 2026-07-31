@@ -157,8 +157,6 @@ npm run dev
 |----------|-----------|------|-----------------|-------------|
 | GET | `/api/aircon` | ✅ | All | Get air conditioner state and logs |
 | POST | `/api/aircon/toggle` | ✅ | Admin, IT Staff | Toggle air conditioner ON/OFF |
-| POST | `/api/aircon/mode` | ✅ | Admin, IT Staff | Set air conditioner mode (cool/auto/fan) |
-| POST | `/api/aircon/temp` | ✅ | Admin, IT Staff | Set target temperature |
 
 ### Alerts
 

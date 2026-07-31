@@ -23,8 +23,6 @@ with IR transmitters, so **every physical AC action happens on the ESP32**.
 | WS2812B RGB ×20 | 27 | Status color |
 | IR TX #1 | 25 | AC channel 1 |
 | IR TX #2 | 33 | AC channel 2 |
-| IR TX #3 | 32 | AC channel 3 (wired, disabled by default) |
-| IR TX #4 | 15 | AC channel 4 (wired, disabled by default) |
 | DS3231 RTC | SDA 21 / SCL 22 | Timestamp source (optional) |
 | SD card | SPI (CS 5) | Offline buffer (`SD_ENABLED` flag) |
 
@@ -159,7 +157,7 @@ A "channel" = one AC unit's IR transmitter.
 
 | Layer | Representation |
 |-------|----------------|
-| Firmware array | `IR_CHANNEL_PINS[] = {25,33,32,15}` (0-based) |
+| Firmware array | `IR_CHANNEL_PINS[] = {25,33}` (0-based) — **2 transmitters wired** |
 | Firmware runtime | `enabledChannels[]` — patched live via `irConfig` |
 | MySQL | `aircon_state.ir_channel` — **1-based** |
 
@@ -210,9 +208,15 @@ PATCH /api/aircon/:id/toggle  (JWT, role admin|it_staff)
             {channel, action:"on"|"off"})       → ESP32 fires IR_POWER_ON/OFF
 ```
 
-Other manual endpoints (`PATCH /:id/mode`, `/:id/temp`) update MySQL + broadcast
-`airconStatus` only — they do **not** send IR (firmware has no per-degree manual code yet;
-only `IR_POWER_ON` / `IR_POWER_OFF` and the auto-zone temps exist).
+**On/off is the ONLY manual control.** `PATCH /:id/mode` and `/:id/temp` were removed
+(2026-07-31): nothing in the dashboard ever called them, and they could not have worked —
+the firmware has no per-degree or per-mode IR code, so they only wrote to MySQL, and
+`applyAutoIR` overwrites `set_temperature` on every unit that is ON at the next zone
+change. A manual value was silently discarded minutes later.
+
+`mode` / `set_temperature` / `fan_mode` are **read-only status** on the card, showing what
+auto-cooling chose. Real manual override would need captured codes per temperature *and* a
+per-unit "manual" mode that suspends auto-cooling, with a rule for when auto resumes.
 
 **Power-on re-sync.** Auto IR fires only on a zone *change* (§5.2), and a unit that is OFF
 at that moment is skipped by both `applyAutoIR` and the firmware blast — so it would come
@@ -257,7 +261,7 @@ pushes use `io.to("devices").emit(...)`, so the backend never tracks the volatil
 | `irChannelMap` | ESP32 → server | GPIO map on connect → stored + forwarded |
 | `irConfig` | server → ESP32 | Enabled-channel list (connect + on change) |
 | `irCommand` | server → ESP32 | Manual ON/OFF on a channel |
-| `airconStatus` | server → browsers | Manual toggle/mode/temp change |
+| `airconStatus` | server → browsers | Manual on/off toggle, rename, or power-on re-sync |
 | `airconAutoUpdate` | server → browsers | Auto IR zone change |
 
 Auth: browsers send JWT in `handshake.auth.token`; ESP32 sends `DEVICE_SECRET` in
@@ -287,7 +291,8 @@ Auth: browsers send JWT in `handshake.auth.token`; ESP32 sends `DEVICE_SECRET` i
 ### Add a new AC unit
 1. Wire its IR TX to a free GPIO; add the pin to `IR_CHANNEL_PINS[]` and bump
    `MAX_IR_CHANNELS` in the firmware; reflash (only needed for *new GPIO wiring*).
-2. In the dashboard, **Add Aircon** with an unused `ir_channel` (1–8). This inserts
+2. In the dashboard, **Add Aircon** with an unused `ir_channel` (**1–2**, matching
+   `MAX_IR_CHANNELS`). This inserts
    `devices` + `aircon_state` rows and pushes `irConfig` to the ESP32.
 3. Enabling/disabling an existing channel afterward needs **no reflash** — it flows via
    `irConfig`.
@@ -322,7 +327,7 @@ Update both hardcoded endpoints **and** the firmware:
   (`.env`) via the exported `bucket` in `influx.js`; no longer hardcoded (§4.3).
 - **Mock IR data** — nothing physically controls a real Carrier AC until the raw codes are
   replaced (§8).
-- **Manual mode/temp don't emit IR** — only on/off toggle does (§5.3).
+- **On/off is the only manual control** — the mode/temp endpoints were removed (§5.3).
 - **Live timestamps are server-side** — InfluxDB live points use `new Date()`, so ESP32
   clock drift doesn't matter for live data; only offline replay uses the RTC time.
 - **SD buffering is off by default** — `#define SD_ENABLED false`; offline rows are dropped

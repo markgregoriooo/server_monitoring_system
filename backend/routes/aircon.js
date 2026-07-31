@@ -70,7 +70,7 @@ router.post("/", authMiddleware, requireRole("admin", "it_staff"), async (req, r
   const ch = parseInt(ir_channel);
   // F-07: cap at the firmware's MAX_IR_CHANNELS (env_monitor_v2.ino) — channels above
   // this are accepted by the DB but never actuate hardware.
-  if (!ch || ch < 1 || ch > 4)          return res.status(400).json({ error: "ir_channel must be 1–4" });
+  if (!ch || ch < 1 || ch > 2)          return res.status(400).json({ error: "ir_channel must be 1–2" });
 
   try {
     const { deviceId } = await airconService.addUnit({
@@ -160,34 +160,19 @@ router.patch("/:id/name", authMiddleware, requireRole("admin", "it_staff"), asyn
   }
 });
 
-// ── PATCH /api/aircon/:id/mode ────────────────────────────────────────────────
-router.patch("/:id/mode", authMiddleware, requireRole("admin", "it_staff"), async (req, res, next) => {
-  const { mode } = req.body;
-  if (!["cool", "auto", "fan"].includes(mode?.toLowerCase())) {
-    return res.status(400).json({ error: "mode must be cool, auto, or fan" });
-  }
-  try {
-    const result = await airconService.setMode(req.params.id, mode.toLowerCase(), req.user.id, req.user.name);
-    req.app.get("io")?.emit("airconStatus", { aircon: { id: +req.params.id, mode: mode.toLowerCase() }, entry: result.entry });
-    res.json({ success: true, entry: result.entry });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ── PATCH /api/aircon/:id/temp ────────────────────────────────────────────────
-router.patch("/:id/temp", authMiddleware, requireRole("admin", "it_staff"), async (req, res, next) => {
-  const { temp } = req.body;
-  if (typeof temp !== "number" || temp < 16 || temp > 30) {
-    return res.status(400).json({ error: "temp must be 16–30" });
-  }
-  try {
-    const result = await airconService.setTemp(req.params.id, temp, req.user.id, req.user.name);
-    req.app.get("io")?.emit("airconStatus", { aircon: { id: +req.params.id, setTemp: temp }, entry: result.entry });
-    res.json({ success: true, entry: result.entry });
-  } catch (err) {
-    next(err);
-  }
-});
+// ── REMOVED: PATCH /:id/mode and PATCH /:id/temp ──────────────────────────────
+// Both were unreachable — nothing in the dashboard ever called them. They also
+// couldn't have worked: the firmware has no per-degree or per-mode IR codes, so they
+// only wrote to MySQL, and `applyAutoIR` overwrites set_temperature on every unit
+// that is ON at the next zone change anyway. A manual setting would have been
+// silently discarded minutes later.
+//
+// Mode / Set Temp / Fan are READ-ONLY status on the card — what auto-cooling chose.
+// The one real manual control is the on/off toggle above, which does fire IR and
+// which applyAutoIR deliberately respects (a unit switched off stays off).
+//
+// If manual override is ever wanted it needs more than these routes: captured codes
+// per temperature AND a per-unit "manual" mode that suspends auto-cooling for that
+// unit, with a rule for when auto resumes.
 
 export default router;
