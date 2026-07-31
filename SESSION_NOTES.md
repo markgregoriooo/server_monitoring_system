@@ -1264,3 +1264,97 @@ enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
 - PiP `network.summary` tile. Branch `mikrotik-monitoring` not pushed yet.
 
 ---
+## SESSION 16 — 2026-06-27
+**Branch:** `history-page` (off `main`)
+**Developer:** Mark Gregorio
+
+> New feature: a real, unified **History page** — a focused, accountable **activity / audit
+> log**, replacing the old mock (`data/db.js` historyLogs, the hardcoded March-2025 rows). Built
+> on a fresh branch off `main` so it's independent of the in-flight `predictive-analytics`
+> (S14/S15, not on this branch's notes) and the network/UPS branches. **No DB migration needed**
+> — every source table already exists.
+
+### Decision / scope
+- **History = a unified, accountable audit log.** Merge the four append-only log tables the
+  system already writes — `system_logs`, `aircon_logs`, `alerts`, `device_logs` — into one
+  normalized event stream, each event tagged with an **actor: Admin / Staff / System**
+  (`users.role`, or NULL = automated).
+- **Accountability gap closed:** several admin actions weren't logged anywhere → added audit
+  writes so they show in History.
+- **Scope evolution (decided with the user):** daily **Environment** + **Servers** metric
+  summary tabs were prototyped (incl. InfluxDB aggregation + a bar chart) but **cut** — real-world
+  an audit log is its own focused concern, and metric history already lives (better, with live
+  charts) on the **Environment** and **Server Detail** pages. Shipped = activity log only. The
+  InfluxDB summary services/routes/api methods were removed with them.
+
+### Backend (new)
+- **`services/auditService.js`** — `audit({userId, module, action, description, level, ip,
+  userAgent})` appends to `system_logs`; **best-effort** (swallows its own errors so a log
+  failure never breaks the action). `clientInfo(req)` helper for ip/user-agent.
+- **`services/historyService.js`** — the engine. `getHistory()` = a **UNION ALL** across the
+  four tables, normalized to one shape (id/source/category/ts/actor/severity/action/message/
+  device), joined to `users` (name+role) + `devices` (name), newest-first, **paginated +
+  filtered** (days/category/severity/actorType/search) with a one-scan **summary** (counts by
+  severity + actor). Injection-safe: numeric inputs clamped + inlined, every value filter a
+  bound `?` (same posture as `serverHistoryHandler`). Pure MySQL — no InfluxDB.
+- **`routes/history.js`** — `GET /api/history`; `authMiddleware` +
+  `requireRole("admin","it_staff")` (read-only insight, both roles).
+- **`src/server.js`** — mount `/api/history`.
+
+### Backend (audit logging added — accountability)
+`system_logs` writes via `auditService.audit` at the previously-unlogged actions, each with the
+acting user + ip/ua:
+- `routes/users.js` — approve / reject / update / disable-enable / delete (module `users`).
+- `routes/alertRules.js` — create / update / delete (module `alerts`, human-readable rule desc).
+- `routes/agents.js` — server approve / reject (module `devices`).
+- `routes/servers.js` — server remove (module `devices`; name captured before delete).
+- `routes/alerts.js` — acknowledge / resolve (module `alerts`) → alert lifecycle now attributed.
+
+### Frontend
+- **`pages/History.tsx`** — full rewrite, Grafana `--gf-*` tokens (was old `slate-*`). Single
+  **activity log**: stat tiles (total/critical/warnings/by-admin/by-staff/by-system); table with
+  **actor badges** (Admin purple / Staff blue / System slate `#6E7B91`), severity dots, category
+  chips, expandable detail; server-side pagination.
+- **Filters:** search · **time range** (24h/7d/14d/30d presets **+ Custom date range** with
+  from→to pickers) · **category** pills · **severity** pills · a single **Actor** dropdown.
+- **Actor filter (consolidated):** one dropdown — All / by role (Admin, Staff, System) / by
+  person (each user who appears in the history). Replaced an earlier two-control design (actor-type
+  pills + a separate user dropdown) that could **contradict** each other (e.g. Actor=Staff +
+  User=an admin → 0 rows); merging them removes the conflict while keeping every capability
+  (System events can't be expressed by a user filter; a specific person can't by role pills).
+- **Realtime, no Refresh button** — auto-updates while on page 1: socket events (notification,
+  alertUpdated, deviceLog, aircon*, user/agent/server lifecycle) for instant updates + a **10s
+  poll backstop** for events that don't broadcast (login/logout, alert-rule changes). Background
+  refreshes are **silent** (no "Loading…" flash; `silentRef` guard); a green **Live** dot shows
+  while page 1 is auto-updating.
+- **`api/api.ts`** — `getHistory(params)` (days | start/end, category, severity, actorType,
+  userId, search, page) + `getHistoryActors()`; removed the mock `getHistoryLogs`. (Mock
+  `routes/environment.js` `/logs` + `data/db.js historyLogs` left in place but no longer used.)
+- **Backend filter support:** `getHistory` resolves a time window — a strict `YYYY-MM-DD`
+  custom range (validated → safe to inline) else clamped "last N days" — plus `userId` and
+  `actorType` filters; `getActors()` + `GET /api/history/actors` list the people who appear.
+
+### Verified
+- Backend `node --check` + import-resolution clean; service shape = `getHistory` only; **live
+  boot probe**: unauthenticated `GET /api/history` → **401** (route mounted + auth-gated).
+  Frontend **`tsc --noEmit` clean**.
+- Nodemon dev server hot-reloaded the changes during testing (dev stack was running).
+
+### Notes / findings
+- **Duplicate "MSI" server** surfaced while prototyping the (since-removed) server summary:
+  the same machine is enrolled+approved twice (id 22 Online, id 23 Offline since 2026-06-16) —
+  visible on the live Server Metrics page too (no MAC/hostname dedup on this branch; that fix is
+  on `predictive-analytics`). Cleanup = Remove the offline duplicate id 23 there.
+- **Flux tz gotcha (for future InfluxDB work):** this InfluxDB build lacks IANA tzdata, so
+  `timezone.location(name:"Asia/Manila")` throws "unknown time zone" at runtime — use
+  `timezone.fixed(offset: 8h)` (PH is UTC+8 year-round).
+
+### Still pending / not done
+- **Live end-to-end** with a logged-in session (feed render, filters, pagination, realtime
+  auto-update, new audit rows after an admin action) not driven here — verified by
+  build/types/boot probe.
+- SESSION 14/15 (predictive-analytics) entries are **not** in this branch's copy of these notes
+  (different branch) → there's an intentional S13→S16 gap here; resolves on merge.
+- Branch not PR'd into `main`.
+
+---

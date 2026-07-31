@@ -432,14 +432,43 @@ export const api = {
     }
   },
 
-  getHistoryLogs: async (): Promise<ApiResult> => {
+  // Unified activity/audit history (system_logs + aircon_logs + alerts + device_logs)
+  // with actor accountability (admin | staff | system). Returns { events, total,
+  // page, pageSize, days, summary }.
+  getHistory: async (params: {
+    days?: number;
+    start?: string;
+    end?: string;
+    category?: string;
+    severity?: string;
+    actorType?: string | undefined;
+    userId?: number | "all" | undefined;
+    search?: string;
+    page?: number;
+    pageSize?: number;
+  } = {}): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get("/environment/logs");
+      const qs = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== "" && v !== "all") qs.append(k, String(v));
+      });
+      const res = await apiClient.get(`/history?${qs.toString()}`);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
     }
   },
+
+  // Users who appear in the history (for the per-user filter). Returns { actors: [...] }.
+  getHistoryActors: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/history/actors");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
 
   // Aircon
   getAircon: async (): Promise<ApiResult> => {

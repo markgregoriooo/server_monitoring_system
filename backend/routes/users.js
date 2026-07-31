@@ -1,6 +1,7 @@
 import express from "express";
 import asyncHandler from "../utils/asyncHandler.js";
 import userService from "../services/userService.js";
+import { audit, clientInfo } from "../services/auditService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import upload from "../middleware/upload.js";
 
@@ -110,6 +111,14 @@ router.patch(
       req.body,
     );
 
+    await audit({
+      userId: req.user.id,
+      module: "users",
+      action: "update_user",
+      description: `Updated user ${updatedUser.name} (role=${updatedUser.role}, status=${updatedUser.status})`,
+      ...clientInfo(req),
+    });
+
     res.json({
       message: "User updated successfully",
       user: updatedUser,
@@ -129,6 +138,15 @@ router.patch(
       req.user.id,
     );
 
+    await audit({
+      userId: req.user.id,
+      module: "users",
+      action: updatedUser.status === "inactive" ? "disable_user" : "enable_user",
+      description: `${updatedUser.status === "inactive" ? "Disabled" : "Enabled"} user ${updatedUser.name}`,
+      level: updatedUser.status === "inactive" ? "warning" : "info",
+      ...clientInfo(req),
+    });
+
     res.json({
       success: true,
       user: updatedUser,
@@ -143,6 +161,13 @@ router.post(
   requireRole("admin"),
   asyncHandler(async (req, res) => {
     const user = await userService.approveUser(parseInt(req.params.id), req.body.role);
+    await audit({
+      userId: req.user.id,
+      module: "users",
+      action: "approve_user",
+      description: `Approved registration ${user.name} (${user.email}) as ${user.role}`,
+      ...clientInfo(req),
+    });
     req.app.get("io")?.emit("userApproved", { id: user.id });
     res.json({ success: true, user });
   }),
@@ -154,9 +179,19 @@ router.post(
   authMiddleware,
   requireRole("admin"),
   asyncHandler(async (req, res) => {
-    await userService.rejectUser(parseInt(req.params.id));
+    const id = parseInt(req.params.id);
+    const target = await userService.getUserById(id);
+    await userService.rejectUser(id);
+    await audit({
+      userId: req.user.id,
+      module: "users",
+      action: "reject_user",
+      description: `Rejected registration ${target?.name ?? `#${id}`}${target?.email ? ` (${target.email})` : ""}`,
+      level: "warning",
+      ...clientInfo(req),
+    });
     // Refresh open admin pending lists (the row left the 'pending' state).
-    req.app.get("io")?.emit("userPending", { id: parseInt(req.params.id) });
+    req.app.get("io")?.emit("userPending", { id });
     res.json({ success: true });
   }),
 );
@@ -167,7 +202,18 @@ router.delete(
   authMiddleware,
   requireRole("admin"),
   asyncHandler(async (req, res) => {
-    await userService.deleteUser(parseInt(req.params.id), req.user.id);
+    const id = parseInt(req.params.id);
+    const target = await userService.getUserById(id);
+    await userService.deleteUser(id, req.user.id);
+
+    await audit({
+      userId: req.user.id,
+      module: "users",
+      action: "delete_user",
+      description: `Deleted user ${target?.name ?? `#${id}`}${target?.email ? ` (${target.email})` : ""}`,
+      level: "warning",
+      ...clientInfo(req),
+    });
 
     res.json({
       success: true,
