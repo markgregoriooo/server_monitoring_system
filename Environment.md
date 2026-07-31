@@ -72,8 +72,19 @@ Raw ADC → resistance → PPM using the calibrated curve:
 - `adcToRs()` converts ADC value to sensor resistance Rs (kΩ), accounting for the
   10k/20k voltage divider (`DIVIDER_RATIO = 0.6667`).
 - `rsToPPM()` applies `PPM = 30000 · (Rs/Ro)^-2.95`, clamped to 0–9999.
-- `Ro` is the clean-air baseline, **auto-calibrated at boot** after a 20 s warmup
-  (`calibrateRo()`), seeded from `RO_CLEAN_AIR_1/2`.
+- `Ro` is the clean-air baseline. It is **measured once per location and stored in NVS
+  flash**, then reused on every subsequent boot (`loadRo` / `calibrateRo` / `saveRo`).
+  - **First boot in a new place** → no stored value → the firmware waits `CAL_SETTLE_MS`
+    (3 min, for the heater to stabilise), measures, validates and saves. The air must be
+    clean during that window.
+  - **Every boot after** → the stored value is loaded. Ro is deliberately **not**
+    re-measured each boot: a reboot during a gas event would record polluted air as the
+    baseline and then under-report smoke permanently.
+  - **Moved location** → send the **`calibrateGas`** socket event; no reflash needed.
+  - A result outside `RO_MIN_VALID … RO_MAX_VALID` (1–50 kΩ) is **rejected**, not stored,
+    so a bad reading (open circuit, shorted sensor, smoky air) can't blind the detector.
+  > Before 2026-07-31 `calibrateRo()` only *printed* a suggested value and told you to
+  > edit `RO_CLEAN_AIR_1/2` by hand and reflash — the measurement was never applied.
 - Final smoke value = **max** of the two sensors.
 
 | Smoke status | Condition |
@@ -261,6 +272,7 @@ pushes use `io.to("devices").emit(...)`, so the backend never tracks the volatil
 | `irChannelMap` | ESP32 → server | GPIO map on connect → stored + forwarded |
 | `irConfig` | server → ESP32 | Enabled-channel list (connect + on change) |
 | `irCommand` | server → ESP32 | Manual ON/OFF on a channel |
+| `calibrateGas` | server → ESP32 | Re-measure the MQ-2 clean-air baseline and save it to flash. Use after moving the box — the air must be clean. Replaces editing `RO_CLEAN_AIR_*` and reflashing |
 | `airconStatus` | server → browsers | Manual on/off toggle, rename, or power-on re-sync |
 | `airconAutoUpdate` | server → browsers | Auto IR zone change |
 
