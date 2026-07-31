@@ -83,7 +83,34 @@ async function getChannelConfig() {
   };
 }
 
+function fail(status, message) {
+  const e = new Error(message);
+  e.status = status;
+  return e;
+}
+
+// Aircon display names must be unique so two cards can't look identical on the
+// dashboard. There is no UNIQUE index to lean on — `devices.device_name` is shared by
+// every device type, and only aircon names need to be distinct — so it is enforced
+// here, on BOTH the add and rename paths. `excludeId` lets a rename keep its own name.
+// LOWER() is explicit rather than relying on the table's case-insensitive collation,
+// so behaviour doesn't silently change if that collation ever does.
+async function nameTaken(name, excludeId = null) {
+  const [rows] = await db.query(
+    `SELECT device_id FROM devices
+      WHERE device_type = 'aircon'
+        AND LOWER(device_name) = LOWER(?)
+        AND (? IS NULL OR device_id <> ?)
+      LIMIT 1`,
+    [name, excludeId, excludeId],
+  );
+  return rows.length > 0;
+}
+
 async function addUnit({ name, ir_channel, userId, userName }) {
+  if (await nameTaken(name)) {
+    throw fail(409, `An AC unit named "${name}" already exists.`);
+  }
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
@@ -153,9 +180,49 @@ async function toggle(id, userId, userName) {
     VALUES (?, ?, ?, ?, 'manual')
   `, [id, userId, action, `By ${userName}`]);
 
+  // ── Re-sync a unit that was just switched back ON ──────────────────────────
+  // Auto IR fires only on a zone CHANGE, and applyAutoIR skips units that are off at
+  // that moment — so a unit switched off across a zone change comes back showing a
+  // stale set_temperature and never catches up while the room stays in that zone.
+  // Mirror the firmware's re-send (irCommand "on") by writing the current zone's
+  // target here, so DB + dashboard + hardware agree. No-op when the ESP32 hasn't
+  // reported a zone yet (fresh backend restart).
+  let syncEntry = null;
+  let setTemp = null;
+  if (newState && lastZone != null) {
+    const zoneTemp = ZONE_TEMP[lastZone] ?? null;
+    if (zoneTemp !== null) {
+      const [[row]] = await db.query(
+        "SELECT set_temperature FROM aircon_state WHERE device_id = ?", [id],
+      );
+      if (row && row.set_temperature !== zoneTemp) {
+        await db.query(`
+          UPDATE aircon_state
+          SET set_temperature = ?, last_trigger = 'auto', triggered_by_user_id = NULL,
+              updated_at = NOW()
+          WHERE device_id = ?
+        `, [zoneTemp, id]);
+        setTemp = zoneTemp;
+        const syncAction = `Re-synced to ${zoneTemp}°C`;
+        const syncReason = "Matched current temperature zone on power-on";
+        await db.query(`
+          INSERT INTO aircon_logs (device_id, user_id, action, reason, trigger_type)
+          VALUES (?, NULL, ?, ?, 'auto')
+        `, [id, syncAction, syncReason]);
+        syncEntry = {
+          time:   new Date().toLocaleTimeString("en-PH"),
+          action: syncAction,
+          reason: syncReason,
+        };
+      }
+    }
+  }
+
   return {
     enabled:    Boolean(newState),
     ir_channel: current.ir_channel,
+    setTemp,     // non-null only when the power-on re-sync changed it
+    syncEntry,   // extra activity-log row for that re-sync
     entry: {
       time:   new Date().toLocaleTimeString("en-PH"),
       action,
@@ -196,12 +263,63 @@ async function setTemp(id, temp, userId, userName) {
   };
 }
 
+// Rename a unit. `devices.device_name` is purely a display label — the hardware is
+// driven by aircon_state.ir_channel, and every log row references device_id, so a
+// rename is non-destructive and keeps the unit's full activity history. Returns null
+// when the id isn't an aircon; `entry` is null on a no-op rename (same name).
+async function rename(id, name, userId, userName) {
+  const clean = String(name ?? "").trim();
+  if (!clean) throw fail(400, "Name is required.");
+  if (clean.length > 100) throw fail(400, "Name must be 100 characters or fewer.");
+
+  const [[row]] = await db.query(
+    `SELECT device_name FROM devices WHERE device_id = ? AND device_type = 'aircon'`,
+    [id],
+  );
+  if (!row) return null;
+  if (row.device_name === clean) return { name: clean, previousName: clean, entry: null };
+
+  // Excludes this unit, so re-saving your own name (or just changing its casing) works.
+  if (await nameTaken(clean, Number(id))) {
+    throw fail(409, `An AC unit named "${clean}" already exists.`);
+  }
+
+  await db.query(
+    `UPDATE devices SET device_name = ?, updated_at = NOW() WHERE device_id = ?`,
+    [clean, id],
+  );
+
+  // Logged like every other manual action, so the activity feed shows who renamed what.
+  const action = `Renamed to "${clean}"`;
+  const reason = `Was "${row.device_name}" · by ${userName}`;
+  await db.query(`
+    INSERT INTO aircon_logs (device_id, user_id, action, reason, trigger_type)
+    VALUES (?, ?, ?, ?, 'manual')
+  `, [id, userId, action, reason]);
+
+  return {
+    name: clean,
+    previousName: row.device_name,
+    entry: { time: new Date().toLocaleTimeString("en-PH"), action, reason },
+  };
+}
+
 // Map IR zone → set_temperature the ESP32 commanded
 const ZONE_TEMP = { 0: 28, 1: 26, 2: 24, 3: 22, 4: 20 };
+
+// The last zone the ESP32 reported firing (via the `irFired` event). `toggle` reads it
+// to re-sync a unit switched back ON — auto IR fires only on a zone CHANGE, so a unit
+// that was off at that moment would otherwise stay stale indefinitely. In-memory by
+// design: it resets on restart and repopulates at the next zone change.
+let lastZone = null;
 
 async function applyAutoIR({ zone, label }) {
   const setTemp = ZONE_TEMP[zone] ?? null;
   if (setTemp === null) return;
+
+  // Record the zone even when every unit is off — that's precisely the case `toggle`
+  // needs it for (nothing was updated below, so this is the only trace of the zone).
+  lastZone = zone;
 
   // Auto IR only RE-TARGETS the set temperature of units that are currently ON;
   // it must never switch a unit's power. A unit a user manually turned OFF stays
@@ -320,7 +438,7 @@ async function getDeviceIRConfig() {
 const airconService = {
   getAll, getChannelConfig,
   addUnit, removeUnit,
-  toggle, setMode, setTemp,
+  toggle, setMode, setTemp, rename,
   applyAutoIR,
   setChannelMap, getChannelMap,
   getIRConfig, saveIRConfig, getDeviceIRConfig,

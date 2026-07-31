@@ -83,6 +83,8 @@ router.post("/", authMiddleware, requireRole("admin", "it_staff"), async (req, r
     if (err.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: `IR channel ${ch} is already assigned` });
     }
+    // Duplicate display name (409) from airconService.addUnit.
+    if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
   }
 });
@@ -106,7 +108,19 @@ router.patch("/:id/toggle", authMiddleware, requireRole("admin", "it_staff"), as
     if (!result) return res.status(404).json({ error: "Unit not found" });
 
     const io = req.app.get("io");
-    io?.emit("airconStatus", { aircon: { id: +req.params.id, enabled: result.enabled }, entry: result.entry });
+    io?.emit("airconStatus", {
+      aircon: {
+        id: +req.params.id,
+        enabled: result.enabled,
+        // Present only when switching ON re-synced the unit to the current zone.
+        ...(result.setTemp != null && { setTemp: result.setTemp }),
+      },
+      entry: result.entry,
+    });
+    // Second event so the re-sync shows as its own activity-log row (like an auto IR fire).
+    if (result.syncEntry) {
+      io?.emit("airconStatus", { aircon: { id: +req.params.id }, entry: result.syncEntry });
+    }
     await pushIRConfig(io);
 
     // Fire the actual ON/OFF IR signal on the physical AC's channel
@@ -117,6 +131,31 @@ router.patch("/:id/toggle", authMiddleware, requireRole("admin", "it_staff"), as
 
     res.json(result);
   } catch (err) {
+    next(err);
+  }
+});
+
+// ── PATCH /api/aircon/:id/name ────────────────────────────────────────────────
+// Rename a unit. Gated like add/toggle (admin + it_staff) rather than delete
+// (admin-only): a rename is a label change, not a destructive one — and whoever can
+// create a unit with a name should be able to correct it.
+router.patch("/:id/name", authMiddleware, requireRole("admin", "it_staff"), async (req, res, next) => {
+  try {
+    const result = await airconService.rename(
+      req.params.id, req.body?.name, req.user.id, req.user.name,
+    );
+    if (!result) return res.status(404).json({ error: "Unit not found" });
+    // Only broadcast a real change — a no-op rename shouldn't spam other dashboards.
+    if (result.entry) {
+      req.app.get("io")?.emit("airconStatus", {
+        aircon: { id: +req.params.id, name: result.name },
+        entry: result.entry,
+      });
+    }
+    res.json({ success: true, name: result.name, entry: result.entry });
+  } catch (err) {
+    // 400 (empty/too long) or 409 (name already used by another unit).
+    if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
   }
 });
