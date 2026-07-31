@@ -55,11 +55,13 @@ function errorDelta(deviceId, name, total) {
 // Evaluate one numeric metric against its rules. Returns the device_log row created
 // on a fresh escalation (else null). `low` flips the wording for lower-is-worse
 // metrics (battery charge / runtime). Mirrors agentService.checkThresholds.
-async function evalMetric({ deviceId, metricName, type, value, label, unit = "", low = false }) {
+// `iface` narrows rule lookup to one port (link_util / link_errors). Omitted for
+// device-level metrics, which resolve per-device then global as before.
+async function evalMetric({ deviceId, metricName, type, value, label, unit = "", low = false, iface = null }) {
   if (typeof value !== "number" || Number.isNaN(value)) return null;
 
   const prevBand = alertBandState.getBand(deviceId, type);
-  const rules = await alertRulesService.getEffectiveRules(deviceId, metricName);
+  const rules = await alertRulesService.getEffectiveRules(deviceId, metricName, iface);
   const { band, rule } = alertRulesService.nextBand(rules, value, prevBand);
   alertBandState.setBand(deviceId, type, band); // track always, so a later breach re-arms
 
@@ -117,8 +119,11 @@ async function checkRouter(io, device, sample) {
     // Per-interface link saturation — one global `link_util` rule covers every
     // interface; the per-interface `type` keeps each interface's band, alert and
     // auto-resolve independent.
+    // `iface` lets a port carry its own threshold — an ISP uplink that normally sits at
+    // 70% and an access port that should never exceed 5% can't share one number.
+    // Falls back to the device-wide rule, then global, when no per-port rule exists.
     events.push(await evalMetric({
-      deviceId: id, metricName: "link_util", type: `link_util:${i.name}`,
+      deviceId: id, metricName: "link_util", type: `link_util:${i.name}`, iface: i.name,
       value: num(i.utilizationPct), label: `Link ${ifaceLabel}`, unit: "%",
     }));
     events.push(await evalEvent({
@@ -132,7 +137,7 @@ async function checkRouter(io, device, sample) {
     // sit permanently in alarm over errors from months ago.
     const errDelta = errorDelta(id, i.name, (num(i.rxErrors) || 0) + (num(i.txErrors) || 0));
     events.push(await evalMetric({
-      deviceId: id, metricName: "link_errors", type: `link_errors:${i.name}`,
+      deviceId: id, metricName: "link_errors", type: `link_errors:${i.name}`, iface: i.name,
       value: errDelta, label: `Link ${ifaceLabel} errors`,
     }));
   }
