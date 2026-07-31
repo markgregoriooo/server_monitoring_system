@@ -8,11 +8,20 @@ const RANGE_WINDOW = {
   "-24h": "10m",
 };
 
-// GET /api/network/:id/history?range=-1h  (JWT, via authMiddleware)
-// Total in/out throughput for one router from InfluxDB (`network_traffic`).
+// Interface names are user/vendor-supplied, so they can never be interpolated into
+// Flux verbatim. RouterOS and IF-MIB names are alphanumerics plus a few separators —
+// anything else is rejected rather than escaped.
+const SAFE_IFNAME = /^[A-Za-z0-9._\-/ ]{1,50}$/;
+
+// GET /api/network/:id/history?range=-1h[&interface=ether3]  (JWT, via authMiddleware)
+// In/out throughput for one router from InfluxDB (`network_traffic`).
 // network_traffic stores CUMULATIVE byte counters per interface, so we: align each
 // interface to common windows (last), take the non-negative derivative → bytes/sec
-// per interface, then group across interfaces and sum per window → device totals.
+// per interface, then sum per window.
+//
+// Without `interface` the sum spans every port → device totals (the original behaviour).
+// With `interface` the filter narrows to that one port, so a single link can be charted
+// — the per-port data was always in Influx, there was just no way to ask for it.
 export function networkHistoryHandler(req, res) {
   const deviceId = parseInt(req.params.id, 10);
   if (!Number.isInteger(deviceId)) {
@@ -23,11 +32,20 @@ export function networkHistoryHandler(req, res) {
   if (!RANGE_WINDOW[range]) range = "-1h";
   const every = RANGE_WINDOW[range];
 
+  const iface = req.query.interface ? String(req.query.interface) : "";
+  if (iface && !SAFE_IFNAME.test(iface)) {
+    return res.status(400).json({ error: "Invalid interface name." });
+  }
+  const ifaceFilter = iface
+    ? `|> filter(fn: (r) => r.interface_name == "${iface}")`
+    : "";
+
   const flux = `
     from(bucket: "${bucket}")
       |> range(start: ${range})
       |> filter(fn: (r) => r._measurement == "network_traffic")
       |> filter(fn: (r) => r.device_id == "${deviceId}")
+      ${ifaceFilter}
       |> filter(fn: (r) => r._field == "rx_bytes" or r._field == "tx_bytes")
       |> aggregateWindow(every: ${every}, fn: last, createEmpty: false)
       |> derivative(unit: 1s, nonNegative: true)
@@ -52,7 +70,7 @@ export function networkHistoryHandler(req, res) {
       if (!res.headersSent) res.status(500).json({ error: "History query failed." });
     },
     complete() {
-      if (!res.headersSent) res.json({ range, history });
+      if (!res.headersSent) res.json({ range, interface: iface || null, history });
     },
   });
 }

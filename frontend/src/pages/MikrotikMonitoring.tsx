@@ -1,42 +1,15 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
+import MikrotikDetail from "./MikrotikDetail";
+import type { MkDevice } from "./MikrotikDetail";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface MkIface {
-  name: string;
-  locationLabel: string; // the building this port serves
-  linkUp: boolean;
-  utilizationPct: number | null;
-  rxBytes: string | null;
-  txBytes: string | null;
-}
-interface MkDevice {
-  id: string;
-  name: string;
-  ip: string;
-  location: string;
-  status: string;
-  reachable: boolean | null;
-  uptimeSeconds: number | null;
-  cpuPercent: number | null;
-  memPercent: number | null;
-  connectedClients: number | null;
-  routerosVersion: string | null;
-  boardModel: string | null;
-  apiPort: number | null;
-  useTls: boolean;
-  apiUsername: string | null;
-  interfaces: MkIface[];
-  monitored: boolean;
-}
-interface HistPoint {
-  time: string;
-  rxBytesPerSec: number | null;
-  txBytesPerSec: number | null;
-}
+// ─── MikroTik list page ───────────────────────────────────────────────────────
+// First page = the fleet list (one compact row per router, with "View"); clicking
+// through swaps in MikrotikDetail for the full drill-down. Mirrors
+// ServerMetrics ↔ ServerDetail and NetworkMonitoring ↔ NetworkDetail.
+// Types + the per-device charts/ports live in MikrotikDetail.tsx.
 
 // ─── Grafana tokens (match NetworkMonitoring.tsx) ─────────────────────────────
 
@@ -55,12 +28,7 @@ const GREEN = "#73BF69";
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
-const TRACK = "rgba(127,127,127,0.18)";
-const BAR_GRADIENT = "linear-gradient(90deg,#73BF69 0%,#73BF69 55%,#FF780A 78%,#F2495C 95%)";
-
-const RANGES = ["-1h", "-6h", "-24h"] as const;
-type Range = (typeof RANGES)[number];
-const rangeLabel: Record<Range, string> = { "-1h": "1h", "-6h": "6h", "-24h": "24h" };
+const BLUE_HOVER = "#4278c4";
 
 function loadColor(v: number) {
   if (v >= 85) return RED;
@@ -71,14 +39,6 @@ function statusColor(s: string) {
   if (s === "Online") return GREEN;
   if (s === "Warning") return ORANGE;
   return RED;
-}
-function formatBps(n: number | null): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  const bits = n * 8;
-  if (bits >= 1e9) return `${(bits / 1e9).toFixed(2)} Gb/s`;
-  if (bits >= 1e6) return `${(bits / 1e6).toFixed(2)} Mb/s`;
-  if (bits >= 1e3) return `${(bits / 1e3).toFixed(1)} kb/s`;
-  return `${Math.round(bits)} b/s`;
 }
 function formatUptime(sec: number | null): string {
   if (sec == null || !Number.isFinite(sec)) return "—";
@@ -121,32 +81,54 @@ function mapMk(r: any): MkDevice {
     monitored: r.monitored ?? true,
   };
 }
+// Merge one live `networkMetrics` payload onto the row we already hold. Every field is
+// optional: a poll carries metrics, while an add/config-save carries identity + settings
+// only. Anything absent keeps its current value.
 function mergeMkLive(prev: MkDevice | undefined, p: any): MkDevice {
-  const base = prev ?? mapMk({ ...p, monitored: true });
+  const base = prev ?? mapMk({ ...p, monitored: p.monitored ?? false });
   return {
     ...base,
+    name: p.name ?? base.name,
+    ip: p.ip ?? base.ip,
+    location: p.location ?? base.location,
     status: p.status ?? base.status,
     reachable: p.reachable ?? base.reachable,
     uptimeSeconds: p.uptimeSeconds ?? base.uptimeSeconds,
     cpuPercent: p.cpuPercent ?? base.cpuPercent,
     memPercent: p.memPercent ?? base.memPercent,
     connectedClients: p.connectedClients ?? base.connectedClients,
-    interfaces: p.interfaces ? mapMk(p).interfaces : base.interfaces,
+    routerosVersion: p.routerosVersion ?? base.routerosVersion,
+    boardModel: p.boardModel ?? base.boardModel,
+    apiPort: p.apiPort ?? base.apiPort,
+    useTls: p.useTls != null ? Boolean(p.useTls) : base.useTls,
+    apiUsername: p.apiUsername ?? base.apiUsername,
+    monitored: p.monitored != null ? Boolean(p.monitored) : base.monitored,
+    // Only a real poll carries ports. An add/config-save sends an empty array, which
+    // must NOT wipe the ports we're already showing — offline clearing is handled by
+    // the separate `networkStatus` event.
+    interfaces: Array.isArray(p.interfaces) && p.interfaces.length ? mapMk(p).interfaces : base.interfaces,
   };
 }
 
 // ─── Panel / StatPanel ────────────────────────────────────────────────────────
 
 function Panel({
-  title, right, children, noPad,
+  title, right, children, noPad, onClick,
 }: {
   title?: string;
   right?: React.ReactNode;
   children: React.ReactNode;
   noPad?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="flex flex-col rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+    <div
+      className={`flex flex-col rounded-lg overflow-hidden ${onClick ? "cursor-pointer transition-colors" : ""}`}
+      style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
+      onClick={onClick}
+      onMouseEnter={onClick ? (e) => (e.currentTarget.style.borderColor = "rgba(87,148,242,0.45)") : undefined}
+      onMouseLeave={onClick ? (e) => (e.currentTarget.style.borderColor = "var(--gf-panel-border)") : undefined}
+    >
       {title !== undefined && (
         <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
           <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
@@ -174,71 +156,95 @@ function StatPanel({ label, value, unit, color, sub }: { label: string; value: s
   );
 }
 
-// ─── Throughput history chart (rx/tx dual line) ───────────────────────────────
+// ─── Ghost button (matches ServerMetrics / NetworkMonitoring "View") ──────────
 
-function ThroughputChart({ history }: { history: HistPoint[] }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const c = ref.current;
-    if (!c) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    const W = (c.width = c.clientWidth * 2);
-    const H = (c.height = 160 * 2);
-    ctx.clearRect(0, 0, W, H);
-    const rx = history.map((p) => p.rxBytesPerSec ?? 0);
-    const tx = history.map((p) => p.txBytesPerSec ?? 0);
-    if (rx.length < 2) {
-      ctx.fillStyle = "#6B7280";
-      ctx.font = "24px 'JetBrains Mono', monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("No data in range", W / 2, H / 2);
-      return;
-    }
-    const max = Math.max(1, ...rx, ...tx);
-    const pad = 12 * 2;
-    const x = (i: number, len: number) => pad + (i / (len - 1)) * (W - pad * 2);
-    const y = (v: number) => H - pad - (v / max) * (H - pad * 2);
-    const line = (data: number[], color: string) => {
-      ctx.beginPath();
-      data.forEach((v, i) => (i ? ctx.lineTo(x(i, data.length), y(v)) : ctx.moveTo(x(i, data.length), y(v))));
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.lineJoin = "round";
-      ctx.stroke();
-    };
-    line(rx, BLUE);
-    line(tx, GREEN);
-  }, [history]);
-  return <canvas ref={ref} style={{ width: "100%", height: 160, display: "block" }} />;
+function GhostButton({ children, onClick, danger }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void; danger?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
+      style={{ color: danger ? RED : gf.textMuted, border: `1px solid ${danger ? `${RED}55` : gf.border}`, background: "transparent" }}
+    >
+      {children}
+    </button>
+  );
 }
 
-// ─── Building (interface) row ─────────────────────────────────────────────────
+// ─── Port chip (compact per-port state for the LIST row) ──────────────────────
+// The full utilization bars live in the detail view — the list only needs an
+// at-a-glance "which ports are up".
 
-function BuildingRow({ i }: { i: MkIface }) {
-  const util = Math.round(i.utilizationPct ?? 0);
-  const primary = i.locationLabel || i.name; // building label leads; port name is secondary
-  const secondary = i.locationLabel ? i.name : "";
+function PortChip({ label, up, util }: { label: string; up: boolean; util?: number | null }) {
+  const showUtil = up && util != null && Number.isFinite(util);
   return (
-    <div className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
-      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: i.linkUp ? GREEN : RED, boxShadow: `0 0 5px ${i.linkUp ? GREEN : RED}` }} />
-      <div className="w-36 min-w-0">
-        <div className="text-[12px] truncate" style={{ color: gf.textPrimary }}>{primary}</div>
-        {secondary && <div className="text-[9px] truncate" style={{ color: gf.textDim }}>{secondary}</div>}
-      </div>
-      <div className="flex-1 h-3 rounded-[2px] overflow-hidden" style={{ background: TRACK }}>
-        <div className="h-full rounded-[2px] transition-all duration-500" style={{ width: `${i.linkUp ? util : 0}%`, background: BAR_GRADIENT, backgroundSize: `${util > 0 ? (100 / util) * 100 : 100}% 100%` }} />
-      </div>
-      <span className="text-[11px] font-bold w-12 text-right shrink-0" style={{ color: i.linkUp ? loadColor(util) : gf.textDim }}>
-        {i.linkUp ? `${util}%` : "down"}
-      </span>
+    <span
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[10px]"
+      style={{ background: gf.hover, border: `1px solid ${gf.divider}`, color: up ? gf.textMuted : gf.textDim }}
+    >
+      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: up ? GREEN : RED }} />
+      <span className="truncate" style={{ maxWidth: 120 }}>{label}</span>
+      {showUtil && (
+        <span className="tabular-nums" style={{ color: loadColor(Math.round(util as number)) }}>
+          {Math.round(util as number)}%
+        </span>
+      )}
+      {!up && <span style={{ color: gf.textDim }}>down</span>}
+    </span>
+  );
+}
+
+// ─── Password input with a show/hide toggle ───────────────────────────────────
+// RouterOS passwords are typed by hand and are never displayed again once saved, so
+// being able to verify what you typed before committing avoids a save-then-fail loop.
+
+function PasswordField({
+  value, onChange, placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <input
+        type={show ? "text" : "password"}
+        className="w-full pl-2 pr-8 py-1.5 text-[12px] rounded-[2px] outline-none"
+        style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete="new-password"
+      />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        title={show ? "Hide password" : "Show password"}
+        aria-label={show ? "Hide password" : "Show password"}
+        className="absolute right-1 top-1/2 -translate-y-1/2 grid place-items-center w-6 h-6 rounded-[2px] transition-colors"
+        style={{ color: gf.textMuted, background: "transparent" }}
+        onMouseEnter={(e) => (e.currentTarget.style.color = gf.textPrimary)}
+        onMouseLeave={(e) => (e.currentTarget.style.color = gf.textMuted)}
+      >
+        {show ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+            <path d="M1 1l22 22" />
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        )}
+      </button>
     </div>
   );
 }
 
 // ─── Admin: add a new MikroTik ────────────────────────────────────────────────
 
-function AddModal({ onClose, onAdded }: { onClose: () => void; onAdded: (msg: string) => void }) {
+function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdded: (msg: string) => void; usedNames: string[] }) {
   const [name, setName] = useState("Campus MikroTik");
   const [ip, setIp] = useState("");
   const [location, setLocation] = useState("Server Room");
@@ -248,10 +254,41 @@ function AddModal({ onClose, onAdded }: { onClose: () => void; onAdded: (msg: st
   const [apiPassword, setApiPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // Verify the login before creating anything — nothing is persisted by this call.
+  const test = async () => {
+    if (!ip.trim() || !apiUsername.trim()) {
+      setTestResult({ ok: false, msg: "IP address and username are required to test." });
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    const r = await api.testMikrotik(null, {
+      ip: ip.trim(),
+      apiPort: Number(apiPort),
+      useTls,
+      apiUsername: apiUsername.trim(),
+      apiPassword,
+    });
+    setTesting(false);
+    const data: any = r.data ?? {};
+    if (r.success && data.ok) {
+      setTestResult({ ok: true, msg: `OK — RouterOS ${data.version ?? "?"}${data.boardName ? ` · ${data.boardName}` : ""}` });
+    } else {
+      setTestResult({ ok: false, msg: data.error || r.error || "Connection failed" });
+    }
+  };
 
   const submit = async () => {
     if (!name.trim() || !ip.trim()) {
       setErr("Name and IP are required.");
+      return;
+    }
+    // Instant feedback; the server enforces the same rule authoritatively (409).
+    if (usedNames.some((u) => u.toLowerCase() === name.trim().toLowerCase())) {
+      setErr(`A MikroTik named "${name.trim()}" already exists.`);
       return;
     }
     setBusy(true);
@@ -316,17 +353,27 @@ function AddModal({ onClose, onAdded }: { onClose: () => void; onAdded: (msg: st
           </div>
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Password</label>
-            <input type="password" className={inputCls} style={inputStyle} value={apiPassword} onChange={(e) => setApiPassword(e.target.value)} placeholder="RouterOS API password" autoComplete="new-password" />
+            <PasswordField value={apiPassword} onChange={setApiPassword} placeholder="RouterOS API password" />
             <p className="text-[9px] mt-1" style={{ color: gf.textDim }}>Stored encrypted (AES-256-GCM).</p>
           </div>
           {err && (
             <div className="text-[11px] px-2 py-1.5 rounded-[2px]" style={{ color: RED, background: RED + "14", border: `1px solid ${RED}40` }}>{err}</div>
           )}
-          <div className="flex items-center justify-end gap-2 pt-1">
+          {testResult && (
+            <div className="text-[11px] px-2 py-1.5 rounded-[2px]" style={{ color: testResult.ok ? GREEN : RED, background: (testResult.ok ? GREEN : RED) + "14", border: `1px solid ${(testResult.ok ? GREEN : RED)}40` }}>
+              {testResult.msg}
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <button onClick={test} disabled={testing || busy} className="text-[11px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, opacity: testing || busy ? 0.6 : 1 }}>
+              {testing ? "Testing…" : "Test connection"}
+            </button>
+            <div className="flex items-center gap-2">
             <button onClick={onClose} className="text-[11px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted }}>Cancel</button>
             <button onClick={submit} disabled={busy || !name.trim() || !ip.trim()} className="text-[11px] px-3 py-1.5 rounded-[2px] font-semibold" style={{ background: BLUE, color: "#fff", opacity: busy || !name.trim() || !ip.trim() ? 0.6 : 1 }}>
               {busy ? "Adding…" : "Add MikroTik"}
             </button>
+            </div>
           </div>
         </div>
       </div>
@@ -365,10 +412,18 @@ function ConnectionModal({
     else setResult({ ok: false, msg: r.error || "Save failed" });
   };
 
+  // Tests what's currently typed, not what's stored — so a wrong password never has to
+  // be saved just to discover it's wrong. A blank password field falls back to the
+  // stored one server-side.
   const test = async () => {
     setBusy("test");
     setResult(null);
-    const r = await api.testMikrotik(Number(device.id));
+    const r = await api.testMikrotik(Number(device.id), {
+      apiPort: Number(apiPort),
+      useTls,
+      apiUsername: apiUsername.trim(),
+      ...(apiPassword ? { apiPassword } : {}),
+    });
     setBusy("");
     const data: any = r.data ?? {};
     if (r.success && data.ok) {
@@ -406,7 +461,7 @@ function ConnectionModal({
           </div>
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Password</label>
-            <input type="password" className={inputCls} style={inputStyle} value={apiPassword} onChange={(e) => setApiPassword(e.target.value)} placeholder="leave blank to keep current" autoComplete="new-password" />
+            <PasswordField value={apiPassword} onChange={setApiPassword} placeholder="leave blank to keep current" />
             <p className="text-[9px] mt-1" style={{ color: gf.textDim }}>Stored encrypted (AES-256-GCM); never shown again.</p>
           </div>
 
@@ -427,7 +482,7 @@ function ConnectionModal({
               </button>
             </div>
           </div>
-          <p className="text-[9px]" style={{ color: gf.textDim }}>Test uses the saved credentials — Save first, then Test.</p>
+          <p className="text-[9px]" style={{ color: gf.textDim }}>Test uses what's typed above — no need to save first. Leave the password blank to test the stored one.</p>
         </div>
       </div>
     </div>
@@ -438,22 +493,35 @@ function ConnectionModal({
 
 export default function MikrotikMonitoring() {
   const [devices, setDevices] = useState<MkDevice[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [range, setRange] = useState<Range>("-1h");
-  const [history, setHistory] = useState<HistPoint[]>([]);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [configFor, setConfigFor] = useState<MkDevice | null>(null);
   const [adding, setAdding] = useState(false);
   const [toast, setToast] = useState("");
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+
+  // Decommission. Cascades server-side to mikrotik_devices / network_interfaces /
+  // device_logs / alerts, so it's gated behind the inline Yes/No confirm.
+  const remove = async (id: string) => {
+    setRemoving(id);
+    const r = await api.deleteMikrotik(Number(id));
+    setRemoving(null);
+    setConfirmId(null);
+    if (!r.success) {
+      alert(r.error ?? "Failed to remove MikroTik.");
+      return;
+    }
+    setDevices((prev) => prev.filter((x) => x.id !== id));
+    setDetailId((cur) => (cur === id ? null : cur));
+    setToast("MikroTik removed");
+    setTimeout(() => setToast(""), 3000);
+  };
 
   const load = () =>
     api.getMikrotikDevices().then((r) => {
-      if (r.success && r.data) {
-        const list: MkDevice[] = (r.data.devices ?? []).map(mapMk);
-        setDevices(list);
-        setSelectedId((cur) => cur ?? (list[0]?.id ?? null));
-      }
+      if (r.success && r.data) setDevices((r.data.devices ?? []).map(mapMk));
     });
 
   useEffect(() => {
@@ -468,7 +536,6 @@ export default function MikrotikMonitoring() {
         next[idx] = mergeMkLive(next[idx], data.device);
         return next;
       });
-      setSelectedId((cur) => cur ?? id);
     };
     const onStatus = (data: { id: number | string; status: string }) => {
       const id = String(data?.id);
@@ -482,35 +549,71 @@ export default function MikrotikMonitoring() {
         ),
       );
     };
+    // Another admin removed it — drop it here too, and bail out of its detail view.
+    const onRemoved = (data: { id: number | string }) => {
+      const id = String(data?.id);
+      setDevices((prev) => prev.filter((d) => d.id !== id));
+      setDetailId((cur) => (cur === id ? null : cur));
+    };
     socket.on("networkMetrics", onMetrics);
     socket.on("networkStatus", onStatus);
+    socket.on("networkRemoved", onRemoved);
     return () => {
       socket.off("networkMetrics", onMetrics);
       socket.off("networkStatus", onStatus);
+      socket.off("networkRemoved", onRemoved);
     };
   }, []);
-
-  // Throughput history for the selected device whenever it / the range changes.
-  useEffect(() => {
-    if (!selectedId) {
-      setHistory([]);
-      return;
-    }
-    api.getMikrotikHistory(Number(selectedId), range).then((r) => {
-      if (r.success && r.data) setHistory(r.data.history ?? []);
-    });
-  }, [selectedId, range]);
 
   const total = devices.length;
   const online = devices.filter((d) => d.status === "Online").length;
   const allIfaces = devices.flatMap((d) => d.interfaces);
   const portsUp = allIfaces.filter((i) => i.linkUp).length;
+  // WORST across the fleet, not the average. A status tile exists to make you look —
+  // and an average is the one aggregation guaranteed to stop that: one router at 98%
+  // with three idle ones averages to ~29% and shows green while a device is on fire.
+  // Devices that haven't reported (offline) contribute nothing rather than counting as 0.
   const cpuVals = devices.filter((d) => d.cpuPercent != null).map((d) => d.cpuPercent as number);
   const memVals = devices.filter((d) => d.memPercent != null).map((d) => d.memPercent as number);
-  const avgCpu = cpuVals.length ? Math.round(cpuVals.reduce((a, b) => a + b, 0) / cpuVals.length) : 0;
-  const avgMem = memVals.length ? Math.round(memVals.reduce((a, b) => a + b, 0) / memVals.length) : 0;
-  const selected = devices.find((d) => d.id === selectedId) ?? null;
-  const latest = history.length ? history[history.length - 1] : undefined;
+  const worstCpu = cpuVals.length ? Math.round(Math.max(...cpuVals)) : 0;
+  const worstMem = memVals.length ? Math.round(Math.max(...memVals)) : 0;
+  const reporting = Math.max(cpuVals.length, memVals.length);
+  const aggSub = reporting > 1 ? `worst of ${reporting}` : "router load";
+
+  // Drill-down: render the per-router detail in place (Back returns to the list),
+  // mirroring ServerMetrics ↔ ServerDetail. Look the device up by id each render so
+  // the open page keeps receiving live socket updates from the list's state.
+  const detail = detailId ? devices.find((d) => d.id === detailId) ?? null : null;
+  if (detail) {
+    return (
+      <>
+        <MikrotikDetail
+          device={detail}
+          isAdmin={isAdmin}
+          onBack={() => setDetailId(null)}
+          onConfigure={isAdmin ? () => setConfigFor(detail) : undefined}
+        />
+        {configFor && (
+          <ConnectionModal
+            device={configFor}
+            onClose={() => setConfigFor(null)}
+            onSaved={(msg) => {
+              setConfigFor(null);
+              setToast(msg);
+              load();
+              setTimeout(() => setToast(""), 3000);
+            }}
+          />
+        )}
+        {toast && (
+          <div className="fixed top-5 right-5 z-[80] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl"
+            style={{ color: GREEN, background: GREEN + "14", borderColor: GREEN + "40" }}>
+            <span>✓</span> {toast}
+          </div>
+        )}
+      </>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
@@ -518,12 +621,21 @@ export default function MikrotikMonitoring() {
       <div className="flex items-center justify-between gap-3 px-0.5">
         <div className="flex items-baseline gap-2 min-w-0">
           <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>MikroTik Network</h1>
-          <span className="text-[11px] hidden sm:inline" style={{ color: gf.textDim }}>per-building traffic · {portsUp}/{allIfaces.length} ports up</span>
+          <span className="text-[11px] hidden sm:inline" style={{ color: gf.textDim }}>
+            per-port traffic · {portsUp}/{allIfaces.length} ports up
+          </span>
         </div>
         <div className="flex items-center gap-3 shrink-0">
           {isAdmin && (
-            <button onClick={() => setAdding(true)} className="text-[11px] px-2.5 py-1 rounded-[2px] font-medium" style={{ background: BLUE, color: "#fff" }}>
-              + Add MikroTik
+            <button
+              onClick={() => setAdding(true)}
+              className="inline-flex items-center gap-1.5 text-[11px] font-medium"
+              style={{ height: 28, padding: "0 10px", color: "#fff", background: BLUE, border: `1px solid ${BLUE}`, borderRadius: 2 }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = BLUE_HOVER; e.currentTarget.style.borderColor = BLUE_HOVER; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = BLUE; e.currentTarget.style.borderColor = BLUE; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              Add MikroTik
             </button>
           )}
           <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
@@ -534,10 +646,10 @@ export default function MikrotikMonitoring() {
 
       {/* Stat row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <StatPanel label="Building Ports" value={String(allIfaces.length)} color={BLUE} sub={`${total} router${total === 1 ? "" : "s"}`} />
-        <StatPanel label="Ports Up" value={`${portsUp}/${allIfaces.length}`} color={portsUp === allIfaces.length && allIfaces.length > 0 ? GREEN : portsUp === 0 ? RED : ORANGE} sub="links online" />
-        <StatPanel label="CPU" value={String(avgCpu)} unit="%" color={loadColor(avgCpu)} sub="router load" />
-        <StatPanel label="Memory" value={String(avgMem)} unit="%" color={loadColor(avgMem)} sub="router RAM" />
+        <StatPanel label="Routers" value={`${online}/${total}`} color={total > 0 && online === total ? GREEN : online === 0 ? RED : ORANGE} sub="online" />
+        <StatPanel label="Ports Up" value={`${portsUp}/${allIfaces.length}`} color={allIfaces.length > 0 && portsUp === allIfaces.length ? GREEN : portsUp === 0 ? RED : ORANGE} sub="links up" />
+        <StatPanel label="CPU" value={String(worstCpu)} unit="%" color={loadColor(worstCpu)} sub={aggSub} />
+        <StatPanel label="Memory" value={String(worstMem)} unit="%" color={loadColor(worstMem)} sub={reporting > 1 ? `worst of ${reporting}` : "router RAM"} />
       </div>
 
       {total === 0 ? (
@@ -561,83 +673,94 @@ export default function MikrotikMonitoring() {
           </div>
         </Panel>
       ) : (
-        <>
-          {/* Selected device throughput history */}
-          {selected && (
-            <Panel
-              title={`Throughput · ${selected.name}`}
-              right={
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px]" style={{ color: BLUE }}>↓ {formatBps(latest?.rxBytesPerSec ?? null)}</span>
-                  <span className="text-[10px]" style={{ color: GREEN }}>↑ {formatBps(latest?.txBytesPerSec ?? null)}</span>
-                  <div className="flex rounded-md overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
-                    {RANGES.map((rg) => (
-                      <button
-                        key={rg}
-                        onClick={() => setRange(rg)}
-                        className="text-[10px] px-2 py-0.5 transition-colors"
-                        style={{ background: range === rg ? gf.hover : "transparent", color: range === rg ? gf.textPrimary : gf.textMuted }}
-                      >
-                        {rangeLabel[rg]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              }
-            >
-              <ThroughputChart history={history} />
-            </Panel>
-          )}
-
-          {/* Per-device: info + buildings (ports) */}
-          {devices.map((d) => (
-            <Panel
-              key={d.id}
-              title={d.name}
-              noPad
-              right={
-                <div className="flex items-center gap-2">
-                  {isAdmin && (
-                    <button onClick={() => setConfigFor(d)} className="text-[10px] px-2 py-0.5 rounded-[2px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
-                      Configure
-                    </button>
-                  )}
-                  <button onClick={() => setSelectedId(d.id)} className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
+        /* Fleet list — click a row (or "View") to open its full detail */
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+          {devices.map((d) => {
+            const up = d.interfaces.filter((i) => i.linkUp).length;
+            return (
+              <Panel
+                key={d.id}
+                title={d.name}
+                noPad
+                onClick={() => setDetailId(d.id)}
+                right={
+                  <span className="flex items-center gap-2">
                     <span className="inline-flex items-center gap-1.5">
                       <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
                       <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
                     </span>
-                  </button>
+                    {confirmId === d.id ? (
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-[10px]" style={{ color: RED }}>Remove?</span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); void remove(d.id); }}
+                          disabled={removing === d.id}
+                          className="px-2 py-1 rounded-md text-[10px] font-medium"
+                          style={{ color: RED, border: `1px solid ${RED}55`, background: "transparent", opacity: removing === d.id ? 0.6 : 1 }}
+                        >
+                          {removing === d.id ? "Removing…" : "Yes"}
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setConfirmId(null); }}
+                          className="px-2 py-1 rounded-md text-[10px]"
+                          style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
+                        >
+                          No
+                        </button>
+                      </span>
+                    ) : (
+                      <>
+                        <GhostButton onClick={(e) => { e.stopPropagation(); setDetailId(d.id); }}>View</GhostButton>
+                        {isAdmin && (
+                          <GhostButton onClick={(e) => { e.stopPropagation(); setConfigFor(d); }}>Configure</GhostButton>
+                        )}
+                        {isAdmin && (
+                          <GhostButton danger onClick={(e) => { e.stopPropagation(); setConfirmId(d.id); }}>Remove</GhostButton>
+                        )}
+                      </>
+                    )}
+                  </span>
+                }
+              >
+                {/* summary strip */}
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
+                  <span className="font-mono">{d.ip}</span>
+                  <span>{d.location}</span>
+                  <span>CPU <span style={{ color: loadColor(Math.round(d.cpuPercent ?? 0)) }}>{d.cpuPercent != null ? `${Math.round(d.cpuPercent)}%` : "—"}</span></span>
+                  <span>MEM <span style={{ color: loadColor(Math.round(d.memPercent ?? 0)) }}>{d.memPercent != null ? `${Math.round(d.memPercent)}%` : "—"}</span></span>
+                  <span>{d.connectedClients != null ? `${d.connectedClients} lease${d.connectedClients === 1 ? "" : "s"}` : "— leases"}</span>
+                  {d.routerosVersion && <span>RouterOS {d.routerosVersion}</span>}
+                  <span className="ml-auto">↑ {formatUptime(d.uptimeSeconds)}</span>
                 </div>
-              }
-            >
-              {/* device summary line */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
-                <span>{d.location}</span>
-                <span>CPU <span style={{ color: loadColor(Math.round(d.cpuPercent ?? 0)) }}>{d.cpuPercent != null ? `${Math.round(d.cpuPercent)}%` : "—"}</span></span>
-                <span>MEM <span style={{ color: loadColor(Math.round(d.memPercent ?? 0)) }}>{d.memPercent != null ? `${Math.round(d.memPercent)}%` : "—"}</span></span>
-                <span>{d.connectedClients != null ? `${d.connectedClients} clients` : "— clients"}</span>
-                {d.routerosVersion && <span>RouterOS {d.routerosVersion}</span>}
-                {d.boardModel && <span>{d.boardModel}</span>}
-                <span className="ml-auto">↑ {formatUptime(d.uptimeSeconds)}</span>
-              </div>
-              {!d.monitored ? (
-                <div className="px-3 py-4 text-[11px]" style={{ color: ORANGE }}>API not configured — set the read-only RouterOS login (admin).</div>
-              ) : d.interfaces.length === 0 ? (
-                <div className="px-3 py-4 text-[11px]" style={{ color: gf.textDim }}>
-                  {d.status === "Online" ? "No ports reported." : "Offline — awaiting next poll."}
-                </div>
-              ) : (
-                d.interfaces.map((i) => <BuildingRow key={`${d.id}:${i.name}`} i={i} />)
-              )}
-            </Panel>
-          ))}
-        </>
+
+                {/* ports at a glance — full utilization bars live in the detail view */}
+                {!d.monitored ? (
+                  <div className="px-3 py-3 text-[11px]" style={{ color: ORANGE }}>API not configured — set the read-only RouterOS login (admin).</div>
+                ) : d.interfaces.length === 0 ? (
+                  <div className="px-3 py-3 text-[11px]" style={{ color: gf.textDim }}>
+                    {d.status === "Online" ? "No ports reported." : "Offline — awaiting next poll."}
+                  </div>
+                ) : (
+                  <div className="px-3 py-2.5 flex flex-col gap-1.5">
+                    <span className="text-[9px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                      Ports · {up}/{d.interfaces.length} up
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {d.interfaces.map((i) => (
+                        <PortChip key={i.name} label={i.name} up={i.linkUp} util={i.utilizationPct} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </Panel>
+            );
+          })}
+        </div>
       )}
 
       {adding && (
         <AddModal
+          usedNames={devices.map((d) => d.name)}
           onClose={() => setAdding(false)}
           onAdded={(msg) => {
             setAdding(false);

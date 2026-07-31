@@ -1,12 +1,22 @@
 # MikroTik Network Monitoring — CSPC-ICTU Monitoring
 
-> Status: **IMPLEMENTED** (branch `mikrotik-monitoring`, stacked on `router-ups-monitoring`).
-> Backend poller + RouterOS client + crypto + REST routes, and the dashboard page with admin
-> **Add / Configure / Test**. **Mock removed — live RouterOS only.** **Real alerts (bell / email /
-> Alerts page) via configurable `alert_rules` are now wired** (`services/deviceAlerts.js`, shared by
-> the MikroTik + SNMP pollers). Pending: a live test against the dev MikroTik, and a port→building
-> labeling UI.
+> Status: **IMPLEMENTED + LIVE-TESTED** (branch `mikrotik-monitoring`, stacked on
+> `router-ups-monitoring`). Backend poller + RouterOS client + crypto + REST routes, and the
+> dashboard list → detail pages with admin **Add / Configure / Test / Remove** and a port
+> **label editor**. **Mock removed — live RouterOS only.** Real alerts (bell / email / Alerts
+> page) via configurable `alert_rules` (`services/deviceAlerts.js`, shared by the MikroTik +
+> SNMP pollers), including interface **error-rate** alerting.
 > **→ §13 is the study guide for how it actually works (read that with the code open).**
+>
+> ⚠️ **Terminology.** This document was written around "each building is a port". The
+> implementation and UI now speak in **ports**, with an optional free-text label per port
+> (`network_interfaces.location_label`) — which may be a building, a rack, an uplink, or
+> anything else. Read "building" below as "labelled port".
+>
+> **Live test (2026-07-31, RB951G-2HnD / RouterOS 6.43.4)** found two real issues, both fixed:
+> `/interface/print` with `=stats=` is rejected on that build (now falls back to a plain print),
+> and `/interface/print` returns every logical interface — `bridge`, `wlan1`, VLANs — so a
+> 5-port router reported 7 "ports" until `physicalOnly()` was added.
 
 Monitor the **campus network through a single MikroTik router**. The campus has **one large
 MikroTik** that all buildings' networks pass through; it has ~**4–5 ports**, and **each
@@ -72,7 +82,7 @@ Server metrics (existing)         MikroTik metrics (this feature)
       │                                 │
       ▼                                 ▼
   InfluxDB server_metrics           InfluxDB network_traffic + router_metrics  (SHARED w/ SNMP)
-      │                                 │   (one row per interface = per building)
+      │                                 │   (one row per physical port)
       ▼                                 ▼
   socket "serverMetrics"            socket "networkMetrics" / "networkStatus"  (SHARED w/ SNMP)
       │                                 │
@@ -86,7 +96,7 @@ Server metrics (existing)         MikroTik metrics (this feature)
 |---|---|---|
 | Per-interface rx/tx, up/down | ✅ `/interface print` (+ `/interface/monitor-traffic`) | ✅ IF-MIB |
 | **Router CPU / memory** | ✅ `/system/resource` | ❌ vendor MIB — left `null` today |
-| **Connected clients per building** | ✅ DHCP leases (per interface/subnet) | ⚠️ hard / not portable |
+| **DHCP leases, per port** | ✅ leases grouped by DHCP server → interface | ⚠️ hard / not portable |
 | RouterOS version, board, uptime | ✅ `/system/resource` | partial (`sysDescr`) |
 | Credential sensitivity | router **login** (encrypt at rest, read-only user) | community string (read-only) |
 | Library | `node-routeros` (v6 + v7) **or** REST `/rest` (v7 only, no dep) | `net-snmp` (already added) |
@@ -101,10 +111,11 @@ Server metrics (existing)         MikroTik metrics (this feature)
 | Memory used % | `/system/resource` `free-memory` / `total-memory` | derive % |
 | Uptime, version, board | `/system/resource` `uptime`, `version`, `board-name` | identity |
 | Per-interface rx/tx **bytes** | `/interface print stats` `rx-byte` / `tx-byte` | **cumulative counters** → derive bps at query time |
-| Interface up/down | `/interface print` `running` / `disabled` | per port = per building |
+| Interface up/down | `/interface print` `running` / `disabled` | one row per physical port |
 | Interface errors/drops | `/interface print stats` `rx-error` / `tx-error` | cumulative |
 | Link speed (for util %) | `/interface/ethernet print` `rate` | optional |
-| **Connected clients (per building)** | `/ip/dhcp-server/lease print` grouped by `server`/interface | ⚠️ only breaks down per building if each building is its own subnet / DHCP server / VLAN — see §10 Q3 |
+| **Connected clients (total)** | `/ip/dhcp-server/lease print ?status=bound` | device-level count |
+| **Connected clients (per port)** | leases grouped by `server`, mapped to an interface via `/ip/dhcp-server print` | ✅ implemented. Resolves to `null` per port when every lease sits on one bridge — see §10 Q3 |
 
 This maps **1:1 onto the shape `collectRouter()` already returns** in `snmpPollerService`
 (`{ reachable, sysName, uptimeSeconds, cpuPercent, memPercent, connectedClients, interfaces:[{ name, rxBytes, txBytes, rxErrors, txErrors, linkUp, utilizationPct }] }`),
@@ -178,7 +189,7 @@ ALTER TABLE `mikrotik_devices` DROP COLUMN `firmware_version`;
 Write the **same** measurements the `router-ups-monitoring` design defined, tagged by the
 stable `device_id` **and `interface_name` / `location_label`**:
 
-- `network_traffic` — **per interface (= per building), per poll**: `rx_bytes`/`tx_bytes`
+- `network_traffic` — **per interface (= per physical port), per poll**: `rx_bytes`/`tx_bytes`
   (**uinteger**, cumulative Counter64 — use `point.uintField`, not float),
   `rx_errors`/`tx_errors`, `link_up` (boolean), `utilization_pct` (float). Throughput is derived
   at query time (`derivative(nonNegative:true)`), so a counter wrap / reboot doesn't spike.
@@ -231,6 +242,10 @@ Sidebar nav "Network"                       ← offline badge when the MikroTik 
 MIKROTIK_POLL_INTERVAL_MS=30000   # poll cadence (RouterOS API is lighter than SNMP walks)
 MIKROTIK_API_TIMEOUT_MS=5000      # connect/read timeout
 MIKROTIK_ENC_KEY=                 # 32-byte hex key for AES-256-GCM credential encryption (REQUIRED)
+MIKROTIK_TLS_VERIFY=              # true = verify the router's cert when use_tls is on. Blank/false
+                                  #   = encrypted but unverified. RouterOS ships a SELF-SIGNED cert,
+                                  #   so strict verification fails against a stock router.
+MIKROTIK_TLS_CA=                  # optional CA file path, used only when MIKROTIK_TLS_VERIFY=true
 ```
 
 > Dependency: `node-routeros` (RouterOS API client, v6 + v7). If the router is RouterOS **v7**,
@@ -347,9 +362,12 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
 - [x] **Phase 3 — Page + admin.** `MikrotikMonitoring.tsx` (per-port = per-building rows,
       CPU/mem/clients, throughput history) + **Add MikroTik** (`POST /api/mikrotik`) + **Configure**
       + **Test connection** (admin). Route / sidebar / role wired.
-- [~] **Phase 4 — Detail.** The single-router page already shows per-port + throughput + device info
-      (+ a logs endpoint), so a separate drill-down wasn't needed. ⏳ port→building **labeling UI**
-      still TODO (labels live in `network_interfaces`, currently SQL-seeded).
+- [x] **Phase 4 — Detail.** Split into a fleet **list** (`MikrotikMonitoring.tsx`) and a per-router
+      **detail** page (`MikrotikDetail.tsx`), reached via **View** — an in-page swap mirroring
+      ServerMetrics ↔ ServerDetail and NetworkMonitoring ↔ NetworkDetail. Detail carries stat tiles,
+      a Chart.js throughput chart with a **per-port selector**, a WinBox-style port table
+      (flags / Tx / Rx / errors / leases / utilization), the **port label editor**, connection info
+      and the event log. Live throughout — history re-fetches each poll and `deviceLog` streams in.
 - [x] **Phase 5 — Alerting.** **Real alerts wired** via `services/deviceAlerts.js` (shared by the
       MikroTik + SNMP pollers): router CPU/mem/clients, per-interface link utilization, and UPS
       charge/runtime/load are evaluated against the configurable `alert_rules` (band + hysteresis via
@@ -358,8 +376,11 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
       events (interface down, UPS on-battery, and device offline/unreachable via checkReachability) raise directly, like server 'offline'. Global default
       thresholds are seeded by `migrations/2026-06-30_router_ups_alert_rules.sql` (⚠️ run it, or
       rules-only means silent), and the **Alert Rules** admin page now lists these metrics.
-      ⏳ per-device (per-router/UPS) overrides in the UI still TODO — the scope picker lists servers
-      only, so these metrics are global-only there for now.
+      Per-device overrides are now selectable: the Alert Rules scope dropdown lists servers, routers /
+      MikroTik and UPS in grouped sections, and the metric list narrows to that device class.
+      Interface **error rate** (`link_errors`) was added on 2026-07-31 — seeded by
+      `migrations/2026-07-31_link_errors_alert_rule.sql`, measured as the per-poll DELTA so a
+      long-running router isn't permanently in alarm over old errors.
 - [ ] **Phase 6 — Polish.** PiP `network.summary` tile; live test on the dev MikroTik then campus.
 
 > **Removed:** the `MIKROTIK_MOCK` synthetic-data mode (built during scaffolding, dropped at request
@@ -378,9 +399,12 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
 | `migrations/2026-06-20_mikrotik_device.sql` | ENUM `+'mikrotik'` + `use_tls` + seed template (`mikrotik_devices` / `network_interfaces` already in V10) — **new** |
 | `backend/handlers/networkMetricsHandler.js` | `writeNetworkSample()` — **REUSED** (from router-ups) |
 | `backend/handlers/networkHistoryHandler.js` | Flux history — **REUSED** (from router-ups) |
-| `network_interfaces` table | port → building mapping — **REUSED** (from router-ups) |
+| `network_interfaces` table | port → label mapping (edited from the Ports panel) — **REUSED** (from router-ups) |
 | `backend/services/snmpPollerService.js` | the structure this poller mirrors — **reference** |
-| `frontend/src/pages/NetworkMonitoring.tsx` | the page to extend (per-building rows) — **REUSED/extend** |
+| `frontend/src/pages/MikrotikMonitoring.tsx` | fleet **list** page (View / Configure / Remove per row) — **new** |
+| `frontend/src/pages/MikrotikDetail.tsx` | per-router **detail** page (in-page swap, mirrors ServerMetrics ↔ ServerDetail) — **new** |
+| `migrations/2026-07-31_link_errors_alert_rule.sql` | seeds the `link_errors` thresholds — **new** (⚠️ run it, or error alerting is silent) |
+| `frontend/src/pages/NetworkMonitoring.tsx` | the SNMP router page; shares the collector + events — **reference** |
 | `frontend/src/api/api.ts` | MikroTik connection/history calls — **edit** |
 | `frontend/src/components/layout/Sidebar.tsx` | nav item + offline badge — **edit** |
 | `router-ups-monitoring.md` | sibling feature (sources C+D); shared data model — **reference** |
@@ -410,7 +434,7 @@ mikrotikPollerService.pollAll(io)
    │                          /interface/ethernet        → link speed (for utilization)
    │                          /ip/dhcp-server/lease      → bound-lease count = connected clients
    │                        withUtilization() → (byte delta vs last cycle ÷ link speed) → utilization_pct
-   │                        attach locationLabel from network_interfaces (port → building)
+   │                        attach locationLabel from network_interfaces (port → label)
    │    setReachable(io,d,true)       flip devices.status; log device_logs on transition; emit networkStatus
    │    writeNetworkSample(io,d,sample)   ← SHARED with the SNMP poller:
    │         InfluxDB  router_metrics (cpu/mem/uptime/clients) + network_traffic (per port, cumulative)
@@ -435,8 +459,9 @@ Browser: `MikrotikMonitoring.tsx` fetches `GET /api/mikrotik` once, then live-up
 | 4 | `backend/handlers/networkMetricsHandler.js` | `writeNetworkSample()` — InfluxDB write + `networkMetrics` (SHARED, from router-ups) |
 | 5 | `backend/routes/mikrotik.js` | REST: list / create / connection / test / history / logs |
 | 6 | `backend/src/server.js` | mounts `/api/mikrotik` + the poll `setInterval` |
-| 7 | `frontend/src/pages/MikrotikMonitoring.tsx` | the page + `AddModal` + `ConnectionModal` |
-| 8 | `frontend/src/api/api.ts` | `getMikrotikDevices` / `addMikrotik` / `saveMikrotikConnection` / `testMikrotik` / history / logs |
+| 7 | `frontend/src/pages/MikrotikMonitoring.tsx` | the **list** page + `AddModal` + `ConnectionModal` + `PasswordField` + remove-confirm |
+| 8 | `frontend/src/pages/MikrotikDetail.tsx` | the **detail** page (in-page swap via "View"): stat tiles, throughput chart with a per-port selector, the WinBox-style port table, the label editor, event log. Owns the shared `MkDevice` / `MkIface` types |
+| 9 | `frontend/src/api/api.ts` | `getMikrotikDevices` / `addMikrotik` / `deleteMikrotik` / `saveMikrotikConnection` / `testMikrotik` / `get|saveMikrotikInterfaces` / history / logs |
 | — | `backend/services/snmpPollerService.js` | the sibling this mirrors — read side-by-side |
 
 ### 13.3 REST surface (`/api/mikrotik`, all behind JWT `authMiddleware`)
@@ -444,10 +469,14 @@ Browser: `MikrotikMonitoring.tsx` fetches `GET /api/mikrotik` once, then live-up
 | Method / Path | Role | Purpose |
 |---|---|---|
 | `GET /` | any | list MikroTik(s) + latest live values (password is **never** returned) |
-| `POST /` | admin | register a router (creates `devices` + `mikrotik_devices` rows; encrypts password) |
+| `POST /` | admin | register a router (creates `devices` + `mikrotik_devices` rows; encrypts password). `409` if the name is taken |
+| `DELETE /:id` | admin | decommission — cascades to `mikrotik_devices` / `network_interfaces` / `device_logs` / `alerts`; emits `networkRemoved` |
 | `PUT /:id/connection` | admin | update port / TLS / username / password |
-| `POST /:id/test` | admin | probe the API with the stored creds → version/board, or an error |
-| `GET /:id/history?range=-1h\|-6h\|-24h` | any | throughput history from InfluxDB (shared handler) |
+| `POST /test` | admin | probe credentials **before** the device exists (Add form) — nothing persisted |
+| `POST /:id/test` | admin | probe the API; body may carry credentials to test instead of the stored ones (blank password = use stored) |
+| `GET /:id/interfaces` | any | port → label map (`network_interfaces`) |
+| `PUT /:id/interfaces` | admin | set port labels; a blank label deletes that port's row |
+| `GET /:id/history?range=-1h\|-6h\|-24h[&interface=ether3]` | any | throughput from InfluxDB (shared handler). Without `interface` = device totals; with it = that single port |
 | `GET /:id/logs` | any | device event log (`device_logs`) |
 
 ### 13.4 Operational flow (how an admin uses it)
@@ -456,7 +485,9 @@ Browser: `MikrotikMonitoring.tsx` fetches `GET /api/mikrotik` once, then live-up
 2. **Router:** enable the API + create a read-only user (`mikrotik-dev-setup.md`).
 3. Dashboard → **MikroTik** → **+ Add MikroTik** → name / IP / port / username / password → **Add**.
 4. **Configure** edits creds later; **Test connection** verifies. The poller then streams every ~30s.
-5. **Port → building labels:** add `network_interfaces` rows (`interface_name → location_label`). *(UI for this is the remaining TODO; until then ports show by their RouterOS name.)*
+5. **Port labels:** open a router → **View** → Ports panel → **Edit labels** (admin). Name each port
+   by what it connects to; blank clears it and the raw RouterOS name shows instead. Saved to
+   `network_interfaces` and pushed live, no poll wait.
 
 ### 13.5 What changed from the original plan (§1–§12)
 
@@ -469,11 +500,28 @@ Browser: `MikrotikMonitoring.tsx` fetches `GET /api/mikrotik` once, then live-up
 
 ### 13.6 Known gaps / next
 
-- **Live test** against the dev MikroTik — the RouterOS command words in `mikrotikClient` are
-  best-effort and should be confirmed on hardware.
-- **Port → building labeling UI** (currently SQL).
-- **Per-device (per-router/UPS) alert-rule overrides in the UI** — the Alert Rules scope picker
-  lists servers only, so `router_*` / `link_util` / `ups_*` metrics are global-only there for now
-  (global covers every device of that type; per-device tuning needs SQL until the picker includes
-  network/UPS/MikroTik devices). Threshold *alerting itself* is fully wired (see Phase 5).
+Closed on 2026-07-31:
+
+- ~~Live test against the dev MikroTik~~ — done on an RB951G-2HnD / RouterOS 6.43.4; found and
+  fixed the `=stats=` rejection and the virtual-interface leak (see the status note at the top).
+- ~~Port labeling UI~~ — `GET/PUT /api/mikrotik/:id/interfaces` + an **Edit labels** editor in the
+  Ports panel (admin). Blank label deletes the row; changes are pushed live, no poll wait.
+- ~~Per-device alert-rule overrides~~ — the Alert Rules scope dropdown now lists servers, routers /
+  MikroTik and UPS in grouped sections, and the metric list narrows to whatever that device class
+  supports.
+- ~~Per-port client counts~~ — leases grouped by DHCP server → interface, with a total-only fallback.
+- ~~Interface error alerting~~ — new `link_errors` metric on the per-poll error DELTA (not the
+  lifetime counter), seeded by `migrations/2026-07-31_link_errors_alert_rule.sql`.
+- ~~Test connection required saving first~~ — `POST /api/mikrotik/test` (no id) plus body
+  credentials on `/:id/test`, so a login is verified before anything is persisted.
+- ~~API-SSL unusable~~ — TLS options now tolerate RouterOS's self-signed certificate by default;
+  set `MIKROTIK_TLS_VERIFY=true` (+ optional `MIKROTIK_TLS_CA`) once a CA-signed cert is installed.
+
+Still open:
+
+- **Per-port history is device-wide by default.** `GET /:id/history?interface=ether3` charts one
+  port, but the *alert* rules for `link_util` / `link_errors` are still per-DEVICE — one threshold
+  covers every port on that router. Per-interface rules would need a different rule model.
 - **PiP `network.summary` tile.**
+- **Production hardening:** API-SSL with a real certificate, and the API firewalled to the backend
+  host only. See §3 and `mikrotik-dev-setup.md`.

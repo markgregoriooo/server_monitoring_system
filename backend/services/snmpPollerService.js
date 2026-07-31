@@ -105,6 +105,9 @@ export async function collectRouter(deviceId, conn, labels = {}) {
         txErrors: Number(outErr[idx] ?? 0),
         linkUp,
         utilizationPct,
+        // Was computed for utilizationPct but dropped from the sample, so SNMP routers
+        // couldn't show a link-speed badge the way MikroTik ones do.
+        speedMbps: speedMbps || null,
       });
     }
 
@@ -256,6 +259,9 @@ async function pollRouter(io, d) {
       utilizationPct: i.utilizationPct ?? null,
       rxBytes: i.rxBytes != null ? String(i.rxBytes) : null, // BigInt → string (JSON-safe)
       txBytes: i.txBytes != null ? String(i.txBytes) : null,
+      rxErrors: i.rxErrors ?? 0,
+      txErrors: i.txErrors ?? 0,
+      speedMbps: i.speedMbps ?? null,
     })),
   });
 }
