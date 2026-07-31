@@ -18,13 +18,18 @@ interface Rule {
   updatedAt?: string | null;
 }
 
+// Every device class that can carry a per-device threshold override. The room-level
+// environment metrics have no device at all, so they aren't a kind.
+type DeviceKind = "server" | "network" | "ups";
+
 interface ServerOpt {
   id: number;
   name: string;
+  kind: DeviceKind;
 }
 
 interface FormState {
-  deviceId: string; // "" = global default, else the server id
+  deviceId: string; // "" = global default, else the device id
   metricName: string;
   thresholdValue: string;
   comparison: string;
@@ -37,29 +42,48 @@ interface MetricMeta {
   label: string;
   unit: string;
   color: string;
-  env?: boolean; // room-level (ESP32) metric — global only, never per-server
-  globalOnly?: boolean; // non-server device metric (router / UPS) — global only in this UI (the scope dropdown lists servers only)
+  env?: boolean; // room-level (ESP32) metric — global only, never per-device
+  // Which class of device this metric applies to. Drives the scope dropdown: picking a
+  // router only offers router metrics, picking a UPS only offers UPS metrics. Metrics
+  // used to be server-only here, which forced every router/UPS threshold to be global.
+  scope?: DeviceKind;
   lowerIsWorse?: boolean; // smaller value = worse (battery charge / runtime) → default the condition to '<='
 }
 
 const METRICS: MetricMeta[] = [
-  { value: "cpu", label: "CPU usage", unit: "%", color: "#5794F2" },
-  { value: "mem", label: "Memory usage", unit: "%", color: "#B877D9" },
-  { value: "disk", label: "Disk usage", unit: "%", color: "#FFA94D" },
+  { value: "cpu", label: "CPU usage", unit: "%", color: "#5794F2", scope: "server" },
+  { value: "mem", label: "Memory usage", unit: "%", color: "#B877D9", scope: "server" },
+  { value: "disk", label: "Disk usage", unit: "%", color: "#FFA94D", scope: "server" },
   { value: "temperature", label: "Temperature", unit: "°C", color: "#FF6B6B", env: true },
   { value: "gas", label: "Gas / smoke", unit: "ppm", color: "#9AA0A6", env: true },
   { value: "humidity", label: "Humidity", unit: "%", color: "#3CC8E8", env: true },
-  // Router / UPS metrics (SNMP + MikroTik pollers → services/deviceAlerts.js). Seeded
-  // as GLOBAL defaults (device_id NULL) by migrations/2026-06-30_router_ups_alert_rules.sql;
-  // per-device overrides for these devices are a future enhancement (scope lists servers only).
-  { value: "router_cpu", label: "Router CPU", unit: "%", color: "#5794F2", globalOnly: true },
-  { value: "router_mem", label: "Router memory", unit: "%", color: "#B877D9", globalOnly: true },
-  { value: "router_clients", label: "Connected clients", unit: "", color: "#73BF69", globalOnly: true },
-  { value: "link_util", label: "Link utilization", unit: "%", color: "#FF9830", globalOnly: true },
-  { value: "ups_charge", label: "UPS battery", unit: "%", color: "#73BF69", globalOnly: true, lowerIsWorse: true },
-  { value: "ups_runtime", label: "UPS runtime", unit: "min", color: "#5794F2", globalOnly: true, lowerIsWorse: true },
-  { value: "ups_load", label: "UPS load", unit: "%", color: "#FF780A", globalOnly: true },
+  // Router / UPS metrics (SNMP + MikroTik pollers → services/deviceAlerts.js). Global
+  // defaults are seeded by migrations/2026-06-30_router_ups_alert_rules.sql; per-device
+  // overrides are now selectable here too.
+  { value: "router_cpu", label: "Router CPU", unit: "%", color: "#5794F2", scope: "network" },
+  { value: "router_mem", label: "Router memory", unit: "%", color: "#B877D9", scope: "network" },
+  { value: "router_clients", label: "Connected clients", unit: "", color: "#73BF69", scope: "network" },
+  { value: "link_util", label: "Link utilization", unit: "%", color: "#FF9830", scope: "network" },
+  // Errors ADDED since the previous poll (rx+tx), not the lifetime counter — so the
+  // sensible threshold depends on the poll cadence. See
+  // migrations/2026-07-31_link_errors_alert_rule.sql.
+  { value: "link_errors", label: "Link errors", unit: "/poll", color: "#F2495C", scope: "network" },
+  { value: "ups_charge", label: "UPS battery", unit: "%", color: "#73BF69", scope: "ups", lowerIsWorse: true },
+  { value: "ups_runtime", label: "UPS runtime", unit: "min", color: "#5794F2", scope: "ups", lowerIsWorse: true },
+  { value: "ups_load", label: "UPS load", unit: "%", color: "#FF780A", scope: "ups" },
 ];
+
+const KIND_LABEL: Record<DeviceKind, string> = {
+  server: "Servers",
+  network: "Routers / MikroTik",
+  ups: "UPS",
+};
+// First metric offered when the scope switches to a device of this kind.
+const KIND_DEFAULT_METRIC: Record<DeviceKind, string> = {
+  server: "cpu",
+  network: "router_cpu",
+  ups: "ups_charge",
+};
 const COMPARISONS = [">=", ">", "<=", "<"];
 const SEVERITIES = ["info", "warning", "critical"];
 const SEV_COLOR: Record<string, string> = { critical: "#E02F44", warning: "#FF780A", info: "#5794F2" };
@@ -179,6 +203,7 @@ function MetricIcon({ name, size = 15 }: { name: string; size?: number }) {
     case "router_mem":
     case "router_clients":
     case "link_util":
+    case "link_errors":
       return (
         <svg {...p}>
           <rect x="3" y="13" width="18" height="7" rx="1.5" />
@@ -231,14 +256,29 @@ export default function AlertRules() {
   };
 
   const load = async () => {
-    const [rulesRes, serversRes] = await Promise.all([api.getAlertRules(), api.getServers()]);
+    // Every device class that can hold an override, so the scope dropdown isn't limited
+    // to servers. Each list is independent — one failing shouldn't blank the others.
+    const [rulesRes, serversRes, netRes, upsRes, mkRes] = await Promise.all([
+      api.getAlertRules(),
+      api.getServers(),
+      api.getNetworkDevices(),
+      api.getUpsDevices(),
+      api.getMikrotikDevices(),
+    ]);
     if (rulesRes.success && rulesRes.data) setRules(rulesRes.data.rules ?? []);
     else setError(rulesRes.error || "Failed to load alert rules.");
-    if (serversRes.success && serversRes.data) {
-      setServers(
-        (serversRes.data.servers ?? []).map((s: any) => ({ id: Number(s.id), name: s.name })),
-      );
-    }
+
+    const opts: ServerOpt[] = [];
+    const push = (rows: any[] | undefined, kind: DeviceKind) => {
+      for (const r of rows ?? []) opts.push({ id: Number(r.id), name: r.name, kind });
+    };
+    if (serversRes.success) push(serversRes.data?.servers, "server");
+    // Routers and MikroTiks share the router_* / link_* metric vocabulary.
+    if (netRes.success) push(netRes.data?.devices, "network");
+    if (mkRes.success) push(mkRes.data?.devices, "network");
+    if (upsRes.success) push(upsRes.data?.devices, "ups");
+    setServers(opts);
+
     setLoading(false);
   };
 
@@ -440,10 +480,15 @@ export default function AlertRules() {
 
   const selectCls = "text-[11px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer";
   const liveWarn = formOpen ? coverageLossMessage() : null;
-  // Per-server scope only exposes server metrics — temperature/gas/humidity are
-  // room-level (the ESP32 isn't a `devices` row) and can only be global.
-  const isServerScope = form.deviceId !== "";
-  const metricOptions = isServerScope ? METRICS.filter((m) => !m.env && !m.globalOnly) : METRICS;
+  // A per-device scope only exposes metrics that apply to THAT kind of device — a router
+  // can't have a disk rule, a UPS can't have a link-utilization rule. Temperature / gas /
+  // humidity are room-level (the ESP32 isn't a `devices` row) so they stay global-only.
+  const selectedDevice = form.deviceId === ""
+    ? null
+    : servers.find((s) => String(s.id) === form.deviceId) ?? null;
+  const metricOptions = selectedDevice
+    ? METRICS.filter((m) => !m.env && m.scope === selectedDevice.kind)
+    : METRICS;
 
   return (
     <div className="p-4 lg:p-6" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
@@ -780,23 +825,36 @@ export default function AlertRules() {
                     onChange={(e) => {
                       const deviceId = e.target.value;
                       setForm((f) => {
-                        // switching to a server scope: drop metrics that can only be global
-                        // (room-level env + non-server device metrics like router / UPS)
+                        // Switching scope: if the current metric doesn't apply to the newly
+                        // selected device's kind (or is room-level), fall back to that
+                        // kind's default metric.
+                        const dev = deviceId === "" ? null : servers.find((s) => String(s.id) === deviceId);
+                        if (!dev) return { ...f, deviceId };
                         const m = metricMeta(f.metricName);
                         const metricName =
-                          deviceId !== "" && (m.env || m.globalOnly) ? "cpu" : f.metricName;
+                          m.env || m.scope !== dev.kind ? KIND_DEFAULT_METRIC[dev.kind] : f.metricName;
                         return { ...f, deviceId, metricName };
                       });
                     }}
                     className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none"
                     style={inputStyle}
                   >
-                    <option value="">Global (all servers / room)</option>
-                    {servers.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
+                    <option value="">Global (all devices / room)</option>
+                    {/* Grouped so it's obvious which class each device belongs to —
+                        the metric list below adapts to whichever you pick. */}
+                    {(["server", "network", "ups"] as DeviceKind[]).map((kind) => {
+                      const group = servers.filter((s) => s.kind === kind);
+                      if (!group.length) return null;
+                      return (
+                        <optgroup key={kind} label={KIND_LABEL[kind]}>
+                          {group.map((s) => (
+                            <option key={`${kind}:${s.id}`} value={s.id}>
+                              {s.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      );
+                    })}
                   </select>
                 </Field>
 
@@ -955,7 +1013,7 @@ function StatCard({ label, value, color, sub }: { label: string; value: number; 
 function RulePreview({ form, servers }: { form: FormState; servers: ServerOpt[] }) {
   const meta = metricMeta(form.metricName);
   const sev = SEV_COLOR[form.severity] ?? gf.textMuted;
-  const scope = form.deviceId === "" ? "all servers / the room" : servers.find((s) => String(s.id) === form.deviceId)?.name ?? "the selected server";
+  const scope = form.deviceId === "" ? "all devices / the room" : servers.find((s) => String(s.id) === form.deviceId)?.name ?? "the selected device";
   const threshold = form.thresholdValue.trim() === "" ? "…" : form.thresholdValue;
   return (
     <div className="flex items-center gap-2.5 flex-wrap text-[11px]" style={{ color: gf.textPrimary }}>

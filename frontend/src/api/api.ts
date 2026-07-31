@@ -344,9 +344,42 @@ export const api = {
     }
   },
 
-  getMikrotikHistory: async (id: number, range: string): Promise<ApiResult> => {
+  getMikrotikInterfaces: async (id: number): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get(`/mikrotik/${id}/history`, { params: { range } });
+      const res = await apiClient.get(`/mikrotik/${id}/interfaces`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  saveMikrotikInterfaces: async (
+    id: number,
+    labels: { name: string; label: string }[],
+  ): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put(`/mikrotik/${id}/interfaces`, { labels });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteMikrotik: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/mikrotik/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // `iface` omitted → device totals; supplied → that single port's throughput.
+  getMikrotikHistory: async (id: number, range: string, iface?: string): Promise<ApiResult> => {
+    try {
+      const params: Record<string, string> = { range };
+      if (iface) params.interface = iface;
+      const res = await apiClient.get(`/mikrotik/${id}/history`, { params });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
@@ -375,9 +408,15 @@ export const api = {
     }
   },
 
-  testMikrotik: async (id: number): Promise<ApiResult> => {
+  // id === null → ad-hoc test of credentials that haven't been saved yet (Add form).
+  // With an id, `body` overrides the stored values; omit it to test what's saved.
+  testMikrotik: async (
+    id: number | null,
+    body?: { ip?: string; apiPort?: number; useTls?: boolean; apiUsername?: string; apiPassword?: string },
+  ): Promise<ApiResult> => {
     try {
-      const res = await apiClient.post(`/mikrotik/${id}/test`);
+      const url = id == null ? "/mikrotik/test" : `/mikrotik/${id}/test`;
+      const res = await apiClient.post(url, body ?? {});
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

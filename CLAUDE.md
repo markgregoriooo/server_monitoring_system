@@ -39,6 +39,18 @@ INFLUX_ORG=
 INFLUX_BUCKET=
 AGENT_INSTALL_KEY= # shared key the Go agents present at enrollment (POST /api/agents/register)
 SNMP_POLL_INTERVAL_MS= # router/UPS SNMP poll cadence; blank = 60000 (60s). Per-device community/port live in device_network, not here
+MIKROTIK_ENC_KEY=      # ⚠️ REQUIRED for MikroTik. 64 hex chars (32 bytes) for AES-256-GCM of mikrotik_devices.api_password. Saving credentials THROWS without it. Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+MIKROTIK_POLL_INTERVAL_MS= # RouterOS API poll cadence; blank = 30000 (30s). Lighter than SNMP walks, so 10-15s is fine for one router
+MIKROTIK_API_TIMEOUT_MS=   # per-call connect/read timeout; blank = 5000
+MIKROTIK_TLS_VERIFY=       # true = verify the router's certificate when use_tls is on. Blank/false = encrypted but unverified (RouterOS ships a SELF-SIGNED cert, so strict verification fails on a stock router)
+MIKROTIK_TLS_CA=           # optional path to a CA file, used only when MIKROTIK_TLS_VERIFY=true
+BACKUP_ENABLED=        # false disables the on-site NDJSON backup writer; blank = enabled. See backup-storage.md
+BACKUP_DIR=            # where the NDJSON/dump files land (micro SD / USB drive); blank = backend/backups
+BACKUP_FLUSH_MS=       # buffered-write flush interval; blank = 5000. Larger = kinder to flash endurance, larger worst-case loss on a hard cut
+BACKUP_RETENTION_DAYS= # dated backup files older than this are purged daily; blank = 30
+BACKUP_OFFSITE_ENABLED=      # true turns on the offsite-staleness check (reads a local marker only, no cloud dependency); blank = off
+BACKUP_OFFSITE_MARKER=       # path the rclone job stamps on each successful upload; blank = <BACKUP_DIR>/.last_offsite_sync
+BACKUP_OFFSITE_MAX_AGE_HOURS= # warn if no successful offsite sync within this many hours; blank = 26
 WEB_ORIGIN=        # allowed dashboard origins, comma-separated — or * for any (roaming LAN); blank = localhost+LAN default
 GOOGLE_CLIENT_ID=       # Google OAuth web client ID (public). Login verifies ID tokens against it. Must match frontend VITE_GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=   # Google OAuth web client SECRET. Required: the auth-code flow exchanges the code server-side

@@ -99,6 +99,9 @@ export async function writeNetworkSample(io, device, sample) {
         uptimeSeconds: sample.uptimeSeconds ?? null,
         cpuPercent: sample.cpuPercent ?? null,
         memPercent: sample.memPercent ?? null,
+        // Was omitted, so the dashboard's client count never updated live — it only
+        // arrived on the initial GET. SNMP leaves it null; MikroTik fills it.
+        connectedClients: sample.connectedClients ?? null,
         interfaces: (sample.interfaces ?? []).map((i) => ({
           name: i.name,
           locationLabel: i.locationLabel ?? "",
@@ -106,6 +109,13 @@ export async function writeNetworkSample(io, device, sample) {
           utilizationPct: i.utilizationPct ?? null,
           rxBytes: i.rxBytes != null ? String(i.rxBytes) : null,
           txBytes: i.txBytes != null ? String(i.txBytes) : null,
+          // Collected by both pollers and written to Influx, but previously never sent
+          // to the browser — so error counts and link speed couldn't be shown at all.
+          rxErrors: i.rxErrors ?? 0,
+          txErrors: i.txErrors ?? 0,
+          speedMbps: i.speedMbps ?? null,
+          // Per-port DHCP client count; null when the topology can't attribute it.
+          clients: i.clients ?? null,
         })),
         timestamp: ts.toISOString(),
       },

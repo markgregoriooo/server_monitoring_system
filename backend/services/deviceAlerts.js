@@ -35,6 +35,23 @@ const num = (v) => (v == null || !Number.isFinite(Number(v)) ? NaN : Number(v));
 // behavior); a genuine up→down transition still alerts.
 const seenLink = new Set();
 
+// Previous cumulative error counters per interface, so `link_errors` can alert on the
+// RATE of new errors rather than the lifetime total. A router up for a year will have a
+// large total that says nothing about current health; errors appearing *now* mean a
+// failing cable, dying SFP or duplex mismatch. key `${deviceId}:${ifName}`.
+const prevErrors = new Map();
+
+// Errors added since the previous poll, or NaN on the first sighting (no baseline yet,
+// so nothing to compare). Counter resets (router reboot) yield 0, not a negative spike.
+function errorDelta(deviceId, name, total) {
+  if (!Number.isFinite(total)) return NaN;
+  const key = `${deviceId}:${name}`;
+  const prev = prevErrors.get(key);
+  prevErrors.set(key, total);
+  if (prev == null) return NaN;
+  return total >= prev ? total - prev : 0;
+}
+
 // Evaluate one numeric metric against its rules. Returns the device_log row created
 // on a fresh escalation (else null). `low` flips the wording for lower-is-worse
 // metrics (battery charge / runtime). Mirrors agentService.checkThresholds.
@@ -108,6 +125,15 @@ async function checkRouter(io, device, sample) {
       deviceId: id, type: `link_down:${i.name}`, active: i.linkUp === false,
       severity: "warning", title: "Interface down",
       message: `Interface ${ifaceLabel} is down`, baselineKey: `${id}:${i.name}`,
+    }));
+
+    // Rising rx/tx errors — the classic failing-cable / duplex-mismatch signal. Uses
+    // the per-poll DELTA, not the lifetime counter, so a long-running router doesn't
+    // sit permanently in alarm over errors from months ago.
+    const errDelta = errorDelta(id, i.name, (num(i.rxErrors) || 0) + (num(i.txErrors) || 0));
+    events.push(await evalMetric({
+      deviceId: id, metricName: "link_errors", type: `link_errors:${i.name}`,
+      value: errDelta, label: `Link ${ifaceLabel} errors`,
     }));
   }
 
