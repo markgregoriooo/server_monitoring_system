@@ -231,37 +231,11 @@ async function toggle(id, userId, userName) {
   };
 }
 
-async function setMode(id, mode, userId, userName) {
-  await db.query(`
-    UPDATE aircon_state SET mode = ?, updated_at = NOW() WHERE device_id = ?
-  `, [mode, id]);
-
-  const action = `Mode changed to ${mode}`;
-  await db.query(`
-    INSERT INTO aircon_logs (device_id, user_id, action, reason, trigger_type)
-    VALUES (?, ?, ?, ?, 'manual')
-  `, [id, userId, action, `By ${userName}`]);
-
-  return {
-    entry: { time: new Date().toLocaleTimeString("en-PH"), action, reason: `By ${userName}` },
-  };
-}
-
-async function setTemp(id, temp, userId, userName) {
-  await db.query(`
-    UPDATE aircon_state SET set_temperature = ?, updated_at = NOW() WHERE device_id = ?
-  `, [temp, id]);
-
-  const action = `Target temp set to ${temp}°C`;
-  await db.query(`
-    INSERT INTO aircon_logs (device_id, user_id, action, reason, trigger_type)
-    VALUES (?, ?, ?, ?, 'manual')
-  `, [id, userId, action, `By ${userName}`]);
-
-  return {
-    entry: { time: new Date().toLocaleTimeString("en-PH"), action, reason: `By ${userName}` },
-  };
-}
+// NOTE: setMode() and setTemp() were removed — see the comment at the foot of
+// routes/aircon.js. They were unreachable, and `applyAutoIR` overwrites
+// set_temperature on every unit that is ON at the next zone change, so a manual
+// value could never persist. `mode` / `set_temperature` / `fan_mode` remain in
+// aircon_state as READ-ONLY status written by the auto path.
 
 // Rename a unit. `devices.device_name` is purely a display label — the hardware is
 // driven by aircon_state.ir_channel, and every log row references device_id, so a
@@ -438,7 +412,7 @@ async function getDeviceIRConfig() {
 const airconService = {
   getAll, getChannelConfig,
   addUnit, removeUnit,
-  toggle, setMode, setTemp, rename,
+  toggle, rename,
   applyAutoIR,
   setChannelMap, getChannelMap,
   getIRConfig, saveIRConfig, getDeviceIRConfig,

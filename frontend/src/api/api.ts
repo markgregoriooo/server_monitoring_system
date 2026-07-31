@@ -324,24 +324,6 @@ export const api = {
     }
   },
 
-  setAirconMode: async (id: number, mode: string): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.patch(`/aircon/${id}/mode`, { mode });
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  setAirconTemp: async (id: number, temp: number): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.patch(`/aircon/${id}/temp`, { temp });
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
   // Auto-cooling IR zone thresholds (when IR fires). GET both roles; PUT admin-only.
   getAirconIRConfig: async (): Promise<ApiResult> => {
     try {

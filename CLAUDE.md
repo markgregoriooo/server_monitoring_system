@@ -72,7 +72,7 @@ ESP32 (DHT11 + 2× MQ-2 + IR TX array + RGB LED) → Node.js + Socket.IO → Rea
 - **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, resend (alert email)
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS, JetBrains Mono font
 - **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment **and** server-metric time-series)
-- **Hardware:** ESP32, DHT11, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×4, DS3231 RTC (optional)
+- **Hardware:** ESP32, DHT11, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×2 (GPIO 25/33), DS3231 RTC (optional)
 
 ---
 
@@ -200,7 +200,7 @@ SESSION_NOTES.md                ← per-session work log
 | `deviceLog` | new `device_logs` entry (lifecycle + CPU/Mem/Disk threshold crossings) |
 | `notification` | new alert raised → pushed to **one user's** room (`user:<id>`) → bell feed + badge + corner **toast** (`ToastHost`) + opt-in **OS popup** (Web Notifications API, tab-backgrounded only). Persisted (`alerts` + `alert_notifications`). See `email-popup-notifications.md` |
 | `alertUpdated` | an alert's lifecycle changed (manual acknowledge/resolve, or auto-resolve on metric recovery) → Alerts page refreshes live |
-| `airconStatus` | manual toggle/mode/temp change, or a **rename** (`{ aircon: { id, name }, entry }`) |
+| `airconStatus` | manual on/off toggle, or a **rename** (`{ aircon: { id, name }, entry }`) |
 | `airconAutoUpdate` | ESP32 auto IR zone change |
 | `irChannelMap` | forwarded from ESP32 on connect |
 

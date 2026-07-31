@@ -423,8 +423,6 @@ parentheses use `requireRole(...)`.
 | POST | `/aircon` | ✅ (admin, it_staff) | Add a unit (body `{ name, ir_channel: 1–4 }`). `409` if the name or channel is already taken |
 | DELETE | `/aircon/:id` | ✅ (admin) | Remove a unit |
 | PATCH | `/aircon/:id/toggle` | ✅ (admin, it_staff) | Turn ON/OFF → emits `airconStatus` + fires `irCommand` |
-| PATCH | `/aircon/:id/mode` | ✅ (admin, it_staff) | Set mode `cool`/`auto`/`fan` |
-| PATCH | `/aircon/:id/temp` | ✅ (admin, it_staff) | Set target temp (16–30) |
 | PATCH | `/aircon/:id/name` | ✅ (admin, it_staff) | Rename a unit (body `{ name }`, 1–100 chars, unique among aircon; `409` if taken) → emits `airconStatus` + logs to `aircon_logs` |
 
 ### Mock endpoints (in-memory, reset on restart)
@@ -472,7 +470,7 @@ distinguishes them.
 | `agentApproved` / `agentPending` | Agent approved / registered-or-rejected |
 | `userPending` / `userApproved` | User self-registered-or-rejected / approved |
 | `deviceLog` | New `device_logs` entry (lifecycle + threshold crossings) |
-| `airconStatus` | Manual toggle/mode/temp change |
+| `airconStatus` | Manual on/off toggle, rename, or power-on re-sync |
 | `airconAutoUpdate` | ESP32 auto IR zone change (only affected `deviceIds`) |
 | `irChannelMap` | Forwarded from ESP32 on connect |
 
