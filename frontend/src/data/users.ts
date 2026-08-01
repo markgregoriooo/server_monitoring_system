@@ -1,16 +1,5 @@
 export type Role = "admin" | "it_staff";
 
-export interface User {
-  [key: string]: number | string;
-  // id: number;
-  // name: string;
-  // username: string;
-  // password: string;
-  // role: Role;
-  // avatar: string;
-  // email: string;
-}
-
 export interface RoleConfig {
   label: string;
   color: string;
