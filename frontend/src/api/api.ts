@@ -278,6 +278,17 @@ export const api = {
     }
   },
 
+  // Whether the ESP32 is currently reporting. Needed on first paint — otherwise the
+  // page only finds out via the next `esp32Status` socket transition, which may never come.
+  getSensorStatus: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/environment/sensor-status");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   // Ask the ESP32 to re-measure the MQ-2 clean-air baseline and save it to its flash.
   // Admin-only. The air must be clean when this runs — the result arrives asynchronously
   // on the `gasCalibrated` socket event.

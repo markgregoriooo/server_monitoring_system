@@ -1089,6 +1089,13 @@ export default function Environment() {
   const [liveTempStatus,        setLiveTempStatus]        = useState<TempLevel>("NORMAL");
   const [liveEnvironmentStatus, setLiveEnvironmentStatus] = useState<AlertLevel>("NORMAL");
 
+  // Is the ESP32 actually reporting? Without this every reading below is the LAST one
+  // received, with nothing to say how old it is — a dead sensor renders exactly like a
+  // stable room. Seeded from REST (the socket only fires on a transition, which may
+  // never come while the page is open) and then kept live by `esp32Status`.
+  const [sensorOnline,   setSensorOnline]   = useState<boolean | null>(null);
+  const [sensorLastSeen, setSensorLastSeen] = useState<string | null>(null);
+
   const [range,       setRange]       = useState<RangeType>("-1h");
   const [customRange, setCustomRange] = useState<CustomRange | null>(null);
   const [customLabel, setCustomLabel] = useState("Custom Range");
@@ -1124,6 +1131,27 @@ export default function Environment() {
     const obs = new MutationObserver(() => setIsDark(document.documentElement.classList.contains("dark")));
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => obs.disconnect();
+  }, []);
+
+  // ESP32 liveness: initial state over REST, then live transitions over the socket.
+  useEffect(() => {
+    let cancelled = false;
+
+    api.getSensorStatus().then((res) => {
+      if (cancelled || !res.success || !res.data) return;
+      setSensorOnline(Boolean(res.data.online));
+      setSensorLastSeen(res.data.lastSeen ?? null);
+    });
+
+    const onStatus = (s: { online?: boolean; lastSeen?: string | null }) => {
+      setSensorOnline(Boolean(s?.online));
+      setSensorLastSeen(s?.lastSeen ?? null);
+    };
+    socket.on("esp32Status", onStatus);
+    return () => {
+      cancelled = true;
+      socket.off("esp32Status", onStatus);
+    };
   }, []);
 
   useEffect(() => {
@@ -1322,6 +1350,37 @@ export default function Environment() {
         <RecalibrateGas isDark={isDark} />
         <RangePicker range={range} customLabel={customLabel} onChange={changeRange} onCustom={() => setShowCustom(true)} onRefresh={handleRefresh} isRefreshing={isRefreshing} />
       </div>
+
+      {/* ── Sensor-offline banner ──────────────────────────────────────────────
+          Everything below renders the LAST reading received. When the ESP32 stops
+          reporting those numbers freeze, and without this banner a dead sensor is
+          indistinguishable from a calm, stable room — the single most dangerous
+          failure mode on this page. */}
+      {sensorOnline === false && (
+        <div
+          className="mx-4 mt-3 flex items-start gap-3 px-4 py-3"
+          style={{
+            background: "rgba(224,47,68,0.10)",
+            border: "1px solid rgba(224,47,68,0.35)",
+            borderRadius: 2,
+          }}
+          role="alert"
+        >
+          <span style={{ color: "#E02F44", fontSize: 14, lineHeight: "18px" }}>■</span>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[12px] font-bold" style={{ color: "#E02F44" }}>
+              Environment sensor offline — readings below are stale
+            </span>
+            <span className="text-[11px]" style={{ color: "var(--gf-text-muted)" }}>
+              The ESP32 has stopped reporting, so temperature, humidity and smoke are
+              not being monitored.
+              {sensorLastSeen
+                ? ` Last reading ${new Date(sensorLastSeen).toLocaleString()}.`
+                : " No readings have been received."}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* ── Panel grid ── */}
       <div className="flex flex-col gap-3 p-4">

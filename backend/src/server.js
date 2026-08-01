@@ -11,6 +11,7 @@ import agentService from "../services/agentService.js";
 import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
+import esp32Monitor from "../services/esp32Monitor.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
@@ -117,6 +118,12 @@ app.set("io", io);
 notificationService.init(io);
 alertsService.init(io); // so acknowledge/resolve + auto-resolve can broadcast alertUpdated
 
+// ESP32 liveness. Seeds from the newest InfluxDB reading so a restart doesn't forget
+// whether the sensor was alive (and so a box with no hardware attached stays quiet).
+esp32Monitor.init(io).catch((e) =>
+  console.error("[ESP32] liveness init failed:", e.message),
+);
+
 // Warm the configurable-threshold cache so the first metric POST evaluates against
 // rules without a cold DB read (getEffectiveRules also lazy-loads as a fallback).
 alertRulesService.reload().catch((e) =>
@@ -189,6 +196,14 @@ setInterval(async () => {
     console.error("[OFFLINE_SWEEP] error:", err);
   }
 }, OFFLINE_SWEEP_MS);
+
+// ESP32 liveness sweep — the environment sensor's equivalent of the offline sweep
+// above. The ESP32 has no `devices` row (so last_seen can't cover it) and pushes
+// `sensorData` every ~3s; this flips it Offline once those stop, raising a room-level
+// alert so a dead sensor can't masquerade as a calm room. Recovery is handled by the
+// reading itself (esp32Monitor.markSeen), not here, so it's instant.
+const ESP32_SWEEP_MS = 10_000;
+setInterval(() => esp32Monitor.sweep(), ESP32_SWEEP_MS);
 
 // Notification retention — purge alerts (and, via cascade, their per-user feed
 // rows) older than NOTIFY_RETENTION_DAYS so the tables don't grow unbounded.
