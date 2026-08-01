@@ -1,451 +1,659 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api/api";
+import { socket } from "../socket/socket";
 
-type FilterType = "all" | "temp" | "humidity" | "alerts" | "aircon";
-type SeverityType = "all" | "critical" | "warning" | "info";
+// ─── History — two views ──────────────────────────────────────────────────────
+// "Activity": one accountable timeline merged from system_logs + aircon_logs +
+// alerts + device_logs (backend services/historyService.js). Every event is tagged
+// with an ACTOR — Admin / Staff / System — so it's clear who (or what) did it.
+//
+// "Environment daily": per-day room conditions from InfluxDB (services/
+// environmentService.js). Deliberately a SUMMARY, not a time-series — live charts
+// still belong on the Environment / Server Detail pages. The two views answer
+// different questions ("who did what" vs "what was the room like") over the same
+// period, which is why they share a page rather than a query.
 
-interface HistoryLog {
-  date: string;
-  avgTemp: number;
-  maxTemp: number;
-  minTemp: number;
-  avgHum: number;
-  events: number;
-}
+// ── Grafana design tokens ──
+const gf = {
+  panel: "var(--gf-panel)",
+  border: "var(--gf-panel-border)",
+  header: "var(--gf-header)",
+  textPrimary: "var(--gf-text-primary)",
+  textMuted: "var(--gf-text-muted)",
+  textDim: "var(--gf-text-dim)",
+  hover: "var(--gf-hover)",
+  accent: "var(--gf-accent)",
+  accentDim: "var(--gf-accent-dim)",
+} as const;
 
-interface LogEntry {
-  id: number;
+const GREEN = "#73BF69";
+
+// ── Types ──
+type ActorType = "admin" | "staff" | "system";
+
+interface HistoryEvent {
+  id: string;
+  source: string;
+  category: string;
   timestamp: string;
-  type: FilterType;
-  severity: SeverityType;
+  actorType: ActorType;
+  actorName: string;
+  severity: string;
+  action: string;
   message: string;
-  value?: string;
-  source?: string;
+  device: string | null;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function tempColor(t: number) {
-  if (t >= 28) return "text-red-600 dark:text-red-400";
-  if (t >= 25) return "text-amber-600 dark:text-amber-400";
-  return "text-cyan-600 dark:text-cyan-400";
+interface HistorySummary {
+  critical: number;
+  warning: number;
+  info: number;
+  system: number;
+  admin: number;
+  staff: number;
 }
 
-function severityStyle(s: SeverityType) {
-  switch (s) {
-    case "critical": return "bg-red-100 dark:bg-red-500/10 border-red-300 dark:border-red-500/25 text-red-600 dark:text-red-400";
-    case "warning":  return "bg-amber-100 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/25 text-amber-600 dark:text-amber-400";
-    case "info":     return "bg-blue-100 dark:bg-blue-500/10 border-blue-300 dark:border-blue-500/25 text-blue-600 dark:text-blue-400";
-    default:         return "bg-slate-100 dark:bg-white/[0.04] border-slate-200 dark:border-white/[0.07] text-slate-600 dark:text-slate-400";
+// ── Color / label resolvers (no Record indexing → noUncheckedIndexedAccess-safe) ──
+function sevColor(s: string): string {
+  return s === "critical" ? "#E02F44" : s === "warning" ? "#FF780A" : "#5794F2";
+}
+
+function actorMeta(t: string): { label: string; color: string } {
+  if (t === "admin") return { label: "Admin", color: "#B877D9" };
+  if (t === "staff") return { label: "Staff", color: "#5794F2" };
+  return { label: "System", color: "#6E7B91" };
+}
+
+function catMeta(c: string): { label: string; color: string } {
+  switch (c) {
+    case "auth": return { label: "Auth", color: "#5794F2" };
+    case "users": return { label: "Users", color: "#B877D9" };
+    case "alerts": return { label: "Alerts", color: "#F2495C" };
+    case "environment": return { label: "Environment", color: "#73BF69" };
+    case "aircon": return { label: "Aircon", color: "#37C2C4" };
+    case "devices": return { label: "Devices", color: "#FF9830" };
+    case "reports": return { label: "Reports", color: "#8E9097" };
+    case "network": return { label: "Network", color: "#FADE2A" };
+    default: return { label: c ? c.charAt(0).toUpperCase() + c.slice(1) : "System", color: "#8E9097" };
   }
 }
 
-function severityDot(s: SeverityType) {
-  switch (s) {
-    case "critical": return "bg-red-500";
-    case "warning":  return "bg-amber-500";
-    case "info":     return "bg-blue-500";
-    default:         return "bg-slate-400";
-  }
-}
-
-function typeLabel(t: FilterType) {
-  switch (t) {
-    case "temp":     return "Temperature";
-    case "humidity": return "Humidity";
-    case "alerts":   return "Alert";
-    case "aircon":   return "Aircon";
-    default:         return "System";
-  }
-}
-
-function typeBadgeStyle(t: FilterType) {
-  switch (t) {
-    case "temp":     return "bg-orange-100 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-500/20";
-    case "humidity": return "bg-sky-100 dark:bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-200 dark:border-sky-500/20";
-    case "alerts":   return "bg-red-100 dark:bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-500/20";
-    case "aircon":   return "bg-purple-100 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-500/20";
-    default:         return "bg-slate-100 dark:bg-white/[0.04] text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/[0.07]";
-  }
-}
-
-// Convert HistoryLog rows into synthetic LogEntry list for the live log view
-function logsToEntries(logs: HistoryLog[]): LogEntry[] {
-  const entries: LogEntry[] = [];
-  logs.forEach((row, i) => {
-    // Temperature entry
-    const tempSeverity: SeverityType = row.maxTemp >= 28 ? "critical" : row.maxTemp >= 25 ? "warning" : "info";
-    entries.push({
-      id: i * 10 + 1,
-      timestamp: row.date,
-      type: "temp",
-      severity: tempSeverity,
-      message: `Daily temperature reading — avg ${row.avgTemp} °C, max ${row.maxTemp} °C, min ${row.minTemp} °C`,
-      value: `${row.avgTemp} °C`,
-      source: "DHT11 Sensor",
-    });
-    // Humidity entry
-    entries.push({
-      id: i * 10 + 2,
-      timestamp: row.date,
-      type: "humidity",
-      severity: row.avgHum > 70 ? "warning" : "info",
-      message: `Daily humidity reading — avg ${row.avgHum} %`,
-      value: `${row.avgHum} %`,
-      source: "DHT11 Sensor",
-    });
-    // Events / alerts
-    if (row.events > 0) {
-      entries.push({
-        id: i * 10 + 3,
-        timestamp: row.date,
-        type: "alerts",
-        severity: row.events > 3 ? "critical" : "warning",
-        message: `${row.events} alert event${row.events !== 1 ? "s" : ""} triggered on this day`,
-        value: `${row.events} events`,
-        source: "Alert Engine",
-      });
-    }
+// ── Time formatting (Manila) ──
+function fmtTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-PH", {
+    timeZone: "Asia/Manila",
+    month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
   });
-  return entries.sort((a, b) => b.id - a.id);
 }
 
-// ─── FilterPill ───────────────────────────────────────────────────────────────
+function relTime(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const s = Math.floor((Date.now() - t) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 
-function FilterPill({
-  label, active, onClick, dot,
-}: {
-  label: string; active: boolean; onClick: () => void; dot?: string;
-}) {
+// ── Filter option sets ──
+const DAYS: { label: string; value: number }[] = [
+  { label: "24h", value: 1 },
+  { label: "7d", value: 7 },
+  { label: "14d", value: 14 },
+  { label: "30d", value: 30 },
+];
+const CATEGORIES = ["all", "auth", "users", "alerts", "environment", "aircon", "devices"];
+const SEVERITIES = ["all", "critical", "warning", "info"];
+const PAGE_SIZE = 50;
+
+// ── Small UI atoms ──
+function Seg({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-all whitespace-nowrap ${
-        active
-          ? "bg-blue-100 dark:bg-blue-500/20 border-blue-300 dark:border-blue-500/40 text-blue-600 dark:text-blue-400"
-          : "bg-slate-100 dark:bg-white/[0.04] border-slate-200 dark:border-white/[0.07] text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
-      }`}
+      className="text-[10.5px] px-2.5 py-1 rounded-[2px] transition-colors whitespace-nowrap"
+      style={{
+        color: active ? gf.textPrimary : gf.textMuted,
+        background: active ? gf.accentDim : "transparent",
+        border: `1px solid ${active ? gf.accent : gf.border}`,
+      }}
     >
-      {dot && <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
-      {label}
+      {children}
     </button>
   );
 }
 
-// ─── StatCard ─────────────────────────────────────────────────────────────────
-
-function StatCard({ label, value, sub, color }: {
-  label: string; value: string | number; sub?: string; color: string;
+function Pill({ active, color, onClick, children }: {
+  active: boolean; color?: string; onClick: () => void; children: ReactNode;
 }) {
+  const c = color ?? gf.accent;
   return (
-    <div className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-3 flex flex-col gap-1">
-      <div className="text-[9px] font-mono text-slate-500 dark:text-slate-400 tracking-widest uppercase">{label}</div>
-      <div className={`text-xl font-bold font-mono leading-none ${color}`}>{value}</div>
-      {sub && <div className="text-[10px] text-slate-400 font-mono">{sub}</div>}
+    <button
+      onClick={onClick}
+      className="text-[10px] px-2 py-1 rounded-[2px] capitalize transition-colors whitespace-nowrap"
+      style={{
+        color: active ? "#fff" : gf.textMuted,
+        background: active ? c : "transparent",
+        border: `1px solid ${active ? c : gf.border}`,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Tile({ label, value, color }: { label: string; value: number | string; color: string }) {
+  return (
+    <div className="rounded-[2px] px-3 py-2.5" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+      <div className="text-[8.5px] tracking-widest uppercase" style={{ color: gf.textDim }}>{label}</div>
+      <div className="text-[20px] font-bold leading-tight mt-0.5" style={{ color }}>{value}</div>
     </div>
   );
 }
 
-// ─── VolumeBar ────────────────────────────────────────────────────────────────
-// Grafana-style log volume histogram
-
-function VolumeBar({ logs, filter }: { logs: HistoryLog[]; filter: FilterType }) {
-  const max = Math.max(...logs.map(l => l.events), 1);
-  const visible = logs.slice(-14).reverse();
+function Badge({ label, color, subtle }: { label: string; color: string; subtle?: boolean }) {
   return (
-    <div className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-4">
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 uppercase tracking-widest">
-          Log volume — last {visible.length} days
-        </span>
-        <span className="text-[10px] font-mono text-slate-400">events / day</span>
-      </div>
-      <div className="flex items-end gap-1 h-14">
-        {visible.map((row, i) => {
-          const h = Math.max(4, Math.round((row.events / max) * 52));
-          const color = row.events > 3 ? "bg-red-400 dark:bg-red-500" :
-                        row.events > 0 ? "bg-amber-400 dark:bg-amber-500" :
-                        "bg-slate-300 dark:bg-white/20";
-          return (
-            <div key={i} className="flex-1 flex flex-col items-center gap-0.5 group relative">
-              <div className={`w-full rounded-sm transition-all ${color}`} style={{ height: h }} />
-              <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[9px] font-mono px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
-                {row.date}: {row.events} events
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="flex justify-between mt-1">
-        <span className="text-[9px] font-mono text-slate-400">{visible[0]?.date ?? ""}</span>
-        <span className="text-[9px] font-mono text-slate-400">{visible[visible.length - 1]?.date ?? ""}</span>
-      </div>
-    </div>
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[2px] text-[9px] tracking-wider uppercase font-medium whitespace-nowrap"
+      style={{ color: subtle ? color : "#fff", background: subtle ? `${color}1f` : color }}
+    >
+      {subtle && <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />}
+      {label}
+    </span>
   );
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ─── Component ────────────────────────────────────────────────────────────────
+// ─── Environment daily summary ────────────────────────────────────────────────
+// The second view on this page. Where the Activity tab answers "who did what", this
+// answers "what was the room actually like" — per-UTC-day temperature avg/max/min,
+// humidity, peak gas and that day's environment-alert count, measured from InfluxDB
+// (GET /api/environment/daily). It replaces a mock that served five rows hardcoded to
+// March 2025. Live charts still live on the Environment page; this is the summary.
 
-export default function History() {
-  const [logs,      setLogs]      = useState<HistoryLog[]>([]);
-  const [filter,    setFilter]    = useState<FilterType>("all");
-  const [severity,  setSeverity]  = useState<SeverityType>("all");
-  const [search,    setSearch]    = useState("");
-  const [view,      setView]      = useState<"logs" | "table">("logs");
-  const [loading,   setLoading]   = useState<boolean>(true);
-  const [expanded,  setExpanded]  = useState<number | null>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
+interface DailyRow {
+  date: string;
+  avgTemp: number | null;
+  maxTemp: number | null;
+  minTemp: number | null;
+  avgHum: number | null;
+  peakGas: number | null;
+  events: number;
+}
+
+const DAILY_DAYS: { label: string; value: number }[] = [
+  { label: "7d", value: 7 },
+  { label: "30d", value: 30 },
+  { label: "90d", value: 90 },
+];
+
+// A missing reading renders as "—", never a fabricated 0.
+function metric(v: number | null, unit: string): string {
+  return v == null ? "—" : `${v} ${unit}`;
+}
+
+function tempColor(v: number | null): string {
+  if (v == null) return gf.textDim;
+  if (v >= 28) return "#E02F44";
+  if (v >= 25) return "#FF780A";
+  return "#37C2C4";
+}
+
+function gasColor(v: number | null): string {
+  if (v == null) return gf.textDim;
+  if (v >= 300) return "#E02F44";
+  if (v >= 150) return "#FF780A";
+  return gf.textPrimary;
+}
+
+function DailySummary() {
+  const [rows, setRows] = useState<DailyRow[]>([]);
+  const [days, setDays] = useState(7);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getHistoryLogs().then((result) => {
-      if (result.success && result.data) setLogs(result.data.logs);
+    let cancelled = false;
+    setLoading(true);
+    api.getEnvironmentDaily(days).then((res) => {
+      if (cancelled) return;
+      if (res.success && res.data) {
+        setRows(res.data.logs ?? []);
+        setError(null);
+      } else {
+        // "Query failed" and "no data yet" must not look the same — this reads
+        // InfluxDB, which can be down independently of the rest of the app.
+        setRows([]);
+        setError(res.error ?? "Could not load the environment summary.");
+      }
       setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [days]);
+
+  // Averages skip days with no reading rather than counting them as 0, which would
+  // drag the mean toward zero every time the sensor was down.
+  const mean = (pick: (r: DailyRow) => number | null): string => {
+    const vals = rows.map(pick).filter((v): v is number => v != null);
+    return vals.length ? (vals.reduce((a, v) => a + v, 0) / vals.length).toFixed(1) : "—";
+  };
+  const peak = rows.reduce<number | null>(
+    (hi, r) => (r.maxTemp != null && (hi == null || r.maxTemp > hi) ? r.maxTemp : hi),
+    null,
+  );
+  const totalEvents = rows.reduce((a, r) => a + r.events, 0);
+
+  return (
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <Tile label="Days with data" value={rows.length} color={gf.textPrimary} />
+        <Tile label="Avg temp" value={`${mean((r) => r.avgTemp)} °C`} color="#37C2C4" />
+        <Tile label="Peak temp" value={peak == null ? "—" : `${peak} °C`} color="#FF780A" />
+        <Tile label="Env alerts" value={totalEvents} color="#E02F44" />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="flex gap-1">
+          {DAILY_DAYS.map((d) => (
+            <Seg key={d.value} active={days === d.value} onClick={() => setDays(d.value)}>
+              {d.label}
+            </Seg>
+          ))}
+        </div>
+        <span className="text-[10px]" style={{ color: gf.textDim }}>
+          days are UTC (InfluxDB windows), so a day runs 08:00–08:00 Manila
+        </span>
+      </div>
+
+      <div className="rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px] border-collapse">
+            <thead>
+              <tr style={{ background: gf.header }}>
+                {["Date", "Avg temp", "Max temp", "Min temp", "Avg humidity", "Peak gas", "Alerts"].map((h) => (
+                  <th key={h} className="text-left px-3 py-2 font-semibold whitespace-nowrap"
+                    style={{ color: gf.textMuted, borderBottom: `1px solid ${gf.border}` }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={7} className="px-3 py-10 text-center" style={{ color: gf.textMuted }}>Loading…</td></tr>
+              ) : error ? (
+                <tr><td colSpan={7} className="px-3 py-10 text-center">
+                  <div style={{ color: "#E02F44" }}>{error}</div>
+                  <div className="mt-1 text-[10px]" style={{ color: gf.textDim }}>
+                    Daily summaries read InfluxDB — check it is running and that INFLUX_BUCKET
+                    matches the bucket the sensor writes to.
+                  </div>
+                </td></tr>
+              ) : rows.length === 0 ? (
+                <tr><td colSpan={7} className="px-3 py-10 text-center">
+                  <div style={{ color: gf.textMuted }}>No environment readings in the last {days} days.</div>
+                  <div className="mt-1 text-[10px]" style={{ color: gf.textDim }}>
+                    Rows appear once the ESP32 has been reporting for at least one day.
+                  </div>
+                </td></tr>
+              ) : (
+                rows.map((r) => (
+                  <tr key={r.date} style={{ borderTop: `1px solid ${gf.border}` }}>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: gf.textPrimary }}>{r.date}</td>
+                    <td className="px-3 py-2 font-bold whitespace-nowrap" style={{ color: tempColor(r.avgTemp) }}>{metric(r.avgTemp, "°C")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.maxTemp == null ? gf.textDim : "#E02F44" }}>{metric(r.maxTemp, "°C")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.minTemp == null ? gf.textDim : GREEN }}>{metric(r.minTemp, "°C")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.avgHum == null ? gf.textDim : "#5794F2" }}>{metric(r.avgHum, "%")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: gasColor(r.peakGas) }}>{metric(r.peakGas, "ppm")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.events > 0 ? "#FF780A" : gf.textDim }}>{r.events}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+export default function History() {
+  const [tab, setTab] = useState<"activity" | "daily">("activity");
+  const [events, setEvents] = useState<HistoryEvent[]>([]);
+  const [summary, setSummary] = useState<HistorySummary | null>(null);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const silentRef = useRef(false); // background (realtime) refresh → don't flash "Loading…"
+
+  // filters
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("all");
+  const [severity, setSeverity] = useState("all");
+  // single actor filter: "all" | "type:admin|staff|system" | "user:<id>"
+  const [actor, setActor] = useState("all");
+  const [days, setDays] = useState(7);
+  const [rangeMode, setRangeMode] = useState<"preset" | "custom">("preset");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  const [page, setPage] = useState(1);
+
+  // people who appear in the history → the per-user filter dropdown
+  const [actors, setActors] = useState<{ id: number; name: string; role: string }[]>([]);
+  useEffect(() => {
+    api.getHistoryActors().then((res) => {
+      if (res.success && res.data) setActors(res.data.actors ?? []);
     });
   }, []);
 
-  const entries = logsToEntries(logs);
+  // debounce search
+  useEffect(() => {
+    const t = setTimeout(() => { setSearch(searchInput); setPage(1); }, 350);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
-  const filtered = entries.filter(e => {
-    if (filter !== "all" && e.type !== filter) return false;
-    if (severity !== "all" && e.severity !== severity) return false;
-    if (search && !e.message.toLowerCase().includes(search.toLowerCase()) &&
-        !e.source?.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
+  // fetch (filter/page changes show "Loading…"; realtime refreshes are silent)
+  useEffect(() => {
+    let cancelled = false;
+    const silent = silentRef.current;
+    silentRef.current = false;
+    if (!silent) setLoading(true);
+    const actorType = actor.startsWith("type:") ? actor.slice(5) : undefined;
+    const filterUserId = actor.startsWith("user:") ? Number(actor.slice(5)) : undefined;
+    const useCustom = rangeMode === "custom" && customStart !== "" && customEnd !== "";
+    api.getHistory({
+      ...(useCustom ? { start: customStart, end: customEnd } : { days }),
+      category, severity, actorType, userId: filterUserId, search, page, pageSize: PAGE_SIZE,
+    }).then((res) => {
+      if (cancelled) return;
+      if (res.success && res.data) {
+        setEvents(res.data.events ?? []);
+        setSummary(res.data.summary ?? null);
+        setTotal(res.data.total ?? 0);
+      }
+      if (!silent) setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [days, rangeMode, customStart, customEnd, category, severity, actor, search, page, reloadKey]);
 
-  // Summary stats
-  const totalEvents = logs.reduce((a, l) => a + l.events, 0);
-  const critCount   = entries.filter(e => e.severity === "critical").length;
-  const warnCount   = entries.filter(e => e.severity === "warning").length;
-  const avgTemp     = logs.length ? (logs.reduce((a, l) => a + l.avgTemp, 0) / logs.length).toFixed(1) : "--";
-  const avgHum      = logs.length ? (logs.reduce((a, l) => a + l.avgHum,  0) / logs.length).toFixed(1) : "--";
+  // realtime — auto-update while on the first page (don't yank the viewport while
+  // someone is paging or reading older entries). Socket events give instant
+  // updates for the activity they broadcast; a short poll is the catch-all for
+  // events that don't push to browsers (login/logout, alert-rule changes, etc.).
+  const live = page === 1;
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  useEffect(() => {
+    const onChange = () => {
+      if (!liveRef.current) return;
+      silentRef.current = true;
+      setReloadKey((k) => k + 1);
+    };
+    const evs = [
+      "notification", "alertUpdated", "deviceLog", "airconStatus", "airconAutoUpdate",
+      "userApproved", "userPending", "agentApproved", "agentPending", "serverRemoved", "serverStatus",
+    ];
+    evs.forEach((e) => socket.on(e, onChange));
+    const poll = setInterval(onChange, 10000);
+    return () => {
+      evs.forEach((e) => socket.off(e, onChange));
+      clearInterval(poll);
+    };
+  }, []);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const to = Math.min(total, page * PAGE_SIZE);
 
   return (
-    <div className="p-4 lg:p-6 flex flex-col gap-4 bg-white dark:bg-transparent">
+    <div className="p-4 lg:p-6 flex flex-col gap-4" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
 
-      {/* ── Header ── */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 tracking-widest uppercase">
-          Environment · Alerts · Aircon — {logs.length} days recorded
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setView("logs")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-all ${
-              view === "logs"
-                ? "bg-blue-100 dark:bg-blue-500/20 border-blue-300 dark:border-blue-500/40 text-blue-600 dark:text-blue-400"
-                : "bg-slate-100 dark:bg-white/[0.04] border-slate-200 dark:border-white/[0.07] text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
-            }`}
-          >
-            ▤ Logs
-          </button>
-          <button
-            onClick={() => setView("table")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-all ${
-              view === "table"
-                ? "bg-blue-100 dark:bg-blue-500/20 border-blue-300 dark:border-blue-500/40 text-blue-600 dark:text-blue-400"
-                : "bg-slate-100 dark:bg-white/[0.04] border-slate-200 dark:border-white/[0.07] text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
-            }`}
-          >
-            ☰ Table
-          </button>
-        </div>
-      </div>
-
-      {/* ── Summary stat cards ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-        <StatCard label="Total Events"   value={totalEvents}      color="text-slate-900 dark:text-white"    sub="all time" />
-        <StatCard label="Critical"       value={critCount}        color="text-red-600 dark:text-red-400"    sub="entries" />
-        <StatCard label="Warnings"       value={warnCount}        color="text-amber-600 dark:text-amber-400" sub="entries" />
-        <StatCard label="Avg Temp"       value={`${avgTemp} °C`}  color="text-cyan-600 dark:text-cyan-400"  sub="across period" />
-        <StatCard label="Avg Humidity"   value={`${avgHum} %`}    color="text-blue-600 dark:text-blue-400"  sub="across period" />
-      </div>
-
-      {/* ── Volume histogram ── */}
-      {logs.length > 0 && <VolumeBar logs={logs} filter={filter} />}
-
-      {/* ── Filter bar ── */}
-      <div className="flex flex-wrap items-center gap-2">
-        {/* Search */}
-        <div className="relative flex-1 min-w-[180px]">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none">⌕</span>
-          <input
-            ref={searchRef}
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search logs…"
-            className="w-full pl-7 pr-3 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-white/[0.03] text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 transition-colors"
-          />
-          {search && (
-            <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-white text-xs">✕</button>
-          )}
-        </div>
-
-        <div className="h-5 w-px bg-slate-200 dark:bg-white/10" />
-
-        {/* Type filters */}
-        <FilterPill label="All"         active={filter === "all"}      onClick={() => setFilter("all")} />
-        <FilterPill label="Temperature" active={filter === "temp"}     onClick={() => setFilter("temp")}     dot="bg-orange-400" />
-        <FilterPill label="Humidity"    active={filter === "humidity"} onClick={() => setFilter("humidity")} dot="bg-sky-400" />
-        <FilterPill label="Alerts"      active={filter === "alerts"}   onClick={() => setFilter("alerts")}   dot="bg-red-400" />
-        <FilterPill label="Aircon"      active={filter === "aircon"}   onClick={() => setFilter("aircon")}   dot="bg-purple-400" />
-
-        <div className="h-5 w-px bg-slate-200 dark:bg-white/10" />
-
-        {/* Severity filters */}
-        <FilterPill label="All severity" active={severity === "all"}      onClick={() => setSeverity("all")} />
-        <FilterPill label="Critical"     active={severity === "critical"} onClick={() => setSeverity("critical")} dot="bg-red-500" />
-        <FilterPill label="Warning"      active={severity === "warning"}  onClick={() => setSeverity("warning")}  dot="bg-amber-500" />
-        <FilterPill label="Info"         active={severity === "info"}     onClick={() => setSeverity("info")}      dot="bg-blue-500" />
-      </div>
-
-      {/* ── Result count ── */}
-      <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 -mt-2">
-        Showing {filtered.length} of {entries.length} log entries
-        {search && <span className="ml-1">matching "<span className="text-slate-600 dark:text-slate-300">{search}</span>"</span>}
-      </div>
-
-      {/* ── Content ── */}
-      {loading ? (
-        <div className="text-center py-16 text-slate-400 text-sm font-mono">Loading...</div>
-      ) : view === "logs" ? (
-
-        /* ── Grafana-style log lines ── */
-        <div className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] overflow-hidden">
-          {/* Log list header */}
-          <div className="flex items-center gap-3 px-4 py-2 border-b border-slate-200 dark:border-white/[0.07] bg-slate-50 dark:bg-white/[0.02]">
-            <span className="text-[9px] font-mono text-slate-400 uppercase tracking-widest w-28 flex-shrink-0">Timestamp</span>
-            <span className="text-[9px] font-mono text-slate-400 uppercase tracking-widest w-14 flex-shrink-0">Level</span>
-            <span className="text-[9px] font-mono text-slate-400 uppercase tracking-widest w-20 flex-shrink-0">Type</span>
-            <span className="text-[9px] font-mono text-slate-400 uppercase tracking-widest flex-1">Message</span>
-            <span className="text-[9px] font-mono text-slate-400 uppercase tracking-widest w-16 text-right">Value</span>
-          </div>
-
-          {filtered.length === 0 ? (
-            <div className="text-center py-12 text-slate-400 dark:text-slate-600 font-mono text-xs">
-              No log entries match the current filters.
-            </div>
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-[15px] font-bold" style={{ color: gf.textPrimary }}>History</h1>
+          {tab === "activity" ? (
+            <p className="text-[11px] mt-1" style={{ color: gf.textMuted }}>
+              Unified activity &amp; audit timeline — every event attributed to{" "}
+              <span style={{ color: "#B877D9" }}>Admin</span>,{" "}
+              <span style={{ color: "#5794F2" }}>Staff</span> or{" "}
+              <span style={{ color: "#6E7B91" }}>System</span>.
+            </p>
           ) : (
-            <div className="divide-y divide-slate-200 dark:divide-white/[0.04] max-h-[520px] overflow-y-auto">
-              {filtered.map(entry => (
-                <div key={entry.id}>
-                  <div
-                    onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
-                    className="flex items-center gap-3 px-4 py-2.5 hover:bg-slate-200 dark:hover:bg-white/[0.04] cursor-pointer transition-colors group"
-                  >
-                    {/* Severity dot */}
-                    <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${severityDot(entry.severity)}`} />
-
-                    {/* Timestamp */}
-                    <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 w-28 flex-shrink-0 whitespace-nowrap">
-                      {entry.timestamp}
-                    </span>
-
-                    {/* Severity badge */}
-                    <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border w-14 flex-shrink-0 text-center uppercase tracking-wider ${severityStyle(entry.severity)}`}>
-                      {entry.severity === "all" ? "info" : entry.severity}
-                    </span>
-
-                    {/* Type badge */}
-                    <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border w-20 flex-shrink-0 text-center ${typeBadgeStyle(entry.type)}`}>
-                      {typeLabel(entry.type)}
-                    </span>
-
-                    {/* Message */}
-                    <span className="text-[11px] font-mono text-slate-700 dark:text-slate-300 flex-1 truncate">
-                      {entry.message}
-                    </span>
-
-                    {/* Value */}
-                    <span className="text-[10px] font-mono font-bold text-slate-600 dark:text-slate-300 w-16 text-right flex-shrink-0">
-                      {entry.value ?? "—"}
-                    </span>
-
-                    {/* Expand chevron */}
-                    <span className={`text-slate-400 text-[10px] transition-transform ${expanded === entry.id ? "rotate-180" : ""}`}>▾</span>
-                  </div>
-
-                  {/* Expanded detail */}
-                  {expanded === entry.id && (
-                    <div className="px-4 py-3 bg-slate-50 dark:bg-white/[0.02] border-t border-slate-200 dark:border-white/[0.06] flex flex-col gap-1.5">
-                      <div className="flex gap-6 flex-wrap">
-                        {[
-                          ["Source",    entry.source ?? "—"],
-                          ["Type",      typeLabel(entry.type)],
-                          ["Severity",  entry.severity],
-                          ["Date",      entry.timestamp],
-                          ["Value",     entry.value ?? "—"],
-                        ].map(([k, v]) => (
-                          <div key={k} className="flex flex-col gap-0.5">
-                            <span className="text-[9px] font-mono text-slate-400 uppercase tracking-widest">{k}</span>
-                            <span className="text-[11px] font-mono text-slate-700 dark:text-slate-200 font-semibold">{v}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-1 text-[10px] font-mono text-slate-600 dark:text-slate-400 bg-slate-200 dark:bg-white/[0.04] rounded-md px-3 py-2">
-                        {entry.message}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
+            <p className="text-[11px] mt-1" style={{ color: gf.textMuted }}>
+              Per-day server-room conditions, measured from InfluxDB.
+            </p>
           )}
         </div>
 
-      ) : (
+        {/* Two questions, one page: who did what, vs. what the room was like. */}
+        <div className="flex gap-1">
+          <Seg active={tab === "activity"} onClick={() => setTab("activity")}>Activity</Seg>
+          <Seg active={tab === "daily"} onClick={() => setTab("daily")}>Environment daily</Seg>
+        </div>
+      </div>
 
-        /* ── Table view ── */
-        <div className="rounded-xl bg-slate-100 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.08] p-4">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr>
-                  {["Date", "Avg Temp", "Max Temp", "Min Temp", "Avg Humidity", "Events"].map(h => (
-                    <th key={h} className="text-left px-3 py-2 text-[10px] text-slate-500 font-semibold tracking-widest border-b border-slate-200 dark:border-white/[0.07] whitespace-nowrap">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {logs
-                  .filter(row => {
-                    if (filter === "temp" || filter === "humidity") return true;
-                    if (filter === "alerts") return row.events > 0;
-                    return true;
-                  })
-                  .filter(row => {
-                    if (!search) return true;
-                    return row.date.includes(search) ||
-                      String(row.avgTemp).includes(search) ||
-                      String(row.events).includes(search);
-                  })
-                  .map((row, i) => (
-                    <tr key={i} className={i % 2 === 0 ? "bg-slate-50 dark:bg-white/[0.015]" : ""}>
-                      <td className="px-3 py-3 font-mono text-slate-900 dark:text-white text-xs whitespace-nowrap">{row.date}</td>
-                      <td className={`px-3 py-3 font-mono font-bold text-xs ${tempColor(row.avgTemp)}`}>{row.avgTemp} °C</td>
-                      <td className="px-3 py-3 font-mono font-bold text-red-600 dark:text-red-400 text-xs">{row.maxTemp} °C</td>
-                      <td className="px-3 py-3 font-mono font-bold text-green-600 dark:text-green-400 text-xs">{row.minTemp} °C</td>
-                      <td className="px-3 py-3 font-mono font-bold text-blue-600 dark:text-blue-400 text-xs">{row.avgHum} %</td>
-                      <td className="px-3 py-3">
-                        <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
-                          row.events > 3
-                            ? "bg-red-100 dark:bg-red-500/10 border-red-300 dark:border-red-500/25 text-red-600 dark:text-red-400"
-                            : row.events > 0
-                            ? "bg-amber-100 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/25 text-amber-600 dark:text-amber-400"
-                            : "bg-green-100 dark:bg-green-500/10 border-green-300 dark:border-green-500/25 text-green-600 dark:text-green-400"
-                        }`}>
-                          {row.events} event{row.events !== 1 ? "s" : ""}
-                        </span>
+      {tab === "daily" && <DailySummary />}
+
+      {tab === "activity" && (
+      <>
+      {/* Stat tiles */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+        <Tile label="Total events" value={total} color={gf.textPrimary} />
+        <Tile label="Critical" value={summary?.critical ?? 0} color="#E02F44" />
+        <Tile label="Warnings" value={summary?.warning ?? 0} color="#FF780A" />
+        <Tile label="By Admin" value={summary?.admin ?? 0} color="#B877D9" />
+        <Tile label="By Staff" value={summary?.staff ?? 0} color="#5794F2" />
+        <Tile label="By System" value={summary?.system ?? 0} color="#6E7B91" />
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[180px]">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] pointer-events-none" style={{ color: gf.textDim }}>⌕</span>
+          <input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Search events, actor or device…"
+            className="w-full pl-7 pr-7 py-1.5 text-[11px] rounded-[2px] focus:outline-none"
+            style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
+          />
+          {searchInput && (
+            <button onClick={() => setSearchInput("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px]" style={{ color: gf.textDim }}>✕</button>
+          )}
+        </div>
+        <div className="flex gap-1">
+          {DAYS.map((d) => (
+            <Seg key={d.value} active={rangeMode === "preset" && days === d.value}
+              onClick={() => { setRangeMode("preset"); setDays(d.value); setPage(1); }}>{d.label}</Seg>
+          ))}
+          <Seg active={rangeMode === "custom"} onClick={() => {
+            if (!customStart || !customEnd) {
+              const fmt = (dt: Date) => dt.toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
+              const today = new Date();
+              const prior = new Date();
+              prior.setDate(today.getDate() - 7);
+              setCustomStart(fmt(prior));
+              setCustomEnd(fmt(today));
+            }
+            setRangeMode("custom");
+            setPage(1);
+          }}>Custom</Seg>
+        </div>
+        {rangeMode === "custom" && (
+          <div className="flex items-center gap-1">
+            <input
+              type="date"
+              value={customStart}
+              max={customEnd || undefined}
+              onChange={(e) => { setCustomStart(e.target.value); setPage(1); }}
+              className="text-[10.5px] px-2 py-1 rounded-[2px] focus:outline-none"
+              style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
+            />
+            <span className="text-[10px]" style={{ color: gf.textDim }}>→</span>
+            <input
+              type="date"
+              value={customEnd}
+              min={customStart || undefined}
+              onChange={(e) => { setCustomEnd(e.target.value); setPage(1); }}
+              className="text-[10.5px] px-2 py-1 rounded-[2px] focus:outline-none"
+              style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Filter pills */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[8.5px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Category</span>
+          {CATEGORIES.map((c) => (
+            <Pill key={c} active={category === c} color={c === "all" ? gf.accent : catMeta(c).color} onClick={() => { setCategory(c); setPage(1); }}>
+              {c === "all" ? "all" : catMeta(c).label}
+            </Pill>
+          ))}
+        </div>
+        <div className="h-4 w-px" style={{ background: gf.border }} />
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[8.5px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Severity</span>
+          {SEVERITIES.map((s) => (
+            <Pill key={s} active={severity === s} color={s === "all" ? gf.accent : sevColor(s)} onClick={() => { setSeverity(s); setPage(1); }}>{s}</Pill>
+          ))}
+        </div>
+        <div className="h-4 w-px" style={{ background: gf.border }} />
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[8.5px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Actor</span>
+          <select
+            value={actor}
+            onChange={(e) => { setActor(e.target.value); setPage(1); }}
+            className="text-[10px] px-2 py-1 rounded-[2px] focus:outline-none"
+            style={{ background: gf.panel, border: `1px solid ${actor !== "all" ? gf.accent : gf.border}`, color: gf.textPrimary }}
+          >
+            <option value="all">All actors</option>
+            <optgroup label="By role">
+              <option value="type:admin">Admin</option>
+              <option value="type:staff">Staff</option>
+              <option value="type:system">System (automated)</option>
+            </optgroup>
+            {actors.length > 0 && (
+              <optgroup label="By person">
+                {actors.map((a) => (
+                  <option key={a.id} value={`user:${a.id}`}>{a.name}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </div>
+      </div>
+
+      {/* Result count + live */}
+      <div className="flex items-center justify-between -mt-1">
+        <span className="text-[10px]" style={{ color: gf.textDim }}>
+          {loading ? "Loading…" : total === 0 ? "No events" : `Showing ${from}–${to} of ${total}`}
+        </span>
+        {live && !loading && (
+          <span className="inline-flex items-center gap-1.5 text-[9px] tracking-wider uppercase" style={{ color: GREEN }}>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN }} /> Live
+          </span>
+        )}
+      </div>
+
+      {/* Table */}
+      <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: gf.header, color: gf.textDim }}>
+                {["When", "Actor", "Category", "Sev", "Event", "Source"].map((h) => (
+                  <th key={h} className="text-left font-medium px-3 py-2 whitespace-nowrap tracking-wider uppercase text-[9px]"
+                    style={{ borderBottom: `1px solid ${gf.border}` }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={6} className="px-3 py-8 text-center" style={{ color: gf.textDim }}>Loading…</td></tr>
+              ) : events.length === 0 ? (
+                <tr><td colSpan={6} className="px-3 py-8 text-center" style={{ color: gf.textDim }}>No events match the current filters.</td></tr>
+              ) : (
+                events.map((e, i) => {
+                  const am = actorMeta(e.actorType);
+                  const cm = catMeta(e.category);
+                  const open = expanded === e.id;
+                  const src = e.device ?? (e.category === "environment" ? "Server room" : "—");
+                  return (
+                    <tr key={e.id}
+                      onClick={() => setExpanded(open ? null : e.id)}
+                      className="cursor-pointer transition-colors align-top"
+                      style={{ background: open ? gf.accentDim : i % 2 ? gf.hover : "transparent", color: gf.textPrimary }}
+                    >
+                      <td className="px-3 py-2 whitespace-nowrap" style={{ color: gf.textMuted }}>
+                        <div className="flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: sevColor(e.severity) }} />
+                          {fmtTime(e.timestamp)}
+                        </div>
                       </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <Badge label={am.label} color={am.color} />
+                        {e.actorType !== "system" && (
+                          <div className="text-[9.5px] mt-0.5 truncate max-w-[120px]" style={{ color: gf.textMuted }}>{e.actorName}</div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <Badge label={cm.label} color={cm.color} subtle />
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className="text-[9px] tracking-wider uppercase font-medium" style={{ color: sevColor(e.severity) }}>{e.severity}</span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className={open ? "" : "truncate max-w-[420px]"} style={{ color: gf.textPrimary }}>{e.message}</div>
+                        {open && (
+                          <div className="mt-2 flex flex-col gap-1 text-[10px]" style={{ color: gf.textMuted }}>
+                            <div className="flex gap-6 flex-wrap">
+                              <span>action: <span style={{ color: gf.textPrimary }}>{e.action}</span></span>
+                              <span>actor: <span style={{ color: am.color }}>{am.label}</span> {e.actorName}</span>
+                              <span>source: <span style={{ color: gf.textPrimary }}>{e.source ?? "—"}</span></span>
+                              <span>when: <span style={{ color: gf.textPrimary }}>{fmtTime(e.timestamp)}</span> · {relTime(e.timestamp)}</span>
+                            </div>
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap" style={{ color: gf.textMuted }}>{src}</td>
                     </tr>
-                  ))}
-              </tbody>
-            </table>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Pagination */}
+      {total > PAGE_SIZE && (
+        <div className="flex items-center justify-between">
+          <span className="text-[10px]" style={{ color: gf.textDim }}>Page {page} of {totalPages}</span>
+          <div className="flex gap-1">
+            <button
+              disabled={page <= 1}
+              onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpanded(null); }}
+              className="text-[10.5px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-40"
+              style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
+            >← Prev</button>
+            <button
+              disabled={page >= totalPages}
+              onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpanded(null); }}
+              className="text-[10.5px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-40"
+              style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
+            >Next →</button>
           </div>
         </div>
-
+      )}
+      </>
       )}
     </div>
   );
