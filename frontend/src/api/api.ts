@@ -423,9 +423,12 @@ export const api = {
     }
   },
 
-  getEnvHistory: async (count: number = 20): Promise<ApiResult> => {
+  // Per-day environment summary measured from InfluxDB (temperature avg/max/min,
+  // humidity avg, peak gas, environment-alert count). Replaces getEnvHistory, which
+  // hit a mock endpoint returning random values and had no callers.
+  getEnvironmentDaily: async (days: number = 7): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get(`/environment/history?count=${count}`);
+      const res = await apiClient.get(`/environment/daily?days=${days}`);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
