@@ -39,8 +39,25 @@ export function getStatus() {
   };
 }
 
-// The only place `online` changes after seeding. Alerts fire on the TRANSITION, never
-// per-sweep, so a device that stays dead raises exactly one alert.
+// Raising the offline alert. Shared by the live transition and the restart path so an
+// "offline" shown in the UI is ALWAYS backed by a real row in `alerts` — a banner with
+// no bell entry and nothing on the Alerts page reads as broken alerting.
+// raiseAlert's de-dup is scoped to OPEN alerts, so calling this again while one is
+// already open (e.g. the backend restarts repeatedly) is a no-op rather than a flood.
+async function raiseOfflineAlert(lastIso) {
+  await notificationService.raiseAlert({
+    deviceId: null, // room-level: the ESP32 has no `devices` row
+    type: ALERT_TYPE,
+    severity: "critical",
+    title: "Environment sensor offline",
+    message:
+      "The ESP32 stopped reporting — temperature, humidity and smoke are no longer being monitored." +
+      (lastIso ? ` Last reading ${lastIso}.` : ""),
+  });
+}
+
+// The only place `online` changes once liveness is established. Alerts fire on the
+// TRANSITION, never per-sweep, so a device that stays dead raises exactly one alert.
 async function setOnline(next) {
   if (next === online) return;
   const prev = online;
@@ -50,14 +67,7 @@ async function setOnline(next) {
 
   try {
     if (next === false && prev === true) {
-      await notificationService.raiseAlert({
-        deviceId: null, // room-level: the ESP32 has no `devices` row
-        type: ALERT_TYPE,
-        severity: "critical",
-        title: "Environment sensor offline",
-        message:
-          "The ESP32 stopped reporting — temperature, humidity and smoke are no longer being monitored.",
-      });
+      await raiseOfflineAlert(lastSeen ? new Date(lastSeen).toISOString() : null);
     } else if (next === true && prev === false) {
       // Recovered: close the open offline incident (no-op when none is open).
       await alertsService.autoResolveMetric(null, ALERT_TYPE);
@@ -90,13 +100,22 @@ export function sweep() {
 }
 
 // Seed `lastSeen` from the newest point already in InfluxDB so liveness survives a
-// backend restart. Deliberately assigns `online` directly instead of going through
-// setOnline, so seeding never alerts:
-//   • data is fresh  → online, and a LATER stop raises the alert (restart-proof)
-//   • data is stale  → offline silently. You aren't paged about a sensor that was
-//     already dead before this process started (and a dev box with no hardware
-//     attached stays quiet), while the UI still correctly shows Offline.
+// backend restart:
+//   • data is fresh   → online, and a LATER stop raises the alert (restart-proof)
+//   • data is stale   → offline, AND we raise the alert: the room really is unmonitored
+//     right now, so it belongs on the bell and the Alerts page. (De-dup is scoped to
+//     open alerts, so a restart loop doesn't flood.)
+//   • no data at all  → offline silently. Nothing has ever reported, so there is no
+//     outage to report — this is a fresh install or a dev box with no hardware.
+//
+// ⚠️ The query is awaited, so a live reading can land WHILE it is in flight. That live
+// reading is strictly better evidence than anything historical, so it wins and the seed
+// result is discarded. Without this guard the seed clobbered `lastSeen` and forced the
+// sensor Offline moments after it had correctly come Online — and because that
+// assignment bypassed setOnline(), it did so with NO alert: a banner saying "offline"
+// with nothing behind it on the bell or the Alerts page.
 export async function seed() {
+  const startedAt = Date.now();
   const flux = `
     from(bucket: "${bucket}")
       |> range(start: -7d)
@@ -106,8 +125,9 @@ export async function seed() {
       |> keep(columns: ["_time"])
   `;
 
+  let seen = null;
   try {
-    const seen = await new Promise((resolve, reject) => {
+    seen = await new Promise((resolve, reject) => {
       let ts = null;
       queryClient.queryRows(flux, {
         next(row, tableMeta) {
@@ -118,19 +138,35 @@ export async function seed() {
         complete: () => resolve(ts),
       });
     });
-    lastSeen = seen;
   } catch (err) {
     // No Influx / empty bucket: treat the sensor as unproven rather than failing boot.
     console.error("[ESP32] liveness seed failed:", err.message);
-    lastSeen = null;
+    seen = null;
   }
 
+  // A reading arrived while the query was running — live beats historical, discard this.
+  if (lastSeen != null && lastSeen >= startedAt) {
+    console.log("[ESP32] liveness seed discarded — a live reading arrived first");
+    return;
+  }
+
+  lastSeen = seen;
   online = !isStale();
   console.log(
     `[ESP32] liveness seeded → ${online ? "online" : "offline"}` +
       `${lastSeen ? ` (last reading ${new Date(lastSeen).toISOString()})` : " (no recent readings)"}`,
   );
   if (_io) _io.emit("esp32Status", getStatus());
+
+  // Stale but previously reporting = a genuine, ongoing outage that started before this
+  // process did. Record it, so "offline" in the UI always has a matching alert.
+  if (!online && seen != null) {
+    try {
+      await raiseOfflineAlert(new Date(seen).toISOString());
+    } catch (err) {
+      console.error("[ESP32] seed alert error:", err.message);
+    }
+  }
 }
 
 export function init(io) {
