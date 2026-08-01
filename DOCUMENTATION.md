@@ -495,7 +495,7 @@ endpoint). Full guide: **`Environment.md`**.
 
 Firmware notes (`iot/esp32/env_monitor_v2.ino`):
 
-- `#define SD_ENABLED false` — set `true` only when the SD module is connected.
+- **No SD card / on-device buffer** — removed; durability lives on the backend (`backupService`). The `offlineData` handler remains but is dormant.
 - `deviceSecret` must match `DEVICE_SECRET` in `backend/.env`.
 - Timestamp priority: DS3231 RTC → NTP (UTC+8) → uptime fallback.
 - Buzzer uses 10-bit LEDC; `ledcWrite(pin, 0)` to silence.
@@ -516,7 +516,9 @@ IR **only on temperature zone change**:
 
 **Power is manual-only.** Auto IR (`applyAutoIR`) only re-targets the set temperature of
 units that are **currently ON** — it never flips `is_on`, so a unit a user turned off stays
-off. All IR raw data is currently mock NEC and needs real captures from the Carrier remote.
+off. All seven IR arrays are **real Carrier captures** (no mock data remains), but none has
+yet driven a physical unit — see `Environment.md` §8 for the two things to verify on the
+hardware and the re-capture procedure.
 
 ### 11.3 Server metrics (Go agent)
 
@@ -607,12 +609,14 @@ classes; ServerDetail is a `slate-*` + `dark:` hybrid.
 - **Vestigial password UI:** with Google-only login, the User Management "Reset PW" and
   Profile "Change Password" controls (and the `POST /users` / reset-password endpoints) are
   no longer meaningful. Flagged for removal.
-- **`routes/auth.js` missing import:** `GET /auth/me` and `POST /auth/logout` reference an
-  `authService` that is not imported in the current working tree (only `googleAuthService`
-  and `authMiddleware` are). These two routes will throw until `authService` is imported —
-  worth fixing before relying on `/me` and `/logout`.
-- **Mock IR data:** all IR raw signals in the firmware are placeholder NEC codes; replace
-  with real captures from the Carrier remote (`IRrecvDumpV2`).
+- ~~**`routes/auth.js` missing import**~~ — FIXED. `authService` is imported (`routes/auth.js:3`),
+  so `GET /auth/me` and `POST /auth/logout` work. Entry kept only so the old note isn't
+  re-derived from a stale copy of this file.
+- **IR data captured but unverified:** all seven arrays are real Carrier captures — no mock
+  data remains — but none has driven a physical AC yet. Two open questions to settle on the
+  hardware: `IR_20C_HIGH` may be the wrong fan setting (bits 53–55 read 010 vs 000 on
+  `IR_22C_HIGH`), and `IR_POWER_OFF` has a one-bit header difference from all six others.
+  See `Environment.md` §8.
 - **Unplanned schema tables:** several schema tables (UPS, MikroTik, suggestions, alert
   rules/notifications, settings, network interfaces, metrics config) are defined but not yet
   wired to live code.
