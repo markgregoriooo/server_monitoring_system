@@ -336,11 +336,28 @@ const uint16_t IR_22C_HIGH[] = {
 };
 
 // 20°C Cool High fan  (Critical zone)
-// ⚠️ NOT YET CAPTURED. The 2026-07-31 attempt came back 133 values / 65 bits with
-// ambient-IR glitches, so it is unusable. Still the old MOCK NEC data — it would not
-// control the AC, so zoneIRData() deliberately refuses to send this zone until a clean
-// capture replaces it (see IR_20C_HIGH_CAPTURED below). Above the NEAR_CRIT boundary
-// the unit therefore stays at 22°C High, which is the safe direction to fail.
+// ⚠️ NOT YET CAPTURED — still the old MOCK NEC data. It would not control the AC, so
+// zoneIRData() deliberately refuses to send this zone until a clean capture replaces it
+// (see IR_20C_HIGH_CAPTURED below). Above the NEAR_CRIT boundary the unit therefore
+// stays at 22°C High, which is the safe direction to fail.
+//
+// Two failed attempts so far, BOTH from ambient light rather than anything wrong with
+// the remote or the sketch:
+//   2026-07-31 — 133 values / 65 bits. Ambient-IR glitches inserted extra edges.
+//   2026-08-01 — 223 values, every one 7000-9500us, alternating ~7700/~9000. That pair
+//                sums to ~16.7ms = 60Hz, i.e. mains frequency: an LED/fluorescent lamp
+//                was saturating the receiver and the remote's frame never got through.
+//                No leader pair, no short/long spaces — there were no bits in it at all.
+//
+// Before the next attempt: capture with the room lights OFF (fluorescent and cheap LED
+// bulbs are the usual culprits), away from sunlight and screens, remote 3-10cm from the
+// receiver and pointed straight at it. If IRLearner prints anything while you are NOT
+// pressing a button, the environment is still too noisy — fix that first, because every
+// capture will fail the same way.
+//
+// A good capture starts ~9000, 4500 and is EXACTLY 131 values (leader pair + 64
+// bit-pairs + stop mark), matching the four arrays above. If you get 133 or 223,
+// recapture — do not trim, because you cannot tell which entries are the intruders.
 #define IR_20C_HIGH_CAPTURED 0
 const uint16_t IR_20C_HIGH[] = {
   9000, 4500, 560, 1690, 560, 560, 560, 560, 560, 1690,
