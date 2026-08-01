@@ -335,38 +335,50 @@ const uint16_t IR_22C_HIGH[] = {
   450, 1800, 400
 };
 
-// 20°C Cool High fan  (Critical zone)
-// ⚠️ NOT YET CAPTURED — still the old MOCK NEC data. It would not control the AC, so
-// zoneIRData() deliberately refuses to send this zone until a clean capture replaces it
-// (see IR_20C_HIGH_CAPTURED below). Above the NEAR_CRIT boundary the unit therefore
-// stays at 22°C High, which is the safe direction to fail.
-//
-// Two failed attempts so far, BOTH from ambient light rather than anything wrong with
-// the remote or the sketch:
+// 20°C Cool High fan  (Critical zone)  (captured 2026-08-01, third attempt)
+// Replaces the mock NEC data that stood here through two failed captures, both killed by
+// ambient light rather than the remote or the sketch:
 //   2026-07-31 — 133 values / 65 bits. Ambient-IR glitches inserted extra edges.
 //   2026-08-01 — 223 values, every one 7000-9500us, alternating ~7700/~9000. That pair
 //                sums to ~16.7ms = 60Hz, i.e. mains frequency: an LED/fluorescent lamp
 //                was saturating the receiver and the remote's frame never got through.
-//                No leader pair, no short/long spaces — there were no bits in it at all.
+// Kept here because it is the failure mode any RE-capture will hit: lights OFF, away from
+// sunlight and screens, remote 3-10cm and pointed at the receiver. If IRLearner prints
+// anything while you are NOT pressing a button, the environment is still too noisy.
 //
-// Before the next attempt: capture with the room lights OFF (fluorescent and cheap LED
-// bulbs are the usual culprits), away from sunlight and screens, remote 3-10cm from the
-// receiver and pointed straight at it. If IRLearner prints anything while you are NOT
-// pressing a button, the environment is still too noisy — fix that first, because every
-// capture will fail the same way.
+// This capture verifies clean: exactly 131 values, 8950/4500 leader, decodes to exactly
+// 64 bits, marks 450-550us, and the two space populations are 600-650 (zero) vs
+// 1750-1800 (one) — an 1100us gap, so no bit is a judgement call. Header bits 0-9 and the
+// all-zero bits 16-39 match the other four temperature frames, and it obeys the
+// structural invariant every verified frame obeys (bits 61-63 are the exact complement of
+// bits 53-55). Nothing here looks like contamination.
 //
-// A good capture starts ~9000, 4500 and is EXACTLY 131 values (leader pair + 64
-// bit-pairs + stop mark), matching the four arrays above. If you get 133 or 223,
-// recapture — do not trim, because you cannot tell which entries are the intruders.
-#define IR_20C_HIGH_CAPTURED 0
+// ⚠️ What the data CANNOT confirm is that this is the right BUTTON. Bits 53-55 differ
+// between this frame (010) and 22C_HIGH (000); if that field were purely fan speed the
+// two High-fan frames would agree. It may not be fan (POWER ON/OFF carry 001 there and
+// have no fan meaning, and no checksum scheme fits all six frames), but the only
+// conclusive test is the unit itself: drive the CRITICAL zone and confirm the AC's own
+// display reads 20°C with the fan on High. If it shows a different fan speed, recapture
+// with the remote set to Cool / 20°C / fan HIGH and check bits 53-55 move to 000.
+#define IR_20C_HIGH_CAPTURED 1
 const uint16_t IR_20C_HIGH[] = {
-  9000, 4500, 560, 1690, 560, 560, 560, 560, 560, 1690,
-  560, 1690, 560, 560, 560, 560, 560, 1690, 560, 560,
-  560, 1690, 560, 1690, 560, 560, 560, 1690, 560, 560,
-  560, 1690, 560, 1690, 560, 560, 560, 1690, 560, 560,
-  560, 560, 560, 1690, 560, 1690, 560, 560, 560, 560,
-  560, 1690, 560, 1690, 560, 560, 560, 1690, 560, 560,
-  560, 1690, 560, 560, 560, 560, 560, 40000
+  8950, 4500, 500, 650, 500, 600, 550, 1750,
+  500, 600, 500, 1750, 500, 600, 500, 600,
+  550, 650, 500, 650, 500, 1750, 550, 600,
+  550, 1750, 500, 600, 500, 1750, 550, 600,
+  500, 650, 500, 650, 450, 650, 500, 600,
+  500, 650, 500, 600, 500, 600, 500, 600,
+  500, 650, 500, 650, 500, 650, 500, 650,
+  500, 650, 500, 600, 500, 600, 500, 600,
+  500, 650, 450, 650, 450, 650, 500, 650,
+  500, 650, 500, 600, 500, 600, 500, 600,
+  500, 650, 450, 1800, 500, 1800, 500, 650,
+  500, 650, 500, 650, 500, 650, 500, 650,
+  500, 1800, 500, 650, 450, 650, 500, 650,
+  500, 650, 500, 650, 500, 650, 500, 1800,
+  450, 650, 450, 650, 450, 650, 450, 650,
+  500, 650, 500, 1750, 500, 1800, 500, 600,
+  500, 1800, 450
 };
 
 // Power ON  (captured 2026-07-31)
