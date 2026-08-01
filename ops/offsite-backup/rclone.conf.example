@@ -1,0 +1,33 @@
+# ============================================================================
+#  rclone.conf  —  TEMPLATE (no secrets). Copy to your real rclone config path
+#  and fill in the values, OR generate it interactively with `rclone config`.
+#
+#  Real config path (do NOT commit the filled-in file — it holds credentials):
+#    Linux   : /etc/rclone/rclone.conf   (or ~/.config/rclone/rclone.conf)
+#    Windows : C:\ProgramData\rclone\rclone.conf
+#
+#  Two remotes: a raw Backblaze B2 remote, and a `crypt` layer on top of it so
+#  data AND filenames are encrypted client-side before upload.
+# ============================================================================
+
+# 1) Raw Backblaze B2 remote.
+#    account = the "keyID" and key = the "applicationKey" from
+#    Backblaze → App Keys. Create a key SCOPED to just the backup bucket.
+[b2]
+type = b2
+account = <B2_KEY_ID>
+key = <B2_APPLICATION_KEY>
+hard_delete = true
+
+# 2) Encryption layer wrapping a bucket/path on the B2 remote.
+#    `remote` points at  <b2-remote>:<bucket>/<path>.
+#    Obscure BOTH passwords first:   rclone obscure "your-strong-passphrase"
+#    Keep the plaintext passphrases somewhere safe & OFFLINE — without them the
+#    cloud copy is unrecoverable (that's the point of client-side encryption).
+[b2crypt]
+type = crypt
+remote = b2:cspc-monitoring-backup/offsite
+filename_encryption = standard
+directory_name_encryption = true
+password = <output of: rclone obscure "passphrase">
+password2 = <output of: rclone obscure "different-salt-passphrase">

@@ -109,9 +109,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("cspc:session-expired", onExpired);
   }, [clearLocalSession]);
 
+  // Sliding session: the API silently renews our token (X-Renewed-Token header →
+  // client.ts saves it + fires this event) while the user stays active. Bumping this
+  // tick re-runs the proactive-expiry effect below so it re-arms to the NEW token's
+  // later exp, instead of firing at the original login+1h mark and logging out an
+  // active user.
+  const [renewTick, setRenewTick] = useState(0);
+  useEffect(() => {
+    const onRenewed = () => setRenewTick((n) => n + 1);
+    window.addEventListener("cspc:token-renewed", onRenewed);
+    return () => window.removeEventListener("cspc:token-renewed", onRenewed);
+  }, []);
+
   // Proactive auto-logout exactly when the JWT expires, so an idle tab doesn't sit
-  // on a dead token until the next request. Re-runs on login / restore-from-storage,
-  // reading exp from the current token.
+  // on a dead token until the next request. Re-runs on login / restore-from-storage /
+  // token renewal, reading exp from the current token.
   useEffect(() => {
     if (!user) return;
     const exp = decodeJwtExp(readToken());
@@ -127,6 +139,69 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const t = setTimeout(expire, msLeft);
     return () => clearTimeout(t);
+  }, [user, clearLocalSession, renewTick]);
+
+  // Activity-based session lifetime — two rules, both keyed on whether the user is
+  // actually WATCHING the dashboard:
+  //   • watching      → keep the session alive. A heartbeat ping triggers the backend's
+  //                     sliding renewal, so even socket-fed pages that make no HTTP
+  //                     calls once loaded — Dashboard, Environment, Server Metrics,
+  //                     Network, MikroTik, UPS — don't expire while on screen.
+  //   • not watching  → the user switched to another tab / minimized / hid the page,
+  //                     so log out after a 15-min idle timeout (PCI-DSS standard)
+  //                     instead of lingering for the full token life.
+  // "Watching" = the tab is visible OR a Picture-in-Picture window is open, so popping
+  // out a live tile and working elsewhere keeps you signed in. The PiP check reads the
+  // browser API directly, so it already works for the pip-widget when that branch merges.
+  useEffect(() => {
+    if (!user) return;
+
+    const HEARTBEAT_MS = 10 * 60 * 1000;    // keep-alive cadence — under the 30-min half-life
+    const AWAY_LOGOUT_MS = 15 * 60 * 1000;  // idle timeout after leaving the tab (PCI-DSS standard)
+
+    const pipOpen = () => {
+      try {
+        const w = window as unknown as { documentPictureInPicture?: { window: unknown } };
+        return !!w.documentPictureInPicture?.window || !!document.pictureInPictureElement;
+      } catch {
+        return false;
+      }
+    };
+    const watching = () => document.visibilityState === "visible" || pipOpen();
+
+    let awayTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelAway = () => {
+      if (awayTimer) {
+        clearTimeout(awayTimer);
+        awayTimer = null;
+      }
+    };
+
+    const ping = () => {
+      if (watching()) void api.me();
+    };
+
+    const onVisibilityChange = () => {
+      if (watching()) {
+        cancelAway();
+        ping(); // refresh the session the moment the user comes back
+      } else if (!awayTimer) {
+        awayTimer = setTimeout(() => {
+          sessionStorage.setItem("cspc_session_expired", "1");
+          clearLocalSession();
+        }, AWAY_LOGOUT_MS);
+      }
+    };
+
+    ping(); // immediate keep-alive on mount/restore
+    const beat = setInterval(ping, HEARTBEAT_MS);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      clearInterval(beat);
+      cancelAway();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [user, clearLocalSession]);
 
   const loginWithGoogle = useCallback(async (code: string) => {

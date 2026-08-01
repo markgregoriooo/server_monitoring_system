@@ -260,18 +260,19 @@ export const api = {
     }
   },
 
-  getEnvHistory: async (count: number = 20): Promise<ApiResult> => {
+  // Network monitoring — routers/switches via SNMP (IF-MIB)
+  getNetworkDevices: async (): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get(`/environment/history?count=${count}`);
+      const res = await apiClient.get("/network");
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
     }
   },
 
-  getHistoryLogs: async (): Promise<ApiResult> => {
+  getNetworkHistory: async (id: number, range: string): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get("/environment/logs");
+      const res = await apiClient.get(`/network/${id}/history`, { params: { range } });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
@@ -289,12 +290,205 @@ export const api = {
     }
   },
 
+  getNetworkLogs: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/network/${id}/logs`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   // Ask the ESP32 to re-measure the MQ-2 clean-air baseline and save it to its flash.
   // Admin-only. The air must be clean when this runs — the result arrives asynchronously
   // on the `gasCalibrated` socket event.
   calibrateGasSensor: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.post("/environment/calibrate-gas");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // UPS monitoring — battery/load via SNMP (UPS-MIB / RFC 1628)
+  getUpsDevices: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/ups");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getUpsHistory: async (id: number, range: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/ups/${id}/history`, { params: { range } });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getUpsLogs: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/ups/${id}/logs`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // MikroTik monitoring — campus router via the RouterOS API (per-port = per-building)
+  getMikrotikDevices: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/mikrotik");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // admin: register a new MikroTik (needs the device_type ENUM migration applied)
+  addMikrotik: async (body: {
+    name: string;
+    ip?: string;
+    location?: string;
+    apiPort?: number;
+    useTls?: boolean;
+    apiUsername?: string;
+    apiPassword?: string;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/mikrotik", body);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getMikrotikInterfaces: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/mikrotik/${id}/interfaces`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  saveMikrotikInterfaces: async (
+    id: number,
+    labels: { name: string; label: string }[],
+  ): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put(`/mikrotik/${id}/interfaces`, { labels });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteMikrotik: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/mikrotik/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // `iface` omitted → device totals; supplied → that single port's throughput.
+  getMikrotikHistory: async (id: number, range: string, iface?: string): Promise<ApiResult> => {
+    try {
+      const params: Record<string, string> = { range };
+      if (iface) params.interface = iface;
+      const res = await apiClient.get(`/mikrotik/${id}/history`, { params });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  getMikrotikLogs: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/mikrotik/${id}/logs`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // admin: set the RouterOS API connection (password is encrypted server-side)
+  saveMikrotikConnection: async (
+    id: number,
+    body: { apiPort?: number; useTls?: boolean; apiUsername?: string; apiPassword?: string },
+  ): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put(`/mikrotik/${id}/connection`, body);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // id === null → ad-hoc test of credentials that haven't been saved yet (Add form).
+  // With an id, `body` overrides the stored values; omit it to test what's saved.
+  testMikrotik: async (
+    id: number | null,
+    body?: { ip?: string; apiPort?: number; useTls?: boolean; apiUsername?: string; apiPassword?: string },
+  ): Promise<ApiResult> => {
+    try {
+      const url = id == null ? "/mikrotik/test" : `/mikrotik/${id}/test`;
+      const res = await apiClient.post(url, body ?? {});
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Per-day environment summary measured from InfluxDB (temperature avg/max/min,
+  // humidity avg, peak gas, environment-alert count). Replaces getEnvHistory, which
+  // hit a mock endpoint returning random values and had no callers.
+  getEnvironmentDaily: async (days: number = 7): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/environment/daily?days=${days}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Unified activity/audit history (system_logs + aircon_logs + alerts + device_logs)
+  // with actor accountability (admin | staff | system). Returns { events, total,
+  // page, pageSize, days, summary }.
+  getHistory: async (params: {
+    days?: number;
+    start?: string;
+    end?: string;
+    category?: string;
+    severity?: string;
+    actorType?: string | undefined;
+    userId?: number | "all" | undefined;
+    search?: string;
+    page?: number;
+    pageSize?: number;
+  } = {}): Promise<ApiResult> => {
+    try {
+      const qs = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== "" && v !== "all") qs.append(k, String(v));
+      });
+      const res = await apiClient.get(`/history?${qs.toString()}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Users who appear in the history (for the per-user filter). Returns { actors: [...] }.
+  getHistoryActors: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/history/actors");
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

@@ -1097,3 +1097,264 @@ enrollment approval pattern. Full design + setup in new **`google-oauth.md`**.
 
 ---
 
+## SESSION 11 — 2026-06-12
+**Branch:** `router-ups-monitoring`
+**Developer:** Mark Gregorio
+
+> Built the **Router & UPS SNMP monitoring** feature from the existing design doc
+> (`router-ups-monitoring.md`, committed earlier on this branch). One **pull**-based SNMP
+> poller covers both classes (routers via IF-MIB, UPS via UPS-MIB / RFC 1628) — the mirror of
+> the push-based Go agents. Built in increments, each verified without real hardware via a
+> loopback SNMP simulator. **Increments 1–4 done; Increment 5 (seed migration) is a template
+> blocked on the device facts.**
+
+### Key schema finding — v2c only
+- `device_network` stores `snmp_community` + `snmp_port` but has **no v3 columns** (no auth
+  user/protocol/priv), so the DB models **SNMP v2c only**. The design's "v2c or v3?" open
+  question is settled by the schema: v2c now; v3 needs a follow-up migration. `snmpClient` has a
+  single marked v3 extension point.
+
+### Increment 1 — `snmpClient.js` (thin net-snmp wrapper)
+- New dep **`net-snmp@3.26.3`** (the only new backend dep — SNMP-only). `services/snmpClient.js`:
+  **standard** OID maps (MIB-II system, IF-MIB, UPS-MIB), v2c session open/close, `get`,
+  `walkColumn`, value normalize (OctetString→string, **Counter64→BigInt** precision-safe).
+- OIDs are IETF/IANA constants (same on every vendor) — **not** mock like the IR NEC codes.
+  Defaults (`161`, `"public"`, timeouts) are real, overridden per-device from `device_network`.
+- **Verified live** on a loopback net-snmp agent: get + walkColumn + Counter64 BigInt + UPS decode.
+
+### Increment 2 — poller + handlers + simulator
+- `services/snmpPollerService.js`: `loadDevices` (routers/ups + connection info), pure
+  `collectRouter`/`collectUps` collectors (SNMP→sample, no DB/Influx), per-interface
+  utilization from the counter delta, status flips (poll IS the heartbeat — no separate sweep),
+  threshold logging (interface-down, UPS on-battery / low-battery — onset only, reuses
+  `agentService.logDevice`).
+- `handlers/networkMetricsHandler.js` → `router_metrics` + per-iface `network_traffic`
+  (cumulative **uint** counters; BigInt via `point.uintField`) + `networkMetrics` broadcast.
+  `handlers/upsMetricsHandler.js` → `ups_metrics` + `upsMetrics` broadcast.
+- `scripts/snmpSim.js`: reusable loopback router (3 ifaces, one DOWN, advancing Counter64) +
+  UPS — develop/test with **no hardware**. Prints ready-to-run seed SQL.
+- `src/server.js`: gated 60s `pollAll` interval (no-op until a router/ups is registered);
+  `SNMP_POLL_INTERVAL_MS` env (default 60000).
+- **Verified:** `node --check` all; import-chain resolves; **collectors run live against the
+  simulator** (router IF-MIB + UPS-MIB shaped correctly, utilization computed from real deltas).
+
+### Increment 3 — read APIs
+- Poller gained a per-device **latest cache** (mirrors `agentService.latestMetrics`) +
+  `getNetworkDevices`/`getUpsDevices` (overlay cache on MySQL; `monitored` flag marks
+  ping-only/USB devices). `handlers/networkHistoryHandler.js` (Flux: per-iface `last` →
+  `derivative` → grouped `sum` = total throughput) + `handlers/upsHistoryHandler.js` (gauge
+  means). `routes/network.js` + `routes/ups.js`: `GET /` , `:id/history`, `:id/logs` (JWT).
+  Mounted `/api/network` + `/api/ups`. **Verified:** `node --check` + import-chain clean.
+
+### Increment 4 — frontend pages
+- `pages/NetworkMonitoring.tsx` (router list, per-iface utilization bars + up/down, throughput
+  history chart w/ range selector, live `networkMetrics`/`networkStatus`) and
+  `pages/UpsMonitoring.tsx` (battery/load/runtime/voltage cards, **on-battery banner**, history
+  chart, live `upsMetrics`/`upsStatus`). All Grafana `--gf-*`. `api.ts`: 6 new methods.
+  Wired routes `/network` + `/ups` in `App.tsx`, nav items + icons in `Sidebar.tsx`, role access
+  (admin + it_staff) in `data/users.ts`. **Verified:** `tsc --noEmit` fully clean.
+
+### Docs + Increment 5 template + client questionnaire
+- **`CLAUDE.md`** updated: `SNMP_POLL_INTERVAL_MS` env, repo layout (new files), data-stores
+  table (router/ups MySQL + `network_traffic`/`router_metrics`/`ups_metrics` Influx), socket
+  events (`networkMetrics`/`upsMetrics`/`networkStatus`/`upsStatus`), role + page-style tables.
+- **`router-ups-monitoring.md`** updated: status banner → "IMPLEMENTED — seeding pending", §8 file
+  table (Status column, simulator row later removed), §10 Q3 settled (v2c), §11 status rewritten.
+- **`migrations/2026-06-12_router_ups_devices.sql`** — Increment 5 **template** (commented
+  INSERTs + placeholders) to register the real routers/UPS.
+- **Client questionnaire** — `router-ups-client-questionnaire.md` **+ a Word `.docx`** (generated
+  with `python-docx`) that collects the §10 device facts (Q1 UPS SNMP cards, Q6 managed routers,
+  Q9 firewall/UDP 161, + per-device IP/model/community) in plain language for the CSPC-ICTU team.
+  Filled when the client responds, then drives the seed migration. (Verdict given: feasible, low
+  technical risk — remaining work is operational, not code.)
+
+### Still pending / not done
+- **Increment 5 is blocked on the device facts** (router-ups-monitoring.md §10): Q1 UPS SNMP
+  cards?, Q6 managed routers?, Q9 firewall allows UDP 161? — answers decide which rows to seed.
+- **Full live stack test not yet run** (needs MySQL + InfluxDB up + seeded devices + a reachable
+  SNMP target): the route responses, Influx history, and pages rendering live data. Up to the
+  SNMP collection layer it was proven during the session against a loopback agent.
+- **Loopback SNMP simulator removed at request** — `backend/scripts/snmpSim.js` (built this
+  session to verify Increments 1–2 with no hardware) was deleted afterward, and its references in
+  the docs / migration / page empty-states cleaned up. Re-add if a no-hardware harness is wanted
+  again (it's a standalone `net-snmp` agent script — nothing in the app imported it).
+- **ICMP-ping fallback** for unmanaged/no-community routers is a **separate module not built** —
+  such routers are currently skipped by `loadDevices` (returned with `monitored:false`).
+- `router-ups-monitoring` branch still **uncommitted**.
+
+---
+
+## SESSION 15 — 2026-06-20
+**Branch:** `mikrotik-monitoring` (created off `main`, then re-pointed onto `router-ups-monitoring`)
+**Developer:** Mark Gregorio
+
+> Built **MikroTik network monitoring** (architecture data source **B**) end to end — a RouterOS
+> **pull** collector + a dashboard page — reusing this branch's (`router-ups-monitoring`) network
+> foundation. **Full study guide: `mikrotik-monitoring.md §13`.**
+>
+> Note on numbering: this `SESSION_NOTES.md` is the `router-ups-monitoring` lineage, so it lacks
+> `main`'s SESSION 14 (the `pip-widget` session, 2026-06-18) — that lives on the `main`/`pip-widget`
+> line and will reconcile on merge. This entry is labeled 15 to continue `main`'s sequence.
+
+### Housekeeping (start of session)
+- Pushed `pip-widget` + `router-ups-monitoring` to origin; committed the MySQL Workbench `.mwb`
+  model to `main` (`d1ecc80`).
+
+### Decision — branch base = B (stacked branch)
+- The feature reuses `router-ups-monitoring`'s shared network code (the `network_traffic` /
+  `router_metrics` InfluxDB measurements, `writeNetworkSample`, `networkMetrics`/`networkStatus`,
+  `network_interfaces`, `NetworkMonitoring.tsx`). That branch isn't merge-ready, so merging it to
+  `main` first (option A) was rejected; instead **re-pointed `mikrotik-monitoring` onto
+  `router-ups-monitoring`** (`git branch -f`) and stacked on top. (Option C = duplicate, rejected.)
+
+### Docs (committed `59f5309`)
+- `mikrotik-monitoring.md` — design of record + **§13 study guide** (runtime flow, file map, REST
+  surface, operational flow, what changed from the plan).
+- `mikrotik-feature-questionnaire.md` + `.docx` — client info request (campus MikroTik); `.docx`
+  generated via `python-docx`.
+- `mikrotik-dev-setup.md` + `.docx` — RouterOS dev-box setup (enable API, read-only user, reach test).
+
+### Schema (migration `2026-06-20_mikrotik_device.sql`, NEW — must run)
+- **Key finding:** the V10 schema **already has `mikrotik_devices`** (1:1 detail table off `devices`,
+  same pattern as `server_specs`/`ups_details`) — kept it; did NOT fold into `device_network`.
+- `devices.device_type` is an **ENUM** lacking `'mikrotik'` → migration `ALTER`s to add the value.
+- Adds `mikrotik_devices.use_tls`; drops the unused `firmware_version`. `api_password VARCHAR(255)`
+  holds AES-GCM ciphertext (base64) — no column change. Plus a commented seed template.
+
+### Backend (committed `9ce4108`; `12996ba` removed mock; `de2c251` add-flow)
+- `services/mikrotikCrypto.js` — AES-256-GCM for the API password (`MIKROTIK_ENC_KEY`, 32-byte hex).
+- `services/mikrotikClient.js` — RouterOS API reads (`/system/resource`, `/interface print stats`,
+  `/interface/ethernet`, DHCP lease count) → the **shared sample shape**; lazy-loads `node-routeros`.
+- `services/mikrotikPollerService.js` — the core poller (mirror of `snmpPollerService`): loadDevices
+  (type='mikrotik'), collect + utilization deltas, `setReachable`→`networkStatus`, reuse
+  `writeNetworkSample`, port-down logging, + `getMikrotikDevices` / `createDevice` / `saveConnection`
+  / `testConnection`.
+- `routes/mikrotik.js` — `GET /` list, `POST /` add (admin), `PUT /:id/connection` (admin),
+  `POST /:id/test` (admin), `/:id/history`, `/:id/logs`.
+- `src/server.js` — mount `/api/mikrotik` + a 30s `setInterval` poll (self-gating until a device exists).
+- **Dependency added:** `node-routeros` (required once mock was removed).
+
+### Frontend (committed `8b6c104` page; `12996ba` modal; `de2c251` add)
+- `pages/MikrotikMonitoring.tsx` — single-router dashboard: stat row, throughput history chart,
+  **per-port = per-building** rows (utilization bars + link state), device summary (CPU / mem /
+  clients / RouterOS version / board / uptime). Live via the shared `networkMetrics`/`networkStatus`
+  (filtered to `type=mikrotik`). **AddModal** (+ Add MikroTik) and **ConnectionModal** (Configure +
+  Test) — admin-only.
+- `api.ts` — getMikrotikDevices / addMikrotik / saveMikrotikConnection / testMikrotik / history / logs.
+- Wired route `/mikrotik`, sidebar nav item + icon, `roleConfig` access (admin + it_staff).
+- `NetworkMonitoring.tsx` — ignores `type=mikrotik` in its live merge (kept on separate pages).
+
+### Removed — mock mode
+- `MIKROTIK_MOCK` (synthetic data) was built during scaffolding then **dropped at request** — live
+  RouterOS only. Removed from poller / client / server + the page empty state.
+
+### `.env`
+- Added `MIKROTIK_ENC_KEY` (generated) + `MIKROTIK_POLL_INTERVAL_MS=30000` to `backend/.env`
+  (gitignored — not committed).
+
+### Verified
+- `node --check` + backend import-resolution clean; frontend `tsc --noEmit` exit 0 throughout.
+
+### Still pending / not done
+- **Run the migration** + **restart backend** + a **live end-to-end test** against the dev MikroTik
+  (the RouterOS command words in `mikrotikClient` are best-effort — confirm on hardware).
+- **Port → building labeling UI** (labels come from `network_interfaces`, currently SQL-seeded).
+- Full **alert_rules** wiring (link_util / CPU / mem + bell/email) — today only port-down +
+  offline/online are logged to `device_logs`.
+- PiP `network.summary` tile. Branch `mikrotik-monitoring` not pushed yet.
+
+---
+## SESSION 16 — 2026-06-27
+**Branch:** `history-page` (off `main`)
+**Developer:** Mark Gregorio
+
+> New feature: a real, unified **History page** — a focused, accountable **activity / audit
+> log**, replacing the old mock (`data/db.js` historyLogs, the hardcoded March-2025 rows). Built
+> on a fresh branch off `main` so it's independent of the in-flight `predictive-analytics`
+> (S14/S15, not on this branch's notes) and the network/UPS branches. **No DB migration needed**
+> — every source table already exists.
+
+### Decision / scope
+- **History = a unified, accountable audit log.** Merge the four append-only log tables the
+  system already writes — `system_logs`, `aircon_logs`, `alerts`, `device_logs` — into one
+  normalized event stream, each event tagged with an **actor: Admin / Staff / System**
+  (`users.role`, or NULL = automated).
+- **Accountability gap closed:** several admin actions weren't logged anywhere → added audit
+  writes so they show in History.
+- **Scope evolution (decided with the user):** daily **Environment** + **Servers** metric
+  summary tabs were prototyped (incl. InfluxDB aggregation + a bar chart) but **cut** — real-world
+  an audit log is its own focused concern, and metric history already lives (better, with live
+  charts) on the **Environment** and **Server Detail** pages. Shipped = activity log only. The
+  InfluxDB summary services/routes/api methods were removed with them.
+
+### Backend (new)
+- **`services/auditService.js`** — `audit({userId, module, action, description, level, ip,
+  userAgent})` appends to `system_logs`; **best-effort** (swallows its own errors so a log
+  failure never breaks the action). `clientInfo(req)` helper for ip/user-agent.
+- **`services/historyService.js`** — the engine. `getHistory()` = a **UNION ALL** across the
+  four tables, normalized to one shape (id/source/category/ts/actor/severity/action/message/
+  device), joined to `users` (name+role) + `devices` (name), newest-first, **paginated +
+  filtered** (days/category/severity/actorType/search) with a one-scan **summary** (counts by
+  severity + actor). Injection-safe: numeric inputs clamped + inlined, every value filter a
+  bound `?` (same posture as `serverHistoryHandler`). Pure MySQL — no InfluxDB.
+- **`routes/history.js`** — `GET /api/history`; `authMiddleware` +
+  `requireRole("admin","it_staff")` (read-only insight, both roles).
+- **`src/server.js`** — mount `/api/history`.
+
+### Backend (audit logging added — accountability)
+`system_logs` writes via `auditService.audit` at the previously-unlogged actions, each with the
+acting user + ip/ua:
+- `routes/users.js` — approve / reject / update / disable-enable / delete (module `users`).
+- `routes/alertRules.js` — create / update / delete (module `alerts`, human-readable rule desc).
+- `routes/agents.js` — server approve / reject (module `devices`).
+- `routes/servers.js` — server remove (module `devices`; name captured before delete).
+- `routes/alerts.js` — acknowledge / resolve (module `alerts`) → alert lifecycle now attributed.
+
+### Frontend
+- **`pages/History.tsx`** — full rewrite, Grafana `--gf-*` tokens (was old `slate-*`). Single
+  **activity log**: stat tiles (total/critical/warnings/by-admin/by-staff/by-system); table with
+  **actor badges** (Admin purple / Staff blue / System slate `#6E7B91`), severity dots, category
+  chips, expandable detail; server-side pagination.
+- **Filters:** search · **time range** (24h/7d/14d/30d presets **+ Custom date range** with
+  from→to pickers) · **category** pills · **severity** pills · a single **Actor** dropdown.
+- **Actor filter (consolidated):** one dropdown — All / by role (Admin, Staff, System) / by
+  person (each user who appears in the history). Replaced an earlier two-control design (actor-type
+  pills + a separate user dropdown) that could **contradict** each other (e.g. Actor=Staff +
+  User=an admin → 0 rows); merging them removes the conflict while keeping every capability
+  (System events can't be expressed by a user filter; a specific person can't by role pills).
+- **Realtime, no Refresh button** — auto-updates while on page 1: socket events (notification,
+  alertUpdated, deviceLog, aircon*, user/agent/server lifecycle) for instant updates + a **10s
+  poll backstop** for events that don't broadcast (login/logout, alert-rule changes). Background
+  refreshes are **silent** (no "Loading…" flash; `silentRef` guard); a green **Live** dot shows
+  while page 1 is auto-updating.
+- **`api/api.ts`** — `getHistory(params)` (days | start/end, category, severity, actorType,
+  userId, search, page) + `getHistoryActors()`; removed the mock `getHistoryLogs`. (Mock
+  `routes/environment.js` `/logs` + `data/db.js historyLogs` left in place but no longer used.)
+- **Backend filter support:** `getHistory` resolves a time window — a strict `YYYY-MM-DD`
+  custom range (validated → safe to inline) else clamped "last N days" — plus `userId` and
+  `actorType` filters; `getActors()` + `GET /api/history/actors` list the people who appear.
+
+### Verified
+- Backend `node --check` + import-resolution clean; service shape = `getHistory` only; **live
+  boot probe**: unauthenticated `GET /api/history` → **401** (route mounted + auth-gated).
+  Frontend **`tsc --noEmit` clean**.
+- Nodemon dev server hot-reloaded the changes during testing (dev stack was running).
+
+### Notes / findings
+- **Duplicate "MSI" server** surfaced while prototyping the (since-removed) server summary:
+  the same machine is enrolled+approved twice (id 22 Online, id 23 Offline since 2026-06-16) —
+  visible on the live Server Metrics page too (no MAC/hostname dedup on this branch; that fix is
+  on `predictive-analytics`). Cleanup = Remove the offline duplicate id 23 there.
+- **Flux tz gotcha (for future InfluxDB work):** this InfluxDB build lacks IANA tzdata, so
+  `timezone.location(name:"Asia/Manila")` throws "unknown time zone" at runtime — use
+  `timezone.fixed(offset: 8h)` (PH is UTC+8 year-round).
+
+### Still pending / not done
+- **Live end-to-end** with a logged-in session (feed render, filters, pagination, realtime
+  auto-update, new audit rows after an admin action) not driven here — verified by
+  build/types/boot probe.
+- SESSION 14/15 (predictive-analytics) entries are **not** in this branch's copy of these notes
+  (different branch) → there's an intentional S13→S16 gap here; resolves on merge.
+- Branch not PR'd into `main`.
+
+---
