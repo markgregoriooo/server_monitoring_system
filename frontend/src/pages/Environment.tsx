@@ -1137,20 +1137,34 @@ export default function Environment() {
   useEffect(() => {
     let cancelled = false;
 
-    api.getSensorStatus().then((res) => {
-      if (cancelled || !res.success || !res.data) return;
-      setSensorOnline(Boolean(res.data.online));
-      setSensorLastSeen(res.data.lastSeen ?? null);
-    });
+    const resync = () => {
+      api.getSensorStatus().then((res) => {
+        if (cancelled || !res.success || !res.data) return;
+        setSensorOnline(Boolean(res.data.online));
+        setSensorLastSeen(res.data.lastSeen ?? null);
+      });
+    };
+    resync();
 
     const onStatus = (s: { online?: boolean; lastSeen?: string | null }) => {
       setSensorOnline(Boolean(s?.online));
       setSensorLastSeen(s?.lastSeen ?? null);
     };
     socket.on("esp32Status", onStatus);
+
+    // `esp32Status` only fires on a TRANSITION, so a client that was disconnected or
+    // backgrounded when it fired never learns — and the banner silently stays wrong
+    // until a manual refresh. Re-pull the authoritative state whenever we could have
+    // missed one: on (re)connect, and when the tab regains focus.
+    socket.on("connect", resync);
+    const onVisible = () => { if (document.visibilityState === "visible") resync(); };
+    document.addEventListener("visibilitychange", onVisible);
+
     return () => {
       cancelled = true;
       socket.off("esp32Status", onStatus);
+      socket.off("connect", resync);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
