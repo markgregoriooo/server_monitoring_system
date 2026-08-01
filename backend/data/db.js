@@ -12,28 +12,11 @@ const servers = [
   { id: 3, name: "Server 3", ip: "192.168.1.103", status: "Online", cpu: 28, memory: 49, uptime: "20 days" },
 ];
 
-// ── SENSOR HISTORY (simulates InfluxDB time-series) ───────────────────────────
-function generateSensorHistory(count = 20) {
-  const now = Date.now();
-  return Array.from({ length: count }, (_, i) => {
-    const ts = new Date(now - (count - i) * 60000); // 1 min intervals
-    return {
-      time: ts.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }),
-      timestamp: ts.toISOString(),
-      temperature: +(24 + Math.random() * 4).toFixed(1),
-      humidity: Math.round(62 + Math.random() * 12),
-    };
-  });
-}
-
-// ── HISTORY LOGS (simulates InfluxDB daily aggregates) ────────────────────────
-const historyLogs = [
-  { date: "2025-03-12", avgTemp: 26.2, maxTemp: 28.1, minTemp: 24.0, avgHum: 69, events: 3 },
-  { date: "2025-03-11", avgTemp: 25.8, maxTemp: 27.5, minTemp: 23.5, avgHum: 67, events: 1 },
-  { date: "2025-03-10", avgTemp: 27.1, maxTemp: 29.0, minTemp: 25.2, avgHum: 72, events: 5 },
-  { date: "2025-03-09", avgTemp: 24.9, maxTemp: 26.3, minTemp: 23.1, avgHum: 65, events: 0 },
-  { date: "2025-03-08", avgTemp: 26.5, maxTemp: 28.4, minTemp: 24.8, avgHum: 70, events: 2 },
-];
+// ── SENSOR HISTORY / DAILY AGGREGATES — REMOVED ───────────────────────────────
+// `generateSensorHistory()` (random temps) and `historyLogs` (five rows hardcoded to
+// March 2025) used to back GET /api/environment/history and /logs. Both are gone:
+// daily summaries now come from InfluxDB via services/environmentService.js, and live
+// sensor history via the Socket.IO `changeRange` → querySensorHistoryHandler path.
 
 // ── ALERTS ────────────────────────────────────────────────────────────────────
 const alerts = [
@@ -56,8 +39,6 @@ const auditLog = [];
 
 export {
   servers,
-  generateSensorHistory,
-  historyLogs,
   alerts,
   reports,
   auditLog,
