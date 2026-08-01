@@ -126,7 +126,7 @@ backend/handlers/
   networkHistoryHandler.js      ← Flux on `network_traffic` (derived throughput) for GET /api/network/:id/history
   upsHistoryHandler.js          ← Flux on `ups_metrics` for GET /api/ups/:id/history
 backend/sockets/connectionHandler.js  ← all socket events, device vs browser segregation
-backend/data/db.js              ← in-memory mock: alerts, reports, environment history — NOT persisted (servers are now real: MySQL + InfluxDB)
+backend/data/db.js              ← in-memory mock: **`reports` only** — NOT persisted. Everything else it once backed (servers, alerts, environment history/logs) is now real (MySQL + InfluxDB)
 backend/middleware/
   auth.js                       ← authMiddleware, requireRole(...roles), JWT_SECRET export
   agentAuth.js                  ← Bearer `AGT-…` token auth for agent metric POSTs
@@ -168,7 +168,7 @@ SESSION_NOTES.md                ← per-session work log
 | Server-metric time-series | InfluxDB | measurement: `server_metrics` |
 | Router/UPS time-series | InfluxDB | measurements: `network_traffic` (per-iface, cumulative uint counters), `router_metrics`, `ups_metrics` — tagged by `device_id` |
 | **On-site backup copy (all streams)** | flat files under `BACKUP_DIR` | independent NDJSON backup of every sample (env/server/router/MikroTik/UPS), one file per stream per day, on a micro SD / USB drive on the backend. Survives DB wipe + power outage. See `backup-storage.md` |
-| **alerts, reports, environment history/logs** | `data/db.js` in-memory | **mock — not persisted**, resets on restart (`/api/alerts`, `/api/reports`, `/api/environment`) |
+| **reports** | `data/db.js` in-memory | **the last mock — not persisted**, resets on restart (`/api/reports`). Real impl (`reportService` + CSV/PDF against the `reports` table) lives on the `reports-page` branch; when that merges, `data/` can be deleted outright |
 
 ---
 
@@ -189,7 +189,7 @@ SESSION_NOTES.md                ← per-session work log
 > Login no longer uses passwords. `users.hash_password` is now nullable; `users.status` gained `pending`/`rejected`; new columns `google_sub` + `auth_provider`. The User Management "Add User"/"Reset PW" and Profile "Change Password" UIs are now vestigial.
 
 ### Mock endpoints (still `data/db.js`, not real)
-- `routes/environment.js` GET `/history` + `/logs` return mock random data, **not** InfluxDB — real sensor history comes via Socket.IO `changeRange` → `sensorHistory`
+- `routes/environment.js` is **no longer mock.** GET `/history` + `/logs` (random data / five rows hardcoded to March 2025) are **removed**; `GET /daily` returns a real InfluxDB-backed per-day summary via `services/environmentService.js`, and live sensor history remains a Socket.IO concern (`changeRange` → `sensorHistory`). The file also serves `POST /calibrate-gas` and `GET /sensor-status` (see ESP32 Firmware Notes).
 - `routes/reports.js` (`reports`) still serves an in-memory array that resets on restart, even though a real `reports` table exists. **Note:** the **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) writes the **real** `alerts` + `alert_notifications` tables, and both the bell feed and the **Dashboard "Alerts" panel** render that real per-user feed (via `NotificationContext`). See `email-popup-notifications.md`.
 - **`routes/alerts.js` is now REAL** (no longer mock): `services/alertsService.js` backs the shared alert **lifecycle** — `GET /api/alerts` (history, `?status=` filter), `POST /api/alerts/:id/acknowledge`, `POST /api/alerts/:id/resolve`, `GET /api/alerts/count` (open-alert count → sidebar **Alerts badge**), all admin + it_staff. Sets `alerts.status` + `acknowledged_by`/`acknowledged_at`/`resolved_at`. **Auto-resolves** open alerts when the metric recovers to normal (wired into `checkThresholds` + `sensorHandler`). Broadcasts `alertUpdated`. UI = **Alerts** page (`pages/Alerts.tsx`) + live unresolved-count badge on the nav (`NotificationContext.openAlertCount`). Shared incident state, distinct from the per-user bell (`is_read`). **Resolve attribution:** single "by {acknowledger}" (resolve folds into `acknowledged_by`); a `resolved_by` column exists from `migrations/2026-06-14_alerts_resolved_by.sql` but is **DORMANT/unused** (separate-resolver UI was built then reverted — see `email-popup-notifications.md` §13.8).
 
@@ -289,7 +289,20 @@ Each AC unit is a row in `devices` (type=`'aircon'`) with a linked row in `airco
 > backend's zone comes from `lastZone`, cached in-memory from `irFired`; if the backend
 > restarted since the last zone change it is null and only the hardware re-syncs.
 
-> **All IR raw data is currently mock NEC.** Replace `IR_28C_AUTO`, `IR_26C_AUTO`, `IR_24C_AUTO`, `IR_22C_HIGH`, `IR_20C_HIGH`, `IR_POWER_ON`, `IR_POWER_OFF` with real captures from the Carrier remote using `IRrecvDumpV2`.
+> **All seven IR arrays are real captures from the Carrier remote** (2026-07-31 / 2026-08-01,
+> 38 kHz, 131 values each, captured with `IRLearner.ino`). No mock IR data remains, and
+> `zoneIRData()` no longer refuses any zone. The protocol decodes as UNKNOWN, so there is no
+> library encoder — they are replayed verbatim with `sendRaw()`. Each frame verifies as
+> exactly 64 bits with clean timing clusters, and all seven satisfy the structural invariant
+> the family obeys (bits 61–63 are the complement of bits 53–55).
+>
+> ⚠️ **Captured is not the same as verified against the AC — nothing here has driven a real
+> unit yet.** Two things to confirm on the hardware: (1) `IR_20C_HIGH` reads 010 at bits
+> 53–55 where `IR_22C_HIGH` reads 000, so if that field is fan speed this may be the wrong
+> button — check the unit displays 20 °C / fan High; (2) `IR_POWER_OFF` has `byte[0] = 04`
+> where the other six have `14`, likely a genuine power-state bit but it is the one frame
+> with no sibling to cross-check. Firmware compiles clean against ESP32 core 3.3.7 at **94%
+> of program storage** — worth knowing before adding anything to this sketch.
 
 ---
 
@@ -335,7 +348,7 @@ Panel border-radius: `2px` (not `rounded-xl`). Font: `'JetBrains Mono', monospac
 ## ESP32 Firmware Notes
 
 - Active file: `iot/esp32/env_monitor_v2.ino`
-- `#define SD_ENABLED false` — set `true` only when SD module is physically connected
+- **No SD card / on-device buffer** — the offline log was removed. Every monitored link is on a UPS, so the device doesn't drop; durability is the backend's job (`backupService`). A reading taken while WiFi is down is logged to serial and dropped. The backend's `offlineData` handler still exists but is dormant — nothing emits it
 - `deviceSecret` must match `DEVICE_SECRET` in `backend/.env`
 - IR fires only on temperature **zone change**, not every loop tick
 - `enabledChannels[]` updated at runtime via `irConfig` socket event — no reflash needed to add/disable AC units

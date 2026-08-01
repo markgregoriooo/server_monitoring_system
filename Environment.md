@@ -24,7 +24,6 @@ with IR transmitters, so **every physical AC action happens on the ESP32**.
 | IR TX #1 | 25 | AC channel 1 |
 | IR TX #2 | 33 | AC channel 2 |
 | DS3231 RTC | SDA 21 / SCL 22 | Timestamp source (optional) |
-| SD card | SPI (CS 5) | Offline buffer (`SD_ENABLED` flag) |
 
 Firmware: `iot/esp32/env_monitor_v2.ino`. Reads every loop tick; logs/sends every
 `LOG_INTERVAL` (3 s).
@@ -134,10 +133,15 @@ ESP32 emits every 3 s when WiFi + socket are up. Backend `sensorHandler.js`:
    - **timestamp = server `new Date()`** (ms precision) — ESP32's own time is ignored for live data.
 4. **Broadcasts** `sensorData` to all *other* browsers (`socket.broadcast.volatile.emit`).
 
-### 4.2 Offline replay (`offlineData`)
-If WiFi drops and `SD_ENABLED=true`, the ESP32 buffers rows to `/log.csv`. On reconnect
-it flushes each row as `offlineData`. Backend `offlineDataHandler.js`:
-- Same InfluxDB fields **but uses the ESP32 RTC timestamp** (historical, not now).
+### 4.2 Offline replay (`offlineData`) — DORMANT
+⚠️ **Nothing emits this any more.** The ESP32's SD-card offline buffer was removed from the
+firmware: every monitored link (ESP32 mini-UPS, router UPS, backend UPS) rides through an
+outage, so the device does not disconnect, and the single on-site backup now lives on the
+backend (`backupService`, rotating NDJSON — see `backup-storage.md`).
+
+The backend side is still wired (`offlineDataHandler.js`, `socket.on("offlineData")`) and
+still works if anything ever sends it — it is dormant, not broken:
+- Same InfluxDB fields **but uses the sender's timestamp** (historical, not now).
 - **No broadcast** (it's backfill, not live) and **no throttle**.
 
 ### 4.3 History queries (`changeRange` → `sensorHistory`)
@@ -309,16 +313,38 @@ Auth: browsers send JWT in `handshake.auth.token`; ESP32 sends `DEVICE_SECRET` i
 3. Enabling/disabling an existing channel afterward needs **no reflash** — it flows via
    `irConfig`.
 
-### Capture real IR codes (replace the mock NEC data)
-All `IR_*` arrays in the firmware are **placeholder NEC**. Use the `IRrecvDumpV2` sketch with
-the Carrier remote to capture real raw timings, then replace:
-`IR_28C_AUTO`, `IR_26C_AUTO`, `IR_24C_AUTO`, `IR_22C_HIGH`, `IR_20C_HIGH`,
-`IR_POWER_ON`, `IR_POWER_OFF`.
+### Re-capture an IR code
+All seven `IR_*` arrays are already real Carrier captures (2026-07-31 / 2026-08-01) — this is
+the procedure if one ever needs replacing. Use `IRLearner.ino`, not `IRrecvDumpV2`.
+
+**Capture conditions matter more than anything else.** Both failed attempts at `IR_20C_HIGH`
+were killed by ambient light, not by the remote or the sketch: one came back 133 values with
+stray edges, the other 223 values of pure 60 Hz mains flicker off a lamp with no remote frame
+in it at all. So: room lights **off** (fluorescent and cheap LED are the usual culprits), away
+from sunlight and screens, remote 3–10 cm and pointed straight at the receiver. If IRLearner
+prints anything while you are *not* pressing a button, the environment is still too noisy —
+fix that first, because every capture will fail the same way.
+
+**Validate before pasting it in.** A good capture is **exactly 131 values** (leader pair + 64
+bit-pairs + stop mark), starts ~`9000, 4500`, and decodes to exactly 64 bits with marks around
+450–600 µs and two clearly separated space populations (~600 = zero, ~1750 = one). Cross-check
+it against the existing arrays: bits 0–9 and the all-zero bits 16–39 should match the other
+temperature frames, and bits 61–63 must be the exact complement of bits 53–55 — an invariant
+all seven satisfy. If you get 133 or 223 values, **recapture; do not trim**, because you
+cannot tell which entries are the intruders.
 
 ### Change a sensor threshold
-Edit the `#define`s in the firmware (`WARNING_PPM`, `DANGER_PPM`, `TEMP_*`, `HUM_*`) and the
-zone bounds in `getIRZone()`. Status strings are computed on-device, so no backend change
-is needed.
+**No reflash, and no code edit.** Both threshold families are runtime-configurable from the
+dashboard, and the firmware applies them live:
+- **Alarm thresholds** (LED / buzzer / reported status) — the admin **Alert Rules** page.
+  Saving pushes `envConfig` to the ESP32, which updates `WARNING_PPM`, `DANGER_PPM`, `TEMP_*`
+  and `HUM_*` — these are mutable globals now, not `#define`s. A metric with no rule keeps its
+  compiled default on the device.
+- **Auto-cooling zone boundaries** (when IR fires) — the **Auto-Cooling Thresholds** card on
+  the AirConditioner page, admin-edit. Saving pushes `acConfig`, which updates the bounds
+  `getIRZone()` reads. The per-zone target temps stay fixed: each is a captured raw IR code.
+
+These are deliberately separate — cooling should ramp *before* the alarm fires.
 
 ### Add a new sensor field to InfluxDB
 1. Firmware: add the field to the `sensorData` JSON.
@@ -337,12 +363,15 @@ Update both hardcoded endpoints **and** the firmware:
 
 - **Bucket name** — both read and write paths now derive the bucket from `INFLUX_BUCKET`
   (`.env`) via the exported `bucket` in `influx.js`; no longer hardcoded (§4.3).
-- **Mock IR data** — nothing physically controls a real Carrier AC until the raw codes are
-  replaced (§8).
+- **IR data is real, but unproven against the AC** — all seven arrays are genuine Carrier
+  captures (§8), so the mock-data caveat is gone. What remains is that no code here has ever
+  driven a physical unit: verify `IR_20C_HIGH` really is 20 °C / fan High, and give
+  `IR_POWER_OFF` a deliberate test (§8).
 - **On/off is the only manual control** — the mode/temp endpoints were removed (§5.3).
 - **Live timestamps are server-side** — InfluxDB live points use `new Date()`, so ESP32
   clock drift doesn't matter for live data; only offline replay uses the RTC time.
-- **SD buffering is off by default** — `#define SD_ENABLED false`; offline rows are dropped
-  unless the SD module is connected and the flag is set.
+- **There is no on-device buffer** — the SD-card offline log was removed from the firmware
+  (§4.2). A reading taken while WiFi is down is logged to serial and dropped; durability is
+  the backend's job now (`backupService`).
 - **DHT11 is low-resolution** (±1 °C / integer-ish humidity) — fine for zone logic, not for
   precise readings.
