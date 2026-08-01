@@ -3,6 +3,7 @@ import { offlineDataHandler }   from "../handlers/offlineDataHandler.js";
 import { sendSensorHistory }    from "../handlers/querySensorHistoryHandler.js";
 import airconService            from "../services/airconService.js";
 import alertRulesService        from "../services/alertRulesService.js";
+import esp32Monitor             from "../services/esp32Monitor.js";
 
 export const handleConnection = (io, socket) => {
   console.log("Client connected:", socket.id, socket.isDevice ? "[ESP32]" : "[browser]");
@@ -91,6 +92,10 @@ const registerEvents = (io, socket) => {
 
   socket.on("disconnect", () => {
     console.log("Client disconnected:", socket.id);
+    // The ESP32 dropping is immediate proof the room is unmonitored — flip it offline
+    // now rather than waiting out the staleness window. No-op while another device
+    // socket is still in the room (see esp32Monitor.markDisconnected).
+    if (socket.isDevice) esp32Monitor.markDisconnected(io, socket.id);
   });
 };
 

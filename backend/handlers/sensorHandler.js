@@ -3,6 +3,7 @@ import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
 import alertBandState from "../services/alertBandState.js";
+import esp32Monitor from "../services/esp32Monitor.js";
 
 const SEV_RANK = alertRulesService.SEV_RANK;
 
@@ -82,6 +83,10 @@ export async function sensorHandler(socket, data) {
     console.log("[SENSOR] Invalid payload:", data);
     return;
   }
+
+  // A valid reading is the ESP32's heartbeat — this is what keeps the sensor "online"
+  // and auto-resolves an open offline alert the instant it comes back.
+  esp32Monitor.markSeen();
 
   const timestamp = new Date();   // precision: ms (matches writeClient config)
 
