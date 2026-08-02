@@ -324,6 +324,19 @@ and alert activity. No migration needed.
 | `email_report` | info | Same, plus where it was sent |
 | `delete_report` | **warning** | Destructive and irreversible — the files go too |
 
+> **The actor is not the author.** A History row's actor is whoever performed *that*
+> action — for a delete, the admin. So `download`/`email`/`delete` carry the original
+> author in the description (`— created by <name>`), because for a delete the row it
+> came from no longer exists to look it up in:
+>
+> ```
+> Mark Gregorio | delete_report | Deleted report: UPS Power Report (ups) — created by Ralph Aguirre
+> ```
+>
+> `remove()`, `fileFor()` and `email()` each return the report for this reason.
+> `generate_report` omits it — there the actor *is* the author. The name falls back to
+> `user #<id>` if that account was since deleted.
+
 Reads (`GET /`, `/scope-options`) are **not** audited: they are noise, and History is
 for actions that changed or exported something. Auditing is best-effort by design
 (`auditService`), so a failed audit write can never break the action that triggered it.
