@@ -139,8 +139,7 @@ server-infrastructure-monitoring-system-webSystem/
 │   │   ├── auth.js                 ← authMiddleware, requireRole(...), JWT_SECRET
 │   │   ├── agentAuth.js            ← Bearer AGT-… token auth for agent POSTs
 │   │   └── upload.js               ← multer config
-│   ├── sockets/connectionHandler.js← all socket events, device vs browser segregation
-│   └── data/db.js                  ← in-memory mock: alerts, reports, env history (NOT persisted)
+│   └── sockets/connectionHandler.js← all socket events, device vs browser segregation
 │
 ├── frontend/
 │   └── src/
@@ -354,10 +353,13 @@ but are **not** all wired to live code yet — see [section 14](#14-known-limita
 Reads and writes always target the same `INFLUX_BUCKET`. Recommended: set a retention policy
 (e.g. 30–90 days) on the bucket — `server_metrics` is the only high-volume store.
 
-### In-memory mock (`data/db.js`)
+### In-memory mock (`data/db.js`) — **gone**
 
-`alerts`, `reports`, and environment `history`/`logs` are served from in-memory arrays that
-**reset on restart** — not persisted, despite real tables existing.
+There is no longer any mock store. `alerts` moved to the real `alerts` +
+`alert_notifications` tables, environment `history`/`logs` to InfluxDB
+(`environmentService`), and `reports` to the real `reports` table plus on-disk CSV/PDF
+(`reportService` — see `report-page.md`). `reports` was the last consumer, so
+`backend/data/` was deleted outright.
 
 ---
 

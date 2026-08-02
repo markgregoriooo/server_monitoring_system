@@ -31,6 +31,9 @@ Guide to the Reports feature: an admin/IT-staff user picks a **report type** and
                               │   2. build dataset live, per type:                │
                               │        environment → InfluxDB sensor_environment  │
                               │        server      → InfluxDB server_metrics      │
+                              │        network     → InfluxDB router_metrics +    │
+                              │                      network_traffic (+ MySQL)    │
+                              │        ups         → InfluxDB ups_metrics (+ MySQL)│
                               │        alerts      → MySQL alerts                 │
                               │        aircon      → MySQL aircon_logs            │
                               │   3. reportRenderer.js → CSV + PDF (pdfkit)       │
@@ -61,7 +64,8 @@ reports are produced occasionally.
    ```
 3. Open **Reports** in the sidebar (admin or IT staff).
 4. Click **Generate report**:
-   - pick a **type** (Environment / Server Metrics / Alert History / Aircon Activity),
+   - pick a **type** (Environment / Server Metrics / Network Traffic / UPS Power /
+     Alert History / Aircon Activity),
    - optional **title** (defaults to e.g. "Environment Report"),
    - pick a **period** — quick `Last 24h / 7 days / 30 days`, or **Custom** dates.
 5. Hit **Generate**. The new row appears at the top with status **generated**.
@@ -83,7 +87,7 @@ No migration is needed — the `reports` table already ships in the schema
 | `backend/services/reportService.js` | The feature core — persistence, the per-type data builders (InfluxDB/MySQL), file writing, lifecycle, download resolution, delete. |
 | `backend/services/reportRenderer.js` | Store-agnostic layout: turns a normalized `{ summary, table }` into a CSV string and a PDF `Buffer` (pdfkit). Knows nothing about where the data came from. |
 | `backend/reports/` | Generated files (`report-<id>.csv` / `.pdf`). Created at startup, **git-ignored**. |
-| `backend/data/db.js` | The mock `reports` array was **removed** here. |
+| ~~`backend/data/db.js`~~ | **Deleted.** `reports` was the last mock it backed, so the whole `backend/data/` folder went with this feature. |
 
 ### Frontend
 | File | Role |
@@ -101,7 +105,7 @@ No migration is needed — the `reports` table already ships in the schema
 | `report_id` | PK. |
 | `generated_by` | FK → `users.user_id` (who generated it). Joined to show the author name. |
 | `title` | Display title; defaults to `"<Type> Report"`. |
-| `type` | ENUM — we use `environment` / `server` / `alerts` / `aircon` (the schema also has `network` / `ups`, currently unused). |
+| `type` | ENUM — all six values are used: `environment` / `server` / `network` / `ups` / `alerts` / `aircon`. The ENUM already shipped with `network` + `ups`, so wiring those two needed **no migration**. |
 | `status` | `pending` → `generated`, or `failed` if the build threw. |
 | `file_path` | The **stem** `report-<id>` (no extension). The route appends `.csv` / `.pdf`. |
 | `period_start`, `period_end` | The reporting window. |
@@ -122,6 +126,8 @@ internal** (stable, collision-free). It is *not* what the user sees — see §7.
 |------|--------|---------|-------|
 | `environment` | InfluxDB `sensor_environment` — 3 daily-window queries (`mean` / `max` / `min`, `every: 1d`, `timeSrc: "_start"`) | days covered, avg temp, peak temp, peak gas | per day: avg/max/min temp, avg humidity, peak gas (max of the two MQ-2 sensors) |
 | `server` | InfluxDB `server_metrics` — grouped `mean` + `max` per `device_id`/`_field`, names joined from MySQL `devices` (`device_type='server'`) | servers reporting, busiest CPU | per server: avg/max CPU, mem, disk % |
+| `network` | InfluxDB `router_metrics` (grouped `mean`/`max`) + `network_traffic` (`increase()` → `last()` for counters, `max` for utilization, bool→float `mean` for link state); device facts + offline events from MySQL | devices reporting, total traffic, busiest port, link errors, offline events | **two tables** — per device: kind, avg/max CPU, avg mem, avg clients, RX/TX GB, offline count; per port: RX/TX GB, peak util, errors, link-up % |
+| `ups` | InfluxDB `ups_metrics` (grouped `mean`/`min`/`max`, plus bool→float `mean` for `on_battery`); device facts + events from MySQL `alerts` | units reporting, lowest battery, shortest runtime, peak load, on-battery + offline events | **two tables** — battery & load: avg/min charge, avg/min runtime, avg/max load, on-battery %; voltage & events: in/out/battery volts, max temp, event counts |
 | `alerts` | MySQL `alerts` (`created_at BETWEEN`) joined to `devices` | total + critical/warning/info counts | each alert: time, severity, device, title, value, status |
 | `aircon` | MySQL `aircon_logs` (`created_at BETWEEN`) joined to `devices` + `users` | total, manual vs auto | each action: time, unit, action, trigger, who, reason |
 
@@ -131,6 +137,30 @@ parameterized queries.
 
 Empty windows are handled: no data → empty table + zeroed/`—` summary (the report
 still generates successfully).
+
+### Three things the network/UPS builders deliberately get right
+
+1. **Byte and error counters are cumulative**, so a `mean` over them is meaningless.
+   The builder uses `increase()` (sum of non-negative deltas — a counter reset on
+   reboot reads as `0`, not as terabytes) then `last()` for the period total. A series
+   with only one sample yields no delta and therefore no row: one poll genuinely
+   cannot tell you a volume.
+2. **Uptime/availability does NOT come from InfluxDB.** `writeNetworkSample` is only
+   called for a device that answered, so the `reachable` field is *always* `true` in
+   Influx and a "reachability %" derived from it would read 100 % during an outage.
+   Offline counts come from MySQL `alerts` where `type = 'device_offline'` instead —
+   the structured record `deviceAlerts.checkReachability` already writes.
+3. **UPS time-on-battery is reported as a share of polls**, not minutes. There is no
+   honest "minutes on battery" without assuming a fixed poll interval, and
+   `SNMP_POLL_INTERVAL_MS` is configurable. The share-of-polls figure is correct at any
+   cadence; the `ups_on_battery` **event count** (from `alerts`) is the "how many times"
+   half of the picture.
+
+**MikroTik has no report type of its own** — `mikrotikPollerService` reuses
+`writeNetworkSample`, so it writes the same two measurements as an SNMP router and is
+covered by the `network` report, with a **Kind** column separating them. A device whose
+MySQL row was deleted still has history in Influx; those show as `#<id>` with kind `—`
+rather than being silently mislabelled.
 
 ---
 
@@ -176,13 +206,25 @@ conveys it).
 
 Both formats are produced from the same normalized payload by `reportRenderer.js`.
 
+A builder returns **either** a single `table: { columns, rows }` **or** several titled
+`tables: [{ title, columns, rows }]`. The renderer normalizes both, so the older
+single-table types are untouched while `network` and `ups` — which have a per-device
+roll-up *and* a per-port / per-metric breakdown — return two sections each.
+
 **CSV** — metadata header (Title / Type / Period / Generated), a `Summary` block, then
-the table. Properly escaped (quotes/commas/newlines). Opens in Excel/Sheets.
+the table(s). With more than one table each block is preceded by its title and a blank
+line; a single table has no title row, so it still opens cleanly in Excel/Sheets.
+Properly escaped (quotes/commas/newlines).
 
 **PDF** (pdfkit, A4) — branded header, the period + generated timestamp, the summary as
-label/value lines, then a striped table with a colored header row that **paginates**
-(re-draws the header on each new page) and truncates over-wide cells. Pure JS — no
-headless Chrome, which suits the on-prem deployment.
+label/value lines, then each table as a striped block with a colored header row that
+**paginates** (re-draws the header on each new page) and truncates over-wide cells. A
+section heading that would land at the very foot of a page breaks to the next one
+instead. Pure JS — no headless Chrome, which suits the on-prem deployment.
+
+> `drawTable` positions every cell absolutely, so it now explicitly leaves `doc.y`
+> below its last row. Without that a second table is drawn straight over the first —
+> invisible while only single-table reports existed.
 
 ---
 
@@ -217,7 +259,6 @@ the **Delete** action only for admin. (The old page checked a non-existent
   metrics) makes the POST take longer; the modal shows a spinner until done.
 
 ### Possible follow-ups
-- Wire the unused `network` / `ups` enum types once those data sources exist.
 - Scheduled/auto reports (cron) writing the same table.
 - Email the generated file via the existing Resend wrapper (`emailService.js`).
 - A daily purge of old report files mirroring the alerts retention job.

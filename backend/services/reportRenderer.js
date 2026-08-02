@@ -5,6 +5,23 @@ import PDFDocument from "pdfkit";
 // this module only knows how to lay it out. Shape:
 //   { title, type, periodStart, periodEnd, generatedAt,
 //     summary: [{ label, value }], table: { columns: [...], rows: [[...]] } }
+//
+// A report may instead carry `tables: [{ title, columns, rows }]` when one flat
+// table can't say it — the network report needs a per-device roll-up AND a
+// per-interface breakdown. `table` stays supported and renders as a single
+// "Details" section, so the older builders are untouched.
+
+// Normalize either shape into an array of titled sections.
+function sections(report) {
+  if (report.tables?.length) {
+    return report.tables.map((t, i) => ({
+      title: t.title || (i === 0 ? "Details" : `Details ${i + 1}`),
+      columns: t.columns ?? [],
+      rows: t.rows ?? [],
+    }));
+  }
+  return [{ title: "Details", columns: report.table?.columns ?? [], rows: report.table?.rows ?? [] }];
+}
 
 function fmtTs(d) {
   if (!d) return "";
@@ -36,9 +53,17 @@ export function toCSV(report) {
     lines.push("");
   }
 
-  if (report.table?.columns?.length) {
-    lines.push(csvRow(report.table.columns));
-    for (const r of report.table.rows) lines.push(csvRow(r));
+  const secs = sections(report).filter((s) => s.columns.length);
+  if (secs.length) {
+    secs.forEach((s, i) => {
+      if (i > 0) lines.push("");
+      // Only label the block when there's more than one — a single table reads
+      // cleaner in Excel without a stray title row above the header.
+      if (secs.length > 1) lines.push(csvRow([s.title]));
+      lines.push(csvRow(s.columns));
+      for (const r of s.rows) lines.push(csvRow(r));
+      if (!s.rows.length) lines.push(csvRow(["No data for the selected period."]));
+    });
   } else {
     lines.push(csvRow(["No data for the selected period."]));
   }
@@ -100,8 +125,11 @@ function drawTable(doc, columns, rows) {
     y += rowH;
   });
 
-  // outer border
-  doc.rect(left, doc.y, 0, 0); // no-op to keep state tidy
+  // Leave the cursor just below the last row. drawTable positions every cell
+  // absolutely, so pdfkit's own doc.y is meaningless by now — a second table (or
+  // anything after it) would otherwise be drawn straight over this one.
+  doc.x = left;
+  doc.y = y;
   doc.lineWidth(0.5).strokeColor(BORDER);
 }
 
@@ -136,15 +164,20 @@ export function toPDFBuffer(report) {
       doc.moveDown(0.8);
     }
 
-    // ── Table ──
-    doc.fillColor(INK).font("Helvetica-Bold").fontSize(11).text("Details");
-    doc.moveDown(0.3);
-    if (report.table?.columns?.length && report.table.rows.length) {
-      drawTable(doc, report.table.columns, report.table.rows);
-    } else {
-      doc.font("Helvetica").fontSize(9).fillColor(MUTED)
-        .text("No data for the selected period.");
-    }
+    // ── Tables ──
+    sections(report).forEach((s, i) => {
+      if (i > 0) doc.moveDown(1);
+      // A heading stranded at the foot of a page is worse than an early break.
+      if (doc.y > doc.page.height - doc.page.margins.bottom - 60) doc.addPage();
+      doc.fillColor(INK).font("Helvetica-Bold").fontSize(11).text(s.title);
+      doc.moveDown(0.3);
+      if (s.columns.length && s.rows.length) {
+        drawTable(doc, s.columns, s.rows);
+      } else {
+        doc.font("Helvetica").fontSize(9).fillColor(MUTED)
+          .text("No data for the selected period.");
+      }
+    });
 
     doc.end();
   });
