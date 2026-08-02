@@ -25,15 +25,20 @@ const SEV_RANK = { normal: 0, info: 1, warning: 2, critical: 3 };
 // cache all active rules and reload only when they change (startup + any mutation).
 let _cache = null; // Map<"<deviceId|g>:<metric>", rule[]> | null when not yet loaded
 
+// Cache key. `interface_name` is only ever set for per-port metrics (link_util /
+// link_errors); everything else keys with an empty interface segment.
+const cacheKey = (deviceId, ifaceName, metricName) =>
+  `${deviceId ?? "g"}|${ifaceName ?? ""}:${metricName}`;
+
 async function reload() {
   const [rows] = await db.query(
-    `SELECT alert_rule_id, device_id, metric_name, threshold_value, comparison, severity
+    `SELECT alert_rule_id, device_id, interface_name, metric_name, threshold_value, comparison, severity
        FROM alert_rules
       WHERE is_active = 1`,
   );
   const m = new Map();
   for (const r of rows) {
-    const key = `${r.device_id ?? "g"}:${r.metric_name}`;
+    const key = cacheKey(r.device_id, r.interface_name, r.metric_name);
     if (!m.has(key)) m.set(key, []);
     m.get(key).push(r);
   }
@@ -45,15 +50,26 @@ async function ensureLoaded() {
   if (!_cache) await reload();
 }
 
-// Active rules that apply to (deviceId, metricName): the per-device override if one
-// exists, otherwise the global (device_id NULL) rules. Empty array = no rule = silent.
-async function getEffectiveRules(deviceId, metricName) {
+// Active rules that apply to (deviceId, metricName [, interfaceName]), most specific
+// first. The FIRST level that matches wins outright — levels are not merged, which
+// matches how the per-device vs global fallback already behaved.
+//
+//   1. this device + this port   ← only for per-port metrics (link_util / link_errors)
+//   2. this device, any port
+//   3. global default
+//
+// Empty array = no rule = silent (rules-only model).
+async function getEffectiveRules(deviceId, metricName, interfaceName = null) {
   await ensureLoaded();
+  if (deviceId != null && interfaceName) {
+    const ifKey = cacheKey(deviceId, interfaceName, metricName);
+    if (_cache.has(ifKey)) return _cache.get(ifKey);
+  }
   if (deviceId != null) {
-    const dKey = `${deviceId}:${metricName}`;
+    const dKey = cacheKey(deviceId, null, metricName);
     if (_cache.has(dKey)) return _cache.get(dKey);
   }
-  return _cache.get(`g:${metricName}`) ?? [];
+  return _cache.get(cacheKey(null, null, metricName)) ?? [];
 }
 
 // ─── Evaluation ─────────────────────────────────────────────────────────────────
@@ -115,7 +131,7 @@ function nextBand(rules, value, prevBand = "normal") {
 async function getRoomThresholds() {
   await ensureLoaded();
   const pick = (metric, severity) => {
-    const r = (_cache.get(`g:${metric}`) ?? []).find((x) => x.severity === severity);
+    const r = (_cache.get(cacheKey(null, null, metric)) ?? []).find((x) => x.severity === severity);
     return r ? Number(r.threshold_value) : null;
   };
   const out = {
@@ -138,7 +154,9 @@ function err(status, message) {
 }
 
 // Validate + normalize an incoming rule. `partial` allows missing fields (PUT patch).
-function clean(data, { partial = false } = {}) {
+// `existing` is the current row on a PATCH, so cross-field validation can reason about
+// the MERGED result rather than only what the caller happened to send.
+function clean(data, { partial = false, existing = null } = {}) {
   const out = {};
 
   if (data.deviceId !== undefined) {
@@ -148,6 +166,17 @@ function clean(data, { partial = false } = {}) {
       throw err(400, "deviceId must be an integer or null (null = global default).");
   } else if (!partial) {
     out.device_id = null; // omitted on create = global default
+  }
+
+  // Optional per-port scope. Only meaningful alongside a device — a global rule can't
+  // name a port, because ports only exist in the context of one router.
+  if (data.interfaceName !== undefined) {
+    const raw = data.interfaceName;
+    const name = raw === null || raw === "" ? null : String(raw).trim();
+    if (name && name.length > 50) throw err(400, "interfaceName must be 50 characters or fewer.");
+    out.interface_name = name || null;
+  } else if (!partial) {
+    out.interface_name = null;
   }
 
   if (data.metricName !== undefined) {
@@ -185,6 +214,14 @@ function clean(data, { partial = false } = {}) {
   if (data.isActive !== undefined) out.is_active = data.isActive ? 1 : 0;
   else if (!partial) out.is_active = 1;
 
+  // A port-scoped rule is meaningless without the device that owns the port. Checked
+  // against the merged view so a PATCH that sets only one of the two still validates.
+  const finalDevice = out.device_id !== undefined ? out.device_id : existing?.device_id ?? null;
+  const finalIface = out.interface_name !== undefined ? out.interface_name : existing?.interface_name ?? null;
+  if (finalIface && finalDevice == null) {
+    throw err(400, "A port-scoped rule needs a device — pick the router the port belongs to.");
+  }
+
   return out;
 }
 
@@ -194,6 +231,7 @@ function toClient(r) {
     id: r.alert_rule_id,
     deviceId: r.device_id,
     deviceName: r.device_name ?? null,
+    interfaceName: r.interface_name ?? null, // null = whole device
     metricName: r.metric_name,
     thresholdValue: Number(r.threshold_value),
     comparison: r.comparison,
@@ -235,9 +273,9 @@ async function create(data, userId = null) {
   let ins;
   try {
     [ins] = await db.query(
-      `INSERT INTO alert_rules (device_id, metric_name, threshold_value, comparison, severity, is_active, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [f.device_id, f.metric_name, f.threshold_value, f.comparison, f.severity, f.is_active, userId],
+      `INSERT INTO alert_rules (device_id, interface_name, metric_name, threshold_value, comparison, severity, is_active, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [f.device_id, f.interface_name ?? null, f.metric_name, f.threshold_value, f.comparison, f.severity, f.is_active, userId],
     );
   } catch (e) {
     if (e.code === "ER_NO_REFERENCED_ROW_2" || e.code === "ER_NO_REFERENCED_ROW")
@@ -249,7 +287,15 @@ async function create(data, userId = null) {
 }
 
 async function update(id, data, userId = null) {
-  const f = clean(data, { partial: true });
+  // Needed so clean() can validate the MERGED row (e.g. naming a port on a rule whose
+  // device_id isn't in this payload). Also gives a proper 404 before any write.
+  const [[current]] = await db.query(
+    `SELECT device_id, interface_name FROM alert_rules WHERE alert_rule_id = ?`,
+    [Number(id)],
+  );
+  if (!current) throw err(404, "Alert rule not found.");
+
+  const f = clean(data, { partial: true, existing: current });
   if (Object.keys(f).length === 0) throw err(400, "No valid fields to update.");
   // Stamp the acting admin + bump updated_at on every edit (incl. activate/pause toggle).
   const sets = Object.keys(f).map((k) => `${k} = ?`).join(", ");

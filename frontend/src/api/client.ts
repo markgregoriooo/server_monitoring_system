@@ -56,7 +56,22 @@ function notifySessionExpired() {
 }
 
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // Sliding session: if the backend renewed our token (auth middleware sets this
+    // header once the current token is past its half-life), swap it into storage
+    // transparently and notify AuthContext to re-arm its expiry timer — so an active
+    // user is never hard-logged-out at the original 1h mark.
+    const renewed = response.headers?.["x-renewed-token"];
+    if (renewed && typeof renewed === "string") {
+      try {
+        sessionStorage.setItem("cspc_token", JSON.stringify(renewed));
+        window.dispatchEvent(new Event("cspc:token-renewed"));
+      } catch {
+        /* storage unavailable — ignore */
+      }
+    }
+    return response;
+  },
   (error) => {
     const status: number | undefined = error?.response?.status;
     const serverError: string | undefined = error?.response?.data?.error;
