@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/api";
+import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 
 // Reports are real now: MySQL `reports` + an on-disk CSV/PDF per report, built on
@@ -14,6 +15,8 @@ interface Report {
   status: string; // pending | generated | failed
   generatedBy: number | null;
   generatedByName: string | null;
+  deviceId: number | null; // null = campus-wide
+  deviceName: string | null;
   periodStart: string | null;
   periodEnd: string | null;
   createdAt: string | null;
@@ -25,6 +28,16 @@ interface TypeMeta {
   label: string;
   desc: string;
   color: string;
+}
+
+// A device a report can be scoped to. The backend decides which types are scopeable
+// (GET /reports/scope-options) from the same map it validates against, so this page
+// never hardcodes "network means routers".
+interface ScopeDevice {
+  id: number;
+  name: string;
+  type: string;
+  location: string | null;
 }
 
 const TYPES: TypeMeta[] = [
@@ -131,6 +144,8 @@ export default function Reports() {
   const [modalOpen, setModalOpen] = useState(false);
   const [genType, setGenType] = useState("environment");
   const [genTitle, setGenTitle] = useState("");
+  const [genDevice, setGenDevice] = useState(""); // "" = all devices
+  const [scopeDevices, setScopeDevices] = useState<ScopeDevice[]>([]);
   const [rangeMode, setRangeMode] = useState("7d");
   const [customStart, setCustomStart] = useState(daysAgoStr(7));
   const [customEnd, setCustomEnd] = useState(todayStr());
@@ -156,6 +171,27 @@ export default function Reports() {
     load();
   }, []);
 
+  // Live: a background build finished (or failed) → swap that row in place. Reports
+  // are generated asynchronously, so the row first appears as `pending` and this is
+  // what flips it. Scoped to the user who asked for it (server emits to user:<id>).
+  useEffect(() => {
+    const onUpdated = (r: Report) => {
+      setReports((prev) => {
+        const i = prev.findIndex((x) => x.id === r.id);
+        if (i === -1) return [r, ...prev]; // generated in another tab
+        const next = [...prev];
+        next[i] = r;
+        return next;
+      });
+      if (r.status === "failed") showToast(`"${r.title}" failed to generate.`, false);
+      else if (r.status === "generated") showToast(`"${r.title}" is ready.`);
+    };
+    socket.on("reportUpdated", onUpdated);
+    return () => {
+      socket.off("reportUpdated", onUpdated);
+    };
+  }, []);
+
   // Escape closes the modal
   useEffect(() => {
     if (!modalOpen) return;
@@ -164,9 +200,25 @@ export default function Reports() {
     return () => window.removeEventListener("keydown", onKey);
   }, [modalOpen]);
 
+  // Which devices the chosen type can be scoped to. Refetched on every type change —
+  // switching from Network to UPS must not leave a router selected.
+  useEffect(() => {
+    if (!modalOpen) return;
+    let cancelled = false;
+    setGenDevice("");
+    api.getReportScopeOptions(genType).then((res) => {
+      if (cancelled) return;
+      setScopeDevices(res.success && res.data ? (res.data.devices ?? []) : []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [genType, modalOpen]);
+
   const openModal = () => {
     setGenType("environment");
     setGenTitle("");
+    setGenDevice("");
     setRangeMode("7d");
     setCustomStart(daysAgoStr(7));
     setCustomEnd(todayStr());
@@ -202,12 +254,16 @@ export default function Reports() {
       periodStart,
       periodEnd,
       ...(title ? { title } : {}),
+      ...(genDevice ? { deviceId: Number(genDevice) } : {}),
     });
     setGenerating(false);
     if (res.success && res.data?.report) {
+      // 202: the row comes back `pending` and the backend builds it in the
+      // background. It lands in the table straight away and flips to generated (or
+      // failed) when `reportUpdated` arrives — see the socket effect above.
       setReports((p) => [res.data.report as Report, ...p]);
       setModalOpen(false);
-      showToast("Report generated.");
+      showToast("Generating report…");
     } else {
       setFormError(res.error || "Could not generate the report.");
     }
@@ -219,6 +275,15 @@ export default function Reports() {
     const res = await api.downloadReport(r.id, format, downloadName(r, format));
     setBusy((b) => ({ ...b, [key]: false }));
     if (!res.success) showToast(res.error || "Download failed.", false);
+  };
+
+  const emailReport = async (r: Report) => {
+    const key = `mail-${r.id}`;
+    setBusy((b) => ({ ...b, [key]: true }));
+    const res = await api.emailReport(r.id);
+    setBusy((b) => ({ ...b, [key]: false }));
+    if (res.success) showToast(`Sent to ${res.data?.sentTo ?? "your inbox"}.`);
+    else showToast(res.error || "Could not send the email.", false);
   };
 
   const remove = async (id: number) => {
@@ -384,6 +449,14 @@ export default function Reports() {
                         <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[9px] tracking-wider uppercase font-semibold" style={{ color: meta.color, background: `${meta.color}1f` }}>
                           {meta.label}
                         </span>
+                        {/* Scope. A device deleted after the fact leaves deviceId set
+                            but deviceName null (FK ON DELETE SET NULL clears the id) —
+                            either way, absent means campus-wide. */}
+                        {r.deviceName && (
+                          <span className="block text-[9.5px] mt-1 truncate max-w-[150px]" style={{ color: gf.textDim }}>
+                            {r.deviceName}
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: gf.textMuted }}>
                         {fmtPeriod(r)}
@@ -412,6 +485,21 @@ export default function Reports() {
                             <>
                               <DownloadBtn label="CSV" disabled={!ready || !!busy[`${r.id}-csv`]} onClick={() => download(r, "csv")} />
                               <DownloadBtn label="PDF" disabled={!ready || !!busy[`${r.id}-pdf`]} onClick={() => download(r, "pdf")} />
+                              {/* Mails the PDF to the signed-in user. Disabled until
+                                  the background build has produced a file. */}
+                              <button
+                                onClick={() => emailReport(r)}
+                                disabled={!ready || !!busy[`mail-${r.id}`]}
+                                className="grid place-items-center w-7 h-7 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                style={{ color: gf.textMuted }}
+                                title="Email this report to me (PDF)"
+                                onMouseEnter={(e) => { if (ready) { e.currentTarget.style.background = gf.accentDim; e.currentTarget.style.color = gf.accent; } }}
+                                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = gf.textMuted; }}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M3 6.5h18v11H3zM3 7l9 6 9-6" />
+                                </svg>
+                              </button>
                               {canDelete && (
                                 <button
                                   onClick={() => setConfirmId(r.id)}
@@ -482,12 +570,38 @@ export default function Reports() {
                 })}
               </div>
 
+              {/* Device scope — only rendered for types the backend says are
+                  scopeable. Environment returns no options (one server room), so the
+                  control disappears rather than offering a meaningless choice. */}
+              {scopeDevices.length > 0 && (
+                <div className="mb-3">
+                  <Field label="Device (optional)">
+                    <select
+                      value={genDevice}
+                      onChange={(e) => setGenDevice(e.target.value)}
+                      className={selectCls}
+                      style={{ ...inputStyle, width: "100%" }}
+                    >
+                      <option value="">All devices</option>
+                      {scopeDevices.map((d) => (
+                        <option key={d.id} value={String(d.id)}>
+                          {d.name}
+                          {d.location ? ` — ${d.location}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+              )}
+
               {/* Title */}
               <Field label="Title (optional)">
                 <input
                   value={genTitle}
                   onChange={(e) => setGenTitle(e.target.value)}
-                  placeholder={`${typeMeta(genType).label} Report`}
+                  placeholder={`${typeMeta(genType).label} Report${
+                    genDevice ? ` — ${scopeDevices.find((d) => String(d.id) === genDevice)?.name ?? ""}` : ""
+                  }`}
                   className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none"
                   style={inputStyle}
                 />

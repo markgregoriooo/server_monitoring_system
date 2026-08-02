@@ -3,6 +3,7 @@ import path from "path";
 import db from "../config/mysql.js";
 import { queryClient, bucket } from "../config/influx.js";
 import { toCSV, toPDFBuffer } from "./reportRenderer.js";
+import emailService from "./emailService.js";
 
 // Real reports: persisted in MySQL `reports`, with a CSV + PDF written to disk per
 // report (file_path = stem, the route appends .csv/.pdf). Data is built on generate
@@ -16,6 +17,13 @@ import { toCSV, toPDFBuffer } from "./reportRenderer.js";
 const REPORTS_DIR = path.resolve(process.cwd(), "reports");
 fs.mkdirSync(REPORTS_DIR, { recursive: true });
 
+// Injected once at startup (init) so build() can push `reportUpdated` when an async
+// build finishes. Same pattern as notificationService / alertsService.
+let _io = null;
+function init(io) {
+  _io = io;
+}
+
 export const REPORT_TYPES = ["environment", "server", "network", "ups", "alerts", "aircon"];
 const TYPE_LABEL = {
   environment: "Environment",
@@ -25,6 +33,35 @@ const TYPE_LABEL = {
   alerts: "Alert History",
   aircon: "Aircon Activity",
 };
+
+// Which device_type a report of each kind can be scoped to. `environment` is absent
+// on purpose: it describes the server room itself (one sensor cluster), so "which
+// device" is not a meaningful question — scoping it is rejected rather than ignored.
+export const SCOPE_TYPES = {
+  server: ["server"],
+  network: ["router", "mikrotik"],
+  ups: ["ups"],
+  aircon: ["aircon"],
+  alerts: ["server", "router", "mikrotik", "ups", "aircon", "esp32"],
+};
+
+function badRequest(msg) {
+  const err = new Error(msg);
+  err.status = 400;
+  return err;
+}
+
+// The ONLY user-supplied value that reaches a Flux query string. Everything else in
+// these queries is a literal, which is what keeps the whitelist promise in
+// report-page.md §5 true. Validated as a positive integer, so it cannot carry Flux
+// syntax; create() also validates at the boundary and stores it in an INT column, so
+// this is the second of two gates.
+function fluxDeviceFilter(deviceId) {
+  if (deviceId == null) return "";
+  const id = Number(deviceId);
+  if (!Number.isInteger(id) || id <= 0) throw badRequest("Invalid device id.");
+  return `|> filter(fn: (r) => r.device_id == "${id}")`;
+}
 
 // ─── Influx helper ──────────────────────────────────────────────────────────
 // Whitelisted Flux only (no user strings interpolated) → no injection surface.
@@ -107,12 +144,14 @@ async function buildEnvironment(start, stop) {
   };
 }
 
-async function buildServer(start, stop) {
+async function buildServer(start, stop, deviceId) {
   const fields = `r._field == "cpu_percent" or r._field == "mem_percent" or r._field == "disk_percent"`;
+  const scope = fluxDeviceFilter(deviceId);
   const q = (fn) => `
     from(bucket: "${bucket}")
       |> range(start: ${start.toISOString()}, stop: ${stop.toISOString()})
       |> filter(fn: (r) => r._measurement == "server_metrics")
+      ${scope}
       |> filter(fn: (r) => ${fields})
       |> group(columns: ["device_id", "_field"])
       |> ${fn}()`;
@@ -170,15 +209,17 @@ async function buildServer(start, stop) {
 // writeNetworkSample — so one builder covers every network device. The MySQL
 // `device_type` is what separates a stock SNMP router from the MikroTik, and it
 // rides along as a column rather than splitting the report in two.
-async function buildNetwork(start, stop) {
+async function buildNetwork(start, stop, deviceId) {
   const S = start.toISOString();
   const E = stop.toISOString();
+  const scope = fluxDeviceFilter(deviceId);
 
   // Per-device gauges (same group()+aggregate shape as buildServer).
   const gauges = (fn) => `
     from(bucket: "${bucket}")
       |> range(start: ${S}, stop: ${E})
       |> filter(fn: (r) => r._measurement == "router_metrics")
+      ${scope}
       |> filter(fn: (r) => r._field == "cpu_percent" or r._field == "mem_percent" or r._field == "connected_clients")
       |> group(columns: ["device_id", "_field"])
       |> ${fn}()`;
@@ -192,6 +233,7 @@ async function buildNetwork(start, stop) {
     from(bucket: "${bucket}")
       |> range(start: ${S}, stop: ${E})
       |> filter(fn: (r) => r._measurement == "network_traffic")
+      ${scope}
       |> filter(fn: (r) => r._field == "rx_bytes" or r._field == "tx_bytes" or r._field == "rx_errors" or r._field == "tx_errors")
       |> increase()
       |> last()`;
@@ -200,6 +242,7 @@ async function buildNetwork(start, stop) {
     from(bucket: "${bucket}")
       |> range(start: ${S}, stop: ${E})
       |> filter(fn: (r) => r._measurement == "network_traffic")
+      ${scope}
       |> filter(fn: (r) => r._field == "utilization_pct")
       |> max()`;
 
@@ -209,6 +252,7 @@ async function buildNetwork(start, stop) {
     from(bucket: "${bucket}")
       |> range(start: ${S}, stop: ${E})
       |> filter(fn: (r) => r._measurement == "network_traffic")
+      ${scope}
       |> filter(fn: (r) => r._field == "link_up")
       |> map(fn: (r) => ({ r with _value: if r._value then 1.0 else 0.0 }))
       |> mean()`;
@@ -221,10 +265,14 @@ async function buildNetwork(start, stop) {
     fluxRows(linkUp),
   ]);
 
-  // Device facts + offline events from MySQL.
+  // Device facts + offline events from MySQL. `scoped` narrows both to one device
+  // when the report is device-scoped (bound param, not interpolated).
+  const scoped = deviceId != null;
   const [devices] = await db.query(
     `SELECT device_id, device_name, device_type, location
-       FROM devices WHERE device_type IN ('router', 'mikrotik')`,
+       FROM devices
+      WHERE device_type IN ('router', 'mikrotik')${scoped ? " AND device_id = ?" : ""}`,
+    scoped ? [deviceId] : [],
   );
   const [offline] = await db.query(
     `SELECT a.device_id, COUNT(*) AS n
@@ -233,8 +281,9 @@ async function buildNetwork(start, stop) {
       WHERE a.type = 'device_offline'
         AND d.device_type IN ('router', 'mikrotik')
         AND a.created_at BETWEEN ? AND ?
+        ${scoped ? "AND a.device_id = ?" : ""}
       GROUP BY a.device_id`,
-    [start, stop],
+    scoped ? [start, stop, deviceId] : [start, stop],
   );
   const meta = new Map(devices.map((d) => [String(d.device_id), d]));
   const offlineOf = new Map(offline.map((r) => [String(r.device_id), Number(r.n)]));
@@ -330,14 +379,16 @@ async function buildNetwork(start, stop) {
 }
 
 // ─── UPS power ───────────────────────────────────────────────────────────────
-async function buildUps(start, stop) {
+async function buildUps(start, stop, deviceId) {
   const S = start.toISOString();
   const E = stop.toISOString();
+  const scope = fluxDeviceFilter(deviceId);
 
   const gauges = (fn) => `
     from(bucket: "${bucket}")
       |> range(start: ${S}, stop: ${E})
       |> filter(fn: (r) => r._measurement == "ups_metrics")
+      ${scope}
       |> filter(fn: (r) =>
           r._field == "battery_charge_pct" or r._field == "runtime_remaining_min" or
           r._field == "load_pct" or r._field == "input_voltage" or
@@ -354,6 +405,7 @@ async function buildUps(start, stop) {
     from(bucket: "${bucket}")
       |> range(start: ${S}, stop: ${E})
       |> filter(fn: (r) => r._measurement == "ups_metrics")
+      ${scope}
       |> filter(fn: (r) => r._field == "on_battery")
       |> map(fn: (r) => ({ r with _value: if r._value then 1.0 else 0.0 }))
       |> group(columns: ["device_id"])
@@ -366,8 +418,11 @@ async function buildUps(start, stop) {
     fluxRows(onBattery),
   ]);
 
+  const scoped = deviceId != null;
   const [devices] = await db.query(
-    `SELECT device_id, device_name, location FROM devices WHERE device_type = 'ups'`,
+    `SELECT device_id, device_name, location FROM devices
+      WHERE device_type = 'ups'${scoped ? " AND device_id = ?" : ""}`,
+    scoped ? [deviceId] : [],
   );
   const [events] = await db.query(
     `SELECT a.device_id, a.type, COUNT(*) AS n
@@ -376,8 +431,9 @@ async function buildUps(start, stop) {
       WHERE a.type IN ('ups_on_battery', 'device_offline')
         AND d.device_type = 'ups'
         AND a.created_at BETWEEN ? AND ?
+        ${scoped ? "AND a.device_id = ?" : ""}
       GROUP BY a.device_id, a.type`,
-    [start, stop],
+    scoped ? [start, stop, deviceId] : [start, stop],
   );
   const meta = new Map(devices.map((d) => [String(d.device_id), d]));
   const evOf = new Map();
@@ -452,14 +508,16 @@ async function buildUps(start, stop) {
   };
 }
 
-async function buildAlerts(start, stop) {
+async function buildAlerts(start, stop, deviceId) {
+  const scoped = deviceId != null;
   const [rows] = await db.query(
     `SELECT a.created_at, a.type, a.title, a.severity, a.status, a.metric_value, d.device_name
        FROM alerts a
        LEFT JOIN devices d ON d.device_id = a.device_id
       WHERE a.created_at BETWEEN ? AND ?
+        ${scoped ? "AND a.device_id = ?" : ""}
       ORDER BY a.created_at DESC`,
-    [start, stop],
+    scoped ? [start, stop, deviceId] : [start, stop],
   );
   const count = (sev) => rows.filter((r) => r.severity === sev).length;
   return {
@@ -483,15 +541,17 @@ async function buildAlerts(start, stop) {
   };
 }
 
-async function buildAircon(start, stop) {
+async function buildAircon(start, stop, deviceId) {
+  const scoped = deviceId != null;
   const [rows] = await db.query(
     `SELECT l.created_at, l.action, l.reason, l.trigger_type, d.device_name, u.name AS user_name
        FROM aircon_logs l
        LEFT JOIN devices d ON d.device_id = l.device_id
        LEFT JOIN users u   ON u.user_id   = l.user_id
       WHERE l.created_at BETWEEN ? AND ?
+        ${scoped ? "AND l.device_id = ?" : ""}
       ORDER BY l.created_at DESC`,
-    [start, stop],
+    scoped ? [start, stop, deviceId] : [start, stop],
   );
   const manual = rows.filter((r) => r.trigger_type === "manual").length;
   return {
@@ -538,6 +598,10 @@ function toClient(r) {
     status: r.status,
     generatedBy: r.generated_by,
     generatedByName: r.generated_by_name ?? null,
+    // null = campus-wide. deviceName survives as NULL if the device is later
+    // deleted (FK is ON DELETE SET NULL) — the report itself is still valid history.
+    deviceId: r.device_id ?? null,
+    deviceName: r.device_name ?? null,
     periodStart: iso(r.period_start),
     periodEnd: iso(r.period_end),
     createdAt: iso(r.created_at),
@@ -546,10 +610,33 @@ function toClient(r) {
 }
 
 const BASE_SELECT = `
-  SELECT r.report_id, r.title, r.type, r.status, r.generated_by, r.file_path,
-         r.period_start, r.period_end, r.created_at, u.name AS generated_by_name
+  SELECT r.report_id, r.title, r.type, r.device_id, r.status, r.generated_by, r.file_path,
+         r.period_start, r.period_end, r.created_at,
+         u.name AS generated_by_name, d.device_name
     FROM reports r
-    LEFT JOIN users u ON u.user_id = r.generated_by`;
+    LEFT JOIN users u   ON u.user_id   = r.generated_by
+    LEFT JOIN devices d ON d.device_id = r.device_id`;
+
+// Devices a report of `type` can be scoped to. Driven by the SAME SCOPE_TYPES map
+// that validates a submitted scope in create(), so the dropdown and the validator
+// cannot drift apart. Empty array = this type is campus-wide (environment).
+async function scopeOptions(type) {
+  const allowed = SCOPE_TYPES[type];
+  if (!allowed?.length) return [];
+  const [rows] = await db.query(
+    `SELECT device_id, device_name, device_type, location
+       FROM devices
+      WHERE device_type IN (${allowed.map(() => "?").join(", ")})
+      ORDER BY device_type, device_name`,
+    allowed,
+  );
+  return rows.map((d) => ({
+    id: d.device_id,
+    name: d.device_name,
+    type: d.device_type,
+    location: d.location ?? null,
+  }));
+}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 async function list({ type, limit = 100 } = {}) {
@@ -573,36 +660,73 @@ async function getRaw(id) {
   return row ?? null;
 }
 
-async function generate({ userId, type, title, periodStart, periodEnd }) {
-  if (!REPORT_TYPES.includes(type)) {
-    const err = new Error("Invalid report type.");
-    err.status = 400;
-    throw err;
-  }
+// Generation is a two-step so the HTTP request doesn't have to wait for it: create()
+// records the row as `pending` and returns immediately, build() does the slow work and
+// flips the status. `reports.status` was always pending→generated|failed; before this
+// split nothing could ever observe the pending state.
+//
+// The row IS the progress record, so a crash mid-build leaves a visible `pending` row
+// rather than a silent gap.
+
+async function create({ userId, type, title, periodStart, periodEnd, deviceId }) {
+  if (!REPORT_TYPES.includes(type)) throw badRequest("Invalid report type.");
 
   const end = periodEnd ? new Date(periodEnd) : new Date();
   const start = periodStart ? new Date(periodStart) : new Date(end.getTime() - 7 * 24 * 3600 * 1000);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
-    const err = new Error("Invalid period: start must be before end.");
-    err.status = 400;
-    throw err;
+    throw badRequest("Invalid period: start must be before end.");
   }
 
-  const finalTitle = (title && title.trim()) || `${TYPE_LABEL[type]} Report`;
+  // Device scope: validated HERE, at the boundary, so everything downstream reads an
+  // integer straight out of an INT column. A scope that doesn't match the report type
+  // is rejected rather than silently dropped — "the MikroTik's environment report"
+  // is a mistake worth surfacing, not quietly widening to the whole server room.
+  let scopeId = null;
+  let scopeName = null;
+  if (deviceId != null && deviceId !== "") {
+    const id = Number(deviceId);
+    if (!Number.isInteger(id) || id <= 0) throw badRequest("Invalid device id.");
+    const allowed = SCOPE_TYPES[type];
+    if (!allowed) throw badRequest(`A ${TYPE_LABEL[type]} report covers the whole server room and cannot be scoped to one device.`);
+    const [[dev]] = await db.query(
+      "SELECT device_id, device_name, device_type FROM devices WHERE device_id = ? LIMIT 1",
+      [id],
+    );
+    if (!dev) throw badRequest("Device not found.");
+    if (!allowed.includes(dev.device_type)) {
+      throw badRequest(`"${dev.device_name}" is a ${dev.device_type}, which a ${TYPE_LABEL[type]} report does not cover.`);
+    }
+    scopeId = dev.device_id;
+    scopeName = dev.device_name;
+  }
 
-  // Insert as pending first so a slow/failed build is still recorded.
+  // Default title carries the scope, so a list of reports stays readable.
+  const finalTitle =
+    (title && title.trim()) ||
+    `${TYPE_LABEL[type]} Report${scopeName ? ` — ${scopeName}` : ""}`;
+
   const [ins] = await db.query(
-    `INSERT INTO reports (generated_by, title, type, status, period_start, period_end)
-     VALUES (?, ?, ?, 'pending', ?, ?)`,
-    [userId, finalTitle.slice(0, 100), type, start, end],
+    `INSERT INTO reports (generated_by, title, type, device_id, status, period_start, period_end)
+     VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+    [userId, finalTitle.slice(0, 100), type, scopeId, start, end],
   );
-  const id = ins.insertId;
+  return toClient(await getRaw(ins.insertId));
+}
+
+// Build the dataset, write both files, flip the status. NEVER THROWS — it is called
+// fire-and-forget from the route, where a rejection would be unhandled. Failure is
+// reported the same way success is: the row status plus a `reportUpdated` push.
+async function build(id) {
+  const row = await getRaw(id);
+  if (!row) return null;
 
   try {
-    const payload = await BUILDERS[type](start, end);
+    const start = new Date(row.period_start);
+    const end = new Date(row.period_end);
+    const payload = await BUILDERS[row.type](start, end, row.device_id ?? null);
     const report = {
-      title: finalTitle,
-      type: TYPE_LABEL[type],
+      title: row.title,
+      type: TYPE_LABEL[row.type] + (row.device_name ? ` — ${row.device_name}` : ""),
       periodStart: start,
       periodEnd: end,
       generatedAt: new Date(),
@@ -622,14 +746,29 @@ async function generate({ userId, type, title, periodStart, periodEnd }) {
       [stem, id],
     );
   } catch (err) {
-    console.error("[REPORTS] generate failed:", err.message);
-    await db.query("UPDATE reports SET status = 'failed' WHERE report_id = ?", [id]);
-    const e = new Error("Report generation failed while gathering data.");
-    e.status = 500;
-    throw e;
+    console.error("[REPORTS] build failed:", err.message);
+    try {
+      await db.query("UPDATE reports SET status = 'failed' WHERE report_id = ?", [id]);
+    } catch (dbErr) {
+      // The DB is the only channel for "this failed" — if it's down too, log and
+      // leave the row pending rather than crash the process.
+      console.error("[REPORTS] could not mark failed:", dbErr.message);
+    }
   }
 
-  return toClient(await getRaw(id));
+  const final = toClient(await getRaw(id));
+  // Push to every tab of the user who asked for it (same room as the bell feed).
+  if (final && row.generated_by) {
+    _io?.to(`user:${row.generated_by}`).emit("reportUpdated", final);
+  }
+  return final;
+}
+
+// Create + build in one call. The route uses create/build separately so it can
+// answer 202 immediately; this is for callers that genuinely want to wait.
+async function generate(opts) {
+  const created = await create(opts);
+  return (await build(created.id)) ?? created;
 }
 
 // Resolve the on-disk file for a download. Returns { absPath, downloadName } or null.
@@ -670,4 +809,77 @@ async function remove(id) {
   return true;
 }
 
-export default { list, generate, fileFor, remove, REPORT_TYPES };
+// Email an already-generated report as a PDF attachment. Deliberately a separate
+// step from generate: re-sending an existing report must not rebuild it (the numbers
+// in a saved report are frozen, and rebuilding would silently change them).
+//
+// Recipient defaults to the user who asked for it, resolved from the row — so this
+// can't be turned into a way to mail arbitrary addresses.
+async function email(id, { toUserId } = {}) {
+  const row = await getRaw(id);
+  if (!row) throw badRequest("Report not found.");
+  if (row.status !== "generated" || !row.file_path) {
+    throw badRequest("Report is not ready to send yet.");
+  }
+  if (!emailService.isEnabled()) {
+    const err = new Error("Email is not configured on this server (RESEND_API_KEY).");
+    err.status = 503;
+    throw err;
+  }
+
+  const [[user]] = await db.query("SELECT email, name FROM users WHERE user_id = ? LIMIT 1", [
+    toUserId ?? row.generated_by,
+  ]);
+  if (!user?.email) throw badRequest("No email address on file for that user.");
+
+  const file = await fileFor(id, "pdf");
+  if (!file) throw badRequest("Report PDF is missing — regenerate it.");
+
+  const ok = await emailService.sendReportEmail(
+    user.email,
+    {
+      title: row.title,
+      typeLabel: TYPE_LABEL[row.type] ?? row.type,
+      periodStart: row.period_start,
+      periodEnd: row.period_end,
+      deviceName: row.device_name ?? null,
+      generatedByName: row.generated_by_name ?? null,
+      filename: file.downloadName,
+    },
+    fs.readFileSync(file.absPath),
+  );
+  if (!ok) {
+    const err = new Error("The email provider rejected the message.");
+    err.status = 502;
+    throw err;
+  }
+  return { sentTo: user.email };
+}
+
+// Retention: drop reports older than `days` — the MySQL row AND both files. Goes
+// through remove() so the path-traversal guard and unlink stay one code path.
+//
+// Deleting the row (rather than only the file) is deliberate: a row whose file is
+// gone renders as a download that 404s, which is worse than no row at all. The
+// default is longer than the alerts one (NOTIFY_RETENTION_DAYS, 30) because a
+// report is an artifact somebody deliberately asked for, not an auto-raised alert.
+async function purgeOld(days) {
+  // NOT `Number(days) || 90` — 0 is falsy, so that silently turns "purge everything"
+  // into "keep 90 days", which is the opposite instruction. 0 is a legitimate value.
+  const raw = Number(days);
+  const n = Number.isFinite(raw) && raw >= 0 ? raw : 90;
+  const [rows] = await db.query(
+    "SELECT report_id FROM reports WHERE created_at < (NOW() - INTERVAL ? DAY)",
+    [n],
+  );
+  let removed = 0;
+  for (const r of rows) {
+    if (await remove(r.report_id)) removed++;
+  }
+  return removed;
+}
+
+export default {
+  init, list, create, build, generate, fileFor, remove, purgeOld, scopeOptions, email,
+  REPORT_TYPES, SCOPE_TYPES,
+};
