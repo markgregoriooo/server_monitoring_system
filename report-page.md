@@ -104,9 +104,10 @@ No migration is needed — the `reports` table already ships in the schema
 |--------|-------|
 | `report_id` | PK. |
 | `generated_by` | FK → `users.user_id` (who generated it). Joined to show the author name. |
-| `title` | Display title; defaults to `"<Type> Report"`. |
+| `title` | Display title; defaults to `"<Type> Report"`, or `"<Type> Report — <Device>"` when scoped. |
 | `type` | ENUM — all six values are used: `environment` / `server` / `network` / `ups` / `alerts` / `aircon`. The ENUM already shipped with `network` + `ups`, so wiring those two needed **no migration**. |
-| `status` | `pending` → `generated`, or `failed` if the build threw. |
+| `device_id` | **Added by `migrations/2026-08-02_report_device_scope.sql`.** FK → `devices`, NULL = campus-wide. `ON DELETE SET NULL` so decommissioning a router doesn't delete the reports describing it. See §12. |
+| `status` | `pending` → `generated`, or `failed` if the build threw. Now genuinely observable — generation is asynchronous (§11). |
 | `file_path` | The **stem** `report-<id>` (no extension). The route appends `.csv` / `.pdf`. |
 | `period_start`, `period_end` | The reporting window. |
 | `created_at`, `updated_at` | Timestamps. |
@@ -171,12 +172,16 @@ All routes are under `/api/reports` and require a valid JWT (`authMiddleware`).
 | Method | Path | Role | Purpose |
 |--------|------|------|---------|
 | `GET` | `/` | admin + it_staff | List reports, newest first. Optional `?type=` filter. |
-| `POST` | `/` | admin + it_staff | Generate. Body `{ type, title?, periodStart?, periodEnd? }`. Defaults: period = last 7 days. Returns the finished `{ report }`. |
+| `GET` | `/scope-options?type=` | admin + it_staff | Devices this report type can be scoped to. Empty array = campus-wide only. |
+| `POST` | `/` | admin + it_staff | Start a report. Body `{ type, title?, periodStart?, periodEnd?, deviceId? }`. Defaults: period = last 7 days, scope = all devices. **Returns `202` with the `pending` row** — see §11. |
+| `POST` | `/:id/email` | admin + it_staff | Mails the stored PDF to the requesting user. Does not rebuild. |
 | `GET` | `/:id/download?format=csv\|pdf` | admin + it_staff | Streams the stored file via `res.download`. `404` if not generated / missing. |
 | `DELETE` | `/:id` | **admin** | Deletes the row + both files. |
 
-Validation errors (`bad type`, `start >= end`) return `400`; a build failure marks the
-row `failed` and returns `500`.
+Validation errors (`bad type`, `start >= end`, bad/mismatched `deviceId`) return `400`.
+A build failure no longer returns `500` — the request has already been answered `202`,
+so failure surfaces as `status: "failed"` on the row plus a `reportUpdated` push.
+Email returns `503` when `RESEND_API_KEY` is unset and `502` if Resend rejects it.
 
 ---
 
@@ -255,10 +260,90 @@ the **Delete** action only for admin. (The old page checked a non-existent
 - **InfluxDB day boundaries are UTC** (`aggregateWindow every: 1d`). For a UTC+8
   campus the daily buckets are offset from local midnight; acceptable for summary
   reporting. `timeSrc: "_start"` labels each row with the day it summarizes.
-- **Generation is synchronous.** A very large window (e.g. 30 days of dense server
-  metrics) makes the POST take longer; the modal shows a spinner until done.
+
+---
+
+## 11. Asynchronous generation
+
+`POST /api/reports` answers **202** as soon as the row is recorded, then builds in the
+background. A 30-day network report runs several InfluxDB queries and would otherwise
+hold the request open.
+
+```
+create()  INSERT status='pending'  →  202 { report }      (request ends here)
+build(id) run builder → write CSV+PDF → status='generated'
+          → io.to(`user:<id>`).emit("reportUpdated", report)
+```
+
+- `reportService.init(io)` is called once at startup (`server.js`), matching
+  `notificationService.init` / `alertsService.init`.
+- **`build()` never throws.** It is called fire-and-forget from the route, where a
+  rejection would be an unhandled rejection *after the response was already sent*. It
+  catches, marks the row `failed`, and reports that the same way it reports success.
+  The route still attaches a `.catch()` as a second line of defence.
+- The row **is** the progress record, so a crash mid-build leaves a visible `pending`
+  row rather than a silent gap. A client that missed the socket push sees the real
+  status on next load.
+- The Reports page already rendered `pending`/`failed` via `STATUS_COLOR`, and already
+  gated the CSV/PDF buttons on `status === "generated"` — that state was simply
+  unreachable before. The only UI change needed was the socket listener.
+
+## 12. Per-device scope
+
+`deviceId` on `POST /api/reports` narrows a report to one device; omit it for
+campus-wide (the previous behaviour, still the default).
+
+`SCOPE_TYPES` in `reportService.js` maps report type → the `device_type`s it may be
+scoped to. **The same map drives both the validator and `GET /scope-options`**, which
+populates the modal's dropdown — so the picker cannot offer something the validator
+would reject.
+
+`environment` is deliberately absent: it describes the server room itself, so
+scoping it is **rejected with a 400**, not silently ignored. Likewise, asking for a
+Network report scoped to a UPS is an error, not an empty report.
+
+> **Flux injection.** `deviceId` is the first user-supplied value ever to reach a Flux
+> query string, so §5's "no injection surface" claim needed defending. Two gates:
+> `create()` validates it is a positive integer *and* that the device exists and is of
+> a permitted type, storing it in an INT column; `fluxDeviceFilter()` re-validates with
+> `Number.isInteger` before interpolating. A string like `1" or r.device_id != "` is
+> rejected at the first gate.
+
+## 13. Email delivery
+
+`POST /api/reports/:id/email` sends the **stored PDF** to the requesting user, using
+the existing Resend wrapper (`emailService.sendReportEmail`).
+
+- **Separate from generate on purpose.** Re-sending must not rebuild: a saved report's
+  numbers are frozen, and a rebuild would silently produce different ones.
+- Recipient is resolved server-side from the row/session — the endpoint takes no
+  address, so it can't be used to mail arbitrary recipients.
+- PDF only. The CSV is for spreadsheet work, which is a download job.
+- No-ops safely: `503` when `RESEND_API_KEY` is unset, `502` if Resend rejects it.
+  `NOTIFY_EMAIL_TO` still forces all mail to one address for testing.
+
+## 14. Retention
+
+`REPORT_RETENTION_DAYS` (blank = **90**) purges reports older than that, at startup
+and daily — same cadence and shape as the alerts purge in `server.js`.
+
+It deletes the **row and both files**, via `remove()` so the path-traversal guard stays
+one code path. Deleting only the file would leave a row whose downloads 404, which is
+worse than no row. The default is longer than `NOTIFY_RETENTION_DAYS` (30) because a
+report is an artifact somebody deliberately generated, not an auto-raised alert.
+
+> `purgeOld` reads its argument as `Number.isFinite(raw) && raw >= 0 ? raw : 90` —
+> **not** `Number(days) || 90`. Zero is falsy, so the `||` form silently turns "purge
+> everything" into "keep 90 days", the opposite instruction. (`notificationService.purgeOld`
+> still has the `||` form; same latent edge, not fixed here to keep this change scoped.)
+
+---
 
 ### Possible follow-ups
 - Scheduled/auto reports (cron) writing the same table.
-- Email the generated file via the existing Resend wrapper (`emailService.js`).
-- A daily purge of old report files mirroring the alerts retention job.
+- Multi-device scope (an array rather than one `device_id`).
+- A "users / audit activity" report type — **deliberately not built**: `system_logs`
+  already captures user actions and `historyService` already renders them on the
+  History page, so this would be a third view of the same rows *and* the only report
+  type needing an ENUM migration. A CSV export on the History page is the cheaper
+  answer if an audit trail is ever asked for.

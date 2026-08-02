@@ -15,6 +15,7 @@ import esp32Monitor from "../services/esp32Monitor.js";
 import snmpPollerService from "../services/snmpPollerService.js";
 import mikrotikPollerService from "../services/mikrotikPollerService.js";
 import backupService from "../services/backupService.js";
+import reportService from "../services/reportService.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
@@ -126,6 +127,7 @@ app.set("io", io);
 // threading `io` through every call.
 notificationService.init(io);
 alertsService.init(io); // so acknowledge/resolve + auto-resolve can broadcast alertUpdated
+reportService.init(io); // so a background report build can push reportUpdated when done
 
 // ESP32 liveness. Seeds from the newest InfluxDB reading so a restart doesn't forget
 // whether the sensor was alive (and so a box with no hardware attached stays quiet).
@@ -238,6 +240,22 @@ const runNotificationPurge = async () => {
 };
 runNotificationPurge();
 setInterval(runNotificationPurge, PURGE_INTERVAL_MS);
+
+// Report retention — reports write a CSV + PDF to BACKUP_DIR-adjacent local disk
+// (backend/reports/), so without this they accumulate on the SD/USB drive forever.
+// Purges the row AND both files. Default is longer than the alerts one: a report is
+// something a person deliberately generated. Same startup + daily cadence.
+const REPORT_RETENTION_DAYS = Number(process.env.REPORT_RETENTION_DAYS) || 90;
+const runReportPurge = async () => {
+  try {
+    const purged = await reportService.purgeOld(REPORT_RETENTION_DAYS);
+    if (purged) console.log(`[reports] purged ${purged} report(s) older than ${REPORT_RETENTION_DAYS}d`);
+  } catch (err) {
+    console.error("[reports] purge error:", err.message);
+  }
+};
+runReportPurge();
+setInterval(runReportPurge, PURGE_INTERVAL_MS);
 
 // SNMP poller — pulls metrics from routers (IF-MIB) + UPS units (UPS-MIB) on a
 // timer (the pull mirror of the push-based Go agents). Self-gating: pollAll loads

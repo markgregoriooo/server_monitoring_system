@@ -677,11 +677,25 @@ export const api = {
     }
   },
 
+  // Devices a report of this type can be scoped to (empty = campus-wide only).
+  getReportScopeOptions: async (type: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/reports/scope-options", { params: { type } });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Returns 202 with a `pending` report — the backend builds it in the background
+  // and pushes the finished row over Socket.IO as `reportUpdated`.
+  // `deviceId` scopes the report to one device; omit for campus-wide.
   generateReport: async (opts: {
     type: string;
     title?: string;
     periodStart?: string;
     periodEnd?: string;
+    deviceId?: number;
   }): Promise<ApiResult> => {
     try {
       const res = await apiClient.post("/reports", opts);
@@ -716,6 +730,17 @@ export const api = {
       a.remove();
       window.URL.revokeObjectURL(url);
       return { success: true };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Mails an already-generated report to the signed-in user as a PDF attachment.
+  // Does not rebuild it — a saved report's numbers are frozen.
+  emailReport: async (id: number | string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/reports/${id}/email`);
+      return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
     }
