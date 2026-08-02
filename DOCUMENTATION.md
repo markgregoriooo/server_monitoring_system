@@ -427,13 +427,13 @@ parentheses use `requireRole(...)`.
 | PATCH | `/aircon/:id/toggle` | ✅ (admin, it_staff) | Turn ON/OFF → emits `airconStatus` + fires `irCommand` |
 | PATCH | `/aircon/:id/name` | ✅ (admin, it_staff) | Rename a unit (body `{ name }`, 1–100 chars, unique among aircon; `409` if taken) → emits `airconStatus` + logs to `aircon_logs` |
 
-### Mock endpoints (in-memory, reset on restart)
+### Formerly-mock endpoints — all now real
 
 | Method | Endpoint | Notes |
 |--------|----------|-------|
-| GET | `/environment/history` · `/environment/logs` | Random mock data — **not** InfluxDB. Real history comes via the `changeRange` socket event |
-| GET/PATCH | `/alerts` · `/alerts/:id` | In-memory `alerts` + audit log |
-| GET/POST | `/reports` | In-memory `reports` |
+| GET | `/environment/daily` | Real InfluxDB per-day summary (`environmentService`). The old random-data `/history` + `/logs` are **removed**; live history comes via the `changeRange` socket event |
+| GET/POST | `/alerts` · `/alerts/:id/acknowledge` · `/resolve` | Real `alerts` table + shared lifecycle (`alertsService`) |
+| GET/POST | `/reports` · `/reports/:id/download\|email` | Real `reports` table + CSV/PDF on disk (`reportService`). Generation is async: POST returns `202` and the result arrives over Socket.IO. See `report-page.md` |
 
 Global rate limit: 500 requests / 15 min / IP (the agent metrics path is exempt).
 
@@ -604,10 +604,13 @@ classes; ServerDetail is a `slate-*` + `dark:` hybrid.
 
 ---
 
-## 14. Known Limitations & Mock Endpoints
+## 14. Known Limitations
 
-- **Mock data:** `/api/environment/history|logs`, `/api/alerts`, and `/api/reports` return
-  in-memory data that resets on restart, even though real `alerts`/`reports` tables exist.
+- ~~**Mock data:** `/api/environment/history|logs`, `/api/alerts`, `/api/reports`~~ — **FIXED.**
+  No mock store remains; `backend/data/` was deleted when Reports went real.
+- **Report layout is not a client-approved template.** The PDF header, section order and
+  the absence of a signature block were chosen by the dev team, not supplied by CSPC-ICTU.
+  See `reports-client-questionnaire.md`.
 - **Vestigial password UI:** with Google-only login, the User Management "Reset PW" and
   Profile "Change Password" controls (and the `POST /users` / reset-password endpoints) are
   no longer meaningful. Flagged for removal.

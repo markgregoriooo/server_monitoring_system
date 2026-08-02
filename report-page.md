@@ -417,8 +417,17 @@ report is an artifact somebody deliberately generated, not an auto-raised alert.
 
 ---
 
+> ⚠️ **The layout is a dev-team guess, not a client-approved template.** The header,
+> section order, A4 paper, UTC timestamps and the **absence of a signature block** were
+> all chosen here, not supplied by CSPC-ICTU. Institutional reports in the Philippines
+> usually need *Prepared by / Noted by / Approved by* lines, and the PDF header
+> hardcodes the plain text `"CSPC-ICTU Monitoring"` while the dashboard itself already
+> renders the real CSPC logo (`VITE_LOGO_SRC`). Confirm with the client before this is
+> used for anything filed: `reports-client-questionnaire.md`.
+
 ### Possible follow-ups
 - Scheduled/auto reports (cron) writing the same table.
+- Signature block, logo and PH-time timestamps — pending the client questionnaire.
 - Multi-device scope (an array rather than one `device_id`).
 - A "users / audit activity" report type — **deliberately not built**: `system_logs`
   already captures user actions and `historyService` already renders them on the
