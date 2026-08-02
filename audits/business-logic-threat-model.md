@@ -166,9 +166,14 @@ isolation; combined they allow privilege persistence and unauthorized actuation 
 - **Why it matters:** `super_admin` is never issued, so the intended privileged role can't
   create reports, **`admin` is denied** (`POST /api/reports` → 403 for admin), while
   **`it_staff` — the lower-privilege role — is the only role that can write reports**. This
-  is an authorization-model inconsistency: the gate does the opposite of intent. (Note the
-  `reports` store is in-memory mock — `backend/data/db.js` — so impact is limited today, but
-  the gate is a latent privilege bug that will mislead once persisted.)
+  is an authorization-model inconsistency: the gate does the opposite of intent. (At audit
+  time the `reports` store was an in-memory mock — `backend/data/db.js` — so impact was
+  limited, but the gate was a latent privilege bug that would mislead once persisted.)
+
+  > **Since resolved on both counts.** The gate is now `requireRole("admin","it_staff")`
+  > (F-03 above), and reports are no longer a mock: they persist to the `reports` table
+  > with CSV/PDF on disk (`services/reportService.js`, `report-page.md`). `data/db.js` has
+  > been deleted.
 - **Exploitability:** `it_staff` token → `POST /api/reports` succeeds; `admin` token → 403.
 - **Remediation (drop-in):**
   ```js
