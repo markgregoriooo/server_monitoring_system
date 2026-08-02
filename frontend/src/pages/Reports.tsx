@@ -3,13 +3,14 @@ import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
 
 // Reports are real now: MySQL `reports` + an on-disk CSV/PDF per report, built on
-// generate from the live stores (InfluxDB sensor_environment / server_metrics, MySQL
-// alerts / aircon_logs). Backend: services/reportService.js + routes/reports.js.
+// generate from the live stores (InfluxDB sensor_environment / server_metrics /
+// router_metrics + network_traffic / ups_metrics, MySQL alerts / aircon_logs).
+// Backend: services/reportService.js + routes/reports.js.
 
 interface Report {
   id: number;
   title: string;
-  type: string; // environment | server | alerts | aircon
+  type: string; // environment | server | network | ups | alerts | aircon
   status: string; // pending | generated | failed
   generatedBy: number | null;
   generatedByName: string | null;
@@ -29,6 +30,8 @@ interface TypeMeta {
 const TYPES: TypeMeta[] = [
   { value: "environment", label: "Environment", desc: "Temperature, humidity & gas — daily min / max / avg from the sensor.", color: "#FF6B6B" },
   { value: "server", label: "Server Metrics", desc: "CPU, memory & disk per server — average & peak over the period.", color: "#5794F2" },
+  { value: "network", label: "Network Traffic", desc: "Routers & the MikroTik — traffic per port, peak utilization, link errors.", color: "#73BF69" },
+  { value: "ups", label: "UPS Power", desc: "Battery charge, runtime & load, plus on-battery and offline events.", color: "#B877D9" },
   { value: "alerts", label: "Alert History", desc: "Every alert raised in the window, counted by severity.", color: "#FF780A" },
   { value: "aircon", label: "Aircon Activity", desc: "Manual & auto IR triggers — who acted, when and why.", color: "#3CC8E8" },
 ];
@@ -439,8 +442,10 @@ export default function Reports() {
       {/* Generate modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setModalOpen(false)}>
-          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-xl rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}`, boxShadow: "var(--gf-shadow)" }}>
-            <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.header }}>
+          {/* Capped + scrollable: six type cards make this taller than a laptop
+              viewport, and the Generate button lives at the bottom of the body. */}
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-xl max-h-[90vh] flex flex-col rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}`, boxShadow: "var(--gf-shadow)" }}>
+            <div className="flex items-center justify-between px-4 shrink-0" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.header }}>
               <span className="text-[12px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>
                 Generate report
               </span>
@@ -451,7 +456,7 @@ export default function Reports() {
               </button>
             </div>
 
-            <div className="p-4">
+            <div className="p-4 overflow-y-auto">
               {/* Type cards */}
               <div className="text-[9px] tracking-wider uppercase mb-1.5" style={{ color: gf.textDim }}>Report type</div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
@@ -626,7 +631,7 @@ function EmptyState({ filtered, canGenerate, onGenerate, onClear }: { filtered: 
         <>
           <div className="text-[13px] font-semibold mb-1" style={{ color: gf.textPrimary }}>No reports yet</div>
           <div className="text-[11px] mb-4 max-w-sm" style={{ color: gf.textMuted }}>
-            {canGenerate ? "Generate a summary of environment, server, alert or aircon activity for any time window." : "No reports have been generated yet."}
+            {canGenerate ? "Generate a summary of environment, server, network, UPS, alert or aircon activity for any time window." : "No reports have been generated yet."}
           </div>
           {canGenerate && (
             <button onClick={onGenerate} className="text-[11px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: gf.accent }}>+ Generate your first report</button>
@@ -661,6 +666,23 @@ function TypeIcon({ type, size = 15 }: { type: string; size?: number }) {
           <rect x="3" y="4" width="18" height="7" rx="1" />
           <rect x="3" y="13" width="18" height="7" rx="1" />
           <path d="M7 7.5h.01M7 16.5h.01" />
+        </svg>
+      );
+    // Stacked switch + link — matches the Network nav icon in the sidebar.
+    case "network":
+      return (
+        <svg {...p}>
+          <rect x="2" y="3" width="20" height="6" rx="1.5" />
+          <rect x="2" y="15" width="20" height="6" rx="1.5" />
+          <path d="M12 9v6M5.5 6h.01M5.5 18h.01" />
+        </svg>
+      );
+    // Battery + bolt — matches the UPS nav icon.
+    case "ups":
+      return (
+        <svg {...p}>
+          <rect x="2" y="5" width="19" height="14" rx="2" />
+          <path d="M13 8.5 9.5 12.5h3L11 15.5" />
         </svg>
       );
     case "alerts":

@@ -6,17 +6,22 @@ import { toCSV, toPDFBuffer } from "./reportRenderer.js";
 
 // Real reports: persisted in MySQL `reports`, with a CSV + PDF written to disk per
 // report (file_path = stem, the route appends .csv/.pdf). Data is built on generate
-// from the live stores — InfluxDB (sensor_environment / server_metrics) and MySQL
-// (alerts / aircon_logs) — then frozen into the saved files. Replaces the old
-// data/db.js mock array.
+// from the live stores — InfluxDB (sensor_environment / server_metrics /
+// router_metrics + network_traffic / ups_metrics) and MySQL (alerts / aircon_logs) —
+// then frozen into the saved files. Replaces the old data/db.js mock array.
+//
+// Every monitored stream has a report type. The six match the `reports.type` ENUM
+// already in the schema, so adding network + ups needed no migration.
 
 const REPORTS_DIR = path.resolve(process.cwd(), "reports");
 fs.mkdirSync(REPORTS_DIR, { recursive: true });
 
-export const REPORT_TYPES = ["environment", "server", "alerts", "aircon"];
+export const REPORT_TYPES = ["environment", "server", "network", "ups", "alerts", "aircon"];
 const TYPE_LABEL = {
   environment: "Environment",
   server: "Server Metrics",
+  network: "Network Traffic",
+  ups: "UPS Power",
   alerts: "Alert History",
   aircon: "Aircon Activity",
 };
@@ -40,6 +45,8 @@ function fluxRows(flux) {
 
 const num = (v, d = 1) => (typeof v === "number" && !Number.isNaN(v) ? +v.toFixed(d) : null);
 const dayKey = (iso) => String(iso).slice(0, 10);
+// Decimal GB, the convention for link throughput (not GiB).
+const gb = (bytes) => +((Number(bytes) || 0) / 1e9).toFixed(2);
 
 // ─── Data builders (return the normalized report payload) ────────────────────
 async function buildEnvironment(start, stop) {
@@ -138,8 +145,13 @@ async function buildServer(start, stop) {
       { label: "Servers reporting", value: rows.length },
       {
         label: "Busiest CPU (avg)",
+        // Influx keeps metrics for devices that have since been removed from MySQL,
+        // so fall back to the id — the same "#id" the table shows, not a bare "?".
         value: rows.length
-          ? `${nameOf.get(rows.reduce((m, r) => ((r.avgCpu ?? 0) > (m.avgCpu ?? 0) ? r : m)).device_id) ?? "?"}`
+          ? (() => {
+              const id = rows.reduce((m, r) => ((r.avgCpu ?? 0) > (m.avgCpu ?? 0) ? r : m)).device_id;
+              return nameOf.get(id) ?? `#${id}`;
+            })()
           : "—",
       },
     ],
@@ -150,6 +162,293 @@ async function buildServer(start, stop) {
         r.avgCpu ?? "—", r.maxCpu ?? "—", r.avgMem ?? "—", r.maxMem ?? "—", r.avgDisk ?? "—", r.maxDisk ?? "—",
       ]),
     },
+  };
+}
+
+// ─── Network: SNMP routers + MikroTik ────────────────────────────────────────
+// Both pollers write the SAME measurements — mikrotikPollerService reuses
+// writeNetworkSample — so one builder covers every network device. The MySQL
+// `device_type` is what separates a stock SNMP router from the MikroTik, and it
+// rides along as a column rather than splitting the report in two.
+async function buildNetwork(start, stop) {
+  const S = start.toISOString();
+  const E = stop.toISOString();
+
+  // Per-device gauges (same group()+aggregate shape as buildServer).
+  const gauges = (fn) => `
+    from(bucket: "${bucket}")
+      |> range(start: ${S}, stop: ${E})
+      |> filter(fn: (r) => r._measurement == "router_metrics")
+      |> filter(fn: (r) => r._field == "cpu_percent" or r._field == "mem_percent" or r._field == "connected_clients")
+      |> group(columns: ["device_id", "_field"])
+      |> ${fn}()`;
+
+  // Byte/error counters are CUMULATIVE (design doc §5), so a mean is meaningless
+  // here: increase() sums the non-negative deltas — a counter reset on reboot
+  // reads as 0, not as terabytes — and last() takes the period total. A series
+  // with a single sample yields no delta and so no row: correct, one poll can't
+  // tell you a volume.
+  const counters = `
+    from(bucket: "${bucket}")
+      |> range(start: ${S}, stop: ${E})
+      |> filter(fn: (r) => r._measurement == "network_traffic")
+      |> filter(fn: (r) => r._field == "rx_bytes" or r._field == "tx_bytes" or r._field == "rx_errors" or r._field == "tx_errors")
+      |> increase()
+      |> last()`;
+
+  const peakUtil = `
+    from(bucket: "${bucket}")
+      |> range(start: ${S}, stop: ${E})
+      |> filter(fn: (r) => r._measurement == "network_traffic")
+      |> filter(fn: (r) => r._field == "utilization_pct")
+      |> max()`;
+
+  // link_up is a boolean → map to 1/0 so mean() reads as "share of polls the port
+  // was up".
+  const linkUp = `
+    from(bucket: "${bucket}")
+      |> range(start: ${S}, stop: ${E})
+      |> filter(fn: (r) => r._measurement == "network_traffic")
+      |> filter(fn: (r) => r._field == "link_up")
+      |> map(fn: (r) => ({ r with _value: if r._value then 1.0 else 0.0 }))
+      |> mean()`;
+
+  const [means, maxes, ctrs, utils, links] = await Promise.all([
+    fluxRows(gauges("mean")),
+    fluxRows(gauges("max")),
+    fluxRows(counters),
+    fluxRows(peakUtil),
+    fluxRows(linkUp),
+  ]);
+
+  // Device facts + offline events from MySQL.
+  const [devices] = await db.query(
+    `SELECT device_id, device_name, device_type, location
+       FROM devices WHERE device_type IN ('router', 'mikrotik')`,
+  );
+  const [offline] = await db.query(
+    `SELECT a.device_id, COUNT(*) AS n
+       FROM alerts a
+       JOIN devices d ON d.device_id = a.device_id
+      WHERE a.type = 'device_offline'
+        AND d.device_type IN ('router', 'mikrotik')
+        AND a.created_at BETWEEN ? AND ?
+      GROUP BY a.device_id`,
+    [start, stop],
+  );
+  const meta = new Map(devices.map((d) => [String(d.device_id), d]));
+  const offlineOf = new Map(offline.map((r) => [String(r.device_id), Number(r.n)]));
+
+  // ── Per-device roll-up ──
+  const byDev = new Map();
+  const dev = (id) => {
+    if (!byDev.has(id)) byDev.set(id, { device_id: id, rxBytes: 0, txBytes: 0 });
+    return byDev.get(id);
+  };
+  const G = { cpu_percent: "Cpu", mem_percent: "Mem", connected_clients: "Clients" };
+  for (const r of means) dev(r.device_id)[`avg${G[r._field]}`] = num(r._value, 0);
+  for (const r of maxes) dev(r.device_id)[`max${G[r._field]}`] = num(r._value, 0);
+
+  // ── Per-interface breakdown ──
+  const byIface = new Map();
+  const iface = (r) => {
+    const key = `${r.device_id}|${r.interface_name}`;
+    if (!byIface.has(key)) {
+      byIface.set(key, {
+        device_id: r.device_id,
+        name: r.interface_name || "—",
+        label: r.location_label || "",
+        rxBytes: 0, txBytes: 0, errors: 0,
+      });
+    }
+    return byIface.get(key);
+  };
+  for (const r of ctrs) {
+    const i = iface(r);
+    const v = Number(r._value) || 0;
+    if (r._field === "rx_bytes") { i.rxBytes = v; dev(r.device_id).rxBytes += v; }
+    else if (r._field === "tx_bytes") { i.txBytes = v; dev(r.device_id).txBytes += v; }
+    else i.errors += v; // rx_errors + tx_errors — one "did this link misbehave" number
+  }
+  for (const r of utils) iface(r).peakUtil = num(r._value, 0);
+  for (const r of links) iface(r).upPct = num(Number(r._value) * 100, 0);
+
+  const nameOf = (id) => meta.get(id)?.device_name ?? `#${id}`;
+  // Influx outlives MySQL rows — a device deleted from the dashboard still has its
+  // history here. Say "—" rather than guessing "Router" for one we can't identify.
+  const kindOf = (id) => {
+    const t = meta.get(id)?.device_type;
+    return t === "mikrotik" ? "MikroTik" : t === "router" ? "Router" : "—";
+  };
+
+  const devRows = [...byDev.values()].sort((a, b) =>
+    nameOf(a.device_id).localeCompare(nameOf(b.device_id)),
+  );
+  const ifaceRows = [...byIface.values()].sort(
+    (a, b) => b.rxBytes + b.txBytes - (a.rxBytes + a.txBytes),
+  );
+
+  const totalBytes = devRows.reduce((s, d) => s + d.rxBytes + d.txBytes, 0);
+  const totalErrors = ifaceRows.reduce((s, i) => s + i.errors, 0);
+  const totalOffline = devRows.reduce((s, d) => s + (offlineOf.get(d.device_id) ?? 0), 0);
+  const busiest = ifaceRows[0];
+
+  return {
+    summary: [
+      { label: "Network devices reporting", value: devRows.length },
+      { label: "Total traffic", value: totalBytes ? `${gb(totalBytes)} GB` : "—" },
+      {
+        label: "Busiest port",
+        value: busiest
+          ? `${nameOf(busiest.device_id)} ${busiest.name}${busiest.label ? ` (${busiest.label})` : ""} — ${gb(busiest.rxBytes + busiest.txBytes)} GB`
+          : "—",
+      },
+      { label: "Link errors", value: totalErrors },
+      { label: "Offline events", value: totalOffline },
+    ],
+    tables: [
+      {
+        title: "Devices",
+        columns: ["Device", "Kind", "Avg CPU %", "Max CPU %", "Avg Mem %", "Avg Clients", "RX GB", "TX GB", "Offline"],
+        rows: devRows.map((d) => [
+          nameOf(d.device_id), kindOf(d.device_id),
+          d.avgCpu ?? "—", d.maxCpu ?? "—", d.avgMem ?? "—", d.avgClients ?? "—",
+          gb(d.rxBytes), gb(d.txBytes), offlineOf.get(d.device_id) ?? 0,
+        ]),
+      },
+      {
+        title: "Ports",
+        columns: ["Device", "Port", "Location", "RX GB", "TX GB", "Peak Util %", "Errors", "Link Up %"],
+        rows: ifaceRows.map((i) => [
+          nameOf(i.device_id), i.name, i.label || "—",
+          gb(i.rxBytes), gb(i.txBytes),
+          i.peakUtil ?? "—", i.errors, i.upPct ?? "—",
+        ]),
+      },
+    ],
+  };
+}
+
+// ─── UPS power ───────────────────────────────────────────────────────────────
+async function buildUps(start, stop) {
+  const S = start.toISOString();
+  const E = stop.toISOString();
+
+  const gauges = (fn) => `
+    from(bucket: "${bucket}")
+      |> range(start: ${S}, stop: ${E})
+      |> filter(fn: (r) => r._measurement == "ups_metrics")
+      |> filter(fn: (r) =>
+          r._field == "battery_charge_pct" or r._field == "runtime_remaining_min" or
+          r._field == "load_pct" or r._field == "input_voltage" or
+          r._field == "output_voltage" or r._field == "battery_voltage" or
+          r._field == "temperature")
+      |> group(columns: ["device_id", "_field"])
+      |> ${fn}()`;
+
+  // on_battery is a boolean. There is no "minutes on battery" that doesn't assume
+  // a fixed poll interval, so we report the SHARE OF POLLS spent on battery —
+  // honest whatever SNMP_POLL_INTERVAL_MS is set to. The event count below (from
+  // the alerts table) is the "how many times did it happen" half.
+  const onBattery = `
+    from(bucket: "${bucket}")
+      |> range(start: ${S}, stop: ${E})
+      |> filter(fn: (r) => r._measurement == "ups_metrics")
+      |> filter(fn: (r) => r._field == "on_battery")
+      |> map(fn: (r) => ({ r with _value: if r._value then 1.0 else 0.0 }))
+      |> group(columns: ["device_id"])
+      |> mean()`;
+
+  const [means, mins, maxes, batt] = await Promise.all([
+    fluxRows(gauges("mean")),
+    fluxRows(gauges("min")),
+    fluxRows(gauges("max")),
+    fluxRows(onBattery),
+  ]);
+
+  const [devices] = await db.query(
+    `SELECT device_id, device_name, location FROM devices WHERE device_type = 'ups'`,
+  );
+  const [events] = await db.query(
+    `SELECT a.device_id, a.type, COUNT(*) AS n
+       FROM alerts a
+       JOIN devices d ON d.device_id = a.device_id
+      WHERE a.type IN ('ups_on_battery', 'device_offline')
+        AND d.device_type = 'ups'
+        AND a.created_at BETWEEN ? AND ?
+      GROUP BY a.device_id, a.type`,
+    [start, stop],
+  );
+  const meta = new Map(devices.map((d) => [String(d.device_id), d]));
+  const evOf = new Map();
+  for (const e of events) {
+    const slot = evOf.get(String(e.device_id)) ?? { ups_on_battery: 0, device_offline: 0 };
+    slot[e.type] = Number(e.n);
+    evOf.set(String(e.device_id), slot);
+  }
+
+  const byDev = new Map();
+  const dev = (id) => {
+    if (!byDev.has(id)) byDev.set(id, { device_id: id });
+    return byDev.get(id);
+  };
+  const F = {
+    battery_charge_pct: "Charge",
+    runtime_remaining_min: "Runtime",
+    load_pct: "Load",
+    input_voltage: "InV",
+    output_voltage: "OutV",
+    battery_voltage: "BattV",
+    temperature: "Temp",
+  };
+  for (const r of means) dev(r.device_id)[`avg${F[r._field]}`] = num(r._value, 0);
+  for (const r of mins) dev(r.device_id)[`min${F[r._field]}`] = num(r._value, 0);
+  for (const r of maxes) dev(r.device_id)[`max${F[r._field]}`] = num(r._value, 0);
+  for (const r of batt) dev(r.device_id).onBattPct = num(Number(r._value) * 100, 1);
+
+  const nameOf = (id) => meta.get(id)?.device_name ?? `#${id}`;
+  const rows = [...byDev.values()].sort((a, b) =>
+    nameOf(a.device_id).localeCompare(nameOf(b.device_id)),
+  );
+
+  const lowest = (key) =>
+    rows.reduce((m, r) => (r[key] != null && (m == null || r[key] < m) ? r[key] : m), null);
+  const totalEv = (type) =>
+    rows.reduce((s, r) => s + (evOf.get(r.device_id)?.[type] ?? 0), 0);
+  const peakLoad = rows.reduce((m, r) => (r.maxLoad != null && r.maxLoad > m ? r.maxLoad : m), -Infinity);
+
+  return {
+    summary: [
+      { label: "UPS units reporting", value: rows.length },
+      { label: "Lowest battery", value: lowest("minCharge") != null ? `${lowest("minCharge")} %` : "—" },
+      { label: "Shortest runtime", value: lowest("minRuntime") != null ? `${lowest("minRuntime")} min` : "—" },
+      { label: "Peak load", value: Number.isFinite(peakLoad) ? `${peakLoad} %` : "—" },
+      { label: "On-battery events", value: totalEv("ups_on_battery") },
+      { label: "Offline events", value: totalEv("device_offline") },
+    ],
+    tables: [
+      {
+        title: "Battery & load",
+        columns: ["UPS", "Location", "Avg Charge %", "Min Charge %", "Avg Runtime min", "Min Runtime min", "Avg Load %", "Max Load %", "On Battery %"],
+        rows: rows.map((r) => [
+          nameOf(r.device_id), meta.get(r.device_id)?.location ?? "—",
+          r.avgCharge ?? "—", r.minCharge ?? "—",
+          r.avgRuntime ?? "—", r.minRuntime ?? "—",
+          r.avgLoad ?? "—", r.maxLoad ?? "—", r.onBattPct ?? "—",
+        ]),
+      },
+      {
+        title: "Voltage & events",
+        columns: ["UPS", "Avg Input V", "Min Input V", "Max Input V", "Avg Output V", "Avg Battery V", "Max Temp °C", "On-battery", "Offline"],
+        rows: rows.map((r) => [
+          nameOf(r.device_id),
+          r.avgInV ?? "—", r.minInV ?? "—", r.maxInV ?? "—",
+          r.avgOutV ?? "—", r.avgBattV ?? "—", r.maxTemp ?? "—",
+          evOf.get(r.device_id)?.ups_on_battery ?? 0,
+          evOf.get(r.device_id)?.device_offline ?? 0,
+        ]),
+      },
+    ],
   };
 }
 
@@ -223,6 +522,8 @@ function fmtRow(d) {
 const BUILDERS = {
   environment: buildEnvironment,
   server: buildServer,
+  network: buildNetwork,
+  ups: buildUps,
   alerts: buildAlerts,
   aircon: buildAircon,
 };
@@ -306,7 +607,10 @@ async function generate({ userId, type, title, periodStart, periodEnd }) {
       periodEnd: end,
       generatedAt: new Date(),
       summary: payload.summary,
+      // A builder returns either one `table` or several titled `tables` — the
+      // renderer normalizes both. Only ever one of the two is set.
       table: payload.table,
+      tables: payload.tables,
     };
 
     const stem = `report-${id}`;
