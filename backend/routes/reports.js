@@ -12,6 +12,12 @@ const router = express.Router();
 const describe = (r) =>
   `${r.title}${r.deviceName ? ` [${r.deviceName}]` : ""} (${r.type})`;
 
+// Who originally generated the report. A History row's actor is whoever performed
+// THIS action — for a delete that's the admin — so the author has to be carried in
+// the description or it is lost with the row. `generatedByName` is null when that
+// user has since been removed (BASE_SELECT left-joins `users`).
+const byAuthor = (r) => ` — created by ${r.generatedByName ?? `user #${r.generatedBy ?? "?"}`}`;
+
 // GET /api/reports — list saved reports (newest first), optional ?type= filter.
 router.get("/", authMiddleware, async (req, res, next) => {
   try {
@@ -96,7 +102,7 @@ router.get("/:id/download", authMiddleware, async (req, res, next) => {
       userId: req.user.id,
       module: "reports",
       action: "download_report",
-      description: `Downloaded ${String(req.query.format ?? "csv").toUpperCase()}: ${file.downloadName}`,
+      description: `Downloaded ${String(req.query.format ?? "csv").toUpperCase()}: ${describe(file.report)}${byAuthor(file.report)}`,
       ...clientInfo(req),
     });
 
@@ -120,7 +126,7 @@ router.post("/:id/email", authMiddleware, requireRole("admin", "it_staff"), asyn
       userId: req.user.id,
       module: "reports",
       action: "email_report",
-      description: `Emailed report #${id} to ${result.sentTo}`,
+      description: `Emailed to ${result.sentTo}: ${describe(result.report)}${byAuthor(result.report)}`,
       ...clientInfo(req),
     });
     res.json({ success: true, ...result });
@@ -142,7 +148,7 @@ router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, nex
       userId: req.user.id,
       module: "reports",
       action: "delete_report",
-      description: `Deleted report: ${describe(removed)}`,
+      description: `Deleted report: ${describe(removed)}${byAuthor(removed)}`,
       level: "warning", // destructive + irreversible: the files go too
       ...clientInfo(req),
     });

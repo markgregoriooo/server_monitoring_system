@@ -780,7 +780,9 @@ async function generate(opts) {
   return (await build(created.id)) ?? created;
 }
 
-// Resolve the on-disk file for a download. Returns { absPath, downloadName } or null.
+// Resolve the on-disk file for a download. Returns { absPath, downloadName, report }
+// or null. `report` rides along so the download route can audit whose report was
+// exported — the actor and the author are often different people.
 async function fileFor(id, format) {
   const fmt = String(format).toLowerCase();
   if (fmt !== "csv" && fmt !== "pdf") return null;
@@ -800,7 +802,7 @@ async function fileFor(id, format) {
     row.period_start && row.period_end
       ? `_${dateOnly(row.period_start)}_to_${dateOnly(row.period_end)}`
       : "";
-  return { absPath, downloadName: `${safeTitle}${period}.${fmt}` };
+  return { absPath, downloadName: `${safeTitle}${period}.${fmt}`, report: toClient(row) };
 }
 
 // Returns the removed report (truthy) or null. Returning the row rather than a
@@ -869,7 +871,8 @@ async function email(id, { toUserId } = {}) {
     err.status = 502;
     throw err;
   }
-  return { sentTo: user.email };
+  // `report` rides along so the route can audit WHAT was sent, not just "#<id>".
+  return { sentTo: user.email, report: toClient(row) };
 }
 
 // Retention: drop reports older than `days` — the MySQL row AND both files. Goes
