@@ -3,6 +3,8 @@ import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
 import alertBandState from "../services/alertBandState.js";
+import esp32Monitor from "../services/esp32Monitor.js";
+import backupService from "../services/backupService.js";
 
 const SEV_RANK = alertRulesService.SEV_RANK;
 
@@ -83,6 +85,10 @@ export async function sensorHandler(socket, data) {
     return;
   }
 
+  // A valid reading is the ESP32's heartbeat — this is what keeps the sensor "online"
+  // and auto-resolves an open offline alert the instant it comes back.
+  esp32Monitor.markSeen();
+
   const timestamp = new Date();   // precision: ms (matches writeClient config)
 
   console.log(
@@ -111,6 +117,18 @@ export async function sensorHandler(socket, data) {
   } catch (error) {
     console.error("[SENSOR] InfluxDB Error:", error);
   }
+
+  // ---- On-site backup copy (independent of InfluxDB) ----
+  backupService.record("env", {
+    temperature: data.temperature,
+    humidity: data.humidity,
+    mq2_1_ppm: data.mq2_1_ppm,
+    mq2_2_ppm: data.mq2_2_ppm,
+    heat_index: data.heat_index,
+    smoke_status: data.smoke_status,
+    temp_status: data.temp_status,
+    environment_status: data.environment_status,
+  });
 
   // ---- Broadcast to dashboard ----
   try {

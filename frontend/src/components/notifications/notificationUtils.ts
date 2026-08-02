@@ -22,6 +22,9 @@ export function routeFor(n: AppNotification): string {
     case "temperature":
     case "gas":
     case "humidity":
+    // Room-level, like the metrics above: the ESP32 has no device row, so there is no
+    // server detail page to deep-link to — send it to the Environment page.
+    case "esp32_offline":
       return "/environment";
     default:
       return "/";

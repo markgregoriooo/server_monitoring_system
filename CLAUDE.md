@@ -38,6 +38,19 @@ INFLUX_TOKEN=
 INFLUX_ORG=
 INFLUX_BUCKET=
 AGENT_INSTALL_KEY= # shared key the Go agents present at enrollment (POST /api/agents/register)
+SNMP_POLL_INTERVAL_MS= # router/UPS SNMP poll cadence; blank = 60000 (60s). Per-device community/port live in device_network, not here
+MIKROTIK_ENC_KEY=      # ⚠️ REQUIRED for MikroTik. 64 hex chars (32 bytes) for AES-256-GCM of mikrotik_devices.api_password. Saving credentials THROWS without it. Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+MIKROTIK_POLL_INTERVAL_MS= # RouterOS API poll cadence; blank = 30000 (30s). Lighter than SNMP walks, so 10-15s is fine for one router
+MIKROTIK_API_TIMEOUT_MS=   # per-call connect/read timeout; blank = 5000
+MIKROTIK_TLS_VERIFY=       # true = verify the router's certificate when use_tls is on. Blank/false = encrypted but unverified (RouterOS ships a SELF-SIGNED cert, so strict verification fails on a stock router)
+MIKROTIK_TLS_CA=           # optional path to a CA file, used only when MIKROTIK_TLS_VERIFY=true
+BACKUP_ENABLED=        # false disables the on-site NDJSON backup writer; blank = enabled. See backup-storage.md
+BACKUP_DIR=            # where the NDJSON/dump files land (micro SD / USB drive); blank = backend/backups
+BACKUP_FLUSH_MS=       # buffered-write flush interval; blank = 5000. Larger = kinder to flash endurance, larger worst-case loss on a hard cut
+BACKUP_RETENTION_DAYS= # dated backup files older than this are purged daily; blank = 30
+BACKUP_OFFSITE_ENABLED=      # true turns on the offsite-staleness check (reads a local marker only, no cloud dependency); blank = off
+BACKUP_OFFSITE_MARKER=       # path the rclone job stamps on each successful upload; blank = <BACKUP_DIR>/.last_offsite_sync
+BACKUP_OFFSITE_MAX_AGE_HOURS= # warn if no successful offsite sync within this many hours; blank = 26
 WEB_ORIGIN=        # allowed dashboard origins, comma-separated — or * for any (roaming LAN); blank = localhost+LAN default
 GOOGLE_CLIENT_ID=       # Google OAuth web client ID (public). Login verifies ID tokens against it. Must match frontend VITE_GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=   # Google OAuth web client SECRET. Required: the auth-code flow exchanges the code server-side
@@ -67,12 +80,14 @@ Still hardcoded (firmware only): `iot/esp32/env_monitor_v2.ino` — `host`, `por
 
 Server room environment monitoring system for CSPC-ICTU.  
 ESP32 (DHT11 + 2× MQ-2 + IR TX array + RGB LED) → Node.js + Socket.IO → React dashboard.
+Three ingest paths: ESP32 (push, Socket.IO), Go agents (push, HTTP), and an SNMP
+poller (**pull** — routers via IF-MIB, UPS via UPS-MIB). See `router-ups-monitoring.md`.
 
 ### Tech Stack
-- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, resend (alert email)
+- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, resend (alert email), net-snmp
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS, JetBrains Mono font
-- **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment **and** server-metric time-series)
-- **Hardware:** ESP32, DHT11, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×4, DS3231 RTC (optional)
+- **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment, server-metric, **and** router/UPS time-series)
+- **Hardware:** ESP32, DHT11, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×2 (GPIO 25/33), DS3231 RTC (optional)
 
 ---
 
@@ -93,9 +108,14 @@ backend/services/
   agentService.js               ← Go-agent + server-device DB logic (devices + server_specs + device_network + agent_tokens); enroll/approve/reject, offline sweep, device_logs
   notificationService.js        ← raiseAlert() → de-dup cooldown (NOTIFY_COOLDOWN_MIN, restart-proof, **open-alert-scoped** — a resolved alert no longer suppresses, so recurrences re-alert) → writes `alerts` (incl. `alert_rule_id` when rule-driven) + fans out `alert_notifications` per active user + pushes `notification` to each user room + severity-gated email; listForUser/unreadCount/markRead. `init(io)` once at startup. Triggers: server CPU/mem/disk + **environment** temperature/gas/humidity (both via configurable `alert_rules` — see alertRulesService) + offline (not rule-based). See `email-popup-notifications.md`
   alertsService.js              ← alert LIFECYCLE (shared, not per-user): list/acknowledge/resolve/openCount + auto-resolve when a metric recovers (called from checkThresholds + sensorHandler); broadcasts `alertUpdated`; `init(io)` once. Backs the now-real `routes/alerts.js`. Distinct from the per-user bell (`alert_notifications.is_read`)
-  alertRulesService.js          ← configurable alert thresholds (`alert_rules`). In-memory cache (reload on startup + every mutation) + `getEffectiveRules(deviceId, metric)` resolver (per-server override else global `device_id=NULL`) + `nextBand()` hysteresis-aware evaluation + admin CRUD. Rules-only: no matching rule = no alert. metric_name: cpu/mem/disk + temperature/gas/humidity. See `email-popup-notifications.md`
+  alertRulesService.js          ← configurable alert thresholds (`alert_rules`). In-memory cache (reload on startup + every mutation) + `getEffectiveRules(deviceId, metric)` resolver (per-server override else global `device_id=NULL`) + `nextBand()` hysteresis-aware evaluation + admin CRUD. Rules-only: no matching rule = no alert. metric_name: cpu/mem/disk + temperature/gas/humidity + router_cpu/router_mem/router_clients/link_util/ups_charge/ups_runtime/ups_load (router/UPS/MikroTik, via deviceAlerts.js — the last two are lower-is-worse, use `<=`). See `email-popup-notifications.md`
   emailService.js               ← Resend wrapper: sendAlertEmail(to, alert) (inline-styled HTML). No-op if RESEND_API_KEY unset. NOTIFY_EMAIL_TO forces all mail to one address (testing)
-  reportService.js              ← REAL reports (MySQL `reports` + on-disk CSV/PDF per report under backend/reports/). generate() builds the dataset live from InfluxDB (sensor_environment / server_metrics) + MySQL (alerts / aircon_logs) per type, writes both files, flips status pending→generated (or failed). list/fileFor(download name = title + period)/remove. Types: environment|server|alerts|aircon. Backs the now-real `routes/reports.js`. See `report-page.md`
+  snmpClient.js                 ← thin net-snmp wrapper: standard OID maps (IF-MIB/UPS-MIB), v2c session, get/walkColumn, value normalize (Counter64→BigInt)
+  snmpPollerService.js          ← router/UPS poll loop (load devices → SNMP collect → counter diff → handlers → status/threshold logs); + getNetworkDevices/getUpsDevices reads
+  deviceAlerts.js               ← shared router/UPS/MikroTik threshold + event alerting (checkRouter/checkUps), called by the SNMP **and** MikroTik pollers. Evaluates metrics against configurable `alert_rules` (alertRulesService.nextBand, band tracked in alertBandState) → raises REAL alerts via notificationService.raiseAlert (bell/email/Alerts page) + device_logs; auto-resolves on recovery (alertsService). Boolean events (interface down, UPS on-battery, device offline/unreachable via checkReachability) raise directly like server offline. Replaced the old device-log-only poller checks
+  alertBandState.js             ← in-memory per-(device,metric) severity band tracker shared by deviceAlerts (onset-only escalation + recovery)
+  backupService.js              ← on-site backup writer: mirrors EVERY ingested sample (env/server/router/MikroTik/UPS) to rotating NDJSON files on `BACKUP_DIR` (a micro SD / USB drive on the backend) — an independent copy that survives a DB wipe + a power outage. Buffered flush + synchronous flush on shutdown (UPS low-battery SIGTERM) + daily retention purge. `init()` once at startup. See `backup-storage.md`
+  reportService.js              ← REAL reports (MySQL `reports` + on-disk CSV/PDF per report under backend/reports/). generate() builds the dataset live from InfluxDB (sensor_environment / server_metrics / router_metrics + network_traffic / ups_metrics) + MySQL (alerts / aircon_logs) per type, writes both files, flips status pending→generated (or failed). list/fileFor(download name = title + period)/remove. Types: environment|server|alerts|aircon|network|ups. Backs the now-real `routes/reports.js`. See `report-page.md`
   reportRenderer.js             ← turns a normalized report ({summary, table}) into CSV + PDF (pdfkit). Store-agnostic — layout only
 backend/handlers/
   sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers + raises per-metric room-level alerts (temperature/gas/humidity) on band escalation, evaluated against `alert_rules` (alertRulesService) — replaces the old firmware-status escalation
@@ -103,8 +123,11 @@ backend/handlers/
   offlineDataHandler.js         ← SD card batch flush from ESP32
   serverMetricsHandler.js       ← agent metric POST → InfluxDB (`server_metrics`) + broadcast `serverMetrics`
   serverHistoryHandler.js       ← Flux query on `server_metrics` for GET /api/servers/:id/history
+  networkMetricsHandler.js      ← router sample → InfluxDB (`router_metrics` + per-iface `network_traffic`) + broadcast `networkMetrics`
+  upsMetricsHandler.js          ← UPS sample → InfluxDB (`ups_metrics`) + broadcast `upsMetrics`
+  networkHistoryHandler.js      ← Flux on `network_traffic` (derived throughput) for GET /api/network/:id/history
+  upsHistoryHandler.js          ← Flux on `ups_metrics` for GET /api/ups/:id/history
 backend/sockets/connectionHandler.js  ← all socket events, device vs browser segregation
-backend/data/db.js              ← in-memory mock: alerts, environment history — NOT persisted (servers + reports are now real: MySQL + InfluxDB)
 backend/middleware/
   auth.js                       ← authMiddleware, requireRole(...roles), JWT_SECRET export
   agentAuth.js                  ← Bearer `AGT-…` token auth for agent metric POSTs
@@ -141,10 +164,15 @@ SESSION_NOTES.md                ← per-session work log
 | Users, system_logs | MySQL | fully implemented |
 | Devices, aircon_state, aircon_logs | MySQL | fully implemented |
 | Servers (devices + server_specs + device_network + agent_tokens), device_logs | MySQL | fully implemented — Go-agent enrollment |
+| Routers/UPS (devices + device_network + ups_details + network_interfaces) | MySQL | SNMP poller; **devices seeded via `migrations/2026-06-12_router_ups_devices.sql`** (template — needs real device facts) |
 | Environment time-series | InfluxDB | measurement: `sensor_environment`, precision: ms |
 | Server-metric time-series | InfluxDB | measurement: `server_metrics` |
-| Reports | MySQL `reports` + on-disk CSV/PDF (`backend/reports/`) | fully implemented — built live from InfluxDB + MySQL on generate. See reportService.js |
-| **legacy alerts array, environment history/logs** | `data/db.js` in-memory | **mock — not persisted**, resets on restart (`/api/environment`). NB: real alerting uses the `alerts` table |
+| Router/UPS time-series | InfluxDB | measurements: `network_traffic` (per-iface, cumulative uint counters), `router_metrics`, `ups_metrics` — tagged by `device_id` |
+| **On-site backup copy (all streams)** | flat files under `BACKUP_DIR` | independent NDJSON backup of every sample (env/server/router/MikroTik/UPS), one file per stream per day, on a micro SD / USB drive on the backend. Survives DB wipe + power outage. See `backup-storage.md` |
+| **Reports** | MySQL `reports` + on-disk CSV/PDF (`backend/reports/`, git-ignored) | fully implemented — built live from InfluxDB + MySQL at generate time, then frozen into the saved files. See `reportService.js` + `report-page.md` |
+
+> **No mocks remain.** `backend/data/` was deleted when Reports went real — `reports` was
+> its last consumer. Every feature is now backed by MySQL, InfluxDB or the backup writer.
 
 ---
 
@@ -160,13 +188,13 @@ SESSION_NOTES.md                ← per-session work log
 | Role | DB value | Access |
 |------|----------|--------|
 | Admin | `admin` | all pages + user management (approves registrations) + alert rules (configurable thresholds) |
-| IT Staff | `it_staff` | dashboard, server metrics, environment, aircon, **alerts (acknowledge/resolve)**, history, reports |
+| IT Staff | `it_staff` | dashboard, server metrics, network, ups, environment, aircon, **alerts (acknowledge/resolve)**, history, reports |
 
 > Login no longer uses passwords. `users.hash_password` is now nullable; `users.status` gained `pending`/`rejected`; new columns `google_sub` + `auth_provider`. The User Management "Add User"/"Reset PW" and Profile "Change Password" UIs are now vestigial.
 
-### Mock endpoints (still `data/db.js`, not real)
-- `routes/environment.js` GET `/history` + `/logs` return mock random data, **not** InfluxDB — real sensor history comes via Socket.IO `changeRange` → `sensorHistory`
-- **`routes/reports.js` is now REAL** (no longer mock): `services/reportService.js` persists to the `reports` table and writes a CSV **and** PDF per report under `backend/reports/` (git-ignored). `POST /api/reports` (admin + it_staff) builds the dataset **live** from the stores per `type` (environment → InfluxDB `sensor_environment`; server → InfluxDB `server_metrics`; alerts → MySQL `alerts`; aircon → MySQL `aircon_logs`) for the chosen `{periodStart, periodEnd}`, then `GET /api/reports/:id/download?format=csv|pdf` streams the saved file (download name = title + period) and `DELETE /api/reports/:id` (admin) removes the row + files. UI = **Reports** page (`pages/Reports.tsx`, Grafana-styled: type cards + range picker modal, per-row CSV/PDF download). Needs the `pdfkit` dep. Full guide: `report-page.md`. **Note:** the **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) writes the **real** `alerts` + `alert_notifications` tables, and both the bell feed and the **Dashboard "Alerts" panel** render that real per-user feed (via `NotificationContext`). See `email-popup-notifications.md`.
+### Formerly-mock endpoints (all now real)
+- `routes/environment.js` is **no longer mock.** GET `/history` + `/logs` (random data / five rows hardcoded to March 2025) are **removed**; `GET /daily` returns a real InfluxDB-backed per-day summary via `services/environmentService.js`, and live sensor history remains a Socket.IO concern (`changeRange` → `sensorHistory`). The file also serves `POST /calibrate-gas` and `GET /sensor-status` (see ESP32 Firmware Notes).
+- **`routes/reports.js` is now REAL** (the last mock, now gone): `services/reportService.js` persists to the `reports` table and writes a CSV **and** PDF per report under `backend/reports/` (git-ignored). `POST /api/reports` (admin + it_staff) builds the dataset **live** from the stores per `type` (environment → InfluxDB `sensor_environment`; server → InfluxDB `server_metrics`; **network → InfluxDB `router_metrics` + `network_traffic`, covering SNMP routers *and* the MikroTik**; **ups → InfluxDB `ups_metrics`**; alerts → MySQL `alerts`; aircon → MySQL `aircon_logs`) for the chosen `{periodStart, periodEnd}`, then `GET /api/reports/:id/download?format=csv|pdf` streams the saved file (download name = title + period) and `DELETE /api/reports/:id` (admin) removes the row + files. UI = **Reports** page (`pages/Reports.tsx`, Grafana-styled: type cards + range picker modal, per-row CSV/PDF download). Needs the `pdfkit` dep. Full guide: `report-page.md`. **Note:** the **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) writes the **real** `alerts` + `alert_notifications` tables, and both the bell feed and the **Dashboard "Alerts" panel** render that real per-user feed (via `NotificationContext`). See `email-popup-notifications.md`.
 - **`routes/alerts.js` is now REAL** (no longer mock): `services/alertsService.js` backs the shared alert **lifecycle** — `GET /api/alerts` (history, `?status=` filter), `POST /api/alerts/:id/acknowledge`, `POST /api/alerts/:id/resolve`, `GET /api/alerts/count` (open-alert count → sidebar **Alerts badge**), all admin + it_staff. Sets `alerts.status` + `acknowledged_by`/`acknowledged_at`/`resolved_at`. **Auto-resolves** open alerts when the metric recovers to normal (wired into `checkThresholds` + `sensorHandler`). Broadcasts `alertUpdated`. UI = **Alerts** page (`pages/Alerts.tsx`) + live unresolved-count badge on the nav (`NotificationContext.openAlertCount`). Shared incident state, distinct from the per-user bell (`is_read`). **Resolve attribution:** single "by {acknowledger}" (resolve folds into `acknowledged_by`); a `resolved_by` column exists from `migrations/2026-06-14_alerts_resolved_by.sql` but is **DORMANT/unused** (separate-resolver UI was built then reverted — see `email-popup-notifications.md` §13.8).
 
 > The `reports.js` generate gate uses `requireRole("admin", "it_staff")`; the **Reports page** mirrors this (Generate button = admin/it_staff, Delete = admin). The old `super_admin` role check in the page was fixed to `admin`.
@@ -198,12 +226,15 @@ SESSION_NOTES.md                ← per-session work log
 | `serverMetrics` | on each Go agent metric POST (~10s/host) — see `server-metrics.md` |
 | `serverStatus` | offline sweep flips a stale server → `{ id, status: "Offline" }` |
 | `serverRemoved` | admin removes a server → `{ id }` |
+| `networkMetrics` | on each router SNMP poll (~60s) → `{ device }` (interfaces, utilization, uptime) |
+| `upsMetrics` | on each UPS SNMP poll (~60s) → `{ ups }` (battery %, runtime, load, on-battery) |
+| `networkStatus` / `upsStatus` | poller marks a router/UPS unreachable → `{ id, status: "Offline" }` |
 | `agentApproved` / `agentPending` | agent approved / registered-or-rejected (admin pending list) |
 | `userPending` / `userApproved` | user self-registered-or-rejected / approved (admin Pending registrations panel) |
 | `deviceLog` | new `device_logs` entry (lifecycle + CPU/Mem/Disk threshold crossings) |
 | `notification` | new alert raised → pushed to **one user's** room (`user:<id>`) → bell feed + badge + corner **toast** (`ToastHost`) + opt-in **OS popup** (Web Notifications API, tab-backgrounded only). Persisted (`alerts` + `alert_notifications`). See `email-popup-notifications.md` |
 | `alertUpdated` | an alert's lifecycle changed (manual acknowledge/resolve, or auto-resolve on metric recovery) → Alerts page refreshes live |
-| `airconStatus` | manual toggle/mode/temp change |
+| `airconStatus` | manual on/off toggle, or a **rename** (`{ aircon: { id, name }, entry }`) |
 | `airconAutoUpdate` | ESP32 auto IR zone change |
 | `irChannelMap` | forwarded from ESP32 on connect |
 
@@ -213,6 +244,7 @@ SESSION_NOTES.md                ← per-session work log
 | `irConfig` | on ESP32 connect + after any add/remove/toggle |
 | `irCommand` | manual Turn On/Off from dashboard |
 | `envConfig` | on ESP32 connect + after any **Alert Rules** change → room-level `alert_rules` thresholds (`{tempWarn,tempCrit,gasWarn,gasCrit,humWarn,humCrit}`, null fields omitted). Firmware applies them at runtime so its **LED/buzzer/reported status** match the dashboard's alert thresholds (no reflash). See alertRulesService + `email-popup-notifications.md` |
+| `calibrateGas` | admin asks the ESP32 to re-measure the MQ-2 **clean-air baseline** (Ro) and save it to NVS flash. Ro is measured once per location and reused on every boot — deliberately NOT re-measured each boot, since a reboot during a gas event would record polluted air as "clean" and permanently under-report smoke. Replaces hand-editing `RO_CLEAN_AIR_*` + reflashing when the box moves. Air must be clean when triggered; out-of-range results are rejected, not stored |
 | `acConfig` | on ESP32 connect + after any **Auto-Cooling Thresholds** change (AirConditioner page, admin) → IR zone **boundaries** (`{coldBelow,normalMax,acceptableMax,nearCritMax}` °C). Firmware's `getIRZone` uses them at runtime so **WHEN IR fires** tracks the dashboard (no reflash). Target temps per zone are fixed (captured IR codes). Separate from `envConfig`/alerts on purpose — cooling should ramp *before* the alarm thresholds. Backed by `aircon_ir_config` (airconService). See `email-popup-notifications.md` |
 
 ---
@@ -251,7 +283,30 @@ Each AC unit is a row in `devices` (type=`'aircon'`) with a linked row in `airco
 > turned OFF stays OFF when IR fires. It returns/emits the affected `deviceIds` so the
 > dashboard updates exactly those units (`airconAutoUpdate` no longer force-enables all).
 
-> **All IR raw data is currently mock NEC.** Replace `IR_28C_AUTO`, `IR_26C_AUTO`, `IR_24C_AUTO`, `IR_22C_HIGH`, `IR_20C_HIGH`, `IR_POWER_ON`, `IR_POWER_OFF` with real captures from the Carrier remote using `IRrecvDumpV2`.
+> **Power-on re-sync.** Because auto IR fires **only on a zone change**, a unit that was
+> OFF at that moment is skipped by both `applyAutoIR` (DB) and the firmware blast (its
+> channel is disabled via `irConfig`) — and would then stay stale until the room next
+> crossed a zone boundary. Switching a unit back ON therefore re-applies the current
+> zone: the firmware sends the zone's IR code right after `IR_POWER_ON` (`irCommand`
+> handler, using the shared `zoneIRData()`), and `airconService.toggle` writes the
+> matching `set_temperature` + an `auto` `aircon_logs` row ("Re-synced to N°C"). The
+> backend's zone comes from `lastZone`, cached in-memory from `irFired`; if the backend
+> restarted since the last zone change it is null and only the hardware re-syncs.
+
+> **All seven IR arrays are real captures from the Carrier remote** (2026-07-31 / 2026-08-01,
+> 38 kHz, 131 values each, captured with `IRLearner.ino`). No mock IR data remains, and
+> `zoneIRData()` no longer refuses any zone. The protocol decodes as UNKNOWN, so there is no
+> library encoder — they are replayed verbatim with `sendRaw()`. Each frame verifies as
+> exactly 64 bits with clean timing clusters, and all seven satisfy the structural invariant
+> the family obeys (bits 61–63 are the complement of bits 53–55).
+>
+> ⚠️ **Captured is not the same as verified against the AC — nothing here has driven a real
+> unit yet.** Two things to confirm on the hardware: (1) `IR_20C_HIGH` reads 010 at bits
+> 53–55 where `IR_22C_HIGH` reads 000, so if that field is fan speed this may be the wrong
+> button — check the unit displays 20 °C / fan High; (2) `IR_POWER_OFF` has `byte[0] = 04`
+> where the other six have `14`, likely a genuine power-state bit but it is the one frame
+> with no sibling to cross-check. Firmware compiles clean against ESP32 core 3.3.7 at **94%
+> of program storage** — worth knowing before adding anything to this sketch.
 
 ---
 
@@ -288,7 +343,7 @@ Panel border-radius: `2px` (not `rounded-xl`). Font: `'JetBrains Mono', monospac
 ### Page Style Status
 | Page | Style |
 |------|-------|
-| Dashboard, Environment, AirConditioner, ServerMetrics, AlertRules, Alerts, Reports, Sidebar, Header | ✅ Grafana tokens |
+| Dashboard, Environment, AirConditioner, ServerMetrics, AlertRules, Alerts, NetworkMonitoring, UpsMonitoring, Reports, Sidebar, Header | ✅ Grafana tokens |
 | History, Settings, UserManagement | ⚠️ still use old `slate-*` classes |
 | ServerDetail | hybrid: `slate-*` base + `dark:` overrides (light/dark adapted, not `--gf-*`) |
 
@@ -297,7 +352,7 @@ Panel border-radius: `2px` (not `rounded-xl`). Font: `'JetBrains Mono', monospac
 ## ESP32 Firmware Notes
 
 - Active file: `iot/esp32/env_monitor_v2.ino`
-- `#define SD_ENABLED false` — set `true` only when SD module is physically connected
+- **No SD card / on-device buffer** — the offline log was removed. Every monitored link is on a UPS, so the device doesn't drop; durability is the backend's job (`backupService`). A reading taken while WiFi is down is logged to serial and dropped. The backend's `offlineData` handler still exists but is dormant — nothing emits it
 - `deviceSecret` must match `DEVICE_SECRET` in `backend/.env`
 - IR fires only on temperature **zone change**, not every loop tick
 - `enabledChannels[]` updated at runtime via `irConfig` socket event — no reflash needed to add/disable AC units

@@ -420,11 +420,10 @@ parentheses use `requireRole(...)`.
 |--------|----------|------|-------------|
 | GET | `/aircon` | ✅ | All AC units + state + channel map |
 | GET | `/aircon/channels` | Public | ESP32 boot-time IR channel config fetch |
-| POST | `/aircon` | ✅ (admin, it_staff) | Add a unit (body `{ name, ir_channel: 1–4 }`) |
+| POST | `/aircon` | ✅ (admin, it_staff) | Add a unit (body `{ name, ir_channel: 1–4 }`). `409` if the name or channel is already taken |
 | DELETE | `/aircon/:id` | ✅ (admin) | Remove a unit |
 | PATCH | `/aircon/:id/toggle` | ✅ (admin, it_staff) | Turn ON/OFF → emits `airconStatus` + fires `irCommand` |
-| PATCH | `/aircon/:id/mode` | ✅ (admin, it_staff) | Set mode `cool`/`auto`/`fan` |
-| PATCH | `/aircon/:id/temp` | ✅ (admin, it_staff) | Set target temp (16–30) |
+| PATCH | `/aircon/:id/name` | ✅ (admin, it_staff) | Rename a unit (body `{ name }`, 1–100 chars, unique among aircon; `409` if taken) → emits `airconStatus` + logs to `aircon_logs` |
 
 ### Mock endpoints (in-memory, reset on restart)
 
@@ -471,7 +470,7 @@ distinguishes them.
 | `agentApproved` / `agentPending` | Agent approved / registered-or-rejected |
 | `userPending` / `userApproved` | User self-registered-or-rejected / approved |
 | `deviceLog` | New `device_logs` entry (lifecycle + threshold crossings) |
-| `airconStatus` | Manual toggle/mode/temp change |
+| `airconStatus` | Manual on/off toggle, rename, or power-on re-sync |
 | `airconAutoUpdate` | ESP32 auto IR zone change (only affected `deviceIds`) |
 | `irChannelMap` | Forwarded from ESP32 on connect |
 
@@ -496,7 +495,7 @@ endpoint). Full guide: **`Environment.md`**.
 
 Firmware notes (`iot/esp32/env_monitor_v2.ino`):
 
-- `#define SD_ENABLED false` — set `true` only when the SD module is connected.
+- **No SD card / on-device buffer** — removed; durability lives on the backend (`backupService`). The `offlineData` handler remains but is dormant.
 - `deviceSecret` must match `DEVICE_SECRET` in `backend/.env`.
 - Timestamp priority: DS3231 RTC → NTP (UTC+8) → uptime fallback.
 - Buzzer uses 10-bit LEDC; `ledcWrite(pin, 0)` to silence.
@@ -517,7 +516,9 @@ IR **only on temperature zone change**:
 
 **Power is manual-only.** Auto IR (`applyAutoIR`) only re-targets the set temperature of
 units that are **currently ON** — it never flips `is_on`, so a unit a user turned off stays
-off. All IR raw data is currently mock NEC and needs real captures from the Carrier remote.
+off. All seven IR arrays are **real Carrier captures** (no mock data remains), but none has
+yet driven a physical unit — see `Environment.md` §8 for the two things to verify on the
+hardware and the re-capture procedure.
 
 ### 11.3 Server metrics (Go agent)
 
@@ -608,12 +609,14 @@ classes; ServerDetail is a `slate-*` + `dark:` hybrid.
 - **Vestigial password UI:** with Google-only login, the User Management "Reset PW" and
   Profile "Change Password" controls (and the `POST /users` / reset-password endpoints) are
   no longer meaningful. Flagged for removal.
-- **`routes/auth.js` missing import:** `GET /auth/me` and `POST /auth/logout` reference an
-  `authService` that is not imported in the current working tree (only `googleAuthService`
-  and `authMiddleware` are). These two routes will throw until `authService` is imported —
-  worth fixing before relying on `/me` and `/logout`.
-- **Mock IR data:** all IR raw signals in the firmware are placeholder NEC codes; replace
-  with real captures from the Carrier remote (`IRrecvDumpV2`).
+- ~~**`routes/auth.js` missing import**~~ — FIXED. `authService` is imported (`routes/auth.js:3`),
+  so `GET /auth/me` and `POST /auth/logout` work. Entry kept only so the old note isn't
+  re-derived from a stale copy of this file.
+- **IR data captured but unverified:** all seven arrays are real Carrier captures — no mock
+  data remains — but none has driven a physical AC yet. Two open questions to settle on the
+  hardware: `IR_20C_HIGH` may be the wrong fan setting (bits 53–55 read 010 vs 000 on
+  `IR_22C_HIGH`), and `IR_POWER_OFF` has a one-bit header difference from all six others.
+  See `Environment.md` §8.
 - **Unplanned schema tables:** several schema tables (UPS, MikroTik, suggestions, alert
   rules/notifications, settings, network interfaces, metrics config) are defined but not yet
   wired to live code.

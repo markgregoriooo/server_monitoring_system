@@ -1,5 +1,6 @@
 import { writeClient, Point } from "../config/influx.js";
 import agentService from "../services/agentService.js";
+import backupService from "../services/backupService.js";
 
 // Float fields every metric POST must carry. process_count is validated
 // separately as an integer. Keep this list in sync with the Go agent's
@@ -71,6 +72,25 @@ export async function serverMetricsHandler(req, res) {
     console.error("[SERVER_METRICS] InfluxDB error:", err);
     // fall through — still update status + broadcast so the UI stays live
   }
+
+  // ---- On-site backup copy (independent of InfluxDB) ----
+  backupService.record("server", {
+    device_id: device.device_id,
+    device_name: device.device_name,
+    location: device.location,
+    os: device.os,
+    cpu_percent: data.cpu_percent,
+    mem_used_mb: data.mem_used_mb,
+    mem_total_mb: data.mem_total_mb,
+    mem_percent: data.mem_percent,
+    disk_used_gb: data.disk_used_gb,
+    disk_total_gb: data.disk_total_gb,
+    disk_percent: data.disk_percent,
+    net_bytes_sent: data.net_bytes_sent,
+    net_bytes_recv: data.net_bytes_recv,
+    uptime_seconds: data.uptime_seconds,
+    process_count: data.process_count,
+  });
 
   // ---- Heartbeat: mark online + refresh last_seen/uptime in MySQL ----
   let cameOnline = false;

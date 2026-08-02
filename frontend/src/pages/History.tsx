@@ -2,11 +2,16 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 
-// ─── Unified activity / audit history ─────────────────────────────────────────
-// One accountable timeline merged from system_logs + aircon_logs + alerts +
-// device_logs (backend services/historyService.js). Every event is tagged with
-// an ACTOR — Admin / Staff / System — so it's clear who (or what) did it.
-// (Metric history lives on the Environment / Server Detail pages, not here.)
+// ─── History — two views ──────────────────────────────────────────────────────
+// "Activity": one accountable timeline merged from system_logs + aircon_logs +
+// alerts + device_logs (backend services/historyService.js). Every event is tagged
+// with an ACTOR — Admin / Staff / System — so it's clear who (or what) did it.
+//
+// "Environment daily": per-day room conditions from InfluxDB (services/
+// environmentService.js). Deliberately a SUMMARY, not a time-series — live charts
+// still belong on the Environment / Server Detail pages. The two views answer
+// different questions ("who did what" vs "what was the room like") over the same
+// period, which is why they share a page rather than a query.
 
 // ── Grafana design tokens ──
 const gf = {
@@ -164,7 +169,159 @@ function Badge({ label, color, subtle }: { label: string; color: string; subtle?
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
+// ─── Environment daily summary ────────────────────────────────────────────────
+// The second view on this page. Where the Activity tab answers "who did what", this
+// answers "what was the room actually like" — per-UTC-day temperature avg/max/min,
+// humidity, peak gas and that day's environment-alert count, measured from InfluxDB
+// (GET /api/environment/daily). It replaces a mock that served five rows hardcoded to
+// March 2025. Live charts still live on the Environment page; this is the summary.
+
+interface DailyRow {
+  date: string;
+  avgTemp: number | null;
+  maxTemp: number | null;
+  minTemp: number | null;
+  avgHum: number | null;
+  peakGas: number | null;
+  events: number;
+}
+
+const DAILY_DAYS: { label: string; value: number }[] = [
+  { label: "7d", value: 7 },
+  { label: "30d", value: 30 },
+  { label: "90d", value: 90 },
+];
+
+// A missing reading renders as "—", never a fabricated 0.
+function metric(v: number | null, unit: string): string {
+  return v == null ? "—" : `${v} ${unit}`;
+}
+
+function tempColor(v: number | null): string {
+  if (v == null) return gf.textDim;
+  if (v >= 28) return "#E02F44";
+  if (v >= 25) return "#FF780A";
+  return "#37C2C4";
+}
+
+function gasColor(v: number | null): string {
+  if (v == null) return gf.textDim;
+  if (v >= 300) return "#E02F44";
+  if (v >= 150) return "#FF780A";
+  return gf.textPrimary;
+}
+
+function DailySummary() {
+  const [rows, setRows] = useState<DailyRow[]>([]);
+  const [days, setDays] = useState(7);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.getEnvironmentDaily(days).then((res) => {
+      if (cancelled) return;
+      if (res.success && res.data) {
+        setRows(res.data.logs ?? []);
+        setError(null);
+      } else {
+        // "Query failed" and "no data yet" must not look the same — this reads
+        // InfluxDB, which can be down independently of the rest of the app.
+        setRows([]);
+        setError(res.error ?? "Could not load the environment summary.");
+      }
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [days]);
+
+  // Averages skip days with no reading rather than counting them as 0, which would
+  // drag the mean toward zero every time the sensor was down.
+  const mean = (pick: (r: DailyRow) => number | null): string => {
+    const vals = rows.map(pick).filter((v): v is number => v != null);
+    return vals.length ? (vals.reduce((a, v) => a + v, 0) / vals.length).toFixed(1) : "—";
+  };
+  const peak = rows.reduce<number | null>(
+    (hi, r) => (r.maxTemp != null && (hi == null || r.maxTemp > hi) ? r.maxTemp : hi),
+    null,
+  );
+  const totalEvents = rows.reduce((a, r) => a + r.events, 0);
+
+  return (
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <Tile label="Days with data" value={rows.length} color={gf.textPrimary} />
+        <Tile label="Avg temp" value={`${mean((r) => r.avgTemp)} °C`} color="#37C2C4" />
+        <Tile label="Peak temp" value={peak == null ? "—" : `${peak} °C`} color="#FF780A" />
+        <Tile label="Env alerts" value={totalEvents} color="#E02F44" />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="flex gap-1">
+          {DAILY_DAYS.map((d) => (
+            <Seg key={d.value} active={days === d.value} onClick={() => setDays(d.value)}>
+              {d.label}
+            </Seg>
+          ))}
+        </div>
+        <span className="text-[10px]" style={{ color: gf.textDim }}>
+          days are UTC (InfluxDB windows), so a day runs 08:00–08:00 Manila
+        </span>
+      </div>
+
+      <div className="rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px] border-collapse">
+            <thead>
+              <tr style={{ background: gf.header }}>
+                {["Date", "Avg temp", "Max temp", "Min temp", "Avg humidity", "Peak gas", "Alerts"].map((h) => (
+                  <th key={h} className="text-left px-3 py-2 font-semibold whitespace-nowrap"
+                    style={{ color: gf.textMuted, borderBottom: `1px solid ${gf.border}` }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={7} className="px-3 py-10 text-center" style={{ color: gf.textMuted }}>Loading…</td></tr>
+              ) : error ? (
+                <tr><td colSpan={7} className="px-3 py-10 text-center">
+                  <div style={{ color: "#E02F44" }}>{error}</div>
+                  <div className="mt-1 text-[10px]" style={{ color: gf.textDim }}>
+                    Daily summaries read InfluxDB — check it is running and that INFLUX_BUCKET
+                    matches the bucket the sensor writes to.
+                  </div>
+                </td></tr>
+              ) : rows.length === 0 ? (
+                <tr><td colSpan={7} className="px-3 py-10 text-center">
+                  <div style={{ color: gf.textMuted }}>No environment readings in the last {days} days.</div>
+                  <div className="mt-1 text-[10px]" style={{ color: gf.textDim }}>
+                    Rows appear once the ESP32 has been reporting for at least one day.
+                  </div>
+                </td></tr>
+              ) : (
+                rows.map((r) => (
+                  <tr key={r.date} style={{ borderTop: `1px solid ${gf.border}` }}>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: gf.textPrimary }}>{r.date}</td>
+                    <td className="px-3 py-2 font-bold whitespace-nowrap" style={{ color: tempColor(r.avgTemp) }}>{metric(r.avgTemp, "°C")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.maxTemp == null ? gf.textDim : "#E02F44" }}>{metric(r.maxTemp, "°C")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.minTemp == null ? gf.textDim : GREEN }}>{metric(r.minTemp, "°C")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.avgHum == null ? gf.textDim : "#5794F2" }}>{metric(r.avgHum, "%")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: gasColor(r.peakGas) }}>{metric(r.peakGas, "ppm")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.events > 0 ? "#FF780A" : gf.textDim }}>{r.events}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export default function History() {
+  const [tab, setTab] = useState<"activity" | "daily">("activity");
   const [events, setEvents] = useState<HistoryEvent[]>([]);
   const [summary, setSummary] = useState<HistorySummary | null>(null);
   const [total, setTotal] = useState(0);
@@ -260,15 +417,31 @@ export default function History() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-[15px] font-bold" style={{ color: gf.textPrimary }}>History</h1>
-          <p className="text-[11px] mt-1" style={{ color: gf.textMuted }}>
-            Unified activity &amp; audit timeline — every event attributed to{" "}
-            <span style={{ color: "#B877D9" }}>Admin</span>,{" "}
-            <span style={{ color: "#5794F2" }}>Staff</span> or{" "}
-            <span style={{ color: "#6E7B91" }}>System</span>.
-          </p>
+          {tab === "activity" ? (
+            <p className="text-[11px] mt-1" style={{ color: gf.textMuted }}>
+              Unified activity &amp; audit timeline — every event attributed to{" "}
+              <span style={{ color: "#B877D9" }}>Admin</span>,{" "}
+              <span style={{ color: "#5794F2" }}>Staff</span> or{" "}
+              <span style={{ color: "#6E7B91" }}>System</span>.
+            </p>
+          ) : (
+            <p className="text-[11px] mt-1" style={{ color: gf.textMuted }}>
+              Per-day server-room conditions, measured from InfluxDB.
+            </p>
+          )}
+        </div>
+
+        {/* Two questions, one page: who did what, vs. what the room was like. */}
+        <div className="flex gap-1">
+          <Seg active={tab === "activity"} onClick={() => setTab("activity")}>Activity</Seg>
+          <Seg active={tab === "daily"} onClick={() => setTab("daily")}>Environment daily</Seg>
         </div>
       </div>
 
+      {tab === "daily" && <DailySummary />}
+
+      {tab === "activity" && (
+      <>
       {/* Stat tiles */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
         <Tile label="Total events" value={total} color={gf.textPrimary} />
@@ -479,6 +652,8 @@ export default function History() {
             >Next →</button>
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );

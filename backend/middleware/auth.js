@@ -4,6 +4,28 @@ import db from "../config/mysql.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
+// ─── Sliding-session renewal ────────────────────────────────────────────────────
+// issueSession() mints 1h tokens. Rather than hard-logging out an active user at the
+// 1h mark, we re-issue a fresh 1h token once the current one is past its HALF-LIFE
+// (>30 min old) and hand it back in the X-Renewed-Token response header; the frontend
+// swaps it into sessionStorage transparently. A user who keeps making requests never
+// gets kicked out, while a genuinely idle session (no requests) still expires ~1h
+// after its last activity. The renewed token carries the SAME claims (incl. `tv`), so
+// token_version revocation (logout/disable/role change) keeps working unchanged.
+const RENEW_TTL = "1h";        // must match issueSession()'s expiresIn
+const FALLBACK_TTL_SEC = 3600; // only used if a token somehow lacks iat/exp
+
+function maybeRenewToken(res, decoded) {
+  const now = Math.floor(Date.now() / 1000);
+  const iat = decoded.iat ?? now;
+  const exp = decoded.exp ?? iat + FALLBACK_TTL_SEC;
+  if (now < iat + (exp - iat) / 2) return; // still in the first half of its life
+
+  // Drop the time claims so jwt.sign can stamp fresh iat/exp from expiresIn.
+  const { iat: _iat, exp: _exp, nbf: _nbf, ...claims } = decoded;
+  const renewed = jwt.sign(claims, JWT_SECRET, { algorithm: "HS256", expiresIn: RENEW_TTL });
+  res.setHeader("X-Renewed-Token", renewed);
+}
 
   //  auth middleware
 async function authMiddleware(req, res, next) {
@@ -16,7 +38,7 @@ async function authMiddleware(req, res, next) {
 
   let decoded;
   try {
-    decoded = jwt.verify(token, JWT_SECRET);
+    decoded = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
   } catch (err) {
     return res.status(403).json({ error: "Invalid or expired token." });
   }
@@ -38,6 +60,7 @@ async function authMiddleware(req, res, next) {
   }
 
   req.user = decoded;
+  maybeRenewToken(res, decoded); // sliding session: extend an active user's token
   next();
 }
 
