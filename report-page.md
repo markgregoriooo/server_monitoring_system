@@ -288,9 +288,21 @@ the **Delete** action only for admin. (The old page checked a non-existent
 | `reportDeleted` | `remove()` | It disappears |
 
 An admin watching the page sees a colleague's report appear, build and finish without
-refreshing. All three handlers in `Reports.tsx` are **idempotent by id** — the tab that
-clicked Generate already inserted the row from the 202 response, and `reportCreated`
-arrives right after for the same id.
+refreshing.
+
+> **Every path that adds a row goes through one insert-or-replace by id
+> (`upsertReport`)** — the socket handlers *and* the Generate response.
+>
+> They race, and **the socket usually wins**: `create()` emits `reportCreated` before
+> returning, and the route then `await`s an audit-log write before sending its 202. So
+> the row is normally in state by the time the HTTP response resolves. The Generate
+> handler originally did an unconditional prepend, which duplicated the row on screen
+> every single time — not intermittently, because the audit write makes the socket win
+> reliably.
+>
+> Keeping the insert on the 202 path (rather than deleting it and trusting the socket)
+> means the row still appears if the socket is down. Making it idempotent is what makes
+> both safe. The same property covers a reconnect that replays `reportCreated`.
 
 Only the **toast** is creator-specific: the page compares `generatedBy` to the signed-in
 user, so nobody gets a popup for somebody else's report.

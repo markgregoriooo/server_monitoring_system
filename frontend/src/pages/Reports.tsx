@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
@@ -171,28 +171,32 @@ export default function Reports() {
     load();
   }, []);
 
+  // Insert-or-replace by id. EVERY path that adds a row must go through this — the
+  // socket handlers below AND the Generate response.
+  //
+  // The two race, and the socket usually wins: the backend emits `reportCreated`
+  // inside create(), then the route awaits an audit-log write before sending its
+  // 202. So by the time the HTTP response resolves the row is normally already in
+  // state, and an unconditional prepend there duplicated it.
+  const upsertReport = useCallback((r: Report) => {
+    setReports((prev) => {
+      const i = prev.findIndex((x) => x.id === r.id);
+      if (i === -1) return [r, ...prev];
+      const next = [...prev];
+      next[i] = r;
+      return next;
+    });
+  }, []);
+
   // Live lifecycle. Reports are a SHARED list — everyone sees every row — so the
   // backend broadcasts all three events to every dashboard: an admin watching this
   // page sees a colleague's report appear as `pending`, then flip to generated or
   // failed, then vanish if it's deleted. No refresh anywhere.
-  //
-  // All three handlers are idempotent by id: the tab that clicked Generate already
-  // inserted the row from the 202 response, and `reportCreated` arrives right after
-  // for the same id.
   useEffect(() => {
-    const upsert = (r: Report) =>
-      setReports((prev) => {
-        const i = prev.findIndex((x) => x.id === r.id);
-        if (i === -1) return [r, ...prev];
-        const next = [...prev];
-        next[i] = r;
-        return next;
-      });
-
-    const onCreated = (r: Report) => upsert(r);
+    const onCreated = (r: Report) => upsertReport(r);
 
     const onUpdated = (r: Report) => {
-      upsert(r);
+      upsertReport(r);
       // Toast only for the person who asked for it — otherwise every user gets a
       // popup every time anyone anywhere generates a report.
       if (user && r.generatedBy === user.id) {
@@ -214,7 +218,7 @@ export default function Reports() {
       socket.off("reportUpdated", onUpdated);
       socket.off("reportDeleted", onDeleted);
     };
-  }, [user]);
+  }, [user, upsertReport]);
 
   // Escape closes the modal
   useEffect(() => {
@@ -283,9 +287,12 @@ export default function Reports() {
     setGenerating(false);
     if (res.success && res.data?.report) {
       // 202: the row comes back `pending` and the backend builds it in the
-      // background. It lands in the table straight away and flips to generated (or
-      // failed) when `reportUpdated` arrives — see the socket effect above.
-      setReports((p) => [res.data.report as Report, ...p]);
+      // background, flipping to generated (or failed) when `reportUpdated` arrives.
+      //
+      // upsert, NOT a prepend: `reportCreated` has almost certainly delivered this
+      // same row over the socket already (see upsertReport). Still done here so the
+      // row appears even if the socket is down.
+      upsertReport(res.data.report as Report);
       setModalOpen(false);
       showToast("Generating report…");
     } else {
