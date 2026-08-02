@@ -27,8 +27,9 @@ Guide to the Reports feature: an admin/IT-staff user picks a **report type** and
                               ┌──────────────────────────────────────────────────┐
                               │  Express backend                                  │
                               │  routes/reports.js → services/reportService.js    │
-                              │   1. INSERT reports row (status=pending)          │
-                              │   2. build dataset live, per type:                │
+                              │   1. create(): INSERT row (pending) → 202 + emit  │
+                              │   ── request ends here; the rest is background ── │
+                              │   2. build(): dataset live, per type:             │
                               │        environment → InfluxDB sensor_environment  │
                               │        server      → InfluxDB server_metrics      │
                               │        network     → InfluxDB router_metrics +    │
@@ -39,6 +40,7 @@ Guide to the Reports feature: an admin/IT-staff user picks a **report type** and
                               │   3. reportRenderer.js → CSV + PDF (pdfkit)       │
                               │   4. write backend/reports/report-<id>.{csv,pdf}  │
                               │   5. UPDATE status=generated, file_path=stem      │
+                              │   6. io.emit("reportUpdated") → every dashboard   │
                               └───────────────┬──────────────────────────────────┘
                                               │
             MySQL `reports` (metadata) ◀──────┤──────▶ backend/reports/ (CSV + PDF, git-ignored)
@@ -47,9 +49,10 @@ Guide to the Reports feature: an admin/IT-staff user picks a **report type** and
                          GET /api/reports/:id/download?format=csv|pdf  → res.download(file)
 ```
 
-Reports are **generated on request**, not on a schedule. Generation is synchronous
-(the POST returns once the files are written) — fine for the campus scale where
-reports are produced occasionally.
+Reports are **generated on request**, not on a schedule, and generation is
+**asynchronous**: the POST answers `202` with a `pending` row and the build runs in
+the background, pushing the result to every open dashboard over Socket.IO (§11, §12).
+Every action is also written to the audit trail the History page reads (§11).
 
 ---
 
@@ -66,15 +69,19 @@ reports are produced occasionally.
 4. Click **Generate report**:
    - pick a **type** (Environment / Server Metrics / Network Traffic / UPS Power /
      Alert History / Aircon Activity),
+   - optional **device** — only shown for types that can be scoped (§13),
    - optional **title** (defaults to e.g. "Environment Report"),
    - pick a **period** — quick `Last 24h / 7 days / 30 days`, or **Custom** dates.
-5. Hit **Generate**. The new row appears at the top with status **generated**.
-6. Download it as **CSV** or **PDF** from the row. Admins can **delete** a report
-   (removes the DB row + both files).
+5. Hit **Generate**. The modal closes and the row appears at the top as **pending**,
+   flipping to **generated** on its own when the background build finishes — on every
+   open Reports page, not just yours (§11).
+6. Download it as **CSV** or **PDF**, or **email** yourself the PDF. Admins can
+   **delete** a report (removes the DB row + both files).
 
-No migration is needed — the `reports` table already ships in the schema
-(`V10cspc-ictu-monitoring-system-schema.sql`). `pdfkit` is the only added dependency
-(`backend/package.json`).
+**Run `migrations/2026-08-02_report_device_scope.sql` once** (adds `reports.device_id`
+for per-device scope). The `reports` table itself already ships in the schema
+(`V10cspc-ictu-monitoring-system-schema.sql`), and `pdfkit` is the only added
+dependency (`backend/package.json`).
 
 ---
 
@@ -83,8 +90,10 @@ No migration is needed — the `reports` table already ships in the schema
 ### Backend
 | File | Role |
 |------|------|
-| `backend/routes/reports.js` | REST routes: list / generate / download / delete. |
-| `backend/services/reportService.js` | The feature core — persistence, the per-type data builders (InfluxDB/MySQL), file writing, lifecycle, download resolution, delete. |
+| `backend/routes/reports.js` | REST routes: list / scope-options / generate / download / email / delete. Audits every mutating action to `system_logs`. |
+| `backend/services/reportService.js` | The feature core — persistence, the per-type data builders (InfluxDB/MySQL), file writing, lifecycle + Socket.IO broadcast, download resolution, email, delete, retention. |
+| `backend/services/auditService.js` | Shared `audit()` helper — report actions land in `system_logs` under `module: 'reports'` (§11). |
+| `backend/services/emailService.js` | Shared Resend wrapper — `sendReportEmail` attaches the stored PDF (§14). |
 | `backend/services/reportRenderer.js` | Store-agnostic layout: turns a normalized `{ summary, table }` into a CSV string and a PDF `Buffer` (pdfkit). Knows nothing about where the data came from. |
 | `backend/reports/` | Generated files (`report-<id>.csv` / `.pdf`). Created at startup, **git-ignored**. |
 | ~~`backend/data/db.js`~~ | **Deleted.** `reports` was the last mock it backed, so the whole `backend/data/` folder went with this feature. |
@@ -92,8 +101,9 @@ No migration is needed — the `reports` table already ships in the schema
 ### Frontend
 | File | Role |
 |------|------|
-| `frontend/src/pages/Reports.tsx` | Grafana-styled page: stat cards, search + type filter, reports table (per-row CSV/PDF + admin delete), and the Generate modal. Builds the download filename client-side. |
-| `frontend/src/api/api.ts` | `getReports()`, `generateReport(opts)`, `downloadReport(id, format, filename?)`, `deleteReport(id)`. |
+| `frontend/src/pages/Reports.tsx` | Grafana-styled page: stat cards, search + type filter, reports table (per-row CSV/PDF/email + admin delete), the Generate modal (type cards, device scope, period), and the three live socket handlers. Builds the download filename client-side. |
+| `frontend/src/api/api.ts` | `getReports()`, `getReportScopeOptions(type)`, `generateReport(opts)`, `downloadReport(id, format, filename?)`, `emailReport(id)`, `deleteReport(id)`. |
+| `frontend/src/pages/History.tsx` | Renders the report audit rows under the **Reports** category pill. |
 
 ---
 
@@ -106,8 +116,8 @@ No migration is needed — the `reports` table already ships in the schema
 | `generated_by` | FK → `users.user_id` (who generated it). Joined to show the author name. |
 | `title` | Display title; defaults to `"<Type> Report"`, or `"<Type> Report — <Device>"` when scoped. |
 | `type` | ENUM — all six values are used: `environment` / `server` / `network` / `ups` / `alerts` / `aircon`. The ENUM already shipped with `network` + `ups`, so wiring those two needed **no migration**. |
-| `device_id` | **Added by `migrations/2026-08-02_report_device_scope.sql`.** FK → `devices`, NULL = campus-wide. `ON DELETE SET NULL` so decommissioning a router doesn't delete the reports describing it. See §12. |
-| `status` | `pending` → `generated`, or `failed` if the build threw. Now genuinely observable — generation is asynchronous (§11). |
+| `device_id` | **Added by `migrations/2026-08-02_report_device_scope.sql`.** FK → `devices`, NULL = campus-wide. `ON DELETE SET NULL` so decommissioning a router doesn't delete the reports describing it. See §13. |
+| `status` | `pending` → `generated`, or `failed` if the build threw. Now genuinely observable — generation is asynchronous (§12). |
 | `file_path` | The **stem** `report-<id>` (no extension). The route appends `.csv` / `.pdf`. |
 | `period_start`, `period_end` | The reporting window. |
 | `created_at`, `updated_at` | Timestamps. |
@@ -173,7 +183,7 @@ All routes are under `/api/reports` and require a valid JWT (`authMiddleware`).
 |--------|------|------|---------|
 | `GET` | `/` | admin + it_staff | List reports, newest first. Optional `?type=` filter. |
 | `GET` | `/scope-options?type=` | admin + it_staff | Devices this report type can be scoped to. Empty array = campus-wide only. |
-| `POST` | `/` | admin + it_staff | Start a report. Body `{ type, title?, periodStart?, periodEnd?, deviceId? }`. Defaults: period = last 7 days, scope = all devices. **Returns `202` with the `pending` row** — see §11. |
+| `POST` | `/` | admin + it_staff | Start a report. Body `{ type, title?, periodStart?, periodEnd?, deviceId? }`. Defaults: period = last 7 days, scope = all devices. **Returns `202` with the `pending` row** — see §12. |
 | `POST` | `/:id/email` | admin + it_staff | Mails the stored PDF to the requesting user. Does not rebuild. |
 | `GET` | `/:id/download?format=csv\|pdf` | admin + it_staff | Streams the stored file via `res.download`. `404` if not generated / missing. |
 | `DELETE` | `/:id` | **admin** | Deletes the row + both files. |
@@ -263,7 +273,50 @@ the **Delete** action only for admin. (The old page checked a non-existent
 
 ---
 
-## 11. Asynchronous generation
+## 11. Live updates & the audit trail
+
+### The list is shared, so the push is too
+
+`GET /api/reports` returns **every** report regardless of who made it — the page has a
+"Generated by" column. So the three lifecycle events broadcast to every dashboard
+(`io.emit`), not to the creator's room:
+
+| Event | Fired by | Effect on every open Reports page |
+|-------|----------|-----------------------------------|
+| `reportCreated` | `create()` | The `pending` row appears |
+| `reportUpdated` | `build()` | It flips to `generated` / `failed` |
+| `reportDeleted` | `remove()` | It disappears |
+
+An admin watching the page sees a colleague's report appear, build and finish without
+refreshing. All three handlers in `Reports.tsx` are **idempotent by id** — the tab that
+clicked Generate already inserted the row from the 202 response, and `reportCreated`
+arrives right after for the same id.
+
+Only the **toast** is creator-specific: the page compares `generatedBy` to the signed-in
+user, so nobody gets a popup for somebody else's report.
+
+> The nightly retention purge calls `remove(id, { silent: true })` — otherwise it would
+> fire one socket event per deleted row at 3am, when nobody is watching and a page
+> opened later loads the correct list anyway.
+
+### Every action lands in History
+
+Report actions are audited to `system_logs` with `module: 'reports'` — a value the
+schema already carried — so they appear on the **History** page next to auth, aircon
+and alert activity. No migration needed.
+
+| Action | Level | Logged because |
+|--------|-------|----------------|
+| `generate_report` | info | Who asked for what data, over which window |
+| `download_report` | info | An **export** of campus monitoring data leaving the system |
+| `email_report` | info | Same, plus where it was sent |
+| `delete_report` | **warning** | Destructive and irreversible — the files go too |
+
+Reads (`GET /`, `/scope-options`) are **not** audited: they are noise, and History is
+for actions that changed or exported something. Auditing is best-effort by design
+(`auditService`), so a failed audit write can never break the action that triggered it.
+
+## 12. Asynchronous generation
 
 `POST /api/reports` answers **202** as soon as the row is recorded, then builds in the
 background. A 30-day network report runs several InfluxDB queries and would otherwise
@@ -288,7 +341,7 @@ build(id) run builder → write CSV+PDF → status='generated'
   gated the CSV/PDF buttons on `status === "generated"` — that state was simply
   unreachable before. The only UI change needed was the socket listener.
 
-## 12. Per-device scope
+## 13. Per-device scope
 
 `deviceId` on `POST /api/reports` narrows a report to one device; omit it for
 campus-wide (the previous behaviour, still the default).
@@ -309,7 +362,7 @@ Network report scoped to a UPS is an error, not an empty report.
 > `Number.isInteger` before interpolating. A string like `1" or r.device_id != "` is
 > rejected at the first gate.
 
-## 13. Email delivery
+## 14. Email delivery
 
 `POST /api/reports/:id/email` sends the **stored PDF** to the requesting user, using
 the existing Resend wrapper (`emailService.sendReportEmail`).
@@ -322,7 +375,7 @@ the existing Resend wrapper (`emailService.sendReportEmail`).
 - No-ops safely: `503` when `RESEND_API_KEY` is unset, `502` if Resend rejects it.
   `NOTIFY_EMAIL_TO` still forces all mail to one address for testing.
 
-## 14. Retention
+## 15. Retention
 
 `REPORT_RETENTION_DAYS` (blank = **90**) purges reports older than that, at startup
 and daily — same cadence and shape as the alerts purge in `server.js`.

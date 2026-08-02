@@ -171,26 +171,50 @@ export default function Reports() {
     load();
   }, []);
 
-  // Live: a background build finished (or failed) → swap that row in place. Reports
-  // are generated asynchronously, so the row first appears as `pending` and this is
-  // what flips it. Scoped to the user who asked for it (server emits to user:<id>).
+  // Live lifecycle. Reports are a SHARED list — everyone sees every row — so the
+  // backend broadcasts all three events to every dashboard: an admin watching this
+  // page sees a colleague's report appear as `pending`, then flip to generated or
+  // failed, then vanish if it's deleted. No refresh anywhere.
+  //
+  // All three handlers are idempotent by id: the tab that clicked Generate already
+  // inserted the row from the 202 response, and `reportCreated` arrives right after
+  // for the same id.
   useEffect(() => {
-    const onUpdated = (r: Report) => {
+    const upsert = (r: Report) =>
       setReports((prev) => {
         const i = prev.findIndex((x) => x.id === r.id);
-        if (i === -1) return [r, ...prev]; // generated in another tab
+        if (i === -1) return [r, ...prev];
         const next = [...prev];
         next[i] = r;
         return next;
       });
-      if (r.status === "failed") showToast(`"${r.title}" failed to generate.`, false);
-      else if (r.status === "generated") showToast(`"${r.title}" is ready.`);
+
+    const onCreated = (r: Report) => upsert(r);
+
+    const onUpdated = (r: Report) => {
+      upsert(r);
+      // Toast only for the person who asked for it — otherwise every user gets a
+      // popup every time anyone anywhere generates a report.
+      if (user && r.generatedBy === user.id) {
+        if (r.status === "failed") showToast(`"${r.title}" failed to generate.`, false);
+        else if (r.status === "generated") showToast(`"${r.title}" is ready.`);
+      }
     };
+
+    const onDeleted = ({ id }: { id: number }) => {
+      setReports((prev) => prev.filter((x) => x.id !== id));
+      setConfirmId((c) => (c === id ? null : c)); // don't strand an open confirm
+    };
+
+    socket.on("reportCreated", onCreated);
     socket.on("reportUpdated", onUpdated);
+    socket.on("reportDeleted", onDeleted);
     return () => {
+      socket.off("reportCreated", onCreated);
       socket.off("reportUpdated", onUpdated);
+      socket.off("reportDeleted", onDeleted);
     };
-  }, []);
+  }, [user]);
 
   // Escape closes the modal
   useEffect(() => {
