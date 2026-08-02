@@ -1,8 +1,16 @@
 import express from "express";
 import reportService from "../services/reportService.js";
+import { audit, clientInfo } from "../services/auditService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
+
+// Every report action lands in `system_logs` (module 'reports' — a value the schema
+// already carried) so it shows up on the History page alongside auth, aircon and
+// alert activity. Reads (list, scope-options) are not audited: they are noise, and
+// the History page is for actions that changed or exported something.
+const describe = (r) =>
+  `${r.title}${r.deviceName ? ` [${r.deviceName}]` : ""} (${r.type})`;
 
 // GET /api/reports — list saved reports (newest first), optional ?type= filter.
 router.get("/", authMiddleware, async (req, res, next) => {
@@ -50,6 +58,14 @@ router.post(
         deviceId,
       });
 
+      await audit({
+        userId: req.user.id,
+        module: "reports",
+        action: "generate_report",
+        description: `Generated report: ${describe(report)} for ${String(report.periodStart).slice(0, 10)} → ${String(report.periodEnd).slice(0, 10)}`,
+        ...clientInfo(req),
+      });
+
       res.status(202).json({ report });
 
       // Deliberately not awaited. build() never throws, but keep the .catch() so an
@@ -74,6 +90,16 @@ router.get("/:id/download", authMiddleware, async (req, res, next) => {
     const file = await reportService.fileFor(id, req.query.format ?? "csv");
     if (!file) return res.status(404).json({ error: "Report file not found." });
 
+    // Audited: a download is an EXPORT of campus monitoring data leaving the system,
+    // which is exactly what an audit trail exists to record.
+    await audit({
+      userId: req.user.id,
+      module: "reports",
+      action: "download_report",
+      description: `Downloaded ${String(req.query.format ?? "csv").toUpperCase()}: ${file.downloadName}`,
+      ...clientInfo(req),
+    });
+
     res.download(file.absPath, file.downloadName);
   } catch (err) {
     next(err);
@@ -90,6 +116,13 @@ router.post("/:id/email", authMiddleware, requireRole("admin", "it_staff"), asyn
     if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid report id." });
 
     const result = await reportService.email(id, { toUserId: req.user.id });
+    await audit({
+      userId: req.user.id,
+      module: "reports",
+      action: "email_report",
+      description: `Emailed report #${id} to ${result.sentTo}`,
+      ...clientInfo(req),
+    });
     res.json({ success: true, ...result });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
@@ -103,8 +136,16 @@ router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, nex
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid report id." });
 
-    const ok = await reportService.remove(id);
-    if (!ok) return res.status(404).json({ error: "Report not found." });
+    const removed = await reportService.remove(id);
+    if (!removed) return res.status(404).json({ error: "Report not found." });
+    await audit({
+      userId: req.user.id,
+      module: "reports",
+      action: "delete_report",
+      description: `Deleted report: ${describe(removed)}`,
+      level: "warning", // destructive + irreversible: the files go too
+      ...clientInfo(req),
+    });
     res.json({ success: true });
   } catch (err) {
     next(err);

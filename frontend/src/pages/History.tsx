@@ -107,7 +107,10 @@ const DAYS: { label: string; value: number }[] = [
   { label: "14d", value: 14 },
   { label: "30d", value: 30 },
 ];
-const CATEGORIES = ["all", "auth", "users", "alerts", "environment", "aircon", "devices"];
+// Must stay in step with historyService.CATEGORIES — "reports" and "network" were
+// accepted by the backend and already had catMeta styling, but had no filter pill,
+// so their rows were only reachable via "all".
+const CATEGORIES = ["all", "auth", "users", "alerts", "environment", "aircon", "devices", "reports", "network"];
 const SEVERITIES = ["all", "critical", "warning", "info"];
 const PAGE_SIZE = 50;
 
