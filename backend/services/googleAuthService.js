@@ -2,6 +2,7 @@ import "../config/env.js";
 import { OAuth2Client } from "google-auth-library";
 import userService from "./userService.js";
 import authService from "./authService.js";
+import { AuthRejection, ServiceUnavailable, isTransportError } from "../utils/httpErrors.js";
 
 // ─── Google "Sign in with Google" (OAuth 2.0 / OpenID Connect) ────────────────
 // The frontend (custom "CSPC Mail" button) runs the OAuth 2.0 AUTHORIZATION CODE
@@ -47,13 +48,22 @@ function domainOf(email) {
 
 // Exchange the Google auth code, verify the ID token, enforce CSPC domain, and
 // resolve the user to one of: ok (session issued) | pending_created | pending |
-// rejected | disabled. Throws (→ 401) on a missing/invalid code, wrong audience,
-// unverified email, or non-CSPC domain.
+// rejected | disabled.
+//
+// Throws AuthRejection (4xx, message shown to the user) ONLY for things the user
+// can act on: a missing/invalid code, wrong audience, unverified email, non-CSPC
+// domain. Everything else — Google unreachable, missing credentials, a database
+// failure from the calls below — throws ServiceUnavailable or propagates unmarked,
+// so the route answers 503 instead of blaming the user's account. See utils/httpErrors.js.
 async function authenticate(code, { ip = null, userAgent = null } = {}) {
   if (!CLIENT_ID || !CLIENT_SECRET) {
-    throw new Error("Google sign-in is not configured on the server.");
+    // A deployment mistake, not a sign-in problem. 401 here used to send admins
+    // looking at Google Cloud consoles instead of at their own .env.
+    throw new ServiceUnavailable(
+      "Google sign-in is not configured on the server (missing GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).",
+    );
   }
-  if (!code) throw new Error("Missing Google sign-in code.");
+  if (!code) throw new AuthRejection("Missing Google sign-in code.", 400);
 
   let payload;
   try {
@@ -66,18 +76,31 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
       audience: CLIENT_ID,
     });
     payload = ticket.getPayload();
-  } catch {
-    throw new Error("Could not verify your Google sign-in. Please try again.");
+  } catch (err) {
+    // Both outcomes throw, but they mean opposite things: if we never reached
+    // Google (DNS, no route, timeout) that is OUR outage — telling the user their
+    // sign-in couldn't be verified would be a lie that hides a network problem.
+    if (isTransportError(err)) {
+      console.error("[AUTH] cannot reach Google to verify sign-in:", err.message);
+      throw new ServiceUnavailable(
+        "Could not reach Google to verify your sign-in. Check the server's internet connection.",
+      );
+    }
+    throw new AuthRejection("Could not verify your Google sign-in. Please try again.");
   }
 
   // The ID token carries email_verified as a real boolean (unlike the legacy
   // tokeninfo string), plus name + picture — so there is no separate profile fetch.
   const email = (payload.email ?? "").trim().toLowerCase();
   if (!email || payload.email_verified !== true) {
-    throw new Error("Your Google email is not verified.");
+    throw new AuthRejection("Your Google email is not verified.");
   }
   if (!ALLOWED_DOMAINS.includes(domainOf(email))) {
-    throw new Error("Only CSPC accounts (@cspc.edu.ph or @my.cspc.edu.ph) can sign in.");
+    // 403, not 401: we know who they are, they're just not allowed in.
+    throw new AuthRejection(
+      "Only CSPC accounts (@cspc.edu.ph or @my.cspc.edu.ph) can sign in.",
+      403,
+    );
   }
 
   const sub = payload.sub ?? null;

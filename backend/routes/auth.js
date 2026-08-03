@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import authService from "../services/authService.js";
 import googleAuthService from "../services/googleAuthService.js";
 import { authMiddleware } from "../middleware/auth.js";
+import { isClientSafe } from "../utils/httpErrors.js";
 
 const router = express.Router();
 
@@ -62,10 +63,25 @@ router.post("/google", googleLimiter, async (req, res) => {
       case "disabled":
         return res.status(403).json({ status: "disabled", error: "Your account has been disabled." });
       default:
-        return res.status(401).json({ error: "Sign-in failed." });
+        // Unreachable unless authenticate() grows an outcome nobody handled — that's
+        // our bug, not a rejected sign-in.
+        console.error("[AUTH] unhandled sign-in outcome:", result.outcome);
+        return res.status(500).json({ error: "Sign-in failed unexpectedly." });
     }
   } catch (error) {
-    res.status(401).json({ error: error.message });
+    // Only a deliberate rejection is the USER's problem. Everything else — the
+    // database down, Google unreachable, missing credentials — is ours, and must
+    // not be dressed up as "sign-in failed": that sends people hunting through
+    // their account settings during an outage (which is exactly what happened).
+    // It also stops raw driver output ("connect ECONNREFUSED 127.0.0.1:3306")
+    // reaching the browser. See utils/httpErrors.js.
+    if (isClientSafe(error)) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    console.error("[AUTH] sign-in failed for an infrastructure reason:", error);
+    return res.status(503).json({
+      error: "Sign-in is temporarily unavailable. Please try again shortly.",
+    });
   }
 });
 
@@ -75,7 +91,14 @@ router.get("/me", authMiddleware, async (req, res) => {
     const user = await authService.getMe(req.user.id);
     res.json({ user });
   } catch (error) {
-    res.status(404).json({ error: error.message });
+    // Same trap as the sign-in route: a blanket 404 here reported a database
+    // outage as "user not found", which reads like a deleted account. Only the
+    // genuine missing-row case is a 404.
+    if (error?.message === "User not found.") {
+      return res.status(404).json({ error: error.message });
+    }
+    console.error("[AUTH] /me failed for an infrastructure reason:", error);
+    return res.status(503).json({ error: "Service temporarily unavailable." });
   }
 });
 
