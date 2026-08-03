@@ -23,10 +23,7 @@ with IR transmitters, so **every physical AC action happens on the ESP32**.
 | WS2812B RGB ×20 | 27 | Status color |
 | IR TX #1 | 25 | AC channel 1 |
 | IR TX #2 | 33 | AC channel 2 |
-| IR TX #3 | 32 | AC channel 3 (wired, disabled by default) |
-| IR TX #4 | 15 | AC channel 4 (wired, disabled by default) |
 | DS3231 RTC | SDA 21 / SCL 22 | Timestamp source (optional) |
-| SD card | SPI (CS 5) | Offline buffer (`SD_ENABLED` flag) |
 
 Firmware: `iot/esp32/env_monitor_v2.ino`. Reads every loop tick; logs/sends every
 `LOG_INTERVAL` (3 s).
@@ -74,8 +71,19 @@ Raw ADC → resistance → PPM using the calibrated curve:
 - `adcToRs()` converts ADC value to sensor resistance Rs (kΩ), accounting for the
   10k/20k voltage divider (`DIVIDER_RATIO = 0.6667`).
 - `rsToPPM()` applies `PPM = 30000 · (Rs/Ro)^-2.95`, clamped to 0–9999.
-- `Ro` is the clean-air baseline, **auto-calibrated at boot** after a 20 s warmup
-  (`calibrateRo()`), seeded from `RO_CLEAN_AIR_1/2`.
+- `Ro` is the clean-air baseline. It is **measured once per location and stored in NVS
+  flash**, then reused on every subsequent boot (`loadRo` / `calibrateRo` / `saveRo`).
+  - **First boot in a new place** → no stored value → the firmware waits `CAL_SETTLE_MS`
+    (3 min, for the heater to stabilise), measures, validates and saves. The air must be
+    clean during that window.
+  - **Every boot after** → the stored value is loaded. Ro is deliberately **not**
+    re-measured each boot: a reboot during a gas event would record polluted air as the
+    baseline and then under-report smoke permanently.
+  - **Moved location** → send the **`calibrateGas`** socket event; no reflash needed.
+  - A result outside `RO_MIN_VALID … RO_MAX_VALID` (1–50 kΩ) is **rejected**, not stored,
+    so a bad reading (open circuit, shorted sensor, smoky air) can't blind the detector.
+  > Before 2026-07-31 `calibrateRo()` only *printed* a suggested value and told you to
+  > edit `RO_CLEAN_AIR_1/2` by hand and reflash — the measurement was never applied.
 - Final smoke value = **max** of the two sensors.
 
 | Smoke status | Condition |
@@ -125,10 +133,15 @@ ESP32 emits every 3 s when WiFi + socket are up. Backend `sensorHandler.js`:
    - **timestamp = server `new Date()`** (ms precision) — ESP32's own time is ignored for live data.
 4. **Broadcasts** `sensorData` to all *other* browsers (`socket.broadcast.volatile.emit`).
 
-### 4.2 Offline replay (`offlineData`)
-If WiFi drops and `SD_ENABLED=true`, the ESP32 buffers rows to `/log.csv`. On reconnect
-it flushes each row as `offlineData`. Backend `offlineDataHandler.js`:
-- Same InfluxDB fields **but uses the ESP32 RTC timestamp** (historical, not now).
+### 4.2 Offline replay (`offlineData`) — DORMANT
+⚠️ **Nothing emits this any more.** The ESP32's SD-card offline buffer was removed from the
+firmware: every monitored link (ESP32 mini-UPS, router UPS, backend UPS) rides through an
+outage, so the device does not disconnect, and the single on-site backup now lives on the
+backend (`backupService`, rotating NDJSON — see `backup-storage.md`).
+
+The backend side is still wired (`offlineDataHandler.js`, `socket.on("offlineData")`) and
+still works if anything ever sends it — it is dormant, not broken:
+- Same InfluxDB fields **but uses the sender's timestamp** (historical, not now).
 - **No broadcast** (it's backfill, not live) and **no throttle**.
 
 ### 4.3 History queries (`changeRange` → `sensorHistory`)
@@ -159,7 +172,7 @@ A "channel" = one AC unit's IR transmitter.
 
 | Layer | Representation |
 |-------|----------------|
-| Firmware array | `IR_CHANNEL_PINS[] = {25,33,32,15}` (0-based) |
+| Firmware array | `IR_CHANNEL_PINS[] = {25,33}` (0-based) — **2 transmitters wired** |
 | Firmware runtime | `enabledChannels[]` — patched live via `irConfig` |
 | MySQL | `aircon_state.ir_channel` — **1-based** |
 
@@ -210,9 +223,24 @@ PATCH /api/aircon/:id/toggle  (JWT, role admin|it_staff)
             {channel, action:"on"|"off"})       → ESP32 fires IR_POWER_ON/OFF
 ```
 
-Other manual endpoints (`PATCH /:id/mode`, `/:id/temp`) update MySQL + broadcast
-`airconStatus` only — they do **not** send IR (firmware has no per-degree manual code yet;
-only `IR_POWER_ON` / `IR_POWER_OFF` and the auto-zone temps exist).
+**On/off is the ONLY manual control.** `PATCH /:id/mode` and `/:id/temp` were removed
+(2026-07-31): nothing in the dashboard ever called them, and they could not have worked —
+the firmware has no per-degree or per-mode IR code, so they only wrote to MySQL, and
+`applyAutoIR` overwrites `set_temperature` on every unit that is ON at the next zone
+change. A manual value was silently discarded minutes later.
+
+`mode` / `set_temperature` / `fan_mode` are **read-only status** on the card, showing what
+auto-cooling chose. Real manual override would need captured codes per temperature *and* a
+per-unit "manual" mode that suspends auto-cooling, with a rule for when auto resumes.
+
+**Power-on re-sync.** Auto IR fires only on a zone *change* (§5.2), and a unit that is OFF
+at that moment is skipped by both `applyAutoIR` and the firmware blast — so it would come
+back with a stale setting and never catch up while the room stays in that zone. Turning a
+unit ON therefore re-applies the current zone: the firmware follows `IR_POWER_ON` with the
+zone's code (shared `zoneIRData()`), and `airconService.toggle` writes the matching
+`set_temperature` plus an `auto` log row. The backend's zone comes from an in-memory
+`lastZone` cached on `irFired`; after a backend restart it is null, so only the hardware
+re-syncs until the next zone change.
 
 ### 5.4 `aircon_state` semantics
 
@@ -248,7 +276,8 @@ pushes use `io.to("devices").emit(...)`, so the backend never tracks the volatil
 | `irChannelMap` | ESP32 → server | GPIO map on connect → stored + forwarded |
 | `irConfig` | server → ESP32 | Enabled-channel list (connect + on change) |
 | `irCommand` | server → ESP32 | Manual ON/OFF on a channel |
-| `airconStatus` | server → browsers | Manual toggle/mode/temp change |
+| `calibrateGas` | server → ESP32 | Re-measure the MQ-2 clean-air baseline and save it to flash. Use after moving the box — the air must be clean. Replaces editing `RO_CLEAN_AIR_*` and reflashing |
+| `airconStatus` | server → browsers | Manual on/off toggle, rename, or power-on re-sync |
 | `airconAutoUpdate` | server → browsers | Auto IR zone change |
 
 Auth: browsers send JWT in `handshake.auth.token`; ESP32 sends `DEVICE_SECRET` in
@@ -278,21 +307,44 @@ Auth: browsers send JWT in `handshake.auth.token`; ESP32 sends `DEVICE_SECRET` i
 ### Add a new AC unit
 1. Wire its IR TX to a free GPIO; add the pin to `IR_CHANNEL_PINS[]` and bump
    `MAX_IR_CHANNELS` in the firmware; reflash (only needed for *new GPIO wiring*).
-2. In the dashboard, **Add Aircon** with an unused `ir_channel` (1–8). This inserts
+2. In the dashboard, **Add Aircon** with an unused `ir_channel` (**1–2**, matching
+   `MAX_IR_CHANNELS`). This inserts
    `devices` + `aircon_state` rows and pushes `irConfig` to the ESP32.
 3. Enabling/disabling an existing channel afterward needs **no reflash** — it flows via
    `irConfig`.
 
-### Capture real IR codes (replace the mock NEC data)
-All `IR_*` arrays in the firmware are **placeholder NEC**. Use the `IRrecvDumpV2` sketch with
-the Carrier remote to capture real raw timings, then replace:
-`IR_28C_AUTO`, `IR_26C_AUTO`, `IR_24C_AUTO`, `IR_22C_HIGH`, `IR_20C_HIGH`,
-`IR_POWER_ON`, `IR_POWER_OFF`.
+### Re-capture an IR code
+All seven `IR_*` arrays are already real Carrier captures (2026-07-31 / 2026-08-01) — this is
+the procedure if one ever needs replacing. Use `IRLearner.ino`, not `IRrecvDumpV2`.
+
+**Capture conditions matter more than anything else.** Both failed attempts at `IR_20C_HIGH`
+were killed by ambient light, not by the remote or the sketch: one came back 133 values with
+stray edges, the other 223 values of pure 60 Hz mains flicker off a lamp with no remote frame
+in it at all. So: room lights **off** (fluorescent and cheap LED are the usual culprits), away
+from sunlight and screens, remote 3–10 cm and pointed straight at the receiver. If IRLearner
+prints anything while you are *not* pressing a button, the environment is still too noisy —
+fix that first, because every capture will fail the same way.
+
+**Validate before pasting it in.** A good capture is **exactly 131 values** (leader pair + 64
+bit-pairs + stop mark), starts ~`9000, 4500`, and decodes to exactly 64 bits with marks around
+450–600 µs and two clearly separated space populations (~600 = zero, ~1750 = one). Cross-check
+it against the existing arrays: bits 0–9 and the all-zero bits 16–39 should match the other
+temperature frames, and bits 61–63 must be the exact complement of bits 53–55 — an invariant
+all seven satisfy. If you get 133 or 223 values, **recapture; do not trim**, because you
+cannot tell which entries are the intruders.
 
 ### Change a sensor threshold
-Edit the `#define`s in the firmware (`WARNING_PPM`, `DANGER_PPM`, `TEMP_*`, `HUM_*`) and the
-zone bounds in `getIRZone()`. Status strings are computed on-device, so no backend change
-is needed.
+**No reflash, and no code edit.** Both threshold families are runtime-configurable from the
+dashboard, and the firmware applies them live:
+- **Alarm thresholds** (LED / buzzer / reported status) — the admin **Alert Rules** page.
+  Saving pushes `envConfig` to the ESP32, which updates `WARNING_PPM`, `DANGER_PPM`, `TEMP_*`
+  and `HUM_*` — these are mutable globals now, not `#define`s. A metric with no rule keeps its
+  compiled default on the device.
+- **Auto-cooling zone boundaries** (when IR fires) — the **Auto-Cooling Thresholds** card on
+  the AirConditioner page, admin-edit. Saving pushes `acConfig`, which updates the bounds
+  `getIRZone()` reads. The per-zone target temps stay fixed: each is a captured raw IR code.
+
+These are deliberately separate — cooling should ramp *before* the alarm fires.
 
 ### Add a new sensor field to InfluxDB
 1. Firmware: add the field to the `sensorData` JSON.
@@ -311,12 +363,15 @@ Update both hardcoded endpoints **and** the firmware:
 
 - **Bucket name** — both read and write paths now derive the bucket from `INFLUX_BUCKET`
   (`.env`) via the exported `bucket` in `influx.js`; no longer hardcoded (§4.3).
-- **Mock IR data** — nothing physically controls a real Carrier AC until the raw codes are
-  replaced (§8).
-- **Manual mode/temp don't emit IR** — only on/off toggle does (§5.3).
+- **IR data is real, but unproven against the AC** — all seven arrays are genuine Carrier
+  captures (§8), so the mock-data caveat is gone. What remains is that no code here has ever
+  driven a physical unit: verify `IR_20C_HIGH` really is 20 °C / fan High, and give
+  `IR_POWER_OFF` a deliberate test (§8).
+- **On/off is the only manual control** — the mode/temp endpoints were removed (§5.3).
 - **Live timestamps are server-side** — InfluxDB live points use `new Date()`, so ESP32
   clock drift doesn't matter for live data; only offline replay uses the RTC time.
-- **SD buffering is off by default** — `#define SD_ENABLED false`; offline rows are dropped
-  unless the SD module is connected and the flag is set.
+- **There is no on-device buffer** — the SD-card offline log was removed from the firmware
+  (§4.2). A reading taken while WiFi is down is logged to serial and dropped; durability is
+  the backend's job now (`backupService`).
 - **DHT11 is low-resolution** (±1 °C / integer-ish humidity) — fine for zone logic, not for
   precise readings.

@@ -23,6 +23,7 @@
     "mysql2": "^3.22.0",
     "net-snmp": "^3.26.3",
     "node-routeros": "^1.6.8",
+    "pdfkit": "^0.19.1",
     "resend": "^6.12.4",
     "socket.io": "^4.7.2"
   },

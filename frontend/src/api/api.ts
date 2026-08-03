@@ -291,9 +291,32 @@ export const api = {
     }
   },
 
+  // Whether the ESP32 is currently reporting. Needed on first paint — otherwise the
+  // page only finds out via the next `esp32Status` socket transition, which may never come.
+  getSensorStatus: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/environment/sensor-status");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getNetworkLogs: async (id: number): Promise<ApiResult> => {
     try {
       const res = await apiClient.get(`/network/${id}/logs`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Ask the ESP32 to re-measure the MQ-2 clean-air baseline and save it to its flash.
+  // Admin-only. The air must be clean when this runs — the result arrives asynchronously
+  // on the `gasCalibrated` socket event.
+  calibrateGasSensor: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/environment/calibrate-gas");
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
@@ -484,7 +507,6 @@ export const api = {
     }
   },
 
-
   // Aircon
   getAircon: async (): Promise<ApiResult> => {
     try {
@@ -522,18 +544,9 @@ export const api = {
     }
   },
 
-  setAirconMode: async (id: number, mode: string): Promise<ApiResult> => {
+  renameAircon: async (id: number, name: string): Promise<ApiResult> => {
     try {
-      const res = await apiClient.patch(`/aircon/${id}/mode`, { mode });
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
-
-  setAirconTemp: async (id: number, temp: number): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.patch(`/aircon/${id}/temp`, { temp });
+      const res = await apiClient.patch(`/aircon/${id}/name`, { name });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
@@ -676,9 +689,78 @@ export const api = {
     }
   },
 
-  generateReport: async (title: string, type: string): Promise<ApiResult> => {
+  // Devices a report of this type can be scoped to (empty = campus-wide only).
+  getReportScopeOptions: async (type: string): Promise<ApiResult> => {
     try {
-      const res = await apiClient.post("/reports", { title, type });
+      const res = await apiClient.get("/reports/scope-options", { params: { type } });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Returns 202 with a `pending` report — the backend builds it in the background
+  // and pushes the finished row over Socket.IO as `reportUpdated`.
+  // `deviceId` scopes the report to one device; omit for campus-wide.
+  generateReport: async (opts: {
+    type: string;
+    title?: string;
+    periodStart?: string;
+    periodEnd?: string;
+    deviceId?: number;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/reports", opts);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Streams the stored CSV/PDF and triggers a browser download. `filename` is
+  // supplied by the caller (built from the report title + period) — the backend's
+  // Content-Disposition name isn't readable cross-origin, so we don't rely on it.
+  downloadReport: async (
+    id: number | string,
+    format: "csv" | "pdf",
+    filename?: string,
+  ): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/reports/${id}/download`, {
+        params: { format },
+        responseType: "blob",
+      });
+      const cd = String(res.headers["content-disposition"] || "");
+      const match = /filename="?([^"]+)"?/.exec(cd);
+      const name = filename || match?.[1] || `report-${id}.${format}`;
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      return { success: true };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Mails an already-generated report to the signed-in user as a PDF attachment.
+  // Does not rebuild it — a saved report's numbers are frozen.
+  emailReport: async (id: number | string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/reports/${id}/email`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteReport: async (id: number | string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/reports/${id}`);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

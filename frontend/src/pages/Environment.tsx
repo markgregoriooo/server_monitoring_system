@@ -5,8 +5,86 @@ import { Chart, registerables } from "chart.js";
 import "../chart/ChartConfig";
 import type { ChartOptions, ChartData, ScriptableContext } from "chart.js";
 import { socket } from "../socket/socket";
+import { api } from "../api/api";
+import { useAuth } from "../context/AuthContext";
 
 Chart.register(...registerables);
+
+// ─── Gas sensor recalibration ─────────────────────────────────────────────────
+// The MQ-2 needs a "clean air" reference (Ro) that differs per sensor and per room.
+// It used to require editing RO_CLEAN_AIR_* in the firmware and reflashing on every
+// move; the ESP32 now measures and stores it itself, and this button asks it to
+// re-measure. Admin-only, confirmed, because the device records whatever it smells
+// AT THAT MOMENT as clean — calibrating in poor air makes it under-report smoke.
+
+function RecalibrateGas({ isDark }: { isDark: boolean }) {
+  const { user } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    const onDone = (d: { ok?: boolean; ro1?: number; ro2?: number }) => {
+      setBusy(false);
+      setResult(
+        d?.ok
+          ? { ok: true, msg: `Calibrated — Ro1 ${Number(d.ro1).toFixed(2)} kΩ · Ro2 ${Number(d.ro2).toFixed(2)} kΩ` }
+          : { ok: false, msg: "Rejected — reading out of range. Previous baseline kept." },
+      );
+      setTimeout(() => setResult(null), 8000);
+    };
+    socket.on("gasCalibrated", onDone);
+    return () => { socket.off("gasCalibrated", onDone); };
+  }, []);
+
+  if (user?.role !== "admin") return null;
+
+  const run = async () => {
+    if (!confirm(
+      "Re-measure the gas sensor's clean-air baseline?\n\n" +
+      "The ESP32 will treat the air RIGHT NOW as clean. Only do this when the room is " +
+      "well ventilated and nothing is burning, soldering or smoking nearby.\n\n" +
+      "Calibrating in poor air makes the sensor under-report real smoke.",
+    )) return;
+
+    setBusy(true);
+    setResult(null);
+    const r = await api.calibrateGasSensor();
+    if (!r.success) {
+      setBusy(false);
+      setResult({ ok: false, msg: r.error ?? "Could not request calibration." });
+      setTimeout(() => setResult(null), 8000);
+    }
+    // On success we stay "busy" until the ESP32 reports back via `gasCalibrated`.
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      {result && (
+        <span className="text-[10px] px-2 py-1 rounded-[2px] whitespace-nowrap"
+          style={{
+            color: result.ok ? "#73BF69" : "#F2495C",
+            background: (result.ok ? "#73BF69" : "#F2495C") + "14",
+            border: `1px solid ${(result.ok ? "#73BF69" : "#F2495C")}40`,
+          }}>
+          {result.msg}
+        </span>
+      )}
+      <button
+        onClick={run}
+        disabled={busy}
+        title="Re-measure the MQ-2 clean-air baseline (admin) — use after moving the sensor"
+        className="text-[11px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-60"
+        style={{
+          color: "var(--gf-text-muted)",
+          border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"}`,
+          background: "transparent",
+        }}
+      >
+        {busy ? "Calibrating…" : "Recalibrate gas"}
+      </button>
+    </div>
+  );
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1011,6 +1089,13 @@ export default function Environment() {
   const [liveTempStatus,        setLiveTempStatus]        = useState<TempLevel>("NORMAL");
   const [liveEnvironmentStatus, setLiveEnvironmentStatus] = useState<AlertLevel>("NORMAL");
 
+  // Is the ESP32 actually reporting? Without this every reading below is the LAST one
+  // received, with nothing to say how old it is — a dead sensor renders exactly like a
+  // stable room. Seeded from REST (the socket only fires on a transition, which may
+  // never come while the page is open) and then kept live by `esp32Status`.
+  const [sensorOnline,   setSensorOnline]   = useState<boolean | null>(null);
+  const [sensorLastSeen, setSensorLastSeen] = useState<string | null>(null);
+
   const [range,       setRange]       = useState<RangeType>("-1h");
   const [customRange, setCustomRange] = useState<CustomRange | null>(null);
   const [customLabel, setCustomLabel] = useState("Custom Range");
@@ -1046,6 +1131,41 @@ export default function Environment() {
     const obs = new MutationObserver(() => setIsDark(document.documentElement.classList.contains("dark")));
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => obs.disconnect();
+  }, []);
+
+  // ESP32 liveness: initial state over REST, then live transitions over the socket.
+  useEffect(() => {
+    let cancelled = false;
+
+    const resync = () => {
+      api.getSensorStatus().then((res) => {
+        if (cancelled || !res.success || !res.data) return;
+        setSensorOnline(Boolean(res.data.online));
+        setSensorLastSeen(res.data.lastSeen ?? null);
+      });
+    };
+    resync();
+
+    const onStatus = (s: { online?: boolean; lastSeen?: string | null }) => {
+      setSensorOnline(Boolean(s?.online));
+      setSensorLastSeen(s?.lastSeen ?? null);
+    };
+    socket.on("esp32Status", onStatus);
+
+    // `esp32Status` only fires on a TRANSITION, so a client that was disconnected or
+    // backgrounded when it fired never learns — and the banner silently stays wrong
+    // until a manual refresh. Re-pull the authoritative state whenever we could have
+    // missed one: on (re)connect, and when the tab regains focus.
+    socket.on("connect", resync);
+    const onVisible = () => { if (document.visibilityState === "visible") resync(); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      cancelled = true;
+      socket.off("esp32Status", onStatus);
+      socket.off("connect", resync);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -1241,8 +1361,40 @@ export default function Environment() {
       {/* ── Toolbar (range picker) — page title comes from the global Header ── */}
       <div className="flex items-center justify-end px-4 py-2.5 flex-wrap gap-3"
         style={{ background: GF.header, borderBottom: `1px solid ${GF.panelBorder}` }}>
+        <RecalibrateGas isDark={isDark} />
         <RangePicker range={range} customLabel={customLabel} onChange={changeRange} onCustom={() => setShowCustom(true)} onRefresh={handleRefresh} isRefreshing={isRefreshing} />
       </div>
+
+      {/* ── Sensor-offline banner ──────────────────────────────────────────────
+          Everything below renders the LAST reading received. When the ESP32 stops
+          reporting those numbers freeze, and without this banner a dead sensor is
+          indistinguishable from a calm, stable room — the single most dangerous
+          failure mode on this page. */}
+      {sensorOnline === false && (
+        <div
+          className="mx-4 mt-3 flex items-start gap-3 px-4 py-3"
+          style={{
+            background: "rgba(224,47,68,0.10)",
+            border: "1px solid rgba(224,47,68,0.35)",
+            borderRadius: 2,
+          }}
+          role="alert"
+        >
+          <span style={{ color: "#E02F44", fontSize: 14, lineHeight: "18px" }}>■</span>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[12px] font-bold" style={{ color: "#E02F44" }}>
+              Environment sensor offline — readings below are stale
+            </span>
+            <span className="text-[11px]" style={{ color: "var(--gf-text-muted)" }}>
+              The ESP32 has stopped reporting, so temperature, humidity and smoke are
+              not being monitored.
+              {sensorLastSeen
+                ? ` Last reading ${new Date(sensorLastSeen).toLocaleString()}.`
+                : " No readings have been received."}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* ── Panel grid ── */}
       <div className="flex flex-col gap-3 p-4">
