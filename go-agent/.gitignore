@@ -1,5 +1,12 @@
 # Build output
 /dist/
 
+# A built binary staged next to the installer (install.ps1 expects one in its own
+# folder). Prefer `make package`, which assembles dist/cspc-ictu-agent-* properly —
+# but if anyone drops a binary here, keep `git add -A` from committing ~10 MB.
+installer/go-agent
+installer/go-agent-*
+installer/*.exe
+
 # Per-host runtime config — contains the device token. Never commit.
 agent.conf
