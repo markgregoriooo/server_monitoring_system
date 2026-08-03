@@ -37,7 +37,8 @@ const handleError = (err: any): ApiResult<never> => {
         status === 403 ? "You don't have permission to do that." :
           status === 404 ? "Resource not found." :
             status === 500 ? "Server error. Please try again later." :
-              "Cannot connect to server.";
+              status === 503 ? "Service temporarily unavailable. Please try again shortly." :
+                "Cannot connect to server.";
 
   return {
     success: false,
@@ -245,6 +246,17 @@ export const api = {
   rejectAgent: async (id: number): Promise<ApiResult> => {
     try {
       const res = await apiClient.post(`/agents/${id}/reject`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Park / unpark a server for planned downtime (admin). While parked, offline
+  // and threshold alerts are suppressed for it.
+  setServerMaintenance: async (id: number, enabled: boolean): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/servers/${id}/maintenance`, { enabled });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

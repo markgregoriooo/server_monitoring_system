@@ -39,7 +39,9 @@ const globalLimiter = rateLimit({
    ipv6Subnet: 56,
   // Agent metric ingestion has its own (more generous) limiter in routes/servers.js.
   // Exempt it here so a busy fleet of agents never consumes the dashboard's budget.
-  skip: (req) => req.method === "POST" && req.path === "/api/servers/metrics",
+  // Covers /metrics AND /metrics/batch — a fleet reconnecting after an outage
+  // backfills in a burst, which is exactly when the dashboard is being watched.
+  skip: (req) => req.method === "POST" && req.path.startsWith("/api/servers/metrics"),
   handler: (req, res) => {
     res.status(429).json({ error: "Too many requests. Please try again later." });
   },

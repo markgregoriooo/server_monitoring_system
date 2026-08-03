@@ -59,6 +59,14 @@ const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
 
+// A server parked for planned maintenance is not a fault — showing it red reads
+// as "down" and hides real outages in a sea of red.
+function hostDotColor(status: string) {
+  if (status === "Online") return GREEN;
+  if (status === "Maintenance") return BLUE;
+  return RED;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function loadColor(v: number) {
@@ -378,8 +386,8 @@ function BarGauge({
           <span
             className="w-1.5 h-1.5 rounded-full shrink-0"
             style={{
-              background: status === "Online" ? GREEN : RED,
-              boxShadow: `0 0 5px ${status === "Online" ? GREEN : RED}`,
+              background: hostDotColor(status),
+              boxShadow: `0 0 5px ${hostDotColor(status)}`,
             }}
           />
         )}

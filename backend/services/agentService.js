@@ -4,6 +4,11 @@ import notificationService from "./notificationService.js";
 import alertRulesService from "./alertRulesService.js";
 import alertsService from "./alertsService.js";
 import alertBandState from "./alertBandState.js";
+import {
+  DEFAULT_INTERVAL_SEC,
+  OFFLINE_FLOOR_SEC,
+  offlineWindowSec,
+} from "./serverMetricUtils.js";
 
 // ─── All Go-agent + server-device DB logic (devices + server_specs +
 //     device_network + agent_tokens). Mirrors the airconService pattern. ───────
@@ -23,39 +28,52 @@ function networkSegment(ip) {
 }
 
 // A server counts as offline when no metric POST has refreshed its last_seen
-// within this window. Agents post every ~10s, so 30s tolerates ~three missed cycles
-// before the badge flips to Offline (one dropped POST won't cause a false alarm).
-const OFFLINE_AFTER_SEC = 30;
+// within its own window — three missed posts at that agent's reported cadence,
+// floored by SERVER_OFFLINE_AFTER_SEC (default 30s). Sizing this per device is
+// what stops an agent installed with `-interval 60` from flapping forever.
+// See services/serverMetricUtils.js.
+const OFFLINE_SQL_WINDOW = `GREATEST(${OFFLINE_FLOOR_SEC}, COALESCE(s.metric_interval_sec, ${DEFAULT_INTERVAL_SEC}) * 3)`;
 
 // In-memory cache of each server's latest live metrics (cpu/mem/disk %, uptime),
 // so GET /api/servers can render real numbers immediately after a browser refresh
 // instead of waiting up to one agent interval (10s) for the next socket push.
 // Resets on backend restart, then repopulates on the next metric POST.
-const latestMetrics = new Map(); // device_id (number) -> { cpu, memory, diskUsed, uptime }
+const latestMetrics = new Map(); // device_id (number) -> { cpu, memory, diskUsed, uptime, volumes }
 
 function cacheLatest(deviceId, live) {
   latestMetrics.set(Number(deviceId), live);
 }
 
-// True when a server's last heartbeat is older than the offline window (or never).
-function isStale(lastSeen) {
+// True when a server's last heartbeat is older than ITS offline window (or never).
+// intervalSec is that agent's reported cadence; null/unknown falls back to the
+// default, which reproduces the old flat 30s.
+function isStale(lastSeen, intervalSec) {
   if (!lastSeen) return true;
-  return Date.now() - new Date(lastSeen).getTime() > OFFLINE_AFTER_SEC * 1000;
+  return Date.now() - new Date(lastSeen).getTime() > offlineWindowSec(intervalSec) * 1000;
 }
 
 // Overlay cached live metrics + label the status for a server DB row. A server
 // whose last_seen has gone stale reads as Offline with zeroed live metrics even
 // if devices.status still says 'online' (the sweep may not have run yet) — so a
 // GET right after a backend restart is already correct, not falsely Online.
+//
+// Maintenance is operator-owned and outranks staleness: a server parked for a
+// planned reboot must NOT flip to Offline just because it stopped posting —
+// that's the whole point of the window.
 function withLive(r) {
-  const offline = r.status === "offline" || isStale(r.lastSeen);
+  const maintenance = r.status === "maintenance";
+  const offline = !maintenance && (r.status === "offline" || isStale(r.lastSeen, r.metricIntervalSec));
   const live = offline ? undefined : latestMetrics.get(r.id);
   return {
     ...r,
-    status: offline ? "Offline" : label(r.status),
+    status: maintenance ? "Maintenance" : offline ? "Offline" : label(r.status),
     cpu: live?.cpu ?? 0,
     memory: live?.memory ?? 0,
     diskUsed: live?.diskUsed ?? 0,
+    processCount: live?.processCount ?? null,
+    // Every fixed volume from the last sample. Empty until the next metric post
+    // after a backend restart (same lifetime as the other cached live values).
+    volumes: live?.volumes ?? [],
     // A down server has no current uptime — don't surface the last-known value,
     // it reads as if the box were still up. Live rows use the cached label.
     uptime: offline ? null : (live?.uptime ?? r.uptime ?? null),
@@ -258,19 +276,82 @@ async function validateToken(token) {
 }
 
 // Called on each metric POST: mark the server online and refresh last_seen/uptime.
-// Returns { cameOnline } so the caller can log an offline→online transition.
-async function recordHeartbeat(deviceId, uptimeLabel) {
+// Returns { cameOnline, maintenance } so the caller can log an offline→online
+// transition and skip alerting during a planned maintenance window.
+async function recordHeartbeat(deviceId, uptimeLabel, intervalSec = null) {
   const [[row]] = await db.query(`SELECT status FROM devices WHERE device_id = ? LIMIT 1`, [deviceId]);
-  const cameOnline = row && row.status !== "online";
+  const maintenance = row?.status === "maintenance";
+  // A parked server keeps ingesting metrics, but its status is operator-owned:
+  // a heartbeat must not drag it back to 'online', which would silently end the
+  // window and re-arm alerting mid-reboot.
+  const cameOnline = Boolean(row) && !maintenance && row.status !== "online";
 
-  await db.query(`UPDATE devices SET status = 'online', updated_at = NOW() WHERE device_id = ?`, [
-    deviceId,
-  ]);
-  await db.query(`UPDATE server_specs SET last_seen = NOW(), uptime = ? WHERE device_id = ?`, [
-    uptimeLabel,
-    deviceId,
-  ]);
-  return { cameOnline: Boolean(cameOnline) };
+  if (!maintenance) {
+    await db.query(`UPDATE devices SET status = 'online', updated_at = NOW() WHERE device_id = ?`, [
+      deviceId,
+    ]);
+  }
+  // last_seen is refreshed even in maintenance, so leaving the window can tell a
+  // live host from one that never came back. metric_interval_sec is only written
+  // when the agent reported one — COALESCE keeps the stored value otherwise, so
+  // an older agent never wipes a known cadence.
+  await db.query(
+    `UPDATE server_specs
+        SET last_seen = NOW(), uptime = ?, metric_interval_sec = COALESCE(?, metric_interval_sec)
+      WHERE device_id = ?`,
+    [uptimeLabel, intervalSec, deviceId],
+  );
+
+  // Recovery: the agent is reporting again → close the open offline alert, the
+  // same way deviceAlerts.checkReachability does for routers/UPS. Without this
+  // every reboot left a permanently open alert inflating the sidebar badge.
+  if (cameOnline) {
+    await alertsService.autoResolveMetric(deviceId, "offline").catch((err) =>
+      console.error("[agent] offline auto-resolve failed:", err.message),
+    );
+  }
+  return { cameOnline, maintenance };
+}
+
+// Park a server for planned downtime, or bring it back. While parked the offline
+// sweep skips it, threshold alerting is suppressed, and a heartbeat won't flip
+// the status — so a reboot doesn't page anyone. Leaving the window re-derives the
+// real status from the last heartbeat rather than assuming Online.
+// Returns null when there is no such server.
+async function setMaintenance(deviceId, enabled) {
+  const id = Number(deviceId);
+  const [[row]] = await db.query(
+    `SELECT d.device_name AS name, s.last_seen AS lastSeen,
+            s.metric_interval_sec AS metricIntervalSec
+       FROM devices d
+       LEFT JOIN server_specs s ON s.device_id = d.device_id
+      WHERE d.device_id = ? AND d.device_type = 'server'
+      LIMIT 1`,
+    [id],
+  );
+  if (!row) return null;
+
+  const status = enabled
+    ? "maintenance"
+    : isStale(row.lastSeen, row.metricIntervalSec)
+      ? "offline"
+      : "online";
+  await db.query(`UPDATE devices SET status = ?, updated_at = NOW() WHERE device_id = ?`, [status, id]);
+
+  // Re-arm the detectors on BOTH transitions so the first breach after the window
+  // alerts, instead of being swallowed as "same band as before maintenance".
+  alertBandState.resetDevice(id);
+  if (!enabled) latestMetrics.delete(id); // stale numbers until the next real post
+
+  // Close any open offline alert. An operator toggling this has explicitly taken
+  // ownership of the server's state, and neither transition would otherwise clear
+  // it: entering the window suppresses the heartbeat's cameOnline auto-resolve,
+  // and a server that recovers WHILE parked never produces that transition at all.
+  await alertsService.autoResolveMetric(id, "offline").catch((err) =>
+    console.error("[agent] offline auto-resolve failed:", err.message),
+  );
+
+  return { id, name: row.name, status: label(status) };
 }
 
 // ─── Device event log (device_logs) ───────────────────────────────────────────
@@ -317,8 +398,25 @@ async function checkThresholds(deviceId, metrics) {
   const id = Number(deviceId);
   const events = [];
 
+  // Disk is evaluated against the WORST volume, not just the root. A data volume
+  // filling up while C:\ looks healthy is the common real incident and used to be
+  // invisible here. The band is still tracked under the single "disk" metric (one
+  // rule, one open alert per server) — the message names the offending mount.
+  const volumes = Array.isArray(metrics.volumes) ? metrics.volumes : [];
+  const worstVolume = volumes.reduce(
+    (worst, v) => (worst === null || v.percent > worst.percent ? v : worst),
+    null,
+  );
+
   for (const key of ["cpu", "mem", "disk"]) {
-    const v = metrics[key];
+    let v = metrics[key];
+    // Name the mount only on multi-volume hosts — on a single-volume box
+    // "Disk high: 91% (/)" is just noise.
+    let where = "";
+    if (key === "disk" && worstVolume) {
+      v = worstVolume.percent;
+      if (volumes.length > 1) where = ` (${worstVolume.mount})`;
+    }
     if (typeof v !== "number" || Number.isNaN(v)) continue;
     const label = METRIC_LABEL[key];
 
@@ -340,10 +438,10 @@ async function checkThresholds(deviceId, metrics) {
 
     const pct = Math.round(v);
     const word = band === "critical" ? "critical" : band === "warning" ? "high" : band;
-    events.push(await logDevice(id, band, `${label} ${word}: ${pct}%`));
+    events.push(await logDevice(id, band, `${label} ${word}: ${pct}%${where}`));
     await notificationService.raiseAlert({
       deviceId: id, type: key, severity: band,
-      title: `${label} ${word}`, message: `${label} ${word}: ${pct}%`,
+      title: `${label} ${word}`, message: `${label} ${word}: ${pct}%${where}`,
       metricValue: v, alertRuleId: rule?.alert_rule_id ?? null,
     });
   }
@@ -366,7 +464,8 @@ async function sweepOffline() {
        LEFT JOIN server_specs s   ON s.device_id = d.device_id
       WHERE d.device_type = 'server'
         AND d.status = 'online'
-        AND (s.last_seen IS NULL OR s.last_seen < (NOW() - INTERVAL ${OFFLINE_AFTER_SEC} SECOND))`,
+        AND (s.last_seen IS NULL
+             OR s.last_seen < (NOW() - INTERVAL ${OFFLINE_SQL_WINDOW} SECOND))`,
   );
   if (stale.length === 0) return [];
 
@@ -397,6 +496,7 @@ const SERVER_SELECT = `
          d.location, s.os, s.kernel, s.cores, s.architecture AS arch,
          s.memory_total_mb AS memoryTotalMB, s.disk_total_gb AS diskTotalGB,
          s.agent_version AS agentVersion, s.uptime, s.last_seen AS lastSeen,
+         s.metric_interval_sec AS metricIntervalSec,
          n.gateway, n.dns, n.network_segment AS region, n.mac_address AS mac
     FROM devices d
     JOIN agent_tokens t        ON t.device_id = d.device_id AND t.status = 'approved'
@@ -438,12 +538,14 @@ async function removeServer(id) {
 
 const agentService = {
   register,
+  refreshHostInfo,
   getStatusByPendingToken,
   listPending,
   approve,
   reject,
   validateToken,
   recordHeartbeat,
+  setMaintenance,
   cacheLatest,
   logDevice,
   getDeviceLogs,

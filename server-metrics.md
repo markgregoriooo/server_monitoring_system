@@ -254,7 +254,7 @@ flow is identical** — only **where the backend lives** and **how it's secured*
 | Backend address | `localhost` / LAN IP `192.168.100.9` | a **stable** address: static IP / **DHCP reservation**, a **hostname/DNS name**, or for cross-site a **VPN/overlay** (Tailscale, ZeroTier) or public host (DDNS + port-forward) |
 | Transport | `http://` | **`https://`** behind a TLS reverse proxy (Nginx/Caddy). The agent sends a bearer token, so don't expose plain HTTP beyond a trusted LAN |
 | Agent `-api-url` | `http://192.168.100.9:3000` | the production URL, e.g. `https://monitor.cspc.edu.ph` (passed at `--register` / install time; stored in `agent.conf`) |
-| Dashboard endpoints | hardcoded `192.168.100.9:3000` in `frontend/src/api/client.ts` + `frontend/src/socket/socket.ts` | point both at the production URL, then `npm run build` |
+| Dashboard endpoints | auto-detected from the page host on :3000 (`frontend/src/config.ts`) | set `VITE_API_URL` in `frontend/.env` to the production URL, then `npm run build` |
 | CORS | `WEB_ORIGIN` defaults to localhost/LAN | set `WEB_ORIGIN` in `.env` to the production dashboard origin(s) |
 | Install key | a fixed dev value | a strong, secret `AGENT_INSTALL_KEY`; keep out of git; rotate if leaked (already-approved agents keep working) |
 | Firewall | open 3000 on the LAN | expose only 443 (the proxy) to where agents/dashboards live |
@@ -323,6 +323,107 @@ every field, writes the point, then emits **camelCase** to the dashboard
 > tags), `collector.go` (collection), `serverMetricsHandler.js` (validation +
 > point + emit), and the frontend `Server` mapping in `ServerMetrics.tsx`.
 
+### 4.1 Per-volume disk: `server_volumes`
+
+The `disk_*` fields above are the **root volume only** (`C:` / `/`). A data or log
+volume filling up while the system drive looks healthy is the likelier real
+incident, so every sample also carries a **`volumes[]`** array — one entry per
+fixed volume — written to its own measurement:
+
+- **Measurement:** `server_volumes`
+- **Tags:** `device_id`, `device_name`, `mount`
+- **Fields:** `total_gb`, `used_gb`, `percent`
+- **Payload shape:** `{ mount, fstype, total_gb, used_gb, percent }`
+
+The array is **optional** — an older agent that omits it still ingests fine, and
+the backend treats "absent" as "not reported" rather than "zero volumes".
+`sanitizeVolumes` in the handler is deliberately lenient (a malformed entry is
+dropped, not a 400) because the core metric fields are what indicate real
+contract drift. It caps at 32 volumes and 120-char mounts, since `mount` is an
+InfluxDB tag and unbounded cardinality is what kills a bucket.
+
+**Alerting uses the worst volume.** `checkThresholds` evaluates the `disk` rule
+against the highest-percentage volume rather than the root, so a full `D:` now
+alerts. The band is still tracked under the single `disk` metric — one rule, one
+open alert per server — and the message names the mount (`Disk critical: 96% (D:)`)
+only on multi-volume hosts, where it disambiguates.
+
+**Volume history is written but not yet charted.** The series exists in InfluxDB
+from the first post; the Server Detail page renders the **current** volumes only.
+
+### 4.2 Host-info refresh
+
+Static facts (IP, MAC, RAM, disk size, kernel, agent version) used to be sent
+**only at enrollment**, so they froze there: a DHCP lease change left a stale IP
+on screen forever, and a RAM upgrade made the derived "Mem used GB" figure —
+which divides by `memory_total_mb` — quietly wrong.
+
+The agent now attaches its `HostInfo` to a metric post as an optional **`host`**
+object on the **first post after start** and **hourly** thereafter
+(`hostRefreshEvery` in `cmd/agent/main.go`). The handler routes it to
+`agentService.refreshHostInfo`, the same function re-enrollment uses. It is
+best-effort: a failed probe just means that post carries metrics only, and the
+clock only advances on a successful send, so a failure retries next cycle rather
+than waiting out the hour.
+
+On the wire this is `collector.Payload` — `ServerMetrics` embedded (so the metric
+contract above is byte-for-byte unchanged) plus the optional `host`,
+`interval_seconds` (§4.3) and `collected_at` (§4.4).
+
+### 4.3 Offline window is per-agent
+
+The sweep used a flat **30s** while the agent's cadence is a settable flag
+(`-interval`), so installing an agent with `-interval 60` flapped that server
+Offline→Online forever — a `device_logs` row and an alert every cycle.
+
+The agent now reports `interval_seconds` on every post. It is stored in
+`server_specs.metric_interval_sec` and the window becomes:
+
+```
+window = clamp(interval × 3, SERVER_OFFLINE_AFTER_SEC … 3600s)
+```
+
+Three missed posts is the tolerance (one dropped POST must not raise a false
+alarm), floored so a 1s agent doesn't get a 3s hair trigger and capped so a
+nonsense interval can't effectively disable offline detection. `NULL` (an older
+agent, or one that has never posted) reads as 10s, which reproduces the previous
+30s behaviour exactly — **so applying the migration changes nothing until agents
+start reporting.**
+
+> Migration: `migrations/2026-08-03_server_metric_interval.sql` (idempotent).
+> Floor override: `SERVER_OFFLINE_AFTER_SEC` in `backend/.env`; blank = 30.
+
+### 4.4 Outage buffering (backfill)
+
+The agent used to drop any sample it couldn't deliver, so a backend restart left
+a permanent hole in history. It now **spools failed samples in memory** (240 max,
+~40 min at 10s; oldest dropped first) and replays them once the link is back, via:
+
+```
+POST /api/servers/metrics/batch     { "samples": [ … ] }   # ≤ 60 per request
+```
+
+Each buffered sample carries `collected_at` — the **only** path where the agent's
+clock is trusted, and it is clamped to `[now − 7d, now + 60s]` so a host with a
+broken RTC can't write points years out. The live path still ignores it and
+stamps server time, as it does for the ESP32.
+
+**Backfill is history only.** The batch handler writes InfluxDB and the on-site
+backup and nothing else — no heartbeat, no status change, no threshold
+evaluation, no socket broadcast. Alerting on an hours-old CPU spike would page
+someone for a condition that has long since passed, and letting a backlog mark a
+server "Online" would resurrect a host that is still down. An outage therefore
+leaves a gap in the **live** view but not in stored history.
+
+The spool is in memory **on purpose**: the realistic outage is "backend down for
+maintenance", which the agent survives, and writing a spool file would put
+unbounded churn on the flash of every monitored host to cover the separate case
+of an agent restart. A 403 (removed) is not an outage — those samples are
+discarded, not buffered.
+
+> `maxBatch` in `sender.go` must stay ≤ `MAX_BATCH` in `serverMetricsHandler.js`;
+> that bound is what keeps a batch inside `express.json()`'s 100 kb default.
+
 ---
 
 ## 5. Enrollment & auth model
@@ -360,11 +461,43 @@ Single shared install key in the backend `.env` as **`AGENT_INSTALL_KEY`**
 | `POST /api/agents/:id/approve` | JWT, `admin` | Approve → issue `AGT-…` token |
 | `POST /api/agents/:id/reject` | JWT, `admin` | Reject a pending agent |
 | `POST /api/servers/metrics` | agent Bearer token | Metric ingestion |
+| `POST /api/servers/metrics/batch` | agent Bearer token | Backfill of samples buffered during an outage (§4.4) — history only |
 | `GET /api/servers` | JWT | Dashboard server list |
 | `GET /api/servers/:id` | JWT | Single server detail |
-| `GET /api/servers/:id/history?range=` | JWT | Real metric history (InfluxDB) — `-1h` / `-6h` / `-24h` |
+| `GET /api/servers/:id/history?range=` | JWT | Real metric history (InfluxDB) — `-1h` / `-6h` / `-24h` / `-7d` / `-30d` |
 | `GET /api/servers/:id/logs` | JWT | Device event log (MySQL `device_logs`) |
+| `POST /api/servers/:id/maintenance` | JWT, `admin` | Park/unpark for planned downtime — `{ enabled: boolean }` |
 | `DELETE /api/servers/:id` | JWT, `admin` | Remove/decommission a server (revokes its token) |
+
+### Maintenance mode
+
+A planned reboot used to page everyone: the offline sweep fired, the bell rang and
+(at critical severity) email went out. An admin can now park a server first —
+**Maintain** on the Server Metrics row, **Resume** to bring it back.
+
+While `devices.status = 'maintenance'`:
+- the offline sweep skips it (its `WHERE d.status = 'online'` already excludes it);
+- `checkThresholds` is not called at all, so CPU/mem/disk alerts stay silent;
+- a heartbeat **will not** flip the status back to `online` — the state is
+  operator-owned, otherwise the next metric post would silently end the window;
+- metrics are still ingested, stored and broadcast, so you keep watching the box
+  through the work — it just doesn't alert;
+- `last_seen` is still refreshed, which is how **Resume** can tell a live host
+  from one that never came back (it re-derives Online vs Offline rather than
+  assuming Online).
+
+Both transitions re-arm `alertBandState` for the device, so the first breach after
+the window alerts instead of being swallowed as "same band as before". Both also
+auto-resolve any open **offline** alert, since neither path would otherwise clear
+it — entering the window suppresses the heartbeat's auto-resolve, and a server
+that recovers *while* parked never produces an offline→online transition.
+
+The status rides the existing `serverStatus` socket event, so every open dashboard
+re-badges live. Maintenance renders **blue**, not red — a parked box is not a fault,
+and red would hide real outages in a sea of red.
+
+> `'maintenance'` was already in the `devices.status` ENUM (and in `STATUS_LABEL`)
+> but nothing ever set it. **No migration is needed.**
 
 ---
 
@@ -372,34 +505,46 @@ Single shared install key in the backend `.env` as **`AGENT_INSTALL_KEY`**
 
 | Event | Direction | When |
 |---|---|---|
-| `serverMetrics` | server → browsers | On each metric POST: `{ server: { id, name, ip, os, location, status, cpuPercent, memPercent, memUsedMB, memTotalMB, diskPercent, diskUsedGB, diskTotalGB, netBytesSent, netBytesRecv, uptimeSeconds, uptimeLabel, processCount, timestamp } }` |
+| `serverMetrics` | server → browsers | On each metric POST: `{ server: { id, name, ip, os, location, status, volumes, cpuPercent, memPercent, memUsedMB, memTotalMB, diskPercent, diskUsedGB, diskTotalGB, netBytesSent, netBytesRecv, uptimeSeconds, uptimeLabel, processCount, timestamp } }` |
 | `agentApproved` | server → browsers | On admin approval: `{ id, name }` — page refreshes its lists |
 | `serverRemoved` | server → browsers | On admin delete: `{ id }` — drops the server from the dashboard/list |
 | `agentPending` | server → browsers | On register/reject: `{ id }` — admins re-fetch the pending list live |
-| `serverStatus` | server → browsers | On the 15s offline sweep flipping a stale server: `{ id, status: "Offline" }` — dashboard sets it Offline + zeroes its live metrics |
+| `serverStatus` | server → browsers | On the 15s offline sweep flipping a stale server (`{ id, status: "Offline" }` — dashboard sets it Offline + zeroes its live metrics), **and** on an admin parking/resuming a server (`status: "Maintenance"` / `"Online"` / `"Offline"`) |
 | `deviceLog` | server → browsers | On a new `device_logs` entry: `{ device_id, log_level, message, recorded_at }` |
 
 The dashboard merges each `serverMetrics` event onto the matching server by `id`
 (static fields like kernel/cores/network come from the initial `GET /api/servers`).
 
 **Device events** — lifecycle (registered, approved) and CPU/Mem/Disk **threshold crossings**
-(warning ≥ 80%, critical ≥ 90%, with a 70–80% hysteresis band so it can't spam) are written
-to `device_logs` and shown in the Server Detail **"Recent events"** panel
+are written to `device_logs` and shown in the Server Detail **"Recent events"** panel
 (`GET /api/servers/:id/logs` + the live `deviceLog` event). Recoveries are intentionally
 **not** logged, which keeps the table lean (no retention job needed).
+
+> Thresholds are **not** the old hardcoded 80/90. `checkThresholds` resolves the
+> configurable `alert_rules` (per-server override, else the global `device_id=NULL`
+> default) through `alertRulesService.getEffectiveRules` / `nextBand`, tracks the
+> band in `alertBandState`, raises a real alert via `notificationService`, and
+> auto-resolves on recovery. **Rules-only: no matching rule means silence.** The
+> `disk` rule is evaluated against the **worst volume** (§4.1), not the root.
 
 ---
 
 ## 7. MySQL tables
 
-All already present in the V9 schema — **no migration needed**.
+All present in the V9 schema except one added column (see the note below).
 
 | Table | Role |
 |---|---|
-| `devices` | one row per server (`device_type='server'`, `status` lifecycle) |
-| `server_specs` | os, kernel, cores, architecture, memory/disk totals, agent_version, `last_seen`, uptime |
+| `devices` | one row per server (`device_type='server'`, `status` lifecycle — incl. `maintenance`, which was already in the ENUM) |
+| `server_specs` | os, kernel, cores, architecture, memory/disk totals, agent_version, `last_seen`, uptime, **`metric_interval_sec`** |
 | `device_network` | mac_address, gateway, dns, network_segment |
 | `agent_tokens` | pending `token`, permanent `approved_token`, `status`, `last_used_at` (NOT NULL — set on insert) |
+
+> **Apply `migrations/2026-08-03_server_metric_interval.sql`** — it adds
+> `server_specs.metric_interval_sec` for the per-agent offline window (§4.3). It is
+> idempotent (guarded, safe to re-run) and behaviour-neutral until agents report a
+> cadence, since `NULL` reads as the 10s default. Without it the sweep query errors
+> on the unknown column, so this one is **not** optional.
 
 ---
 
@@ -410,7 +555,9 @@ All already present in the V9 schema — **no migration needed**.
 | `go-agent/` | The Go agent (see §3) |
 | `backend/middleware/agentAuth.js` | Validate agent Bearer token → `req.device` |
 | `backend/services/agentService.js` | All register/approve/heartbeat/read DB logic |
-| `backend/handlers/serverMetricsHandler.js` | Validate + Influx write + heartbeat + emit |
+| `backend/handlers/serverMetricsHandler.js` | Validate + Influx write + heartbeat + emit, and the backfill batch handler |
+| `backend/services/serverMetricUtils.js` | Pure helpers (validation, volume sanitising, offline-window maths, backfill clamping). **No imports** — this is what lets the tests run without MySQL/InfluxDB |
+| `backend/tests/` | `npm test` (`node --test`, no test-runner dependency) |
 | `backend/routes/agents.js` | `/api/agents/*` (register, status, pending, approve, reject) |
 | `backend/routes/servers.js` | `POST /metrics` + dashboard GETs |
 | `backend/src/server.js` | Mounts `/api/agents` (mock SNMP loop removed) |
@@ -421,16 +568,38 @@ All already present in the V9 schema — **no migration needed**.
 
 ## 9. Dev tasks
 
+### Run the tests
+```bash
+cd backend
+npm test          # node --test "tests/*.test.js" — no dependency to install
+```
+Two suites, neither needing a database:
+- `serverMetricUtils.test.js` — validation, volume sanitising, uptime formatting,
+  offline-window maths (including the `-interval 60` flapping regression), and
+  backfill timestamp clamping.
+- `contract.test.js` — **parses `go-agent/internal/collector/metrics.go`** and asserts
+  its json tags still match what the backend validates. This is the guard for the
+  hand-duplicated contract called out in §10. It also pins that required fields are
+  *not* `omitempty` (a zero-valued required field would vanish from the JSON and be
+  rejected as "missing"), and that `Payload` embeds `ServerMetrics` rather than
+  nesting it.
+
 ### Add a new metric
 1. `go-agent/internal/collector/metrics.go` — add the field + json tag.
 2. `go-agent/internal/collector/collector.go` — collect it.
-3. `backend/handlers/serverMetricsHandler.js` — add to `NUMERIC_FIELDS`, the Point, and the emit.
-4. `frontend/src/pages/ServerMetrics.tsx` — map it in `mapServerRow` / `mergeLive`.
+3. `backend/services/serverMetricUtils.js` — add to `NUMERIC_FIELDS`.
+4. `backend/handlers/serverMetricsHandler.js` — add to the Point and the emit.
+5. `frontend/src/pages/ServerMetrics.tsx` — map it in `mapServerRow` / `mergeLive`.
+
+`npm test` fails on steps 1 and 3 being out of sync, so you'll know before deploying.
 
 ### Move to a new network
 The agent's backend URL is set at install time (`-api-url` / installer arg), stored
-in `agent.conf` — no rebuild needed. The dashboard's own hardcoded endpoints are in
-`frontend/src/api/client.ts` and `frontend/src/socket/socket.ts`.
+in `agent.conf` — no rebuild needed. The dashboard's backend URL is **no longer
+hardcoded**: it is centralized in `frontend/src/config.ts`, which auto-detects from
+the page's own host on port 3000 (so changing networks needs no edit) and can be
+pinned with `VITE_API_URL` in `frontend/.env`. Both `api/client.ts` and
+`socket/socket.ts` import `API_URL` from there.
 
 ### Rotate the install key
 Change `AGENT_INSTALL_KEY` in `backend/.env` and restart. Already-approved agents
@@ -444,9 +613,13 @@ are unaffected (they use their per-device `approved_token`, not the install key)
   startup; nodemon does not restart on `.env` changes. A mismatch returns
   `Invalid install key` on register.
 - **Per-server history is real** — `ServerDetail.tsx` charts query
-  `GET /api/servers/:id/history` (InfluxDB `server_metrics`, 1h/6h/24h ranges) and stay live
-  via the `serverMetrics` socket. Network I/O is *derived* (MB/s) from the cumulative byte
-  counters, so the first point of a range reads 0 (no prior sample to diff against).
+  `GET /api/servers/:id/history` (InfluxDB `server_metrics`, **1h/6h/24h/7d/30d** ranges) and
+  stay live via the `serverMetrics` socket. Network I/O is *derived* (MB/s) from the cumulative
+  byte counters, so the first point of a range reads 0 (no prior sample to diff against).
+  Aggregate windows are sized to keep every range at roughly 150–200 points, so a 30d query
+  doesn't ship megabytes to the browser. The 7d/30d axis labels include the **date** — a bare
+  "14:00" repeats daily and makes a month unreadable. **Ranges beyond 24h are bounded by your
+  InfluxDB bucket retention** (see the retention note below): a 30d view on a 7d bucket shows 7d.
 - **InfluxDB retention** — `server_metrics` (every 10s/host) is the only high-volume store.
   It won't crash anything, but set a **bucket retention policy** (e.g. 30–90 days) so old
   points expire. MySQL tables (`device_logs` + device rows) are bounded and tiny. This is a
@@ -462,9 +635,17 @@ are unaffected (they use their per-device `approved_token`, not the install key)
   (30s ≈ three missed 10s posts), and a 15s sweep in `src/server.js` persists the flip,
   logs a `device_logs` "went offline" entry, and pushes a live `serverStatus` event so the
   dashboard/Server Metrics page update without a refresh. Recovery is automatic on the next
-  metric POST (`serverMetrics` with `status:"Online"`).
+  metric POST (`serverMetrics` with `status:"Online"`), which **also auto-resolves the open
+  `offline` alert** — mirroring `deviceAlerts.checkReachability` for routers/UPS. Before that
+  fix, every reboot left a permanently open alert inflating the sidebar badge.
+  Servers in **maintenance** are exempt from the whole sweep (see §5).
 - **Contract is duplicated** in two places that must stay in sync:
-  `go-agent/internal/collector/metrics.go` ↔ `backend/handlers/serverMetricsHandler.js`.
+  `go-agent/internal/collector/metrics.go` ↔ `backend/services/serverMetricUtils.js`
+  (`NUMERIC_FIELDS`). **`npm test` now enforces this** — `tests/contract.test.js` parses the
+  Go file and fails on drift, instead of every deployed agent silently 400-ing.
+- **Agent metrics are buffered, not lost, during a backend outage** (§4.4) — but only in
+  memory and only ~40 min at the default cadence. A longer outage, or an agent restart
+  mid-outage, still loses the samples beyond that.
 - **`agent.conf` holds the device token** — gitignored; never commit it. Same for
   `AGENT_INSTALL_KEY` / `.env`.
 - **Windows install uses a Scheduled Task**, not a native service (no SCM wrapper is

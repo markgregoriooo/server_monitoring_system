@@ -2,10 +2,16 @@ import { queryClient, bucket } from "../config/influx.js";
 
 // Allowed ranges → aggregate window. Both sides are whitelisted (never taken
 // from user input verbatim) so there is no Flux injection surface here.
+//
+// Windows are chosen to keep every range at roughly 150–200 points: enough shape
+// to read, few enough that a 30d query doesn't ship megabytes to the browser or
+// make Influx scan-and-return millions of raw points.
 const RANGE_WINDOW = {
   "-1h": "20s",
   "-6h": "2m",
   "-24h": "10m",
+  "-7d": "1h",
+  "-30d": "4h",
 };
 
 // GET /api/servers/:id/history?range=-1h  (JWT, via authMiddleware)

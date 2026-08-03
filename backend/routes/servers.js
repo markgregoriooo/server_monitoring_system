@@ -2,7 +2,10 @@ import express from "express";
 import rateLimit from "express-rate-limit";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import { agentAuthMiddleware } from "../middleware/agentAuth.js";
-import { serverMetricsHandler } from "../handlers/serverMetricsHandler.js";
+import {
+  serverMetricsHandler,
+  serverMetricsBatchHandler,
+} from "../handlers/serverMetricsHandler.js";
 import { serverHistoryHandler } from "../handlers/serverHistoryHandler.js";
 import agentService from "../services/agentService.js";
 import { audit, clientInfo } from "../services/auditService.js";
@@ -29,6 +32,12 @@ const metricsLimiter = rateLimit({
 // Authenticated by the agent token, NOT a user JWT.
 router.post("/metrics", metricsLimiter, agentAuthMiddleware, serverMetricsHandler);
 
+// ── POST /api/servers/metrics/batch ─ backfill of samples buffered during an
+// outage (agent bearer token). History only: writes InfluxDB + the on-site backup,
+// never touches status or alerting. Shares the metric limiter — a reconnecting
+// fleet sends a burst of these, and one batch replaces up to 60 live posts.
+router.post("/metrics/batch", metricsLimiter, agentAuthMiddleware, serverMetricsBatchHandler);
+
 // ── GET /api/servers ─ dashboard server list (JWT) ────────────────────────────
 router.get("/", authMiddleware, async (req, res, next) => {
   try {
@@ -47,6 +56,38 @@ router.get("/:id/logs", authMiddleware, async (req, res, next) => {
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid server id." });
   try {
     res.json({ logs: await agentService.getDeviceLogs(id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/servers/:id/maintenance ─ park/unpark a server (admin) ──────────
+// Planned downtime: while parked, the offline sweep skips this server, threshold
+// alerting is suppressed and a heartbeat won't flip its status — so a scheduled
+// reboot doesn't page everyone. Body: { enabled: boolean }.
+router.post("/:id/maintenance", authMiddleware, requireRole("admin"), async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid server id." });
+    if (typeof req.body?.enabled !== "boolean") {
+      return res.status(400).json({ error: "Body must include a boolean `enabled`." });
+    }
+
+    const result = await agentService.setMaintenance(id, req.body.enabled);
+    if (!result) return res.status(404).json({ error: "Server not found." });
+
+    await audit({
+      userId: req.user.id,
+      module: "devices",
+      action: req.body.enabled ? "start_maintenance" : "end_maintenance",
+      description: `${req.body.enabled ? "Started" : "Ended"} maintenance for server "${result.name ?? `#${id}`}"`,
+      level: "warning",
+      ...clientInfo(req),
+    });
+
+    // Same event the offline sweep uses, so every open dashboard re-badges live.
+    req.app.get("io")?.emit("serverStatus", { id, status: result.status });
+    res.json({ success: true, status: result.status });
   } catch (err) {
     next(err);
   }

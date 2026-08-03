@@ -4,6 +4,7 @@ import Chart from "../chart/ChartConfig";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useTheme } from "../context/ThemeContext";
+import type { Volume } from "./ServerMetrics";
 
 interface Server {
   id: string;
@@ -15,6 +16,11 @@ interface Server {
   memoryTotalGB: number;
   diskUsed: number;
   diskTotalGB: number;
+  volumes: Volume[];
+  processCount: number | null;
+  agentVersion: string;
+  lastSeen: string | null;
+  metricIntervalSec: number | null;
   uptime: string;
   os: string;
   kernel: string;
@@ -50,10 +56,22 @@ const RANGES = [
   { key: "-1h",  label: "1h" },
   { key: "-6h",  label: "6h" },
   { key: "-24h", label: "24h" },
+  { key: "-7d",  label: "7d" },
+  { key: "-30d", label: "30d" },
 ];
 
-function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString("en-PH", {
+// Ranges spanning more than a day need the DATE on the axis — bare "14:00"
+// repeats every day and makes a 30d chart unreadable.
+const MULTI_DAY = new Set(["-7d", "-30d"]);
+
+function fmtTime(iso: string, range: string) {
+  const d = new Date(iso);
+  if (MULTI_DAY.has(range)) {
+    return d.toLocaleString("en-PH", {
+      timeZone: "Asia/Manila", month: "short", day: "2-digit", hour: "2-digit", hour12: false,
+    });
+  }
+  return d.toLocaleTimeString("en-PH", {
     timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false,
   });
 }
@@ -251,6 +269,51 @@ function InfoCard({ title, rows }: { title: string; rows: [string, string][] }) 
   );
 }
 
+// ─── VolumesCard ──────────────────────────────────────────────────────────────
+// Every fixed volume the agent reported. The disk gauge above is only the ROOT
+// volume, so without this a full data/log drive is invisible on this page.
+function VolumesCard({ volumes }: { volumes: Volume[] }) {
+  return (
+    <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Volumes</span>
+        {volumes.length > 0 && <span className="text-[10px] text-slate-400">{volumes.length}</span>}
+      </div>
+
+      {volumes.length === 0 ? (
+        <div className="text-xs text-slate-400 py-5 text-center">
+          No volume data yet — arrives with the next agent report.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {volumes.map((v) => {
+            const pct = Math.min(Math.max(v.percent, 0), 100);
+            return (
+              <div key={v.mount}>
+                <div className="flex items-baseline justify-between gap-3 mb-1">
+                  <span className="text-xs font-mono text-slate-700 dark:text-slate-200 truncate" title={v.mount}>
+                    {v.mount}
+                    {v.fstype && <span className="ml-1.5 text-[10px] text-slate-400">{v.fstype}</span>}
+                  </span>
+                  <span className="text-[11px] font-mono flex-shrink-0" style={{ color: barColor(pct) }}>
+                    {v.used_gb} / {v.total_gb} GB · {Math.round(pct)}%
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full overflow-hidden bg-slate-200 dark:bg-white/[0.08]">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{ width: `${pct}%`, background: barColor(pct) }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── ChartCard ────────────────────────────────────────────────────────────────
 function ChartCard({
   title, legend, canvasRef, height = 140,
@@ -349,7 +412,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
     return () => { alive = false; socket.off("deviceLog", onLog); };
   }, [s.id]);
 
-  const labels   = history.map((p) => fmtTime(p.time));
+  const labels   = history.map((p) => fmtTime(p.time, range));
   const cpuData  = history.map((p) => p.cpu ?? 0);
   const memData  = history.map((p) => p.mem ?? 0);
   const diskData = history.map((p) => p.disk ?? 0);
@@ -449,7 +512,9 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         <span className={`text-xs font-medium px-2.5 py-1 rounded-sm ${
           s.status === "Online"
             ? "bg-green-900/40 text-green-400 border border-green-700/40"
-            : "bg-red-900/40 text-red-400 border border-red-700/40"
+            : s.status === "Maintenance"
+              ? "bg-blue-900/40 text-blue-400 border border-blue-700/40"
+              : "bg-red-900/40 text-red-400 border border-red-700/40"
         }`}>
           {s.status}
         </span>
@@ -552,21 +617,32 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         />
       </div>
 
+      {/* Volumes — every fixed disk, not just the root one the gauge shows */}
+      <VolumesCard volumes={s.volumes ?? []} />
+
       {/* Info rows */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <InfoCard title="System info" rows={[
-          ["OS",     s.os],
-          ["Kernel", s.kernel],
-          ["Cores",  String(s.cores)],
-          ["Arch",   s.arch],
-          ["Memory", `${s.memoryTotalGB} GB`],
-          ["Disk",   `${s.diskTotalGB} GB`],
+          ["OS",        s.os],
+          ["Kernel",    s.kernel],
+          ["Cores",     String(s.cores)],
+          ["Arch",      s.arch],
+          ["Memory",    `${s.memoryTotalGB} GB`],
+          ["Disk",      `${s.diskTotalGB} GB`],
+          ["Processes", s.processCount != null ? String(s.processCount) : "—"],
         ]} />
         <InfoCard title="Network info" rows={[
           ["IP address", s.ip],
           ["Gateway",    s.gateway],
           ["DNS",        s.dns],
           ["Region",     s.region],
+        ]} />
+        {/* Agent health — until now you couldn't tell from the dashboard which
+            agents were outdated or when one last checked in. */}
+        <InfoCard title="Monitoring agent" rows={[
+          ["Version",    s.agentVersion || "—"],
+          ["Last report", s.lastSeen ? fmtDateTime(s.lastSeen) : "—"],
+          ["Interval",   s.metricIntervalSec ? `${s.metricIntervalSec}s` : "—"],
         ]} />
       </div>
 

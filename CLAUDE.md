@@ -12,6 +12,7 @@ cd backend
 npm install
 nodemon src/server.js   # dev (watch mode)
 node src/server.js      # production
+npm test                # node --test — pure unit tests, no MySQL/InfluxDB needed
 ```
 > Entry point is `backend/src/server.js`. The root-level `server.js` was deleted.
 
@@ -38,6 +39,7 @@ INFLUX_TOKEN=
 INFLUX_ORG=
 INFLUX_BUCKET=
 AGENT_INSTALL_KEY= # shared key the Go agents present at enrollment (POST /api/agents/register)
+SERVER_OFFLINE_AFTER_SEC= # FLOOR for the per-agent offline window; blank = 30. The real window is max(this, agent's reported interval x 3), capped at 1h — so a `-interval 60` agent no longer flaps Offline. See server-metrics.md §4.3
 SNMP_POLL_INTERVAL_MS= # router/UPS SNMP poll cadence; blank = 60000 (60s). Per-device community/port live in device_network, not here
 MIKROTIK_ENC_KEY=      # ⚠️ REQUIRED for MikroTik. 64 hex chars (32 bytes) for AES-256-GCM of mikrotik_devices.api_password. Saving credentials THROWS without it. Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 MIKROTIK_POLL_INTERVAL_MS= # RouterOS API poll cadence; blank = 30000 (30s). Lighter than SNMP walks, so 10-15s is fine for one router
@@ -105,7 +107,7 @@ backend/services/
   userService.js                ← user CRUD
   permissionService.js          ← static role-based permissions
   airconService.js              ← all aircon DB logic (getAll, toggle, applyAutoIR, etc.) + **configurable auto-cooling IR zone thresholds** (`aircon_ir_config`: getIRConfig/saveIRConfig/getDeviceIRConfig) pushed to the ESP32 via the `acConfig` socket event — sets WHEN IR fires (target temps per zone stay fixed = captured IR codes). See Air Conditioner System + `email-popup-notifications.md`
-  agentService.js               ← Go-agent + server-device DB logic (devices + server_specs + device_network + agent_tokens); enroll/approve/reject, offline sweep, device_logs
+  agentService.js               ← Go-agent + server-device DB logic (devices + server_specs + device_network + agent_tokens); enroll/approve/reject, offline sweep, device_logs. `recordHeartbeat` **auto-resolves the open `offline` alert** on an offline→online transition (servers now match routers/UPS — see deviceAlerts.checkReachability). `checkThresholds` evaluates the `disk` rule against the **worst volume**, not the root. `setMaintenance(id, enabled)` parks a server for planned downtime (sweep skips it, thresholds suppressed, heartbeat won't clobber the status); `refreshHostInfo` is also called from the metric path so static facts don't freeze at enrollment. See `server-metrics.md`
   notificationService.js        ← raiseAlert() → de-dup cooldown (NOTIFY_COOLDOWN_MIN, restart-proof, **open-alert-scoped** — a resolved alert no longer suppresses, so recurrences re-alert) → writes `alerts` (incl. `alert_rule_id` when rule-driven) + fans out `alert_notifications` per active user + pushes `notification` to each user room + severity-gated email; listForUser/unreadCount/markRead. `init(io)` once at startup. Triggers: server CPU/mem/disk + **environment** temperature/gas/humidity (both via configurable `alert_rules` — see alertRulesService) + offline (not rule-based). See `email-popup-notifications.md`
   alertsService.js              ← alert LIFECYCLE (shared, not per-user): list/acknowledge/resolve/openCount + auto-resolve when a metric recovers (called from checkThresholds + sensorHandler); broadcasts `alertUpdated`; `init(io)` once. Backs the now-real `routes/alerts.js`. Distinct from the per-user bell (`alert_notifications.is_read`)
   alertRulesService.js          ← configurable alert thresholds (`alert_rules`). In-memory cache (reload on startup + every mutation) + `getEffectiveRules(deviceId, metric)` resolver (per-server override else global `device_id=NULL`) + `nextBand()` hysteresis-aware evaluation + admin CRUD. Rules-only: no matching rule = no alert. metric_name: cpu/mem/disk + temperature/gas/humidity + router_cpu/router_mem/router_clients/link_util/ups_charge/ups_runtime/ups_load (router/UPS/MikroTik, via deviceAlerts.js — the last two are lower-is-worse, use `<=`). See `email-popup-notifications.md`
@@ -115,12 +117,14 @@ backend/services/
   deviceAlerts.js               ← shared router/UPS/MikroTik threshold + event alerting (checkRouter/checkUps), called by the SNMP **and** MikroTik pollers. Evaluates metrics against configurable `alert_rules` (alertRulesService.nextBand, band tracked in alertBandState) → raises REAL alerts via notificationService.raiseAlert (bell/email/Alerts page) + device_logs; auto-resolves on recovery (alertsService). Boolean events (interface down, UPS on-battery, device offline/unreachable via checkReachability) raise directly like server offline. Replaced the old device-log-only poller checks
   alertBandState.js             ← in-memory per-(device,metric) severity band tracker shared by deviceAlerts (onset-only escalation + recovery)
   backupService.js              ← on-site backup writer: mirrors EVERY ingested sample (env/server/router/MikroTik/UPS) to rotating NDJSON files on `BACKUP_DIR` (a micro SD / USB drive on the backend) — an independent copy that survives a DB wipe + a power outage. Buffered flush + synchronous flush on shutdown (UPS low-battery SIGTERM) + daily retention purge. `init()` once at startup. See `backup-storage.md`
+  serverMetricUtils.js          ← PURE helpers for the server-metric path (NUMERIC_FIELDS, validateSample, sanitizeVolumes, sanitizeInterval, formatUptime, offlineWindowSec, backfillTimestamp). **Deliberately import-free** so `backend/tests/` runs with no MySQL/InfluxDB/.env. Imported by serverMetricsHandler + agentService
+backend/tests/                  ← `npm test` (`node --test`, zero deps). `contract.test.js` PARSES `go-agent/internal/collector/metrics.go` and fails if its json tags drift from NUMERIC_FIELDS — the guard for the hand-duplicated Go↔Node metric contract
 backend/handlers/
   sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers + raises per-metric room-level alerts (temperature/gas/humidity) on band escalation, evaluated against `alert_rules` (alertRulesService) — replaces the old firmware-status escalation
   querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
   offlineDataHandler.js         ← SD card batch flush from ESP32
-  serverMetricsHandler.js       ← agent metric POST → InfluxDB (`server_metrics`) + broadcast `serverMetrics`
-  serverHistoryHandler.js       ← Flux query on `server_metrics` for GET /api/servers/:id/history
+  serverMetricsHandler.js       ← agent metric POST → InfluxDB (`server_metrics` + per-volume `server_volumes`) + broadcast `serverMetrics`; also routes the agent's hourly optional `host` object to agentService.refreshHostInfo and skips threshold alerting while the server is in maintenance. Exports `serverMetricsBatchHandler` too (POST /metrics/batch) — **backfill of samples the agent buffered during an outage: InfluxDB + backup ONLY, no heartbeat/status/alerting/broadcast**
+  serverHistoryHandler.js       ← Flux query on `server_metrics` for GET /api/servers/:id/history (ranges 1h/6h/24h/**7d/30d**, windows sized to ~150-200 points each)
   networkMetricsHandler.js      ← router sample → InfluxDB (`router_metrics` + per-iface `network_traffic`) + broadcast `networkMetrics`
   upsMetricsHandler.js          ← UPS sample → InfluxDB (`ups_metrics`) + broadcast `upsMetrics`
   networkHistoryHandler.js      ← Flux on `network_traffic` (derived throughput) for GET /api/network/:id/history
@@ -165,7 +169,7 @@ SESSION_NOTES.md                ← per-session work log
 | Servers (devices + server_specs + device_network + agent_tokens), device_logs | MySQL | fully implemented — Go-agent enrollment |
 | Routers/UPS (devices + device_network + ups_details + network_interfaces) | MySQL | SNMP poller; **devices seeded via `migrations/2026-06-12_router_ups_devices.sql`** (template — needs real device facts) |
 | Environment time-series | InfluxDB | measurement: `sensor_environment`, precision: ms |
-| Server-metric time-series | InfluxDB | measurement: `server_metrics` |
+| Server-metric time-series | InfluxDB | measurements: `server_metrics` + `server_volumes` (one point per fixed volume per sample, tagged by `mount` — the root-only `disk_*` fields stay on `server_metrics`) |
 | Router/UPS time-series | InfluxDB | measurements: `network_traffic` (per-iface, cumulative uint counters), `router_metrics`, `ups_metrics` — tagged by `device_id` |
 | **On-site backup copy (all streams)** | flat files under `BACKUP_DIR` | independent NDJSON backup of every sample (env/server/router/MikroTik/UPS), one file per stream per day, on a micro SD / USB drive on the backend. Survives DB wipe + power outage. See `backup-storage.md` |
 | **alerts, reports, environment history/logs** | `data/db.js` in-memory | **mock — not persisted**, resets on restart (`/api/alerts`, `/api/reports`, `/api/environment`) |
@@ -220,7 +224,7 @@ SESSION_NOTES.md                ← per-session work log
 | `sensorData` | on every ESP32 reading |
 | `sensorHistory` | response to `changeRange` |
 | `serverMetrics` | on each Go agent metric POST (~10s/host) — see `server-metrics.md` |
-| `serverStatus` | offline sweep flips a stale server → `{ id, status: "Offline" }` |
+| `serverStatus` | offline sweep flips a stale server → `{ id, status: "Offline" }`, **or** an admin parks/resumes one → `{ id, status: "Maintenance" \| "Online" \| "Offline" }` |
 | `serverRemoved` | admin removes a server → `{ id }` |
 | `networkMetrics` | on each router SNMP poll (~60s) → `{ device }` (interfaces, utilization, uptime) |
 | `upsMetrics` | on each UPS SNMP poll (~60s) → `{ ups }` (battery %, runtime, load, on-battery) |

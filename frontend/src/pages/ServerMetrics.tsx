@@ -5,6 +5,16 @@ import ServerDetail from "./ServerDetail";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 
+// One mounted fixed volume, as reported by the agent. Exported so ServerDetail
+// shares the shape instead of redeclaring it (type-only import — no runtime cycle).
+export interface Volume {
+  mount: string;
+  fstype: string;
+  total_gb: number;
+  used_gb: number;
+  percent: number;
+}
+
 interface Server {
   id: string;
   name: string;
@@ -15,6 +25,11 @@ interface Server {
   memoryTotalGB: number;
   diskUsed: number;
   diskTotalGB: number;
+  volumes: Volume[];
+  processCount: number | null;
+  agentVersion: string;
+  lastSeen: string | null;
+  metricIntervalSec: number | null;
   uptime: string;
   os: string;
   kernel: string;
@@ -52,6 +67,11 @@ function mapServerRow(r: any): Server {
     memoryTotalGB: r.memoryTotalMB ? +(r.memoryTotalMB / 1024).toFixed(1) : 0,
     diskUsed: Number(r.diskUsed ?? 0),
     diskTotalGB: Number(r.diskTotalGB ?? 0),
+    volumes: Array.isArray(r.volumes) ? r.volumes : [],
+    processCount: r.processCount ?? null,
+    agentVersion: r.agentVersion ?? "",
+    lastSeen: r.lastSeen ?? null,
+    metricIntervalSec: r.metricIntervalSec ?? null,
     uptime: r.uptime || "—",
     os: r.os ?? "—",
     kernel: r.kernel ?? "—",
@@ -76,6 +96,10 @@ function mergeLive(prev: Server | undefined, p: any): Server {
     memoryTotalGB: p.memTotalMB ? +(p.memTotalMB / 1024).toFixed(1) : base.memoryTotalGB,
     diskUsed: Math.round(p.diskPercent ?? base.diskUsed),
     diskTotalGB: p.diskTotalGB != null ? Math.round(p.diskTotalGB) : base.diskTotalGB,
+    volumes: Array.isArray(p.volumes) ? p.volumes : base.volumes,
+    processCount: p.processCount ?? base.processCount,
+    // A live metric push means the agent just reported, so this IS its last seen.
+    lastSeen: p.timestamp ?? base.lastSeen,
     uptime: p.uptimeLabel ?? base.uptime,
   };
 }
@@ -106,9 +130,34 @@ function loadColor(v: number) {
   return GREEN;
 }
 
+// Compare dotted numeric versions ("1.10.0" > "1.9.0"). Returns 0 for anything
+// non-numeric rather than guessing, so an odd version string never gets flagged.
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map((n) => parseInt(n, 10));
+  const pb = b.split(".").map((n) => parseInt(n, 10));
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (Number.isNaN(x) || Number.isNaN(y)) return 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+function fmtAgo(iso: string | null) {
+  if (!iso) return "never";
+  const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
 function statusColor(s: string) {
   if (s === "Online") return GREEN;
   if (s === "Warning") return ORANGE;
+  // Planned downtime is not a fault — red would read as an outage.
+  if (s === "Maintenance") return BLUE;
   return RED;
 }
 
@@ -300,8 +349,8 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
 
 // ─── ServerCard (mobile) ──────────────────────────────────────────────────────
 
-function ServerCard({ s, isAdmin, onView, onDelete }: {
-  s: Server; isAdmin: boolean; onView: () => void; onDelete: () => void;
+function ServerCard({ s, isAdmin, onView, onDelete, onMaintenance }: {
+  s: Server; isAdmin: boolean; onView: () => void; onDelete: () => void; onMaintenance: () => void;
 }) {
   return (
     <div className="rounded-lg p-3" style={{ border: `1px solid ${gf.border}` }}>
@@ -321,6 +370,11 @@ function ServerCard({ s, isAdmin, onView, onDelete }: {
         <span className="text-[11px] truncate" style={{ color: gf.textMuted }}>↑ {s.uptime}</span>
         <div className="flex gap-2 shrink-0">
           <GhostButton onClick={onView}>View</GhostButton>
+          {isAdmin && (
+            <GhostButton onClick={onMaintenance}>
+              {s.status === "Maintenance" ? "Resume" : "Maintain"}
+            </GhostButton>
+          )}
           {isAdmin && <GhostButton onClick={onDelete} danger>Remove</GhostButton>}
         </div>
       </div>
@@ -401,26 +455,59 @@ function MetricCard({ icon, iconBg, iconColor, label, value, sub, percent }: Met
   );
 }
 
-// Expandable detail row shown when a table row is clicked.
-function ServerDrawerRow({ server: s, isOpen }: { server: Server; isOpen: boolean }) {
+// Expandable detail row shown when a table row is clicked. `newestAgent` is the
+// highest agent version seen across the fleet — comparing against it flags stale
+// agents without needing a hardcoded "current version" to keep updated.
+function ServerDrawerRow({ server: s, isOpen, newestAgent }: {
+  server: Server; isOpen: boolean; newestAgent: string;
+}) {
   const memUsedGB  = ((s.memory / 100) * s.memoryTotalGB).toFixed(1);
   const memFreeGB  = (s.memoryTotalGB - parseFloat(memUsedGB)).toFixed(1);
   const diskUsedGB = Math.round((s.diskUsed / 100) * s.diskTotalGB);
   const diskFreeGB = s.diskTotalGB - diskUsedGB;
+  const outdated =
+    !!s.agentVersion && !!newestAgent && compareVersions(s.agentVersion, newestAgent) < 0;
 
   return (
     <tr>
       <td colSpan={8} className="p-0">
         <div
           className="overflow-hidden transition-all duration-300 ease-in-out"
-          style={{ maxHeight: isOpen ? 220 : 0, borderBottom: isOpen ? `1px solid ${gf.divider}` : "none" }}
+          style={{ maxHeight: isOpen ? 280 : 0, borderBottom: isOpen ? `1px solid ${gf.divider}` : "none" }}
         >
-          <div className="flex flex-wrap gap-2 p-3" style={{ background: gf.bg }}>
-            <MetricCard icon={<CpuIcon />}      iconBg="#E6F1FB" iconColor="#185FA5" label="CPU usage" value={`${s.cpu}%`}       percent={s.cpu}      sub={s.cpu > 80 ? "High load" : s.cpu > 60 ? "Moderate" : "Healthy"} />
-            <MetricCard icon={<MemUsedIcon />}  iconBg="#EEEDFE" iconColor="#534AB7" label="Mem used"  value={`${memUsedGB} GB`} percent={s.memory}   sub={`of ${s.memoryTotalGB} GB`} />
-            <MetricCard icon={<MemFreeIcon />}  iconBg="#EAF3DE" iconColor="#3B6D11" label="Mem free"  value={`${memFreeGB} GB`} sub="available" />
-            <MetricCard icon={<DiskUsedIcon />} iconBg="#FAEEDA" iconColor="#854F0B" label="Disk used" value={`${diskUsedGB} GB`} percent={s.diskUsed} sub={`of ${s.diskTotalGB} GB`} />
-            <MetricCard icon={<DiskFreeIcon />} iconBg="#E1F5EE" iconColor="#0F6E56" label="Disk free" value={`${diskFreeGB} GB`} sub="available" />
+          <div className="p-3" style={{ background: gf.bg }}>
+            <div className="flex flex-wrap gap-2">
+              <MetricCard icon={<CpuIcon />}      iconBg="#E6F1FB" iconColor="#185FA5" label="CPU usage" value={`${s.cpu}%`}       percent={s.cpu}      sub={s.cpu > 80 ? "High load" : s.cpu > 60 ? "Moderate" : "Healthy"} />
+              <MetricCard icon={<MemUsedIcon />}  iconBg="#EEEDFE" iconColor="#534AB7" label="Mem used"  value={`${memUsedGB} GB`} percent={s.memory}   sub={`of ${s.memoryTotalGB} GB`} />
+              <MetricCard icon={<MemFreeIcon />}  iconBg="#EAF3DE" iconColor="#3B6D11" label="Mem free"  value={`${memFreeGB} GB`} sub="available" />
+              <MetricCard icon={<DiskUsedIcon />} iconBg="#FAEEDA" iconColor="#854F0B" label="Disk used" value={`${diskUsedGB} GB`} percent={s.diskUsed} sub={`of ${s.diskTotalGB} GB`} />
+              <MetricCard icon={<DiskFreeIcon />} iconBg="#E1F5EE" iconColor="#0F6E56" label="Disk free" value={`${diskFreeGB} GB`} sub="available" />
+            </div>
+
+            {/* Agent health + per-volume usage — neither was visible anywhere before */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2.5 text-[10px]" style={{ color: gf.textDim }}>
+              <span>
+                agent <span style={{ color: gf.textMuted }}>{s.agentVersion || "—"}</span>
+                {outdated && (
+                  <span className="ml-1.5 px-1 py-0.5 rounded-[2px]" style={{ color: ORANGE, border: `1px solid ${ORANGE}55` }}>
+                    outdated · fleet {newestAgent}
+                  </span>
+                )}
+              </span>
+              <span>last report <span style={{ color: gf.textMuted }}>{fmtAgo(s.lastSeen)}</span></span>
+              {s.metricIntervalSec != null && <span>every {s.metricIntervalSec}s</span>}
+              {s.processCount != null && <span>{s.processCount} processes</span>}
+              {s.volumes.length > 0 && (
+                <span className="truncate">
+                  volumes{" "}
+                  {s.volumes.map((v) => (
+                    <span key={v.mount} className="ml-1" style={{ color: loadColor(v.percent) }}>
+                      {v.mount} {Math.round(v.percent)}%
+                    </span>
+                  ))}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </td>
@@ -531,6 +618,13 @@ export default function ServerMetrics() {
   const cpuAvg = total ? Math.round(servers.reduce((a, s) => a + s.cpu, 0) / total) : 0;
   const memAvg = total ? Math.round(servers.reduce((a, s) => a + s.memory, 0) / total) : 0;
 
+  // Highest agent version in the fleet — the yardstick for flagging stale agents,
+  // so nothing has to hardcode (and then forget to bump) a "current version".
+  const newestAgent = servers.reduce(
+    (max, s) => (s.agentVersion && compareVersions(s.agentVersion, max) > 0 ? s.agentVersion : max),
+    "",
+  );
+
   // Keep the latest averages in a ref so the fixed-interval sampler below reads
   // current values without re-arming the timer on every render.
   const avgRef = useRef({ cpu: cpuAvg, mem: memAvg, count: total });
@@ -560,6 +654,25 @@ export default function ServerMetrics() {
     } else {
       alert(r.error ?? "Failed to remove server.");
     }
+  };
+
+  // Park / unpark a server. The backend broadcasts serverStatus, so other open
+  // dashboards re-badge on their own — we apply it locally for instant feedback.
+  const handleMaintenance = async (id: string, name: string, currentlyParked: boolean) => {
+    if (!currentlyParked && !window.confirm(
+      `Put "${name}" into maintenance?\n\n` +
+      `Offline and threshold alerts stay suppressed for this server until you resume it.`,
+    )) return;
+
+    const r = await api.setServerMaintenance(Number(id), !currentlyParked);
+    if (!r.success) {
+      alert(r.error ?? "Failed to change maintenance state.");
+      return;
+    }
+    const status = r.data?.status ?? (currentlyParked ? "Online" : "Maintenance");
+    const apply = (s: Server): Server => (s.id === id ? { ...s, status } : s);
+    setServers((prev) => prev.map(apply));
+    setDetailServer((d) => (d ? apply(d) : d));
   };
 
   const handleApprove = async (id: number) => {
@@ -680,6 +793,7 @@ export default function ServerMetrics() {
                   isAdmin={isAdmin}
                   onView={() => setDetailServer(s)}
                   onDelete={() => handleDelete(s.id, s.name)}
+                  onMaintenance={() => handleMaintenance(s.id, s.name, s.status === "Maintenance")}
                 />
               ))}
             </div>
@@ -718,12 +832,22 @@ export default function ServerMetrics() {
                           <GhostButton onClick={(e) => { e.stopPropagation(); setDetailServer(s); }}>View</GhostButton>
                           {isAdmin && (
                             <span className="ml-2 inline-block">
+                              <GhostButton onClick={(e) => {
+                                e.stopPropagation();
+                                handleMaintenance(s.id, s.name, s.status === "Maintenance");
+                              }}>
+                                {s.status === "Maintenance" ? "Resume" : "Maintain"}
+                              </GhostButton>
+                            </span>
+                          )}
+                          {isAdmin && (
+                            <span className="ml-2 inline-block">
                               <GhostButton onClick={(e) => { e.stopPropagation(); handleDelete(s.id, s.name); }} danger>Remove</GhostButton>
                             </span>
                           )}
                         </td>
                       </tr>
-                      <ServerDrawerRow server={s} isOpen={openId === s.id} />
+                      <ServerDrawerRow server={s} isOpen={openId === s.id} newestAgent={newestAgent} />
                     </React.Fragment>
                   ))}
                 </tbody>

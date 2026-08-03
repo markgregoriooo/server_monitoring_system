@@ -26,7 +26,19 @@ import (
 	"cspc-ictu/go-agent/internal/sender"
 )
 
+// Stays 1.0.0 until the system is actually deployed — nothing is in the field
+// yet, so there is no released version to distinguish this build from. Bump it on
+// the first change made AFTER go-live, so the dashboard's "outdated agent" flag
+// (which compares each agent against the newest version in the fleet) has
+// something meaningful to compare.
 const agentVersion = "1.0.0"
+
+// hostRefreshEvery is how often the agent re-sends its static host facts (IP,
+// RAM, disk size, kernel, agent version). Enrollment is otherwise the ONLY time
+// they are sent, so without this a DHCP lease change or a RAM upgrade would
+// never reach the dashboard. Hourly is negligible next to the 10s metric
+// cadence, and matters because these probes shell out to PowerShell on Windows.
+const hostRefreshEvery = time.Hour
 
 func main() {
 	// flag.Type(name, defaultValue, helpText)
@@ -85,8 +97,18 @@ func runMetricLoop(s *sender.Sender, intervalSec int) {
 	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 	defer ticker.Stop()
 
+	// Zero value means the FIRST post carries host info, so restarting an agent
+	// re-syncs facts immediately. Only advanced on a successful send, so a failed
+	// refresh is retried on the next cycle rather than skipped for an hour.
+	var lastHost time.Time
+
 	revoked := func() bool {
-		return errors.Is(collectAndSend(s), sender.ErrUnauthorized)
+		withHost := time.Since(lastHost) >= hostRefreshEvery
+		err := collectAndSend(s, withHost, intervalSec)
+		if err == nil && withHost {
+			lastHost = time.Now()
+		}
+		return errors.Is(err, sender.ErrUnauthorized)
 	}
 
 	if revoked() { // send one sample immediately on startup
@@ -99,13 +121,29 @@ func runMetricLoop(s *sender.Sender, intervalSec int) {
 	}
 }
 
-func collectAndSend(s *sender.Sender) error {
+func collectAndSend(s *sender.Sender, withHost bool, intervalSec int) error {
 	m, err := collector.Collect()
 	if err != nil {
 		logger.Errorf("collect: %v", err)
 		return err
 	}
-	return s.Send(m)
+
+	p := collector.Payload{
+		ServerMetrics:   m,
+		IntervalSeconds: intervalSec,
+		// Stamped now so this sample can be replayed with its real time if the
+		// send fails. The backend ignores it unless the sample is backfilled.
+		CollectedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if withHost {
+		// Best-effort: a failed probe just means this post carries metrics only.
+		if hi, herr := collector.CollectHostInfo(agentVersion); herr == nil {
+			p.Host = &hi
+		} else {
+			logger.Errorf("host info refresh: %v", herr)
+		}
+	}
+	return s.Send(p)
 }
 
 // defaultConfPath places agent.conf next to the executable so the installed
