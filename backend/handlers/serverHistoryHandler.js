@@ -1,31 +1,33 @@
 import { queryClient, bucket } from "../config/influx.js";
-
-// Allowed ranges → aggregate window. Both sides are whitelisted (never taken
-// from user input verbatim) so there is no Flux injection surface here.
-//
-// Windows are chosen to keep every range at roughly 150–200 points: enough shape
-// to read, few enough that a 30d query doesn't ship megabytes to the browser or
-// make Influx scan-and-return millions of raw points.
-const RANGE_WINDOW = {
-  "-1h": "20s",
-  "-6h": "2m",
-  "-24h": "10m",
-  "-7d": "1h",
-  "-30d": "4h",
-};
+import { resolveRange } from "../services/historyRange.js";
 
 // GET /api/servers/:id/history?range=-1h  (JWT, via authMiddleware)
+//   ...or an absolute window: ?start=<ISO>&stop=<ISO>
+//
 // Returns the server's real metric history from InfluxDB (measurement
 // `server_metrics`) for the chosen range, aggregated into time windows.
+//
+// Range presets (-1h … -30d) and the custom-window rules live in
+// services/historyRange.js, shared so every history endpoint offers the same
+// choices. That module also owns the Flux-injection guarantee: presets are a fixed
+// whitelist and custom bounds are re-serialised from Date, so no user text ever
+// reaches the query string built below.
 export function serverHistoryHandler(req, res) {
   const deviceId = parseInt(req.params.id, 10);
   if (!Number.isInteger(deviceId)) {
     return res.status(400).json({ error: "Invalid server id." });
   }
 
-  let range = String(req.query.range ?? "-1h");
-  if (!RANGE_WINDOW[range]) range = "-1h";
-  const every = RANGE_WINDOW[range];
+  // A malformed CUSTOM window is a 400 — silently charting the wrong period is
+  // worse than saying the input was rejected. An unknown PRESET still falls back
+  // to -1h, as it always has.
+  let resolved;
+  try {
+    resolved = resolveRange(req.query);
+  } catch (err) {
+    return res.status(err.status ?? 400).json({ error: err.message });
+  }
+  const { rangeExpr, every } = resolved;
 
   // Gauges (cpu/mem/disk %) average cleanly over a window. The network fields are
   // cumulative byte counters, so averaging them smears the value — aggregate those
@@ -33,7 +35,7 @@ export function serverHistoryHandler(req, res) {
   // frontend's consecutive-diff yields the true average throughput for the window.
   const flux = `
     base = from(bucket: "${bucket}")
-      |> range(start: ${range})
+      |> range(${rangeExpr})
       |> filter(fn: (r) => r._measurement == "server_metrics")
       |> filter(fn: (r) => r.device_id == "${deviceId}")
 
@@ -73,7 +75,19 @@ export function serverHistoryHandler(req, res) {
       if (!res.headersSent) res.status(500).json({ error: "History query failed." });
     },
     complete() {
-      if (!res.headersSent) res.json({ range, history });
+      // Echo what was actually served — including the resolved custom bounds, the
+      // span, and the window that was chosen — so the client can label the axis
+      // (a multi-day window needs DATES on it) without re-deriving any of it.
+      if (!res.headersSent) {
+        res.json({
+          range: resolved.custom ? "custom" : resolved.preset,
+          start: resolved.startISO ?? null,
+          stop: resolved.stopISO ?? null,
+          spanSec: resolved.spanSec ?? null,
+          every,
+          history,
+        });
+      }
     },
   });
 }

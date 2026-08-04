@@ -204,10 +204,18 @@ export const api = {
     }
   },
 
-  // Real metric history for one server (InfluxDB) — range: "-1h" | "-6h" | "-24h"
-  getServerHistory: async (id: number, range: string): Promise<ApiResult> => {
+  // Real metric history for one server (InfluxDB). Either a preset range
+  // ("-1h" | "-6h" | "-24h" | "-7d" | "-30d") OR an absolute window via
+  // { start, stop } ISO strings — pass one or the other; `start` wins if both go.
+  getServerHistory: async (
+    id: number,
+    range: string,
+    window?: { start: string; stop: string },
+  ): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get(`/servers/${id}/history`, { params: { range } });
+      const res = await apiClient.get(`/servers/${id}/history`, {
+        params: window ? { ...window } : { range },
+      });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

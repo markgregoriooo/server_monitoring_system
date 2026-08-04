@@ -4,6 +4,8 @@ import Chart from "../chart/ChartConfig";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useTheme } from "../context/ThemeContext";
+import RangePicker, { DEFAULT_RANGE, rangeSpanSec, presetLabel } from "../components/ui/RangePicker";
+import type { RangeValue } from "../components/ui/RangePicker";
 import type { Volume } from "./ServerMetrics";
 
 interface Server {
@@ -52,21 +54,14 @@ interface HistoryPoint {
   netRecv: number | null;  // cumulative bytes
 }
 
-const RANGES = [
-  { key: "-1h",  label: "1h" },
-  { key: "-6h",  label: "6h" },
-  { key: "-24h", label: "24h" },
-  { key: "-7d",  label: "7d" },
-  { key: "-30d", label: "30d" },
-];
+// Windows spanning more than a day need the DATE on the axis — bare "14:00" repeats
+// every day and makes a 30d chart unreadable. Driven by the window's actual SPAN
+// rather than a list of preset keys, so a custom 5-day window gets dates too.
+const MULTI_DAY_SEC = 86400 * 2;
 
-// Ranges spanning more than a day need the DATE on the axis — bare "14:00"
-// repeats every day and makes a 30d chart unreadable.
-const MULTI_DAY = new Set(["-7d", "-30d"]);
-
-function fmtTime(iso: string, range: string) {
+function fmtTime(iso: string, spanSec: number) {
   const d = new Date(iso);
-  if (MULTI_DAY.has(range)) {
+  if (spanSec >= MULTI_DAY_SEC) {
     return d.toLocaleString("en-PH", {
       timeZone: "Asia/Manila", month: "short", day: "2-digit", hour: "2-digit", hour12: false,
     });
@@ -351,7 +346,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   const diskRef = useRef<HTMLCanvasElement>(null);
   const netRef  = useRef<HTMLCanvasElement>(null);
 
-  const [range, setRange]     = useState("-1h");
+  const [range, setRange]     = useState<RangeValue>(DEFAULT_RANGE);
+  const [rangeError, setRangeError] = useState("");
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [logs, setLogs]       = useState<DeviceLog[]>([]);
 
@@ -363,8 +359,11 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   // appending each incoming serverMetrics point for this server.
   useEffect(() => {
     let alive = true;
-    api.getServerHistory(Number(s.id), range).then((r) => {
-      if (!alive || !r.success || !r.data) return;
+    const custom = range.kind === "custom" ? { start: range.start, stop: range.stop } : undefined;
+    api.getServerHistory(Number(s.id), range.kind === "preset" ? range.preset : "", custom).then((r) => {
+      if (!alive) return;
+      if (!r.success || !r.data) { setRangeError(r.error || "Could not load history."); return; }
+      setRangeError("");
       setHistory(
         (r.data.history ?? []).map((p: any) => ({
           time: p.time,
@@ -412,7 +411,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
     return () => { alive = false; socket.off("deviceLog", onLog); };
   }, [s.id]);
 
-  const labels   = history.map((p) => fmtTime(p.time, range));
+  const spanSec  = rangeSpanSec(range);
+  const labels   = history.map((p) => fmtTime(p.time, spanSec));
   const cpuData  = history.map((p) => p.cpu ?? 0);
   const memData  = history.map((p) => p.mem ?? 0);
   const diskData = history.map((p) => p.disk ?? 0);
@@ -570,23 +570,9 @@ export default function ServerDetail({ server: s, onBack }: Props) {
       {/* Range selector */}
       <div className="flex items-center justify-between gap-3">
         <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-          Performance {history.length === 0 ? "· no data for this range" : `· last ${RANGES.find((r) => r.key === range)?.label}`}
+          Performance {history.length === 0 ? "· no data for this range" : range.kind === "preset" ? `· last ${presetLabel[range.preset]}` : "· custom range"}
         </span>
-        <div className="flex gap-1 bg-slate-100 dark:bg-white/[0.05] rounded-md p-0.5">
-          {RANGES.map((r) => (
-            <button
-              key={r.key}
-              onClick={() => setRange(r.key)}
-              className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
-                range === r.key
-                  ? "bg-white dark:bg-white/[0.12] text-slate-900 dark:text-white shadow-sm"
-                  : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
-              }`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
+        <RangePicker value={range} onChange={setRange} error={rangeError || undefined} />
       </div>
 
       {/* Chart panels — 2 columns like Grafana */}
