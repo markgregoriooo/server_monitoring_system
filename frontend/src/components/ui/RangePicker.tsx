@@ -137,7 +137,9 @@ export default function RangePicker({
         </span>
       )}
 
-      <div className="flex rounded-md overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
+      {/* `shrink-0` so the preset group is never squeezed to nothing when it shares a
+          wrapped header row with the port selector and the In/Out readouts. */}
+      <div className="flex rounded-md overflow-hidden shrink-0" style={{ border: `1px solid ${gf.border}` }}>
         {PRESETS.map((p) => {
           const active = !isCustom && value.preset === p;
           return (
@@ -170,10 +172,27 @@ export default function RangePicker({
       </div>
 
       {open && (
-        <div
-          className="absolute right-0 top-full mt-1.5 z-50 rounded-[2px] p-3 flex flex-col gap-2.5 shadow-xl"
-          style={{ background: gf.panel, border: `1px solid ${gf.border}`, minWidth: 250 }}
-        >
+        <>
+          {/* Mobile only: a dimmed backdrop, so a bottom sheet reads as a modal layer
+              and a tap anywhere outside closes it (the mousedown handler above fires
+              for touch too, but the backdrop makes the target unmissable). */}
+          <div
+            className="fixed inset-0 z-[60] sm:hidden"
+            style={{ background: "rgba(0,0,0,0.45)" }}
+            onClick={() => setOpen(false)}
+          />
+          {/* POSITIONING IS THE WHOLE FIX HERE. On >=sm this is an absolutely
+              positioned dropdown. On a phone `absolute` is unusable: the picker lives
+              in a Panel header whose root sets `overflow-hidden` (for the rounded
+              corners), so a dropdown taller than the panel gets clipped and the
+              inputs become unreachable. `fixed` escapes every overflow/stacking
+              ancestor, so on mobile it becomes a bottom sheet pinned to the viewport
+              — always fully visible regardless of where the panel sits or how far
+              the page is scrolled. */}
+          <div
+            className="fixed inset-x-3 bottom-3 z-[70] sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:mt-1.5 sm:w-auto sm:min-w-[250px] rounded-[2px] p-3 flex flex-col gap-2.5 shadow-xl"
+            style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
+          >
           <span className="text-[9px] tracking-widest uppercase" style={{ color: gf.textDim }}>
             Custom range · local time
           </span>
@@ -220,23 +239,26 @@ export default function RangePicker({
 
           {shown && <div className="text-[10px]" style={{ color: RED }}>{shown}</div>}
 
+          {/* Bigger tap targets on touch (py-2 → ~34px tall, near the 44px guideline
+              once padding is counted); back to the compact desktop size at >=sm. */}
           <div className="flex gap-2">
             <button
               onClick={apply}
-              className="text-[10px] px-2.5 py-1 rounded-[2px] font-semibold"
+              className="flex-1 sm:flex-none text-[11px] sm:text-[10px] px-2.5 py-2 sm:py-1 rounded-[2px] font-semibold"
               style={{ background: BLUE, color: "#fff" }}
             >
               Apply
             </button>
             <button
               onClick={() => setOpen(false)}
-              className="text-[10px] px-2.5 py-1 rounded-[2px]"
+              className="flex-1 sm:flex-none text-[11px] sm:text-[10px] px-2.5 py-2 sm:py-1 rounded-[2px]"
               style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
             >
               Cancel
             </button>
           </div>
-        </div>
+          </div>
+        </>
       )}
     </div>
   );

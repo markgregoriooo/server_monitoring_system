@@ -166,10 +166,16 @@ function UpsChart({ history }: { history: UpsHistPoint[] }) {
 
 function Panel({ title, right, children, noPad }: { title: string; right?: React.ReactNode; children: React.ReactNode; noPad?: boolean }) {
   return (
-    <div className="flex flex-col rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
-      <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
+    // overflow-visible so the header's range dropdown isn't clipped by the panel box.
+    <div className="flex flex-col rounded-lg overflow-visible" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+      {/* Header WRAPS rather than overflowing — a fixed non-wrapping 32px row pushed
+          the right-most control off-screen on a phone. min-height keeps desktop identical. */}
+      <div
+        className="flex items-center justify-between gap-x-3 gap-y-1.5 flex-wrap px-3 py-1.5 sm:py-0 shrink-0"
+        style={{ minHeight: 32, borderBottom: `1px solid ${gf.divider}` }}
+      >
         <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
-        {right && <div className="flex items-center gap-2">{right}</div>}
+        {right && <div className="flex items-center gap-2 flex-wrap">{right}</div>}
       </div>
       <div className="flex-1 min-h-0" style={{ padding: noPad ? 0 : 12 }}>{children}</div>
     </div>
@@ -303,7 +309,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
   return (
     <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
       {/* Header */}
-      <div className="flex items-center gap-3 px-0.5">
+      <div className="flex items-center gap-x-3 gap-y-1 px-0.5 flex-wrap">
         <button
           onClick={onBack}
           className="flex items-center gap-1.5 text-[13px] transition-colors text-[var(--gf-text-muted)] hover:text-[var(--gf-text-primary)]"
@@ -374,7 +380,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
       <Panel
         title="Battery & Load History"
         right={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px]" style={{ color: GREEN }}>Battery {fmt(charge, "%")}</span>
             <span className="text-[10px]" style={{ color: ORANGE }}>Load {fmt(u.loadPct, "%")}</span>
             <RangePicker value={range} onChange={setRange} error={rangeError || undefined} />
