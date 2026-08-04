@@ -36,27 +36,63 @@ pip install snmpsim-lextudio            # the SNMP simulator
 
 ### 1. Start the simulator  (leave this terminal running)
 
-**Windows / PowerShell** — note the **back**slash in the path:
-
-```powershell
-snmpsim-command-responder --data-dir="dev-snmpsim\data" --agent-udpv4-endpoint=127.0.0.1:1161 --log-level=error
-```
-
-> ⚠️ Use a back-slash (`dev-snmpsim\data`) on Windows. A forward slash makes snmpsim try to
-> write its index cache into a non-existent folder and crash with a `dbm` flag error.
-
-macOS / Linux:
+**Use this — it works from any shell, on any machine, with nothing to fill in:**
 
 ```bash
-snmpsim-command-responder \
-  --data-dir="dev-snmpsim/data" \
-  --agent-udpv4-endpoint=127.0.0.1:1161 \
-  --log-level=error
+cd dev-snmpsim
+npm start
 ```
 
+`npm` always runs a script with the cwd set to the folder holding `package.json`, so the
+data directory resolves correctly every time. **Prefer this over typing the raw command** —
+every path problem below stops existing.
+
+<details>
+<summary>Raw command (only if you can't use npm)</summary>
+
+```powershell
+snmpsim-command-responder --data-dir="<absolute path to>\dev-snmpsim\data" --agent-udpv4-endpoint=127.0.0.1:1161 --log-level=error
+```
+
+⚠️ **`<absolute path to>` is a placeholder — substitute your real path.** Pasting it
+verbatim gives a directory that doesn't exist, and snmpsim will still print
+`Listening at UDP/IPv4 endpoint…` and still bind the port. It just has no data, so every
+request **times out** and the dashboard shows the devices Offline as if the simulator
+were dead. See the troubleshooting note below.
+
+</details>
+
 It prints `Listening at UDP/IPv4 endpoint 127.0.0.1:1161` and stays running.
-(The `redis`/`sql` "load FAILED" lines are harmless — those are optional modules we don't use.)
 Port **1161** is used instead of 161 so it needs no admin rights.
+
+#### ✅ These two lines are NOT errors — ignore them
+
+```
+ERROR Variation module "redis" … load FAILED: Redis connect parameters not specified
+ERROR Variation module "sql"   … load FAILED: database type not specified
+```
+
+Optional snmpsim plugins we don't use, and it says `ERROR` for both on every single start.
+The only line that matters is `Listening at UDP/IPv4 endpoint 127.0.0.1:1161`.
+(You'll also see a `pysnmp-lextudio is deprecated` warning — likewise harmless.)
+
+#### 🔍 Troubleshooting: it says "Listening" but the dashboard shows Offline
+
+**A bound port is not proof it's answering.** `npm run verify` is the real test. snmpsim
+prints `Listening…` and binds the port even when it has nothing to serve, so these two
+failures look identical to a healthy start:
+
+| Cause | How to confirm | Fix |
+|---|---|---|
+| **`--data-dir` doesn't resolve** (placeholder path left in, or a relative path run from the wrong folder) | the folder in the command doesn't exist | use `npm start` |
+| **Two responders running** — the second can't bind and the first can wedge | `Get-CimInstance Win32_Process -Filter "Name like '%python%'"` → more than one `snmpsim` line | kill all, start one |
+
+> On Windows check the port with `Get-NetUDPEndpoint -LocalPort 1161` — SNMP is **UDP**, so
+> `Get-NetTCPConnection` will never show it no matter how healthy the simulator is.
+
+If you do run the raw command with a relative path, use a **back**slash on Windows
+(`dev-snmpsim\data`) — a forward slash makes snmpsim write its index cache into a
+non-existent folder and crash with a `dbm` flag error.
 
 ### 2. (First time only) tell the backend about the fake devices
 
@@ -74,13 +110,15 @@ cd frontend && npm run dev
 Within ~60s the poller polls the simulator and the **Network** and **UPS** dashboard
 pages light up with live data.
 
-### 4. (Optional) sanity-check the simulator directly
+### 4. Sanity-check that it's actually answering
 
 ```bash
-cd dev-snmpsim && npm install && node verify.cjs
+cd dev-snmpsim && npm run verify
 ```
 
-Prints the router + UPS values and shows the traffic counter increasing.
+Prints the router + UPS values and shows the traffic counter increasing. Worth running
+whenever the dashboard looks wrong — it distinguishes "simulator is dead" from "backend
+isn't polling" in one command. (First time only: `npm install` for the `net-snmp` dep.)
 
 ---
 

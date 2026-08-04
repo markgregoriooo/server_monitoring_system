@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "//": "npm sets the cwd to this folder, so `--data-dir=data` always resolves to dev-snmpsim/data — no absolute path to paste and get wrong, and no dependence on which directory your terminal happens to be in.",
+    "start": "snmpsim-command-responder --data-dir=data --agent-udpv4-endpoint=127.0.0.1:1161 --log-level=error",
+    "verify": "node verify.cjs"
+  },
   "dependencies": {
     "net-snmp": "^3.26.3"
   }
