@@ -270,9 +270,19 @@ export const api = {
     }
   },
 
-  getNetworkHistory: async (id: number, range: string): Promise<ApiResult> => {
+  // `range` is a preset (-1h … -30d) OR an absolute window via { start, stop } ISO
+  // strings — pass one or the other, `start` wins if both are sent. `iface` scopes
+  // the chart to one port; omit for the device total.
+  getNetworkHistory: async (
+    id: number,
+    range: string,
+    iface?: string,
+    window?: { start: string; stop: string },
+  ): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get(`/network/${id}/history`, { params: { range } });
+      const params: Record<string, string> = window ? { ...window } : { range };
+      if (iface) params.interface = iface;
+      const res = await apiClient.get(`/network/${id}/history`, { params });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
@@ -314,6 +324,21 @@ export const api = {
     }
   },
 
+  // Name one of a router's discovered interfaces (admin), e.g. "ether3" →
+  // "Uplink to admin building". The poller discovers the ports; this labels them.
+  setNetworkInterfaceLabel: async (
+    id: number,
+    interfaceName: string,
+    locationLabel: string,
+  ): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch(`/network/${id}/interfaces`, { interfaceName, locationLabel });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   // UPS monitoring — battery/load via SNMP (UPS-MIB / RFC 1628)
   getUpsDevices: async (): Promise<ApiResult> => {
     try {
@@ -324,9 +349,16 @@ export const api = {
     }
   },
 
-  getUpsHistory: async (id: number, range: string): Promise<ApiResult> => {
+  // Same contract as getNetworkHistory: a preset, or an absolute { start, stop }.
+  getUpsHistory: async (
+    id: number,
+    range: string,
+    window?: { start: string; stop: string },
+  ): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get(`/ups/${id}/history`, { params: { range } });
+      const res = await apiClient.get(`/ups/${id}/history`, {
+        params: window ? { ...window } : { range },
+      });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

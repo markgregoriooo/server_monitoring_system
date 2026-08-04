@@ -140,3 +140,8 @@ vite.config.ts.timestamp-*
 
 # user-uploaded files
 backend/uploads/
+
+# on-site backup writer output (rotating NDJSON of every ingested sample, + its
+# checksum file). Runtime DATA, not source — it belongs on the backup drive, and
+# committing it would put device telemetry in git history.
+backend/backups/

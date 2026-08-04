@@ -422,6 +422,14 @@ export default function Dashboard() {
   // Real notification feed (replaces the old mock /api/alerts panel).
   const { items: notifications, unreadCount } = useNotifications();
   const [aircons, setAircons] = useState<Aircon[]>([]);
+  // Routers + UPS (SNMP poller). The Dashboard summarised servers, environment and
+  // aircon but not these two, so a router or UPS incident was invisible on the page
+  // people actually leave open. Only the counts are needed here — the Network / UPS
+  // pages own the detail.
+  const [netDevices, setNetDevices] = useState<{ id: number | string; status: string }[]>([]);
+  const [upsDevices, setUpsDevices] = useState<
+    { id: number | string; status: string; batteryChargePct: number | null; onBattery: boolean | null }[]
+  >([]);
   const [liveTemp, setLiveTemp] = useState<number | string>("--");
   const [liveHum, setLiveHum] = useState<number | string>("--");
   const [chartTemps, setChartTemps] = useState<number[]>([]);
@@ -459,6 +467,48 @@ export default function Dashboard() {
       attributeFilter: ["class"],
     });
     return () => obs.disconnect();
+  }, []);
+
+  // Routers + UPS: initial load, then keep the counts live off the poller's
+  // broadcasts (same events the Network/UPS pages use, ~60s cadence).
+  useEffect(() => {
+    api.getNetworkDevices().then((r) => {
+      if (r.success && r.data) setNetDevices(r.data.devices ?? []);
+    });
+    api.getUpsDevices().then((r) => {
+      if (r.success && r.data) setUpsDevices(r.data.devices ?? []);
+    });
+
+    const upsertBy = <T extends { id: number | string }>(list: T[], row: T): T[] => {
+      const i = list.findIndex((x) => String(x.id) === String(row.id));
+      if (i === -1) return [...list, row];
+      const next = [...list];
+      next[i] = { ...next[i], ...row };
+      return next;
+    };
+    const onNet = (d: any) => d?.device && setNetDevices((p) => upsertBy(p, d.device));
+    const onUps = (d: any) => d?.ups && setUpsDevices((p) => upsertBy(p, d.ups));
+    const onNetStatus = (d: any) =>
+      setNetDevices((p) => p.map((x) => (String(x.id) === String(d?.id) ? { ...x, status: d.status } : x)));
+    const onUpsStatus = (d: any) =>
+      setUpsDevices((p) => p.map((x) => (String(x.id) === String(d?.id) ? { ...x, status: d.status } : x)));
+    const onNetRemoved = (d: any) => setNetDevices((p) => p.filter((x) => String(x.id) !== String(d?.id)));
+    const onUpsRemoved = (d: any) => setUpsDevices((p) => p.filter((x) => String(x.id) !== String(d?.id)));
+
+    socket.on("networkMetrics", onNet);
+    socket.on("upsMetrics", onUps);
+    socket.on("networkStatus", onNetStatus);
+    socket.on("upsStatus", onUpsStatus);
+    socket.on("networkRemoved", onNetRemoved);
+    socket.on("upsRemoved", onUpsRemoved);
+    return () => {
+      socket.off("networkMetrics", onNet);
+      socket.off("upsMetrics", onUps);
+      socket.off("networkStatus", onNetStatus);
+      socket.off("upsStatus", onUpsStatus);
+      socket.off("networkRemoved", onNetRemoved);
+      socket.off("upsRemoved", onUpsRemoved);
+    };
   }, []);
 
   useEffect(() => {
@@ -566,6 +616,15 @@ export default function Dashboard() {
     : 0;
   const online = servers.filter((s) => s.status === "Online").length;
   const acOnline = aircons.filter((a) => a.enabled).length;
+  const netOnline = netDevices.filter((d) => d.status === "Online").length;
+  const upsOnline = upsDevices.filter((d) => d.status === "Online").length;
+  // The UPS tile leads with the WORST unit, not an average — one UPS on battery or
+  // near-flat is the whole story, and averaging would bury it behind healthy units.
+  const upsOnBattery = upsDevices.filter((d) => d.onBattery === true).length;
+  const upsCharges = upsDevices
+    .map((d) => d.batteryChargePct)
+    .filter((c): c is number => typeof c === "number");
+  const worstCharge = upsCharges.length ? Math.min(...upsCharges) : null;
 
   const maxTempY = chartTemps.length
     ? Math.ceil(Math.max(...chartTemps)) + 3
@@ -768,7 +827,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── Row 1: Stat panels ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
         <StatPanel
           label="Room Temp"
           value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : "--"}
@@ -790,6 +849,31 @@ export default function Dashboard() {
           value={`${online}/${servers.length}`}
           color={online === servers.length && servers.length > 0 ? GREEN : ORANGE}
           sub={`${servers.length - online} offline`}
+        />
+        <StatPanel
+          label="Routers Online"
+          value={netDevices.length ? `${netOnline}/${netDevices.length}` : "--"}
+          color={
+            !netDevices.length ? gf.textMuted : netOnline === netDevices.length ? GREEN : RED
+          }
+          sub={netDevices.length ? `${netDevices.length - netOnline} unreachable` : "none registered"}
+        />
+        <StatPanel
+          label="UPS Battery"
+          value={worstCharge == null ? "--" : String(Math.round(worstCharge))}
+          {...(worstCharge != null ? { unit: "%" } : {})}
+          color={
+            !upsDevices.length ? gf.textMuted
+              : upsOnBattery > 0 ? RED
+                : worstCharge != null && worstCharge <= 20 ? RED
+                  : worstCharge != null && worstCharge <= 50 ? ORANGE
+                    : GREEN
+          }
+          sub={
+            !upsDevices.length ? "none registered"
+              : upsOnBattery > 0 ? `${upsOnBattery} ON BATTERY`
+                : `${upsOnline}/${upsDevices.length} online${upsCharges.length > 1 ? " · lowest" : ""}`
+          }
         />
         <StatPanel
           label="Active Alerts"

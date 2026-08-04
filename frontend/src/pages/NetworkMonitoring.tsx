@@ -3,28 +3,14 @@ import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 import NetworkDetail from "./NetworkDetail";
+import type { NetDevice } from "./NetworkDetail";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface NetIface {
-  name: string;
-  locationLabel: string;
-  linkUp: boolean;
-  utilizationPct: number | null;
-  rxBytes: string | null;
-  txBytes: string | null;
-}
-interface NetDevice {
-  id: string;
-  name: string;
-  ip: string;
-  location: string;
-  status: string;
-  reachable: boolean | null;
-  uptimeSeconds: number | null;
-  interfaces: NetIface[];
-  monitored: boolean;
-}
+// ─── SNMP router/switch list page ─────────────────────────────────────────────
+// First page = the fleet list (one compact card per router, with "View"); clicking
+// through swaps in NetworkDetail for the full drill-down. Mirrors
+// MikrotikMonitoring ↔ MikrotikDetail and ServerMetrics ↔ ServerDetail, so moving
+// between the MikroTik and SNMP pages doesn't mean relearning the layout.
+// Types live in NetworkDetail.tsx — this module imports them, never the reverse.
 
 // ─── Grafana tokens (match ServerMetrics.tsx) ─────────────────────────────────
 
@@ -44,8 +30,6 @@ const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
 const BLUE_HOVER = "#4A82DD";
-const TRACK = "rgba(127,127,127,0.18)";
-const BAR_GRADIENT = "linear-gradient(90deg,#73BF69 0%,#73BF69 55%,#FF780A 78%,#F2495C 95%)";
 
 const inputStyle: React.CSSProperties = {
   background: gf.bg,
@@ -101,12 +85,17 @@ function mapNet(r: any): NetDevice {
     location: r.location ?? "—",
     status: r.status ?? "Offline",
     reachable: r.reachable ?? null,
+    descr: r.descr ?? null,
+    sysName: r.sysName ?? null,
     uptimeSeconds: r.uptimeSeconds ?? null,
     interfaces: (r.interfaces ?? []).map((i: any) => ({
       name: i.name ?? "—",
       locationLabel: i.locationLabel ?? "",
       linkUp: Boolean(i.linkUp),
       utilizationPct: i.utilizationPct ?? null,
+      speedMbps: i.speedMbps ?? null,
+      rxErrors: i.rxErrors ?? null,
+      txErrors: i.txErrors ?? null,
       rxBytes: i.rxBytes ?? null,
       txBytes: i.txBytes ?? null,
     })),
@@ -119,6 +108,8 @@ function mergeNetLive(prev: NetDevice | undefined, p: any): NetDevice {
     ...base,
     status: p.status ?? base.status,
     reachable: p.reachable ?? base.reachable,
+    descr: p.descr ?? base.descr,
+    sysName: p.sysName ?? base.sysName,
     uptimeSeconds: p.uptimeSeconds ?? base.uptimeSeconds,
     interfaces: p.interfaces ? mapNet(p).interfaces : base.interfaces,
   };
@@ -138,8 +129,12 @@ function Panel({
   return (
     <div
       onClick={onClick}
-      className={`flex flex-col rounded-lg overflow-hidden${onClick ? " cursor-pointer" : ""}`}
+      className={`flex flex-col rounded-lg overflow-hidden${onClick ? " cursor-pointer transition-colors" : ""}`}
       style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
+      // Border highlight on hover is the affordance that the whole card is clickable —
+      // without it only the "View" button looks interactive. Matches MikrotikMonitoring.
+      onMouseEnter={onClick ? (e) => (e.currentTarget.style.borderColor = "rgba(87,148,242,0.45)") : undefined}
+      onMouseLeave={onClick ? (e) => (e.currentTarget.style.borderColor = "var(--gf-panel-border)") : undefined}
     >
       {title !== undefined && (
         <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
@@ -191,24 +186,28 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-// ─── Interface row ────────────────────────────────────────────────────────────
+// ─── Port chip (compact per-port state for the LIST card) ─────────────────────
+// The list only needs an at-a-glance "which ports are up"; the full per-port table
+// (speed / Tx / Rx / errors / util) lives in the detail view. Matches MikroTik's
+// list — and replaces the old full-width utilization bars, whose empty tracks read
+// as loading skeletons on the idle ports that are the normal case here.
 
-function IfaceRow({ i }: { i: NetIface }) {
-  const util = Math.round(i.utilizationPct ?? 0);
+function PortChip({ label, up, util }: { label: string; up: boolean; util?: number | null }) {
+  const showUtil = up && util != null && Number.isFinite(util);
   return (
-    <div className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
-      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: i.linkUp ? GREEN : RED, boxShadow: `0 0 5px ${i.linkUp ? GREEN : RED}` }} />
-      <div className="w-32 min-w-0">
-        <div className="text-[12px] truncate" style={{ color: gf.textPrimary }}>{i.name}</div>
-        {i.locationLabel && <div className="text-[9px] truncate" style={{ color: gf.textDim }}>{i.locationLabel}</div>}
-      </div>
-      <div className="flex-1 h-3 rounded-[2px] overflow-hidden" style={{ background: TRACK }}>
-        <div className="h-full rounded-[2px] transition-all duration-500" style={{ width: `${i.linkUp ? util : 0}%`, background: BAR_GRADIENT, backgroundSize: `${util > 0 ? (100 / util) * 100 : 100}% 100%` }} />
-      </div>
-      <span className="text-[11px] font-bold w-12 text-right shrink-0" style={{ color: i.linkUp ? loadColor(util) : gf.textDim }}>
-        {i.linkUp ? `${util}%` : "down"}
-      </span>
-    </div>
+    <span
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[10px]"
+      style={{ background: gf.hover, border: `1px solid ${gf.divider}`, color: up ? gf.textMuted : gf.textDim }}
+    >
+      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: up ? GREEN : RED }} />
+      <span className="truncate" style={{ maxWidth: 120 }}>{label}</span>
+      {showUtil && (
+        <span className="tabular-nums" style={{ color: loadColor(Math.round(util as number)) }}>
+          {Math.round(util as number)}%
+        </span>
+      )}
+      {!up && <span style={{ color: gf.textDim }}>down</span>}
+    </span>
   );
 }
 
@@ -219,7 +218,9 @@ export default function NetworkMonitoring() {
   const isAdmin = user?.role === "admin";
 
   const [devices, setDevices] = useState<NetDevice[]>([]);
-  const [detail, setDetail] = useState<NetDevice | null>(null);
+  // Drill-down target held by ID (not a snapshot) so the open detail page keeps
+  // getting the list-level live updates. Same pattern as MikrotikMonitoring.
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   // Add-router modal + inline remove-confirm + toast (admin only).
   const [formOpen, setFormOpen] = useState(false);
@@ -268,7 +269,7 @@ export default function NetworkMonitoring() {
     const res = await api.deleteNetworkDevice(Number(id));
     if (res.success) {
       setDevices((prev) => prev.filter((d) => d.id !== id));
-      setDetail((prev) => (prev?.id === id ? null : prev));
+      setDetailId((prev) => (prev === id ? null : prev));
       showToast("Router removed.");
     } else {
       showToast(res.error || "Could not remove router.");
@@ -316,7 +317,7 @@ export default function NetworkMonitoring() {
     const onRemoved = (data: { id: number | string }) => {
       const id = String(data?.id);
       setDevices((prev) => prev.filter((d) => d.id !== id));
-      setDetail((prev) => (prev?.id === id ? null : prev));
+      setDetailId((prev) => (prev === id ? null : prev));
     };
     socket.on("networkMetrics", onMetrics);
     socket.on("networkStatus", onStatus);
@@ -333,14 +334,15 @@ export default function NetworkMonitoring() {
   const allIfaces = devices.flatMap((d) => d.interfaces);
   const ifacesUp = allIfaces.filter((i) => i.linkUp).length;
   const upUtil = allIfaces.filter((i) => i.linkUp && i.utilizationPct != null).map((i) => i.utilizationPct as number);
-  const avgUtil = upUtil.length ? Math.round(upUtil.reduce((a, b) => a + b, 0) / upUtil.length) : 0;
+  const peakUtil = upUtil.length ? Math.round(Math.max(...upUtil)) : 0;
   const onlineColor = total === 0 ? gf.textMuted : online === total ? GREEN : online === 0 ? RED : ORANGE;
 
   // Drill-down: render the per-router detail in place (Back returns to the list),
-  // mirroring ServerMetrics ↔ ServerDetail. Pass the live row so it opens current.
+  // mirroring MikrotikMonitoring ↔ MikrotikDetail. Look the device up by id each
+  // render so the open page keeps receiving the list's live socket updates.
+  const detail = detailId ? devices.find((x) => x.id === detailId) ?? null : null;
   if (detail) {
-    const live = devices.find((x) => x.id === detail.id) ?? detail;
-    return <NetworkDetail device={live} onBack={() => setDetail(null)} />;
+    return <NetworkDetail device={detail} isAdmin={isAdmin} onBack={() => setDetailId(null)} />;
   }
 
   return (
@@ -372,10 +374,12 @@ export default function NetworkMonitoring() {
 
       {/* Stat row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <StatPanel label="Routers/Switches" value={String(total)} color={BLUE} sub="monitored" />
-        <StatPanel label="Online" value={`${online}/${total}`} color={onlineColor} sub={`${total - online} offline`} />
-        <StatPanel label="Interfaces Up" value={String(ifacesUp)} color={GREEN} sub={`of ${allIfaces.length}`} />
-        <StatPanel label="Avg Utilization" value={String(avgUtil)} unit="%" color={loadColor(avgUtil)} sub="of link speed" />
+        <StatPanel label="Routers" value={`${online}/${total}`} color={onlineColor} sub="online" />
+        <StatPanel label="Ports Up" value={`${ifacesUp}/${allIfaces.length}`} color={allIfaces.length > 0 && ifacesUp === allIfaces.length ? GREEN : ifacesUp === 0 ? RED : ORANGE} sub="links up" />
+        {/* Busiest link, not the mean: one saturated uplink IS the incident, and
+            averaging it against idle ports hides exactly what needs attention. */}
+        <StatPanel label="Peak Util" value={String(peakUtil)} unit="%" color={loadColor(peakUtil)} sub={upUtil.length > 1 ? `busiest of ${upUtil.length}` : "of link speed"} />
+        <StatPanel label="Devices Down" value={String(total - online)} color={total - online === 0 ? GREEN : RED} sub="unreachable" />
       </div>
 
       {total === 0 ? (
@@ -407,7 +411,7 @@ export default function NetworkMonitoring() {
               key={d.id}
               title={d.name}
               noPad
-              onClick={() => setDetail(d)}
+              onClick={() => setDetailId(d.id)}
               right={
                 <span className="flex items-center gap-2">
                   <span className="text-[10px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
@@ -423,16 +427,22 @@ export default function NetworkMonitoring() {
                     </span>
                   ) : (
                     <>
-                      <GhostButton onClick={(e) => { e.stopPropagation(); setDetail(d); }}>View</GhostButton>
+                      <GhostButton onClick={(e) => { e.stopPropagation(); setDetailId(d.id); }}>View</GhostButton>
                       {isAdmin && <GhostButton danger onClick={(e) => { e.stopPropagation(); setConfirmId(d.id); }}>Remove</GhostButton>}
                     </>
                   )}
                 </span>
               }
             >
-              <div className="flex items-center justify-between px-3 py-1.5 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
+              {/* Summary strip — the facts you scan before deciding to drill in. */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
+                <span className="font-mono">{d.ip}</span>
                 <span>{d.location}</span>
-                <span>↑ {formatUptime(d.uptimeSeconds)}</span>
+                {d.sysName && <span>{d.sysName}</span>}
+                <span>
+                  {d.interfaces.filter((i) => i.linkUp).length}/{d.interfaces.length} up
+                </span>
+                <span className="ml-auto">↑ {formatUptime(d.uptimeSeconds)}</span>
               </div>
               {!d.monitored ? (
                 <div className="px-3 py-4 text-[11px]" style={{ color: ORANGE }}>SNMP not configured — reachability only (ping fallback pending).</div>
@@ -441,7 +451,16 @@ export default function NetworkMonitoring() {
                   {d.status === "Online" ? "No interfaces reported." : "Offline — awaiting next poll."}
                 </div>
               ) : (
-                d.interfaces.map((i) => <IfaceRow key={`${d.id}:${i.name}`} i={i} />)
+                <div className="px-3 py-2.5 flex flex-col gap-1.5">
+                  <span className="text-[9px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                    Ports · {d.interfaces.filter((i) => i.linkUp).length}/{d.interfaces.length} up
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {d.interfaces.map((i) => (
+                      <PortChip key={`${d.id}:${i.name}`} label={i.locationLabel || i.name} up={i.linkUp} util={i.utilizationPct} />
+                    ))}
+                  </div>
+                </div>
               )}
             </Panel>
           ))}

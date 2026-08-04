@@ -185,7 +185,11 @@ network_traffic   ── per-interface, 60s ────────────
           rx_errors(uinteger)     CUMULATIVE counter
           tx_errors(uinteger)     CUMULATIVE counter
           link_up(boolean)
-          utilization_pct(float)  precomputed gauge (rate ÷ link speed)
+          utilization_pct(float)  precomputed gauge — BUSIER DIRECTION ÷ link speed.
+                                  Full-duplex: rx and tx each get the full link speed,
+                                  so max(rx,tx) is the saturation measure, not rx+tx
+                                  (summing reports 60+60 Mb/s on a 100 Mb/s link as
+                                  120%, clamped to 100%, and false-fires link_util).
 
 router_metrics    ── per-device, 60s (also covers ping-only / unmanaged routers) ─
   Tags:   device_id, device_name, device_type

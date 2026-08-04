@@ -42,6 +42,27 @@ router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, nex
   }
 });
 
+// ── PATCH /api/network/:id/interfaces ─ name one discovered port (admin) ──────
+// Body: { interfaceName, locationLabel }. The poller discovers the ports; this puts
+// a human label on one ("ether3" → "Uplink to admin building"). 404 when the pair
+// isn't a discovered interface, so a typo can't create an orphan row.
+router.patch("/:id/interfaces", authMiddleware, requireRole("admin"), async (req, res, next) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid device id." });
+  try {
+    const updated = await snmpPollerService.setInterfaceLabel(
+      id,
+      req.body?.interfaceName,
+      req.body?.locationLabel,
+    );
+    if (!updated) return res.status(404).json({ error: "No such interface on this device." });
+    req.app.get("io")?.emit("networkInterfaceLabel", { id, ...updated });
+    res.json({ interface: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── GET /api/network/:id/history ─ total throughput from InfluxDB (JWT) ───────
 router.get("/:id/history", authMiddleware, networkHistoryHandler);
 

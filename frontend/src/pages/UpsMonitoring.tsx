@@ -2,29 +2,13 @@ import { useState, useEffect } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
-import UpsDetail from "./UpsDetail";
+import UpsDetail, { batteryHealth } from "./UpsDetail";
+import type { UpsDevice } from "./UpsDetail";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface UpsDevice {
-  id: string;
-  name: string;
-  ip: string;
-  location: string;
-  brand: string | null;
-  model: string | null;
-  commType: string | null;
-  status: string;
-  batteryChargePct: number | null;
-  runtimeRemainingMin: number | null;
-  loadPct: number | null;
-  inputVoltage: number | null;
-  outputVoltage: number | null;
-  batteryVoltage: number | null;
-  onBattery: boolean | null;
-  temperature: number | null;
-  monitored: boolean;
-}
+// ─── UPS list page ────────────────────────────────────────────────────────────
+// Fleet list (one card per UPS, with "View"); clicking through swaps in UpsDetail.
+// Same shape as NetworkMonitoring ↔ NetworkDetail and MikrotikMonitoring ↔
+// MikrotikDetail. Types live in UpsDetail.tsx — imported here, never the reverse.
 
 // ─── Grafana tokens ───────────────────────────────────────────────────────────
 
@@ -118,6 +102,7 @@ function mapUps(r: any): UpsDevice {
     outputVoltage: r.outputVoltage ?? null,
     batteryVoltage: r.batteryVoltage ?? null,
     onBattery: r.onBattery ?? null,
+    batteryStatus: r.batteryStatus ?? null,
     temperature: r.temperature ?? null,
     monitored: r.monitored ?? true,
   };
@@ -200,20 +185,20 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
   const charge = u.batteryChargePct ?? 0;
   const load = u.loadPct ?? 0;
   const onBattery = u.onBattery === true;
+  const health = batteryHealth(u.batteryStatus);
   return (
     <div
       onClick={onView}
       className="flex flex-col rounded-lg overflow-hidden cursor-pointer transition-colors"
       style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
+      // Border highlight on hover — the affordance that the whole card opens the
+      // detail view, not just the "View" button. Matches the router/MikroTik cards.
+      onMouseEnter={(e) => (e.currentTarget.style.borderColor = "rgba(87,148,242,0.45)")}
+      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--gf-panel-border)")}
     >
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
-        <div className="min-w-0">
-          <div className="text-[13px] font-medium truncate" style={{ color: gf.textPrimary }}>{u.name}</div>
-          <div className="text-[10px] truncate" style={{ color: gf.textDim }}>
-            {[u.brand, u.model].filter(Boolean).join(" ") || u.location}
-          </div>
-        </div>
+      {/* Header — same 32px title bar as every other fleet card */}
+      <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
+        <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{u.name}</span>
         <span className="inline-flex items-center gap-1.5 shrink-0">
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(u.status), boxShadow: `0 0 5px ${statusColor(u.status)}` }} />
           <span className="text-[11px]" style={{ color: gf.textMuted }}>{u.status}</span>
@@ -230,6 +215,15 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
             </>
           )}
         </span>
+      </div>
+
+      {/* Summary strip — the facts you scan before deciding to drill in. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
+        <span className="font-mono">{u.ip}</span>
+        <span>{u.location}</span>
+        {[u.brand, u.model].filter(Boolean).length > 0 && <span>{[u.brand, u.model].filter(Boolean).join(" ")}</span>}
+        {health.text !== "—" && <span>Batt <span style={{ color: health.color }}>{health.text}</span></span>}
+        <span className="ml-auto">{fmt(u.runtimeRemainingMin, " min")} left</span>
       </div>
 
       {/* On-battery banner */}
@@ -291,7 +285,9 @@ export default function UpsMonitoring() {
   const isAdmin = user?.role === "admin";
 
   const [devices, setDevices] = useState<UpsDevice[]>([]);
-  const [detail, setDetail] = useState<UpsDevice | null>(null);
+  // Drill-down target held by ID (not a snapshot) so the open detail page keeps
+  // getting the list-level live updates. Same pattern as NetworkMonitoring.
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   // Add-UPS modal + inline remove-confirm + toast (admin only).
   const [formOpen, setFormOpen] = useState(false);
@@ -345,7 +341,7 @@ export default function UpsMonitoring() {
     const res = await api.deleteUpsDevice(Number(id));
     if (res.success) {
       setDevices((prev) => prev.filter((d) => d.id !== id));
-      setDetail((prev) => (prev?.id === id ? null : prev));
+      setDetailId((prev) => (prev === id ? null : prev));
       showToast("UPS removed.");
     } else {
       showToast(res.error || "Could not remove UPS.");
@@ -393,7 +389,7 @@ export default function UpsMonitoring() {
     const onRemoved = (data: { id: number | string }) => {
       const id = String(data?.id);
       setDevices((prev) => prev.filter((d) => d.id !== id));
-      setDetail((prev) => (prev?.id === id ? null : prev));
+      setDetailId((prev) => (prev === id ? null : prev));
     };
     socket.on("upsMetrics", onMetrics);
     socket.on("upsStatus", onStatus);
@@ -409,14 +405,19 @@ export default function UpsMonitoring() {
   const online = devices.filter((d) => d.status === "Online").length;
   const onBatteryCount = devices.filter((d) => d.onBattery === true).length;
   const loads = devices.filter((d) => d.loadPct != null).map((d) => d.loadPct as number);
-  const avgLoad = loads.length ? Math.round(loads.reduce((a, b) => a + b, 0) / loads.length) : 0;
+  // Worst unit, not the mean. One UPS at 95% load or 15% charge is the incident;
+  // averaging it against healthy units is exactly how you miss it.
+  const peakLoad = loads.length ? Math.round(Math.max(...loads)) : 0;
+  const charges = devices.filter((d) => d.batteryChargePct != null).map((d) => d.batteryChargePct as number);
+  const worstCharge = charges.length ? Math.round(Math.min(...charges)) : null;
+  const needReplace = devices.filter((d) => d.batteryStatus === 3 || d.batteryStatus === 4).length;
   const onlineColor = total === 0 ? gf.textMuted : online === total ? GREEN : online === 0 ? RED : ORANGE;
 
   // Drill-down: render the per-UPS detail in place (Back returns to the list),
   // mirroring ServerMetrics ↔ ServerDetail. Pass the live row so it opens current.
+  const detail = detailId ? devices.find((x) => x.id === detailId) ?? null : null;
   if (detail) {
-    const live = devices.find((x) => x.id === detail.id) ?? detail;
-    return <UpsDetail device={live} onBack={() => setDetail(null)} />;
+    return <UpsDetail device={detail} onBack={() => setDetailId(null)} />;
   }
 
   return (
@@ -455,10 +456,22 @@ export default function UpsMonitoring() {
 
       {/* Stat row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <StatPanel label="UPS Units" value={String(total)} color={BLUE} sub="monitored" />
-        <StatPanel label="Online" value={`${online}/${total}`} color={onlineColor} sub={`${total - online} offline`} />
+        <StatPanel label="UPS Units" value={`${online}/${total}`} color={onlineColor} sub="online" />
         <StatPanel label="On Battery" value={String(onBatteryCount)} color={onBatteryCount > 0 ? RED : GREEN} sub={onBatteryCount > 0 ? "outage" : "on mains"} />
-        <StatPanel label="Avg Load" value={String(avgLoad)} unit="%" color={loadColor(avgLoad)} sub="output load" />
+        <StatPanel
+          label="Lowest Battery"
+          value={worstCharge == null ? "—" : String(worstCharge)}
+          {...(worstCharge == null ? {} : { unit: "%" })}
+          color={worstCharge == null ? gf.textMuted : batteryColor(worstCharge)}
+          sub={charges.length > 1 ? `weakest of ${charges.length}` : "charge"}
+        />
+        <StatPanel
+          label={needReplace > 0 ? "Battery Fault" : "Peak Load"}
+          value={needReplace > 0 ? String(needReplace) : String(peakLoad)}
+          {...(needReplace > 0 ? {} : { unit: "%" })}
+          color={needReplace > 0 ? RED : loadColor(peakLoad)}
+          sub={needReplace > 0 ? "need replacing" : loads.length > 1 ? `busiest of ${loads.length}` : "output load"}
+        />
       </div>
 
       {total === 0 ? (
@@ -488,7 +501,7 @@ export default function UpsMonitoring() {
             <UpsCard
               key={u.id}
               u={u}
-              onView={() => setDetail(u)}
+              onView={() => setDetailId(u.id)}
               isAdmin={isAdmin}
               confirming={confirmId === u.id}
               onAskRemove={() => setConfirmId(u.id)}

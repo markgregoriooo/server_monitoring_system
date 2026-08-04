@@ -238,4 +238,19 @@ async function checkReachability(device, online, opts = {}) {
   });
 }
 
-export default { checkRouter, checkUps, checkReachability };
+// Drop every in-memory trace of one device. Called from a poller's removeDevice
+// alongside alertBandState.resetDevice — that call only clears the SEVERITY bands,
+// while the three maps in this module (link baselines, last uptime, error counters)
+// would otherwise outlive the device. MySQL reuses an AUTO_INCREMENT id after a
+// restart, so a future device inheriting a dead one's link baseline would silently
+// skip the first interface-down alert, and its stale uptime would fire a phantom
+// "Router rebooted" on the first poll.
+function resetDevice(deviceId) {
+  const id = Number(deviceId);
+  const prefix = `${id}:`;
+  prevUptime.delete(id);
+  for (const k of [...seenLink]) if (k.startsWith(prefix)) seenLink.delete(k);
+  for (const k of [...prevErrors.keys()]) if (k.startsWith(prefix)) prevErrors.delete(k);
+}
+
+export default { checkRouter, checkUps, checkReachability, resetDevice };

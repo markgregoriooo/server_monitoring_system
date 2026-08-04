@@ -5,6 +5,17 @@ import deviceAlerts from "./deviceAlerts.js";
 import alertBandState from "./alertBandState.js";
 import { writeNetworkSample } from "../handlers/networkMetricsHandler.js";
 import { writeUpsSample } from "../handlers/upsMetricsHandler.js";
+import {
+  badRequest,
+  numOrNull,
+  inRange,
+  UPS_BOUNDS,
+  normalizePort,
+  isValidIp,
+  networkSegment,
+  computeUtilizationPct,
+  counterDelta,
+} from "./snmpUtils.js";
 
 // ─── SNMP poller: routers (IF-MIB) + UPS (UPS-MIB), pull-based ─────────────────
 //
@@ -38,7 +49,6 @@ const labelStatus = (s) => STATUS_LABEL[s] ?? "Offline";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const numOrNull = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
 const firstValue = (m) => {
   const k = Object.keys(m)[0];
   return k === undefined ? null : m[k];
@@ -81,19 +91,24 @@ export async function collectRouter(deviceId, conn, labels = {}) {
       const speedMbps = Number(speed[idx] ?? 0);
 
       // utilization_pct from the per-interface delta vs the previous cycle.
+      //
+      // Ethernet links are FULL-DUPLEX: rx and tx each get the full link speed, so
+      // the busier DIRECTION is the saturation measure — not their sum. Summing them
+      // reports a 100 Mbit/s link carrying 60 Mbit/s each way as 120% (clamped to
+      // 100%) when neither direction is above 60%, which false-fires `link_util`.
+      // This matches the LibreNMS/Cacti convention of graphing in/out separately and
+      // alerting on the worse one. (Half-duplex would want the sum, but IF-MIB
+      // duplex state isn't collected and modern switched gear is full-duplex.)
       let utilizationPct = null;
       const key = `${deviceId}:${idx}`;
       const prev = prevIface.get(key);
       if (prev) {
-        const dt = (now - prev.t) / 1000;
-        // Discard a negative delta (counter wrap / device reboot) rather than spike.
-        const dRx = rxBytes >= prev.rxBytes ? Number(rxBytes - prev.rxBytes) : 0;
-        const dTx = txBytes >= prev.txBytes ? Number(txBytes - prev.txBytes) : 0;
-        if (dt > 0 && speedMbps > 0) {
-          const capacityBytesPerSec = (speedMbps * 1e6) / 8; // Mbit/s → bytes/s
-          const bytesPerSec = (dRx + dTx) / dt;
-          utilizationPct = Math.min(100, (bytesPerSec / capacityBytesPerSec) * 100);
-        }
+        utilizationPct = computeUtilizationPct({
+          dRxBytes: counterDelta(rxBytes, prev.rxBytes),
+          dTxBytes: counterDelta(txBytes, prev.txBytes),
+          dtSec: (now - prev.t) / 1000,
+          speedMbps,
+        });
       }
       prevIface.set(key, { rxBytes, txBytes, t: now });
 
@@ -104,6 +119,10 @@ export async function collectRouter(deviceId, conn, labels = {}) {
         txBytes,
         rxErrors: Number(inErr[idx] ?? 0),
         txErrors: Number(outErr[idx] ?? 0),
+        // ifHighSpeed (Mbit/s). Carried through to the UI so a port can show its
+        // negotiated speed — a 1 Gb link sitting at 10 Mb is a duplex/cable fault
+        // that a utilization % alone hides completely. 0 = unknown, sent as null.
+        speedMbps: speedMbps > 0 ? speedMbps : null,
         linkUp,
         utilizationPct,
       });
@@ -143,19 +162,23 @@ export async function collectUps(conn) {
     const outV = await client.walkColumn(session, UPS_OID.upsOutputVoltage);
     const load = await client.walkColumn(session, UPS_OID.upsOutputPercentLoad);
 
-    const battV = s[UPS_OID.upsBatteryVoltage];
+    // Every reading is range-checked against UPS_BOUNDS (RFC 1628 where it states a
+    // range, physical plausibility where it doesn't) — out of range means a firmware
+    // sentinel, not a measurement, and becomes null. See snmpUtils.inRange.
+    const B = UPS_BOUNDS;
+    const battV = inRange(s[UPS_OID.upsBatteryVoltage], ...B.batteryVoltageDeci);
     const src = s[UPS_OID.upsOutputSource];
     return {
       reachable: true,
-      batteryChargePct: numOrNull(s[UPS_OID.upsEstimatedChargeRemaining]),
-      runtimeRemainingMin: numOrNull(s[UPS_OID.upsEstimatedMinutesRemaining]),
-      loadPct: numOrNull(firstValue(load)),
-      inputVoltage: numOrNull(firstValue(inV)),
-      outputVoltage: numOrNull(firstValue(outV)),
-      batteryVoltage: battV == null ? null : Number(battV) / 10, // RFC 1628: 0.1 V DC units
+      batteryChargePct: inRange(s[UPS_OID.upsEstimatedChargeRemaining], ...B.batteryChargePct),
+      runtimeRemainingMin: inRange(s[UPS_OID.upsEstimatedMinutesRemaining], ...B.runtimeRemainingMin),
+      loadPct: inRange(firstValue(load), ...B.loadPct),
+      inputVoltage: inRange(firstValue(inV), ...B.voltage),
+      outputVoltage: inRange(firstValue(outV), ...B.voltage),
+      batteryVoltage: battV == null ? null : battV / 10, // RFC 1628: 0.1 V DC units
       onBattery: src == null ? null : isOnBattery(src),
-      batteryStatus: numOrNull(s[UPS_OID.upsBatteryStatus]),
-      temperature: numOrNull(s[UPS_OID.upsBatteryTemperature]),
+      batteryStatus: inRange(s[UPS_OID.upsBatteryStatus], ...B.batteryStatus),
+      temperature: inRange(s[UPS_OID.upsBatteryTemperature], ...B.temperatureC),
     };
   } finally {
     client.closeSession(session);
@@ -195,6 +218,69 @@ async function loadInterfaceLabels(deviceId) {
   return m;
 }
 
+// Record the interfaces this poll discovered. Nothing used to write this table, so
+// `location_label` could never be set for a dashboard-registered router — the admin
+// had no list of port names to label in the first place. Now each poll upserts what
+// the device actually reports, which both populates that list and keeps is_active
+// current as ports are patched in and out.
+//
+// Deliberately preserves location_label on conflict: the label is human-authored and
+// must survive every re-poll. Needs the unique key from
+// migrations/2026-08-04_network_interfaces_unique.sql — without it ON DUPLICATE KEY
+// never matches and this would append a row per interface per cycle, so the whole
+// thing is skipped (and warned once) when the key is missing.
+let ifaceUpsertBroken = false;
+async function syncInterfaces(deviceId, interfaces) {
+  if (ifaceUpsertBroken || !interfaces?.length) return;
+  const names = interfaces.map((i) => i.name).filter(Boolean);
+  if (!names.length) return;
+  try {
+    await db.query(
+      `INSERT INTO network_interfaces (device_id, interface_name, location_label, is_active)
+       VALUES ${names.map(() => "(?, ?, '', 1)").join(", ")}
+       ON DUPLICATE KEY UPDATE is_active = 1`,
+      names.flatMap((n) => [deviceId, n]),
+    );
+    // Ports the device no longer reports stay as rows (their label is worth keeping)
+    // but are flagged inactive so the UI can grey them out.
+    await db.query(
+      `UPDATE network_interfaces SET is_active = 0
+        WHERE device_id = ? AND interface_name NOT IN (${names.map(() => "?").join(", ")})`,
+      [deviceId, ...names],
+    );
+  } catch (err) {
+    ifaceUpsertBroken = true;
+    console.error(
+      "[SNMP_POLLER] interface sync disabled — is migrations/2026-08-04_network_interfaces_unique.sql applied?",
+      err.message,
+    );
+  }
+}
+
+// Set the human label for one discovered interface (admin, from the router detail
+// page). Returns false when that device/interface pair isn't one we've discovered —
+// callers turn that into a 404 rather than silently creating an orphan row.
+async function setInterfaceLabel(deviceId, interfaceName, label) {
+  const id = Number(deviceId);
+  if (!Number.isInteger(id)) throw badRequest("Invalid device id.");
+  const name = String(interfaceName ?? "").trim();
+  if (!name) throw badRequest("Interface name is required.");
+  const text = String(label ?? "").trim().slice(0, 100); // column is varchar(100)
+  const [res] = await db.query(
+    `UPDATE network_interfaces SET location_label = ?, updated_at = NOW()
+      WHERE device_id = ? AND interface_name = ?`,
+    [text, id, name],
+  );
+  if (res.affectedRows === 0) return null;
+  // Push the new label straight into the live cache so the next GET/broadcast carries
+  // it without waiting a full poll cycle.
+  const live = latestNetwork.get(id);
+  if (live?.interfaces) {
+    for (const i of live.interfaces) if (i.name === name) i.locationLabel = text;
+  }
+  return { interfaceName: name, locationLabel: text };
+}
+
 // ─── Status + threshold logging ────────────────────────────────────────────────
 
 const typeLabel = (d) => (d.type === "ups" ? "UPS" : "Router");
@@ -205,9 +291,23 @@ async function setReachable(io, d, online) {
   const id = Number(d.id);
   // Keep the live cache in step with reachability so the list endpoint reflects
   // an offline device immediately (the success path caches richer data below).
+  // Both branches PRESERVE the last successful readings and only overlay the down
+  // state: replacing the router entry wholesale (interfaces: []) rendered an offline
+  // router with no interfaces at all, discarding exactly the context an operator
+  // needs to see what was connected when it dropped. The UPS branch already did
+  // this; the two are now consistent.
   if (!online) {
-    if (d.type === "ups") latestUps.set(id, { ...(latestUps.get(id) ?? {}), status: "Offline" });
-    else latestNetwork.set(id, { status: "Offline", reachable: false, uptimeSeconds: null, interfaces: [] });
+    if (d.type === "ups") {
+      latestUps.set(id, { ...(latestUps.get(id) ?? {}), status: "Offline" });
+    } else {
+      latestNetwork.set(id, {
+        uptimeSeconds: null,
+        interfaces: [],
+        ...(latestNetwork.get(id) ?? {}),
+        status: "Offline",
+        reachable: false,
+      });
+    }
   }
   const newStatus = online ? "online" : "offline";
   if (d.status === newStatus) return;
@@ -244,12 +344,20 @@ async function setReachable(io, d, online) {
 async function pollRouter(io, d) {
   const labels = await loadInterfaceLabels(d.id);
   const sample = await collectRouter(d.id, connFor(d), labels); // throws if unreachable
+  await syncInterfaces(d.id, sample.interfaces);
   await setReachable(io, d, true);
   await writeNetworkSample(io, d, sample);
   await deviceAlerts.checkRouter(io, d, sample);
   latestNetwork.set(Number(d.id), {
     status: "Online",
     reachable: true,
+    // sysDescr/sysName were polled every cycle and thrown away. They're the only
+    // vendor/model/hostname the standard MIBs give us — the router equivalent of the
+    // server path's server_specs — so carry them through to the list + detail views.
+    // Cache-only (no schema column exists for a router's model); they repopulate on
+    // the first poll after a restart, same as every other live value here.
+    descr: sample.descr ?? null,
+    sysName: sample.sysName ?? null,
     uptimeSeconds: sample.uptimeSeconds,
     cpuPercent: sample.cpuPercent,
     memPercent: sample.memPercent,
@@ -258,6 +366,11 @@ async function pollRouter(io, d) {
       locationLabel: i.locationLabel ?? "",
       linkUp: Boolean(i.linkUp),
       utilizationPct: i.utilizationPct ?? null,
+      speedMbps: i.speedMbps ?? null,
+      // Cumulative error counters — the UI shows the delta between polls, which is
+      // what indicates a failing cable/SFP now (a lifetime total says nothing).
+      rxErrors: i.rxErrors ?? null,
+      txErrors: i.txErrors ?? null,
       rxBytes: i.rxBytes != null ? String(i.rxBytes) : null, // BigInt → string (JSON-safe)
       txBytes: i.txBytes != null ? String(i.txBytes) : null,
     })),
@@ -278,6 +391,11 @@ async function pollUps(io, d) {
     outputVoltage: sample.outputVoltage,
     batteryVoltage: sample.batteryVoltage,
     onBattery: sample.onBattery,
+    // RFC 1628 upsBatteryStatus (2 normal, 3 low, 4 depleted). Already drives the
+    // battery-replace alert and the broadcast; cached here too so the list endpoint
+    // can surface battery HEALTH, which is distinct from charge level — a battery at
+    // 100% charge can still report "replace".
+    batteryStatus: sample.batteryStatus,
     temperature: sample.temperature,
   });
 }
@@ -297,6 +415,11 @@ async function pollAll(io) {
         else if (d.type === "ups") await pollUps(io, d);
       } catch (err) {
         // Unreachable / SNMP error for this device — mark offline, keep going.
+        // The reason is logged, not swallowed: "Request timed out" (device down or
+        // firewalled), "Unknown community" (wrong credential) and a genuine bug in
+        // the collector all previously looked identical from outside — every one just
+        // showed up as a device silently sitting Offline with no way to tell which.
+        console.error(`[SNMP_POLLER] ${d.type} "${d.name}" (${d.ip}) poll failed:`, err.message);
         await setReachable(io, d, false);
       }
     }
@@ -332,6 +455,8 @@ async function getNetworkDevices() {
       location: r.location,
       status: live?.status ?? labelStatus(r.status),
       reachable: live?.reachable ?? null,
+      descr: live?.descr ?? null, // sysDescr — vendor/model string
+      sysName: live?.sysName ?? null, // sysName — the device's own hostname
       uptimeSeconds: live?.uptimeSeconds ?? null,
       cpuPercent: live?.cpuPercent ?? null,
       memPercent: live?.memPercent ?? null,
@@ -372,6 +497,7 @@ async function getUpsDevices() {
       outputVoltage: live?.outputVoltage ?? null,
       batteryVoltage: live?.batteryVoltage ?? null,
       onBattery: live?.onBattery ?? null,
+      batteryStatus: live?.batteryStatus ?? null, // RFC 1628 enum: 2 normal, 3 low, 4 depleted
       temperature: live?.temperature ?? null,
       monitored: ["snmp", "network"].includes(r.commType),
     };
@@ -387,35 +513,32 @@ async function getUpsDevices() {
 // REQUIRED: SNMP-only scope means a device without one can't be polled at all (the
 // ICMP-ping fallback for unmanaged routers isn't built yet).
 
-function badRequest(msg) {
-  const e = new Error(msg);
-  e.status = 400;
-  return e;
-}
-
 const trimOrNull = (v) => {
   const s = v == null ? "" : String(v).trim();
   return s === "" ? null : s;
 };
 
-// SNMP port: default 161; reject anything that isn't a valid port number.
-function normalizePort(v) {
-  if (v == null || v === "") return 161;
-  const n = Number(v);
-  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 161;
-}
-
-function isValidIp(ip) {
-  if (typeof ip !== "string") return false;
-  const m = ip.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  return Boolean(m) && m.slice(1).every((o) => Number(o) >= 0 && Number(o) <= 255);
-}
-
-// Derive a /24 segment string from an IPv4 address ("" if unknown) — mirrors
-// agentService.networkSegment so device_network.network_segment stays consistent.
-function networkSegment(ip) {
-  const m = typeof ip === "string" && ip.match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
-  return m ? `${m[1]}.${m[2]}.${m[3]}.0/24` : "";
+// Reject a device whose SNMP endpoint is already registered. The identity of an
+// endpoint is (ip, port, community) — NOT the IP alone: one host can legitimately
+// expose several SNMP contexts on different communities, which is exactly what the
+// dev simulator does (router and UPS both answer on 127.0.0.1:1161, told apart by
+// community). An exact triple match is unambiguously a double-registration, which
+// would poll the box twice and split its history across two device_id-tagged series.
+async function assertEndpointFree(conn, ip, snmpPort, community) {
+  const [dup] = await conn.query(
+    `SELECT d.device_name, d.device_type
+       FROM devices d
+       JOIN device_network n ON n.device_id = d.device_id
+      WHERE d.ip_address = ? AND n.snmp_port = ? AND n.snmp_community = ?
+      LIMIT 1`,
+    [ip, snmpPort, community],
+  );
+  if (dup.length) {
+    throw badRequest(
+      `"${dup[0].device_name}" (${dup[0].device_type}) is already registered at ${ip}:${snmpPort} ` +
+        `with that community string.`,
+    );
+  }
 }
 
 // Validate the fields shared by both device classes, or throw a 400.
@@ -443,6 +566,7 @@ async function addNetworkDevice(input) {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    await assertEndpointFree(conn, ip, snmpPort, community);
     const [dev] = await conn.query(
       `INSERT INTO devices (ip_address, device_name, device_type, status, location)
        VALUES (?, ?, 'router', 'offline', ?)`,
@@ -464,6 +588,8 @@ async function addNetworkDevice(input) {
       location,
       status: "Offline",
       reachable: null,
+      descr: null, // filled in by the first successful poll
+      sysName: null,
       uptimeSeconds: null,
       cpuPercent: null,
       memPercent: null,
@@ -492,6 +618,7 @@ async function addUpsDevice(input) {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    await assertEndpointFree(conn, ip, snmpPort, community);
     const [dev] = await conn.query(
       `INSERT INTO devices (ip_address, device_name, device_type, status, location)
        VALUES (?, ?, 'ups', 'offline', ?)`,
@@ -559,7 +686,8 @@ async function removeDevice(id, type) {
       if (key.startsWith(`${deviceId}:`)) prevIface.delete(key);
     }
   }
-  alertBandState.resetDevice(deviceId);
+  alertBandState.resetDevice(deviceId); // severity bands
+  deviceAlerts.resetDevice(deviceId); // link baselines / uptime / error counters
   return true;
 }
 
@@ -573,4 +701,5 @@ export default {
   addNetworkDevice,
   addUpsDevice,
   removeDevice,
+  setInterfaceLabel,
 };

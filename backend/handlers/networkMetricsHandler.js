@@ -68,6 +68,8 @@ export async function writeNetworkSample(io, device, sample) {
         location: device.location,
         status: "Online",
         reachable: sample.reachable !== false,
+        descr: sample.descr ?? null, // sysDescr — vendor/model
+        sysName: sample.sysName ?? null, // sysName — device hostname
         uptimeSeconds: sample.uptimeSeconds ?? null,
         cpuPercent: sample.cpuPercent ?? null,
         memPercent: sample.memPercent ?? null,
@@ -76,6 +78,9 @@ export async function writeNetworkSample(io, device, sample) {
           locationLabel: i.locationLabel ?? "",
           linkUp: Boolean(i.linkUp),
           utilizationPct: i.utilizationPct ?? null,
+          speedMbps: i.speedMbps ?? null, // negotiated link speed (ifHighSpeed)
+          rxErrors: i.rxErrors ?? null, // cumulative — UI shows the per-poll delta
+          txErrors: i.txErrors ?? null,
           rxBytes: i.rxBytes != null ? String(i.rxBytes) : null,
           txBytes: i.txBytes != null ? String(i.txBytes) : null,
         })),
