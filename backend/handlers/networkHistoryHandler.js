@@ -1,48 +1,44 @@
 import { queryClient, bucket } from "../config/influx.js";
+import { resolveRange } from "../services/historyRange.js";
 
-// Allowed ranges → aggregate window. Both sides whitelisted (never taken from user
-// input verbatim) so there is no Flux-injection surface. Same set as the others.
-const RANGE_WINDOW = {
-  "-1h": "20s",
-  "-6h": "2m",
-  "-24h": "10m",
-};
-
-// Interface names are user/vendor-supplied, so they can never be interpolated into
-// Flux verbatim. RouterOS and IF-MIB names are alphanumerics plus a few separators —
-// anything else is rejected rather than escaped.
-const SAFE_IFNAME = /^[A-Za-z0-9._\-/ ]{1,50}$/;
-
-// GET /api/network/:id/history?range=-1h[&interface=ether3]  (JWT, via authMiddleware)
+// GET /api/network/:id/history?range=-1h[&interface=ether1]  (JWT, via authMiddleware)
+//   ...or an absolute window: ?start=<ISO>&stop=<ISO>  (see historyRange.resolveRange)
 // In/out throughput for one router from InfluxDB (`network_traffic`).
 // network_traffic stores CUMULATIVE byte counters per interface, so we: align each
 // interface to common windows (last), take the non-negative derivative → bytes/sec
-// per interface, then sum per window.
+// per interface, then group across interfaces and sum per window → device totals.
 //
-// Without `interface` the sum spans every port → device totals (the original behaviour).
-// With `interface` the filter narrows to that one port, so a single link can be charted
-// — the per-port data was always in Influx, there was just no way to ask for it.
+// `interface` narrows to a single port. The data was always tagged by
+// interface_name; there was simply no way to ask for one port, so a busy uplink was
+// only ever visible summed together with every idle port. The value is passed
+// through an EQUALITY filter built from a JSON-escaped string, never interpolated as
+// Flux code, so it can't break out of the literal (the range/window pair stays
+// whitelisted above for the same reason).
 export function networkHistoryHandler(req, res) {
   const deviceId = parseInt(req.params.id, 10);
   if (!Number.isInteger(deviceId)) {
     return res.status(400).json({ error: "Invalid device id." });
   }
 
-  let range = String(req.query.range ?? "-1h");
-  if (!RANGE_WINDOW[range]) range = "-1h";
-  const every = RANGE_WINDOW[range];
-
-  const iface = req.query.interface ? String(req.query.interface) : "";
-  if (iface && !SAFE_IFNAME.test(iface)) {
-    return res.status(400).json({ error: "Invalid interface name." });
+  // Preset (-1h … -30d) or an absolute start/stop window; throws a 400 on a
+  // malformed custom window rather than silently charting the wrong period.
+  let resolved;
+  try {
+    resolved = resolveRange(req.query);
+  } catch (err) {
+    return res.status(err.status ?? 400).json({ error: err.message });
   }
+  const { rangeExpr, every } = resolved;
+
+  // JSON.stringify gives a safely quoted+escaped Flux string literal.
+  const iface = req.query.interface ? String(req.query.interface).slice(0, 100) : "";
   const ifaceFilter = iface
-    ? `|> filter(fn: (r) => r.interface_name == "${iface}")`
+    ? `|> filter(fn: (r) => r.interface_name == ${JSON.stringify(iface)})`
     : "";
 
   const flux = `
     from(bucket: "${bucket}")
-      |> range(start: ${range})
+      |> range(${rangeExpr})
       |> filter(fn: (r) => r._measurement == "network_traffic")
       |> filter(fn: (r) => r.device_id == "${deviceId}")
       ${ifaceFilter}
@@ -70,7 +66,17 @@ export function networkHistoryHandler(req, res) {
       if (!res.headersSent) res.status(500).json({ error: "History query failed." });
     },
     complete() {
-      if (!res.headersSent) res.json({ range, interface: iface || null, history });
+      // Echo what was actually served (incl. the resolved custom bounds + the window
+      // that was chosen) so the client can label the axis without re-deriving it.
+      if (!res.headersSent) {
+        res.json({
+          range: resolved.custom ? "custom" : resolved.preset,
+          start: resolved.startISO ?? null,
+          stop: resolved.stopISO ?? null,
+          every,
+          history,
+        });
+      }
     },
   });
 }

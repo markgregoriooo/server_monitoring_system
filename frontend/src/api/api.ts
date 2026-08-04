@@ -290,9 +290,16 @@ export const api = {
     }
   },
 
-  getNetworkHistory: async (id: number, range: string): Promise<ApiResult> => {
+  getNetworkHistory: async (
+    id: number,
+    range: string,
+    iface?: string,
+    window?: { start: string; stop: string },
+  ): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get(`/network/${id}/history`, { params: { range } });
+      const params: Record<string, string> = window ? { ...window } : { range };
+      if (iface) params.interface = iface;
+      const res = await apiClient.get(`/network/${id}/history`, { params });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
@@ -341,9 +348,81 @@ export const api = {
     }
   },
 
-  getUpsHistory: async (id: number, range: string): Promise<ApiResult> => {
+  getUpsHistory: async (
+    id: number,
+    range: string,
+    window?: { start: string; stop: string },
+  ): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get(`/ups/${id}/history`, { params: { range } });
+      const res = await apiClient.get(`/ups/${id}/history`, {
+        params: window ? { ...window } : { range },
+      });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  addNetworkDevice: async (payload: {
+    name: string;
+    ip: string;
+    community: string;
+    snmpPort?: number | string | undefined;
+    location?: string | undefined;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/network", payload);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteNetworkDevice: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/network/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  setNetworkInterfaceLabel: async (
+    id: number,
+    interfaceName: string,
+    locationLabel: string,
+  ): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch(`/network/${id}/interfaces`, { interfaceName, locationLabel });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  addUpsDevice: async (payload: {
+    name: string;
+    ip: string;
+    community: string;
+    snmpPort?: number | string | undefined;
+    location?: string | undefined;
+    brand?: string | undefined;
+    model?: string | undefined;
+    batteryCapacity?: string | undefined;
+    commType?: string | undefined;
+    serialNumber?: string | undefined;
+  }): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/ups", payload);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  deleteUpsDevice: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/ups/${id}`);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

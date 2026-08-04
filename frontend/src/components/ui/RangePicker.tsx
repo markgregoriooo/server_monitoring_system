@@ -77,9 +77,11 @@ export default function RangePicker({
 
   // Per-variant class sets. Kept as whole literal strings (not built by
   // concatenation) so Tailwind's scanner can see every class it must emit.
+  // `shrink-0` so the preset group is never squeezed to nothing when it shares a
+  // wrapped header row with other controls.
   const groupCls = gf
-    ? "flex rounded-md overflow-hidden border border-[var(--gf-panel-border)]"
-    : "flex gap-1 bg-slate-100 dark:bg-white/[0.05] rounded-md p-0.5";
+    ? "flex rounded-md overflow-hidden shrink-0 border border-[var(--gf-panel-border)]"
+    : "flex gap-1 shrink-0 bg-slate-100 dark:bg-white/[0.05] rounded-md p-0.5";
   const btnCls = (active: boolean) =>
     gf
       ? `text-[10px] px-2 py-0.5 transition-colors ${active ? "bg-[var(--gf-hover)] text-[var(--gf-text-primary)]" : "text-[var(--gf-text-muted)]"}`
@@ -88,9 +90,17 @@ export default function RangePicker({
             ? "bg-white dark:bg-white/[0.12] text-slate-900 dark:text-white shadow-sm"
             : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
         }`;
+  // POSITIONING MATTERS HERE. At >=sm this is an absolutely positioned dropdown. On a
+  // phone `absolute` is unusable: the picker sits in a panel header whose root may set
+  // `overflow-hidden` (rounded corners), so a dropdown taller than the panel is clipped
+  // and the inputs become unreachable. `fixed` escapes every overflow and stacking
+  // ancestor, so on mobile it becomes a bottom sheet pinned to the viewport — fully
+  // visible wherever the panel sits and however far the page is scrolled.
+  const popPos =
+    "fixed inset-x-3 bottom-3 z-[70] sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:mt-1.5 sm:w-auto sm:min-w-[250px]";
   const popCls = gf
-    ? "absolute right-0 top-full mt-1.5 z-50 rounded-[2px] p-3 flex flex-col gap-2.5 shadow-xl bg-[var(--gf-panel)] border border-[var(--gf-panel-border)]"
-    : "absolute right-0 top-full mt-1.5 z-50 rounded-md p-3 flex flex-col gap-2.5 shadow-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10";
+    ? `${popPos} rounded-[2px] p-3 flex flex-col gap-2.5 shadow-xl bg-[var(--gf-panel)] border border-[var(--gf-panel-border)]`
+    : `${popPos} rounded-md p-3 flex flex-col gap-2.5 shadow-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10`;
   const labelCls = gf
     ? "text-[9px] tracking-wider uppercase text-[var(--gf-text-muted)]"
     : "text-[9px] tracking-wider uppercase text-slate-500 dark:text-slate-400";
@@ -181,7 +191,11 @@ export default function RangePicker({
       </div>
 
       {open && (
-        <div className={popCls} style={{ minWidth: 250 }}>
+        <>
+        {/* Mobile only: dimmed backdrop so the bottom sheet reads as a modal layer and
+            a tap anywhere outside closes it. */}
+        <div className="fixed inset-0 z-[60] sm:hidden" style={{ background: "rgba(0,0,0,0.45)" }} onClick={() => setOpen(false)} />
+        <div className={popCls}>
           <span className={labelCls}>Custom range · local time</span>
           <label className="flex flex-col gap-1">
             <span className={labelCls}>From</span>
@@ -225,20 +239,22 @@ export default function RangePicker({
 
           {shown && <div className="text-[10px] text-red-500 dark:text-red-400">{shown}</div>}
 
+          {/* Bigger tap targets on touch; compact again at >=sm. */}
           <div className="flex gap-2">
-            <button onClick={apply} className="text-[10px] px-2.5 py-1 rounded font-semibold text-white bg-[#5794F2]">
+            <button onClick={apply} className="flex-1 sm:flex-none text-[11px] sm:text-[10px] px-2.5 py-2 sm:py-1 rounded font-semibold text-white bg-[#5794F2]">
               Apply
             </button>
             <button
               onClick={() => setOpen(false)}
               className={gf
-                ? "text-[10px] px-2.5 py-1 rounded-[2px] text-[var(--gf-text-muted)] border border-[var(--gf-panel-border)]"
-                : "text-[10px] px-2.5 py-1 rounded text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10"}
+                ? "flex-1 sm:flex-none text-[11px] sm:text-[10px] px-2.5 py-2 sm:py-1 rounded-[2px] text-[var(--gf-text-muted)] border border-[var(--gf-panel-border)]"
+                : "flex-1 sm:flex-none text-[11px] sm:text-[10px] px-2.5 py-2 sm:py-1 rounded text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10"}
             >
               Cancel
             </button>
           </div>
         </div>
+        </>
       )}
     </div>
   );

@@ -14,12 +14,16 @@ Branch: `router-ups-monitoring`.
 > system never takes automated action on a power event (no automatic server shutdown). It
 > observes, records to InfluxDB, and raises alerts; humans decide what to do.
 
-> 🧭 **Status: IMPLEMENTED (poller + APIs + pages) — seeding pending.** The poller, handlers,
+> 🧭 **Status: IMPLEMENTED (poller + APIs + pages + add/remove UI).** The poller, handlers,
 > read routes, and the two dashboard pages are built (`node --check` / `tsc` clean; see §8 /
-> SESSION_NOTES SESSION 10). What's left is **registering the real devices** — the
-> `migrations/2026-06-12_router_ups_devices.sql` template, blocked on the §10 device facts — and
-> a live end-to-end test against a real SNMP target. MikroTik router monitoring (data source
-> **B**) is explicitly **out of scope here** and handled separately.
+> SESSION_NOTES SESSION 10). **Devices can now be registered from the dashboard** — the Network
+> and UPS pages have an admin-only **"Add router" / "Add UPS"** button (`POST /api/network`,
+> `POST /api/ups`) plus a per-device **Remove** (`DELETE`), so hand-writing the
+> `migrations/2026-06-12_router_ups_devices.sql` seed is no longer required (the SQL template
+> stays as an alternative / for bulk seeding). The poller picks up a newly added device on its
+> next cycle (≤ `SNMP_POLL_INTERVAL_MS`, ~60s) with **no restart**. What's left is a live
+> end-to-end test against a real SNMP target. MikroTik router monitoring (data source **B**) is
+> explicitly **out of scope here** and handled separately.
 
 > 📖 **New to this?** Read §1–§3 for the concept and the one decision that drives everything,
 > then §4 (what we read) and §5 (how it fits the current system).
@@ -80,6 +84,39 @@ UPS has an SNMP card during requirements; a USB-only unit can't be monitored wit
 ---
 
 ## 4. What we read (and from where)
+
+### Plain-English primer: MIB, OID, IF-MIB, UPS-MIB
+
+The jargon below is simpler than it looks. The whole idea: **you talk to a router/UPS by asking
+it questions *by number*.** It can't chat — you send a number, it sends back a value.
+
+- **OID = a question number.** Like a fixed extension that always reaches the same answer.
+  `1.3.6.1.2.1.1.3.0` always means *"how long have you been running?"* — ask it, get the uptime.
+  The same number means the same thing on every device.
+- **MIB = the dictionary that says what each number means.** On its own an OID is gibberish; the
+  MIB is the published list — *"this number = uptime, that one = battery %, this one = port speed."*
+- **SNMP = the act of dialing those numbers and reading the answers** — what our poller does every ~60s.
+
+**IF-MIB** and **UPS-MIB** are just two *chapters* of that dictionary, one per topic:
+
+- **IF-MIB** = the chapter about **network ports** — *"is this port up? how many bytes went through
+  it? how fast is the link?"* → used for **routers/switches**.
+- **UPS-MIB** = the chapter about **batteries/power** — *"battery %? minutes of runtime left? on
+  battery right now?"* → used for **UPS units**.
+
+A tiny example of the whole exchange:
+
+```
+Poller:  "Give me 1.3.6.1.2.1.33.1.2.4.0"   ← an OID (a question number)
+UPS:     "80"                                ← the answer
+```
+The UPS-MIB dictionary says that number = "battery %", so we read it as **battery at 80%.**
+
+Because these dictionaries are **standard**, the same numbers work on any brand (a Cisco and a
+TP-Link router both answer the IF-MIB numbers; an APC and an Eaton UPS both answer the UPS-MIB
+numbers) — which is why the poller needs no brand-specific code. *(MIB-II is the shared base both
+device types also implement — it's where the universal name/uptime numbers live.)* The exact OIDs
+we use are in the tables below.
 
 ### C — Routers, via **IF-MIB / MIB-II** (standardized; works across Cisco/HP/Aruba/TP-Link/…)
 
@@ -148,7 +185,11 @@ network_traffic   ── per-interface, 60s ────────────
           rx_errors(uinteger)     CUMULATIVE counter
           tx_errors(uinteger)     CUMULATIVE counter
           link_up(boolean)
-          utilization_pct(float)  precomputed gauge (rate ÷ link speed)
+          utilization_pct(float)  precomputed gauge — BUSIER DIRECTION ÷ link speed.
+                                  Full-duplex: rx and tx each get the full link speed,
+                                  so max(rx,tx) is the saturation measure, not rx+tx
+                                  (summing reports 60+60 Mb/s on a 100 Mb/s link as
+                                  120%, clamped to 100%, and false-fires link_util).
 
 router_metrics    ── per-device, 60s (also covers ping-only / unmanaged routers) ─
   Tags:   device_id, device_name, device_type
@@ -241,29 +282,81 @@ SNMP_POLL_INTERVAL_MS=60000   # default poll cadence for the router/UPS poller
 | `backend/handlers/networkMetricsHandler.js` | router sample → InfluxDB `network_traffic` (per-interface) + `router_metrics` + `networkMetrics` broadcast | ✅ built |
 | `backend/handlers/upsMetricsHandler.js` | UPS sample → InfluxDB `ups_metrics` + `upsMetrics` broadcast | ✅ built |
 | `backend/handlers/networkHistoryHandler.js` / `upsHistoryHandler.js` | Flux history (throughput / battery+load) | ✅ built |
-| `backend/routes/network.js` | `GET /api/network`, `/:id/history`, `/:id/logs` | ✅ built |
-| `backend/routes/ups.js` | `GET /api/ups`, `/:id/history`, `/:id/logs` | ✅ built |
+| `backend/routes/network.js` | `GET /api/network`, `/:id/history`, `/:id/logs`; **`POST /api/network` + `DELETE /:id` (admin — add/remove a router from the dashboard)** | ✅ built |
+| `backend/routes/ups.js` | `GET /api/ups`, `/:id/history`, `/:id/logs`; **`POST /api/ups` + `DELETE /:id` (admin — add/remove a UPS from the dashboard)** | ✅ built |
 | `frontend/src/pages/NetworkMonitoring.tsx` | router list + per-interface throughput/status (Grafana `--gf-*` tokens) | ✅ built |
 | `frontend/src/pages/UpsMonitoring.tsx` | UPS battery %, runtime, load, on-battery banner | ✅ built |
 | `migrations/2026-06-12_router_ups_devices.sql` | register `router`/`ups` devices + `device_network` / `ups_details` / `network_interfaces` | ⏳ template — needs §10 device facts |
 
 ---
 
-## 9. Setup steps (per device, when we implement)
+## 9. Setup steps — adding a new device to monitor
 
-**Router (C):** in the router's admin UI, enable **SNMP** (v2c: set a read-only community
-string; v3: create a read-only user). Note the **community string / credentials** and confirm
-UDP **161** is reachable from the backend host. Add a `devices` + `device_network` row.
+Registration is now a **dashboard action** (admin-only): the Network and UPS pages each have an
+**"Add router" / "Add UPS"** button that writes the same `devices` / `device_network` /
+`ups_details` rows the old SQL migration did. No backend restart is needed — the poller loads
+its device list every cycle and starts polling a new device on the **next tick**
+(≤ `SNMP_POLL_INTERVAL_MS`, ~60s). The `migrations/2026-06-12_router_ups_devices.sql` template
+remains only as a **bulk-seed alternative**.
 
-**UPS (D):** enable **SNMP** on the UPS's network management card, set a read-only community,
-and confirm it answers the UPS-MIB (`snmpwalk -v2c -c <community> <ip> 1.3.6.1.2.1.33`). Add
-`devices` + `device_network` + `ups_details(communication_type='snmp')`. *(A UPS with no
-network/SNMP card can't be monitored — it needs an SNMP card added first.)*
+### Step 0 — prepare the device (both classes, do this first)
 
-> 🔎 **Quick probe before coding anything:** from the backend host run
-> `snmpwalk -v2c -c <community> <device-ip>` (install net-snmp tools). If it returns a tree, SNMP
-> works and we know the exact OIDs the device supports; if it times out, a router falls back to
-> ping-only, and a UPS can't be monitored until it has an SNMP/network card.
+1. **Enable SNMP on the device** (its admin/web UI → SNMP settings). Use **v2c** (this system is
+   v2c-only — see §7 / §10 Q3) and set a **read-only community string**. Prefer a non-default
+   value over `public` (see the security note below).
+   - *UPS:* SNMP lives on the UPS's **network / SNMP management card**. A **USB-/serial-only UPS
+     cannot be monitored** — it needs an SNMP card added first (§2/§3).
+   - *Router/switch:* only **managed** gear speaks SNMP. Unmanaged gear can't be added yet (the
+     ICMP-ping fallback module isn't built — §11).
+2. **Confirm UDP 161 is reachable** from the backend host (firewall / ACL). §10 Q9.
+3. **(Recommended) Probe it before registering** — from the backend host, with net-snmp tools:
+   ```bash
+   snmpwalk -v2c -c <community> <device-ip>              # any device: returns a tree if SNMP works
+   snmpwalk -v2c -c <community> <ups-ip> 1.3.6.1.2.1.33   # UPS: should return the UPS-MIB subtree
+   ```
+   A tree back = you have the right IP + community and UDP 161 is open. A timeout = fix that
+   first (wrong community, SNMP not enabled, or firewall) — the dashboard will just show the
+   device **Offline** otherwise.
+
+### Step 1 — register it from the dashboard (admin)
+
+**Router / switch** → **Network Monitoring** page → **"Add router"**:
+
+| Field | Notes |
+|---|---|
+| **Name** | display name, e.g. `Core switch` |
+| **IP address** | the device's management IPv4 (validated) |
+| **SNMP port** | default **161** |
+| **SNMP community** | the **read-only** v2c community you set in Step 0 (**required**) |
+| **Location** | default `CSPC-ICTU Server Room` |
+
+**UPS** → **UPS Monitoring** page → **"Add UPS"** — same fields, plus:
+
+| Field | Notes |
+|---|---|
+| **Comm. type** | `snmp` or `network` (equivalent — both mean "pollable over SNMP"; default `snmp`) |
+| **Brand / Model / Battery capacity / Serial no.** | optional descriptive metadata (`APC`, `Smart-UPS 1500`, `1500 VA`, …) |
+
+> A **community string is required** for both forms: under the SNMP-only scope a device without
+> one is invisible to the poller, so the form won't create a dead row.
+
+### Step 2 — verify
+
+The device appears in the list immediately as **Offline**. Within one poll cycle (~60s) it should
+flip to **Online** and start showing live data (interface throughput for routers; battery %,
+runtime, load for UPS). If it stays Offline, re-run the Step-0 `snmpwalk` probe — the community,
+IP, or firewall is the usual culprit. Per-device events land in **View → logs** (`device_logs`).
+
+### Removing a device
+
+Each row/card has an admin-only **Remove** (inline confirm). It deletes the `devices` row;
+`device_network` / `ups_details` / `network_interfaces` cascade away. **InfluxDB history is left
+intact** (it's tagged by the stable `device_id`; see §5).
+
+> 🔒 **Security note:** v2c sends the community **in cleartext**. That's acceptable on a trusted
+> management LAN (this deployment) but is the reason to (a) use a **read-only** community and
+> (b) prefer a **non-`public`** value. v3 (per-user auth + encryption) would need the follow-up
+> migration described in §10 Q3.
 
 ---
 
@@ -277,8 +370,15 @@ network/SNMP card can't be monitored — it needs an SNMP card added first.)*
    string + port (no v3 auth/priv columns), so the implementation is **v2c**. v3 would need a
    follow-up migration to add credential columns + the `snmpClient` v3 branch. (Use a read-only
    community on a trusted management LAN.)
-4. **Alerting** — reuse the existing `device_logs` / `deviceLog` threshold path, or build proper
-   `alert_rules` rows for "UPS on battery" / "interface down"?
+4. **Alerting — ✅ DECIDED & IMPLEMENTED: configurable `alert_rules`.** Router/UPS threshold
+   alerting now runs through `services/deviceAlerts.js` (shared with the MikroTik poller):
+   numeric metrics (`router_cpu`/`router_mem`/`router_clients`/`link_util`/`ups_charge`/
+   `ups_runtime`/`ups_load`) are evaluated against the configurable `alert_rules`
+   (alertRulesService, hysteresis-aware) and raise REAL alerts via `notificationService.raiseAlert`
+   (bell/email/Alerts page), auto-resolving on recovery; boolean events (interface down, UPS
+   on-battery, device offline) raise directly like server 'offline'. Global defaults are seeded by
+   `migrations/2026-06-30_router_ups_alert_rules.sql`, tunable from the **Alert Rules** admin page.
+   This replaced the earlier hardcoded per-condition checks in `snmpPollerService`.
 
 > 📋 **Collecting these from the client:** Q1/Q2 (UPS SNMP cards), Q6-equivalent (managed routers),
 > Q9 (firewall/UDP 161), plus per-device IP/model/community, are gathered via
@@ -295,10 +395,15 @@ network/SNMP card can't be monitored — it needs an SNMP card added first.)*
   designed (§5). New socket events `networkMetrics` / `upsMetrics` / `networkStatus` /
   `upsStatus`; env `SNMP_POLL_INTERVAL_MS` (default 60s). **v2c** (per §10 Q3).
 - **Scope confirmed (client):** UPS = **monitor-and-alert only**, no automated server shutdown.
-- **Not started / blocked:** the **seed migration** (`migrations/2026-06-12_router_ups_devices.sql`
-  is a fill-in template) — blocked on the §10 device facts (Q1 UPS SNMP cards, Q6 managed
-  routers, Q9 firewall). Also: a **live end-to-end test** against a real SNMP target (needs MySQL
-  + InfluxDB + seeded devices + a reachable router/UPS), and an **ICMP-ping fallback module** for
-  unmanaged/no-community routers (currently skipped, returned `monitored:false`).
+- **Device registration:** now done from the **dashboard** — admin-only **"Add router" / "Add UPS"**
+  on the Network/UPS pages (name, IP, SNMP port, read-only community; UPS also brand/model/capacity/
+  serial/comm-type), plus per-device **Remove**. The poller loads devices every cycle, so an added
+  device starts polling within ~60s with no restart. The `migrations/2026-06-12_router_ups_devices.sql`
+  template remains as an alternative (e.g. bulk seeding), still gated on the §10 device facts (Q1 UPS
+  SNMP cards, Q6 managed routers, Q9 firewall).
+- **Not started / blocked:** a **live end-to-end test** against a real SNMP target (needs MySQL
+  + InfluxDB + registered devices + a reachable router/UPS), and an **ICMP-ping fallback module** for
+  unmanaged/no-community routers (currently skipped, returned `monitored:false`; note the add form
+  **requires** a community string, so it won't register a ping-only router until that module exists).
 - See `CLAUDE.md` (architecture + data stores) and the architecture diagram (data sources C, D)
   for the broader context.

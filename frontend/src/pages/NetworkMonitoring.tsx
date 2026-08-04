@@ -1,33 +1,16 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
+import { useAuth } from "../context/AuthContext";
+import NetworkDetail from "./NetworkDetail";
+import type { NetDevice } from "./NetworkDetail";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface NetIface {
-  name: string;
-  locationLabel: string;
-  linkUp: boolean;
-  utilizationPct: number | null;
-  rxBytes: string | null;
-  txBytes: string | null;
-}
-interface NetDevice {
-  id: string;
-  name: string;
-  ip: string;
-  location: string;
-  status: string;
-  reachable: boolean | null;
-  uptimeSeconds: number | null;
-  interfaces: NetIface[];
-  monitored: boolean;
-}
-interface HistPoint {
-  time: string;
-  rxBytesPerSec: number | null;
-  txBytesPerSec: number | null;
-}
+// ─── SNMP router/switch list page ─────────────────────────────────────────────
+// First page = the fleet list (one compact card per router, with "View"); clicking
+// through swaps in NetworkDetail for the full drill-down. Mirrors
+// MikrotikMonitoring ↔ MikrotikDetail and ServerMetrics ↔ ServerDetail, so moving
+// between the MikroTik and SNMP pages doesn't mean relearning the layout.
+// Types live in NetworkDetail.tsx — this module imports them, never the reverse.
 
 // ─── Grafana tokens (match ServerMetrics.tsx) ─────────────────────────────────
 
@@ -46,12 +29,30 @@ const GREEN = "#73BF69";
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
-const TRACK = "rgba(127,127,127,0.18)";
-const BAR_GRADIENT = "linear-gradient(90deg,#73BF69 0%,#73BF69 55%,#FF780A 78%,#F2495C 95%)";
+const BLUE_HOVER = "#4A82DD";
 
-const RANGES = ["-1h", "-6h", "-24h"] as const;
-type Range = (typeof RANGES)[number];
-const rangeLabel: Record<Range, string> = { "-1h": "1h", "-6h": "6h", "-24h": "24h" };
+const inputStyle: React.CSSProperties = {
+  background: gf.bg,
+  border: `1px solid ${gf.border}`,
+  color: gf.textPrimary,
+  fontFamily: "'JetBrains Mono', monospace",
+};
+
+// Blank form for "Add router". Community defaults to the ubiquitous read-only "public".
+interface NetForm {
+  name: string;
+  ip: string;
+  community: string;
+  snmpPort: string;
+  location: string;
+}
+const EMPTY_NET_FORM: NetForm = {
+  name: "",
+  ip: "",
+  community: "public",
+  snmpPort: "161",
+  location: "CSPC-ICTU Server Room",
+};
 
 function loadColor(v: number) {
   if (v >= 85) return RED;
@@ -62,14 +63,6 @@ function statusColor(s: string) {
   if (s === "Online") return GREEN;
   if (s === "Warning") return ORANGE;
   return RED;
-}
-function formatBps(n: number | null): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  const bits = n * 8;
-  if (bits >= 1e9) return `${(bits / 1e9).toFixed(2)} Gb/s`;
-  if (bits >= 1e6) return `${(bits / 1e6).toFixed(2)} Mb/s`;
-  if (bits >= 1e3) return `${(bits / 1e3).toFixed(1)} kb/s`;
-  return `${Math.round(bits)} b/s`;
 }
 function formatUptime(sec: number | null): string {
   if (sec == null || !Number.isFinite(sec)) return "—";
@@ -92,12 +85,17 @@ function mapNet(r: any): NetDevice {
     location: r.location ?? "—",
     status: r.status ?? "Offline",
     reachable: r.reachable ?? null,
+    descr: r.descr ?? null,
+    sysName: r.sysName ?? null,
     uptimeSeconds: r.uptimeSeconds ?? null,
     interfaces: (r.interfaces ?? []).map((i: any) => ({
       name: i.name ?? "—",
       locationLabel: i.locationLabel ?? "",
       linkUp: Boolean(i.linkUp),
       utilizationPct: i.utilizationPct ?? null,
+      speedMbps: i.speedMbps ?? null,
+      rxErrors: i.rxErrors ?? null,
+      txErrors: i.txErrors ?? null,
       rxBytes: i.rxBytes ?? null,
       txBytes: i.txBytes ?? null,
     })),
@@ -110,6 +108,8 @@ function mergeNetLive(prev: NetDevice | undefined, p: any): NetDevice {
     ...base,
     status: p.status ?? base.status,
     reachable: p.reachable ?? base.reachable,
+    descr: p.descr ?? base.descr,
+    sysName: p.sysName ?? base.sysName,
     uptimeSeconds: p.uptimeSeconds ?? base.uptimeSeconds,
     interfaces: p.interfaces ? mapNet(p).interfaces : base.interfaces,
   };
@@ -118,15 +118,24 @@ function mergeNetLive(prev: NetDevice | undefined, p: any): NetDevice {
 // ─── Panel ────────────────────────────────────────────────────────────────────
 
 function Panel({
-  title, right, children, noPad,
+  title, right, children, noPad, onClick,
 }: {
   title?: string;
   right?: React.ReactNode;
   children: React.ReactNode;
   noPad?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="flex flex-col rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+    <div
+      onClick={onClick}
+      className={`flex flex-col rounded-lg overflow-hidden${onClick ? " cursor-pointer transition-colors" : ""}`}
+      style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
+      // Border highlight on hover is the affordance that the whole card is clickable —
+      // without it only the "View" button looks interactive. Matches MikrotikMonitoring.
+      onMouseEnter={onClick ? (e) => (e.currentTarget.style.borderColor = "rgba(87,148,242,0.45)") : undefined}
+      onMouseLeave={onClick ? (e) => (e.currentTarget.style.borderColor = "var(--gf-panel-border)") : undefined}
+    >
       {title !== undefined && (
         <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
           <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
@@ -154,81 +163,130 @@ function StatPanel({ label, value, unit, color, sub }: { label: string; value: s
   );
 }
 
-// ─── Throughput history chart (rx/tx, dual line canvas) ───────────────────────
+// ─── Ghost button (matches ServerMetrics "View") ──────────────────────────────
 
-function ThroughputChart({ history }: { history: HistPoint[] }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const c = ref.current;
-    if (!c) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    const W = (c.width = c.clientWidth * 2);
-    const H = (c.height = 160 * 2);
-    ctx.clearRect(0, 0, W, H);
-    const rx = history.map((p) => p.rxBytesPerSec ?? 0);
-    const tx = history.map((p) => p.txBytesPerSec ?? 0);
-    if (rx.length < 2) {
-      ctx.fillStyle = "#6B7280";
-      ctx.font = "24px 'JetBrains Mono', monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("No data in range", W / 2, H / 2);
-      return;
-    }
-    const max = Math.max(1, ...rx, ...tx);
-    const pad = 12 * 2;
-    const x = (i: number, len: number) => pad + (i / (len - 1)) * (W - pad * 2);
-    const y = (v: number) => H - pad - (v / max) * (H - pad * 2);
-    const line = (data: number[], color: string) => {
-      ctx.beginPath();
-      data.forEach((v, i) => (i ? ctx.lineTo(x(i, data.length), y(v)) : ctx.moveTo(x(i, data.length), y(v))));
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.lineJoin = "round";
-      ctx.stroke();
-    };
-    line(rx, BLUE);
-    line(tx, GREEN);
-  }, [history]);
-  return <canvas ref={ref} style={{ width: "100%", height: 160, display: "block" }} />;
+function GhostButton({ children, onClick, danger }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void; danger?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
+      style={{ color: danger ? RED : gf.textMuted, border: `1px solid ${danger ? `${RED}55` : gf.border}`, background: "transparent" }}
+    >
+      {children}
+    </button>
+  );
 }
 
-// ─── Interface row ────────────────────────────────────────────────────────────
-
-function IfaceRow({ i }: { i: NetIface }) {
-  const util = Math.round(i.utilizationPct ?? 0);
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
-      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: i.linkUp ? GREEN : RED, boxShadow: `0 0 5px ${i.linkUp ? GREEN : RED}` }} />
-      <div className="w-32 min-w-0">
-        <div className="text-[12px] truncate" style={{ color: gf.textPrimary }}>{i.name}</div>
-        {i.locationLabel && <div className="text-[9px] truncate" style={{ color: gf.textDim }}>{i.locationLabel}</div>}
-      </div>
-      <div className="flex-1 h-3 rounded-[2px] overflow-hidden" style={{ background: TRACK }}>
-        <div className="h-full rounded-[2px] transition-all duration-500" style={{ width: `${i.linkUp ? util : 0}%`, background: BAR_GRADIENT, backgroundSize: `${util > 0 ? (100 / util) * 100 : 100}% 100%` }} />
-      </div>
-      <span className="text-[11px] font-bold w-12 text-right shrink-0" style={{ color: i.linkUp ? loadColor(util) : gf.textDim }}>
-        {i.linkUp ? `${util}%` : "down"}
-      </span>
+    <div className="flex flex-col gap-1">
+      <span className="text-[9px] tracking-wider uppercase" style={{ color: gf.textDim }}>{label}</span>
+      {children}
     </div>
+  );
+}
+
+// ─── Port chip (compact per-port state for the LIST card) ─────────────────────
+// The list only needs an at-a-glance "which ports are up"; the full per-port table
+// (speed / Tx / Rx / errors / util) lives in the detail view. Matches MikroTik's
+// list — and replaces the old full-width utilization bars, whose empty tracks read
+// as loading skeletons on the idle ports that are the normal case here.
+
+function PortChip({ label, up, util }: { label: string; up: boolean; util?: number | null }) {
+  const showUtil = up && util != null && Number.isFinite(util);
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[10px]"
+      style={{ background: gf.hover, border: `1px solid ${gf.divider}`, color: up ? gf.textMuted : gf.textDim }}
+    >
+      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: up ? GREEN : RED }} />
+      <span className="truncate" style={{ maxWidth: 120 }}>{label}</span>
+      {showUtil && (
+        <span className="tabular-nums" style={{ color: loadColor(Math.round(util as number)) }}>
+          {Math.round(util as number)}%
+        </span>
+      )}
+      {!up && <span style={{ color: gf.textDim }}>down</span>}
+    </span>
   );
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function NetworkMonitoring() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
   const [devices, setDevices] = useState<NetDevice[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [range, setRange] = useState<Range>("-1h");
-  const [history, setHistory] = useState<HistPoint[]>([]);
+  // Drill-down target held by ID (not a snapshot) so the open detail page keeps
+  // getting the list-level live updates. Same pattern as MikrotikMonitoring.
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  // Add-router modal + inline remove-confirm + toast (admin only).
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState<NetForm>(EMPTY_NET_FORM);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [toast, setToast] = useState("");
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 3000);
+  };
+
+  const openAdd = () => {
+    setForm(EMPTY_NET_FORM);
+    setFormError("");
+    setFormOpen(true);
+  };
+
+  const save = async () => {
+    if (!form.name.trim()) return setFormError("Device name is required.");
+    if (!form.ip.trim()) return setFormError("IP address is required.");
+    if (!form.community.trim()) return setFormError("SNMP community is required.");
+    setSaving(true);
+    setFormError("");
+    const res = await api.addNetworkDevice({
+      name: form.name.trim(),
+      ip: form.ip.trim(),
+      community: form.community.trim(),
+      snmpPort: form.snmpPort.trim() || undefined,
+      location: form.location.trim() || undefined,
+    });
+    setSaving(false);
+    if (res.success && res.data?.device) {
+      const added = mapNet(res.data.device);
+      setDevices((prev) => (prev.some((d) => d.id === added.id) ? prev : [...prev, added]));
+      setFormOpen(false);
+      showToast("Router added — polling starts within a minute.");
+    } else {
+      setFormError(res.error || "Could not add router.");
+    }
+  };
+
+  const remove = async (id: string) => {
+    setConfirmId(null);
+    const res = await api.deleteNetworkDevice(Number(id));
+    if (res.success) {
+      setDevices((prev) => prev.filter((d) => d.id !== id));
+      setDetailId((prev) => (prev === id ? null : prev));
+      showToast("Router removed.");
+    } else {
+      showToast(res.error || "Could not remove router.");
+    }
+  };
+
+  // Escape closes the add modal.
+  useEffect(() => {
+    if (!formOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFormOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [formOpen]);
 
   const load = () =>
     api.getNetworkDevices().then((r) => {
-      if (r.success && r.data) {
-        const list: NetDevice[] = (r.data.devices ?? []).map(mapNet);
-        setDevices(list);
-        setSelectedId((cur) => cur ?? (list[0]?.id ?? null));
-      }
+      if (r.success && r.data) setDevices((r.data.devices ?? []).map(mapNet));
     });
 
   useEffect(() => {
@@ -256,34 +314,36 @@ export default function NetworkMonitoring() {
         ),
       );
     };
+    const onRemoved = (data: { id: number | string }) => {
+      const id = String(data?.id);
+      setDevices((prev) => prev.filter((d) => d.id !== id));
+      setDetailId((prev) => (prev === id ? null : prev));
+    };
     socket.on("networkMetrics", onMetrics);
     socket.on("networkStatus", onStatus);
+    socket.on("networkRemoved", onRemoved);
     return () => {
       socket.off("networkMetrics", onMetrics);
       socket.off("networkStatus", onStatus);
+      socket.off("networkRemoved", onRemoved);
     };
   }, []);
-
-  // Fetch throughput history for the selected router whenever it / the range changes.
-  useEffect(() => {
-    if (!selectedId) {
-      setHistory([]);
-      return;
-    }
-    api.getNetworkHistory(Number(selectedId), range).then((r) => {
-      if (r.success && r.data) setHistory(r.data.history ?? []);
-    });
-  }, [selectedId, range]);
 
   const total = devices.length;
   const online = devices.filter((d) => d.status === "Online").length;
   const allIfaces = devices.flatMap((d) => d.interfaces);
   const ifacesUp = allIfaces.filter((i) => i.linkUp).length;
   const upUtil = allIfaces.filter((i) => i.linkUp && i.utilizationPct != null).map((i) => i.utilizationPct as number);
-  const avgUtil = upUtil.length ? Math.round(upUtil.reduce((a, b) => a + b, 0) / upUtil.length) : 0;
+  const peakUtil = upUtil.length ? Math.round(Math.max(...upUtil)) : 0;
   const onlineColor = total === 0 ? gf.textMuted : online === total ? GREEN : online === 0 ? RED : ORANGE;
-  const selected = devices.find((d) => d.id === selectedId) ?? null;
-  const latest = history.length ? history[history.length - 1] : undefined;
+
+  // Drill-down: render the per-router detail in place (Back returns to the list),
+  // mirroring MikrotikMonitoring ↔ MikrotikDetail. Look the device up by id each
+  // render so the open page keeps receiving the list's live socket updates.
+  const detail = detailId ? devices.find((x) => x.id === detailId) ?? null : null;
+  if (detail) {
+    return <NetworkDetail device={detail} isAdmin={isAdmin} onBack={() => setDetailId(null)} />;
+  }
 
   return (
     <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
@@ -293,17 +353,33 @@ export default function NetworkMonitoring() {
           <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>Network Monitoring</h1>
           <span className="text-[11px] hidden sm:inline" style={{ color: gf.textDim }}>{total} devices · {online} online</span>
         </div>
-        <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textMuted }}>
-          <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN, boxShadow: `0 0 6px ${GREEN}` }} /> Live
-        </span>
+        <div className="flex items-center gap-2.5 shrink-0">
+          {isAdmin && (
+            <button
+              onClick={openAdd}
+              className="inline-flex items-center gap-1.5 text-[11px] font-medium transition-colors active:translate-y-px"
+              style={{ height: 28, padding: "0 10px", color: "#fff", background: BLUE, border: `1px solid ${BLUE}`, borderRadius: 2 }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = BLUE_HOVER; e.currentTarget.style.borderColor = BLUE_HOVER; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = BLUE; e.currentTarget.style.borderColor = BLUE; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              Add router
+            </button>
+          )}
+          <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN, boxShadow: `0 0 6px ${GREEN}` }} /> Live
+          </span>
+        </div>
       </div>
 
       {/* Stat row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <StatPanel label="Routers/Switches" value={String(total)} color={BLUE} sub="monitored" />
-        <StatPanel label="Online" value={`${online}/${total}`} color={onlineColor} sub={`${total - online} offline`} />
-        <StatPanel label="Interfaces Up" value={String(ifacesUp)} color={GREEN} sub={`of ${allIfaces.length}`} />
-        <StatPanel label="Avg Utilization" value={String(avgUtil)} unit="%" color={loadColor(avgUtil)} sub="of link speed" />
+        <StatPanel label="Routers" value={`${online}/${total}`} color={onlineColor} sub="online" />
+        <StatPanel label="Ports Up" value={`${ifacesUp}/${allIfaces.length}`} color={allIfaces.length > 0 && ifacesUp === allIfaces.length ? GREEN : ifacesUp === 0 ? RED : ORANGE} sub="links up" />
+        {/* Busiest link, not the mean: one saturated uplink IS the incident, and
+            averaging it against idle ports hides exactly what needs attention. */}
+        <StatPanel label="Peak Util" value={String(peakUtil)} unit="%" color={loadColor(peakUtil)} sub={upUtil.length > 1 ? `busiest of ${upUtil.length}` : "of link speed"} />
+        <StatPanel label="Devices Down" value={String(total - online)} color={total - online === 0 ? GREEN : RED} sub="unreachable" />
       </div>
 
       {total === 0 ? (
@@ -316,73 +392,131 @@ export default function NetworkMonitoring() {
             </svg>
             <p className="text-[13px] mt-3" style={{ color: gf.textMuted }}>No routers or switches monitored yet</p>
             <p className="text-[11px] mt-1 max-w-md" style={{ color: gf.textDim }}>
-              Register a managed router (with SNMP enabled) in the database to see live interface metrics here.
+              {isAdmin
+                ? "Click “Add router” to register a managed router (with SNMP enabled) — it starts polling within a minute."
+                : "A managed router (with SNMP enabled) must be registered by an admin to see live interface metrics here."}
             </p>
+            {isAdmin && (
+              <button onClick={openAdd} className="mt-4 text-[11px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: BLUE }}>
+                + Add router
+              </button>
+            )}
           </div>
         </Panel>
       ) : (
-        <>
-          {/* Selected device throughput history */}
-          {selected && (
+        /* Per-device interface panels — click a panel (or "View →") to open its full detail */
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+          {devices.map((d) => (
             <Panel
-              title={`Throughput · ${selected.name}`}
+              key={d.id}
+              title={d.name}
+              noPad
+              onClick={() => setDetailId(d.id)}
               right={
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px]" style={{ color: BLUE }}>↓ {formatBps(latest?.rxBytesPerSec ?? null)}</span>
-                  <span className="text-[10px]" style={{ color: GREEN }}>↑ {formatBps(latest?.txBytesPerSec ?? null)}</span>
-                  <div className="flex rounded-md overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
-                    {RANGES.map((rg) => (
-                      <button
-                        key={rg}
-                        onClick={() => setRange(rg)}
-                        className="text-[10px] px-2 py-0.5 transition-colors"
-                        style={{ background: range === rg ? gf.hover : "transparent", color: range === rg ? gf.textPrimary : gf.textMuted }}
-                      >
-                        {rangeLabel[rg]}
-                      </button>
+                <span className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
+                    <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
+                  </span>
+                  {confirmId === d.id ? (
+                    <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      <span className="text-[10px]" style={{ color: gf.textMuted }}>Remove?</span>
+                      <button onClick={(e) => { e.stopPropagation(); remove(d.id); }} className="px-2 py-1 rounded-md text-[10px] font-medium" style={{ color: "#fff", background: RED }}>Yes</button>
+                      <button onClick={(e) => { e.stopPropagation(); setConfirmId(null); }} className="px-2 py-1 rounded-md text-[10px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>No</button>
+                    </span>
+                  ) : (
+                    <>
+                      <GhostButton onClick={(e) => { e.stopPropagation(); setDetailId(d.id); }}>View</GhostButton>
+                      {isAdmin && <GhostButton danger onClick={(e) => { e.stopPropagation(); setConfirmId(d.id); }}>Remove</GhostButton>}
+                    </>
+                  )}
+                </span>
+              }
+            >
+              {/* Summary strip — the facts you scan before deciding to drill in. */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
+                <span className="font-mono">{d.ip}</span>
+                <span>{d.location}</span>
+                {d.sysName && <span>{d.sysName}</span>}
+                <span>
+                  {d.interfaces.filter((i) => i.linkUp).length}/{d.interfaces.length} up
+                </span>
+                <span className="ml-auto">↑ {formatUptime(d.uptimeSeconds)}</span>
+              </div>
+              {!d.monitored ? (
+                <div className="px-3 py-4 text-[11px]" style={{ color: ORANGE }}>SNMP not configured — reachability only (ping fallback pending).</div>
+              ) : d.interfaces.length === 0 ? (
+                <div className="px-3 py-4 text-[11px]" style={{ color: gf.textDim }}>
+                  {d.status === "Online" ? "No interfaces reported." : "Offline — awaiting next poll."}
+                </div>
+              ) : (
+                <div className="px-3 py-2.5 flex flex-col gap-1.5">
+                  <span className="text-[9px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                    Ports · {d.interfaces.filter((i) => i.linkUp).length}/{d.interfaces.length} up
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {d.interfaces.map((i) => (
+                      <PortChip key={`${d.id}:${i.name}`} label={i.locationLabel || i.name} up={i.linkUp} util={i.utilizationPct} />
                     ))}
                   </div>
                 </div>
-              }
-            >
-              <ThroughputChart history={history} />
+              )}
             </Panel>
-          )}
+          ))}
+        </div>
+      )}
 
-          {/* Per-device interface panels */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
-            {devices.map((d) => (
-              <Panel
-                key={d.id}
-                title={d.name}
-                noPad
-                right={
-                  <button onClick={() => setSelectedId(d.id)} className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-                      <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
-                    </span>
-                  </button>
-                }
-              >
-                <div className="flex items-center justify-between px-3 py-1.5 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
-                  <span>{d.location}</span>
-                  <span>↑ {formatUptime(d.uptimeSeconds)}</span>
-                </div>
-                {!d.monitored ? (
-                  <div className="px-3 py-4 text-[11px]" style={{ color: ORANGE }}>SNMP not configured — reachability only (ping fallback pending).</div>
-                ) : d.interfaces.length === 0 ? (
-                  <div className="px-3 py-4 text-[11px]" style={{ color: gf.textDim }}>
-                    {d.status === "Online" ? "No interfaces reported." : "Offline — awaiting next poll."}
-                  </div>
-                ) : (
-                  d.interfaces.map((i) => <IfaceRow key={`${d.id}:${i.name}`} i={i} />)
-                )}
-              </Panel>
-            ))}
+      {/* Add-router modal (admin) */}
+      {formOpen && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setFormOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+            <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.panel }}>
+              <span className="text-[12px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router / switch</span>
+              <button onClick={() => setFormOpen(false)} className="grid place-items-center w-7 h-7 rounded-md" style={{ color: gf.textMuted }} title="Close (Esc)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="p-4 flex flex-col gap-3">
+              <Field label="Name">
+                <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Core switch" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="IP address">
+                  <input value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.1" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                </Field>
+                <Field label="SNMP port">
+                  <input value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                </Field>
+              </div>
+              <Field label="SNMP community (read-only, v2c)">
+                <input value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+              </Field>
+              <Field label="Location">
+                <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+              </Field>
+              <p className="text-[10px] leading-relaxed" style={{ color: gf.textDim }}>
+                Uses SNMP v2c with a read-only community. Confirm UDP {form.snmpPort || "161"} is reachable from the backend host. Polling begins on the next cycle (≤60s) — no restart needed.
+              </p>
+              {formError && <div className="text-[10.5px]" style={{ color: RED }}>{formError}</div>}
+              <div className="flex gap-2 mt-1">
+                <button onClick={save} disabled={saving} className="text-[11px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: BLUE }}>
+                  {saving ? "Adding…" : "Add router"}
+                </button>
+                <button onClick={() => setFormOpen(false)} className="text-[11px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
           </div>
-        </>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-5 right-5 z-[100] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl" style={{ color: GREEN, background: `${GREEN}14`, borderColor: `${GREEN}40`, fontFamily: "'JetBrains Mono', monospace" }}>
+          <span>✓</span> {toast}
+        </div>
       )}
     </div>
   );
