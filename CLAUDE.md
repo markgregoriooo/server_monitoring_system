@@ -186,7 +186,7 @@ SESSION_NOTES.md                ← per-session work log
 ## Authentication & Authorization
 
 - **Login is Google OAuth (OIDC) only** — the custom "CSPC Mail" button runs the **authorization-code flow** (`@react-oauth/google`, `flow: "auth-code"`) and sends a one-time **code** to `POST /api/auth/google`. `services/googleAuthService.js` exchanges the code with Google (server-side, using `GOOGLE_CLIENT_SECRET`), verifies the returned **ID token** with `verifyIdToken` (`google-auth-library` — audience enforced), enforces the CSPC domains (`@cspc.edu.ph` / `@my.cspc.edu.ph`, exact match + `email_verified`), then issues the app JWT via `authService.issueSession`. The old password/bcrypt login (`/auth/login`) was **removed**. Full guide: `google-oauth.md`.
-- **Self-register → admin approve/reject.** A first-time Google sign-in creates a `users` row with `status='pending'`; an admin approves it (assigning `admin` or `it_staff`) or rejects it (`status='rejected'`) from **User Management → Pending registrations**. Pending/rejected/inactive accounts can never obtain a session (`authMiddleware` requires `status='active'`). Multiple admins are allowed. Schema ships in `v11cspc-ictu-monitoring-system.sql`.
+- **Self-register → admin approve/reject.** A first-time Google sign-in creates a `users` row with `status='pending'`; an admin approves it (assigning `admin` or `it_staff`) or rejects it (`status='rejected'`) from **User Management → Pending registrations**. Pending/rejected/inactive accounts can never obtain a session (`authMiddleware` requires `status='active'`). Multiple admins are allowed. Schema ships in `v12cspc-ictu-monitoring-system.sql`.
 - JWT signed with `JWT_SECRET`, expires 1 h, stored in `sessionStorage` as `cspc_token`. Carries a `tv` (token_version) claim; `authMiddleware` rejects the token when `users.token_version` / `status` no longer match (logout, disable, role change bump it — server-side session revocation)
 - Socket.IO: browsers send JWT in `socket.handshake.auth.token`; ESP32 device key is read from `socket.handshake.auth.deviceKey` (preferred) or `.query.deviceKey` (legacy EIO3 fallback — firmware still sends it here)
 - Go agents authenticate metric POSTs with a Bearer `AGT-…` token (`middleware/agentAuth.js`); first-run enrollment uses the shared `AGENT_INSTALL_KEY`
@@ -206,7 +206,7 @@ SESSION_NOTES.md                ← per-session work log
 
 > The `reports.js` generate gate uses `requireRole("admin", "it_staff")`; the **Reports page** mirrors this (Generate button = admin/it_staff, Delete = admin). The old `super_admin` role check in the page was fixed to `admin`.
 
-> **Configurable alert thresholds (real, not mock).** The previously-unused `alert_rules` table now drives all threshold alerting. `routes/alertRules.js` (`GET/POST/PUT/DELETE /api/alert-rules`, **admin-only**) + `services/alertRulesService.js` manage them; the **Alert Rules** admin page (`pages/AlertRules.tsx`, sidebar nav, admin-only) is the UI. Scope = global default (`device_id=NULL`) + optional per-server override; fallback = rules-only (no rule → silent). The rules ship **pre-seeded** in `v11cspc-ictu-monitoring-system.sql`; alerting is rules-only, so an empty `alert_rules` table means silence. Old hardcoded 80/90 (servers) + firmware env thresholds are removed in favor of these rules.
+> **Configurable alert thresholds (real, not mock).** The previously-unused `alert_rules` table now drives all threshold alerting. `routes/alertRules.js` (`GET/POST/PUT/DELETE /api/alert-rules`, **admin-only**) + `services/alertRulesService.js` manage them; the **Alert Rules** admin page (`pages/AlertRules.tsx`, sidebar nav, admin-only) is the UI. Scope = global default (`device_id=NULL`) + optional per-server override; fallback = rules-only (no rule → silent). The rules ship **pre-seeded** in `v12cspc-ictu-monitoring-system.sql`; alerting is rules-only, so an empty `alert_rules` table means silence. Old hardcoded 80/90 (servers) + firmware env thresholds are removed in favor of these rules.
 
 ---
 
@@ -282,7 +282,7 @@ Each AC unit is a row in `devices` (type=`'aircon'`) with a linked row in `airco
 > Thresholds** card on the AirConditioner page (admin edit, both roles view) writes
 > `aircon_ir_config` and pushes `acConfig` to the ESP32, so an admin can retune **when IR
 > fires** with no reflash. The **Set Temp** column stays fixed (each is a captured raw IR
-> code). Table ships in `v11cspc-ictu-monitoring-system.sql`. This is deliberately
+> code). Table ships in `v12cspc-ictu-monitoring-system.sql`. This is deliberately
 > separate from the Alert Rules temperature thresholds (cooling should ramp *before* the
 > alarm). Default boundaries match the firmware's original compiled values.
 
