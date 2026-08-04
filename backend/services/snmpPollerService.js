@@ -226,7 +226,8 @@ async function loadInterfaceLabels(deviceId) {
 //
 // Deliberately preserves location_label on conflict: the label is human-authored and
 // must survive every re-poll. Needs the unique key from
-// migrations/2026-08-04_network_interfaces_unique.sql — without it ON DUPLICATE KEY
+// the UNIQUE(device_id, interface_name) key that ships in v11cspc-ictu-monitoring-system.sql —
+// without it ON DUPLICATE KEY
 // never matches and this would append a row per interface per cycle, so the whole
 // thing is skipped (and warned once) when the key is missing.
 let ifaceUpsertBroken = false;
@@ -251,7 +252,8 @@ async function syncInterfaces(deviceId, interfaces) {
   } catch (err) {
     ifaceUpsertBroken = true;
     console.error(
-      "[SNMP_POLLER] interface sync disabled — is migrations/2026-08-04_network_interfaces_unique.sql applied?",
+      "[SNMP_POLLER] interface sync disabled — is the UNIQUE(device_id, interface_name) key on "
+      + "network_interfaces present? It ships in v11cspc-ictu-monitoring-system.sql.",
       err.message,
     );
   }
@@ -508,7 +510,7 @@ async function getUpsDevices() {
 //
 // The poller is data-driven: loadDevices() runs every cycle, so a device added here
 // starts being polled within one interval (≤ SNMP_POLL_INTERVAL_MS) with NO restart.
-// These mirror the manual `migrations/2026-06-12_router_ups_devices.sql` seed, so the
+// These replace the old hand-written seed SQL, so the
 // dashboard's "Add router / Add UPS" replaces hand-writing SQL. A community string is
 // REQUIRED: SNMP-only scope means a device without one can't be polled at all (the
 // ICMP-ping fallback for unmanaged routers isn't built yet).

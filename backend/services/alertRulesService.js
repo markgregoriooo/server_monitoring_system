@@ -3,7 +3,7 @@ import db from "../config/mysql.js";
 // ─── Configurable alert thresholds (alert_rules) ────────────────────────────────
 // Replaces the old hardcoded 80/90 (server) and firmware-mirrored env thresholds.
 //
-// Scope model (see migrations/2026-06-14_alert_rules.sql):
+// Scope model (see the `alert_rules` table in v11cspc-ictu-monitoring-system.sql):
 //   * device_id = NULL  → GLOBAL default rule (every server / the room)
 //   * device_id = <id>  → PER-SERVER override
 //   getEffectiveRules() returns the device-specific rules if any exist, else global.

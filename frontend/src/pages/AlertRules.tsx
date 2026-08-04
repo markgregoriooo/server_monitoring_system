@@ -65,7 +65,7 @@ const METRICS: MetricMeta[] = [
   { value: "gas", label: "Gas / smoke", unit: "ppm", color: "#9AA0A6", env: true },
   { value: "humidity", label: "Humidity", unit: "%", color: "#3CC8E8", env: true },
   // Router / UPS metrics (SNMP + MikroTik pollers → services/deviceAlerts.js). Global
-  // defaults are seeded by migrations/2026-06-30_router_ups_alert_rules.sql; per-device
+  // defaults ship seeded in the base schema (v11cspc-ictu-monitoring-system.sql); per-device
   // overrides are now selectable here too.
   { value: "router_cpu", label: "Router CPU", unit: "%", color: "#5794F2", scope: "network" },
   { value: "router_mem", label: "Router memory", unit: "%", color: "#B877D9", scope: "network" },
@@ -73,7 +73,7 @@ const METRICS: MetricMeta[] = [
   { value: "link_util", label: "Link utilization", unit: "%", color: "#FF9830", scope: "network" },
   // Errors ADDED since the previous poll (rx+tx), not the lifetime counter — so the
   // sensible threshold depends on the poll cadence. See
-  // migrations/2026-07-31_link_errors_alert_rule.sql.
+  // the seeded `link_errors` rule in the base schema.
   { value: "link_errors", label: "Link errors", unit: "/poll", color: "#F2495C", scope: "network" },
   { value: "ups_charge", label: "UPS battery", unit: "%", color: "#73BF69", scope: "ups", lowerIsWorse: true },
   { value: "ups_runtime", label: "UPS runtime", unit: "min", color: "#5794F2", scope: "ups", lowerIsWorse: true },

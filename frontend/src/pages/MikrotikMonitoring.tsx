@@ -686,8 +686,7 @@ export default function MikrotikMonitoring() {
             </svg>
             <p className="text-[13px] mt-3" style={{ color: gf.textMuted }}>No MikroTik registered yet</p>
             <p className="text-[11px] mt-1 max-w-md" style={{ color: gf.textDim }}>
-              Run <span style={{ color: gf.textMuted }}>migrations/2026-06-20_mikrotik_device.sql</span>, then add your router below
-              and set its read-only RouterOS login.
+              Add your router below and set its read-only RouterOS login.
             </p>
             {isAdmin && (
               <button onClick={() => setAdding(true)} className="mt-4 text-[12px] px-3 py-1.5 rounded-[2px] font-medium" style={{ background: BLUE, color: "#fff" }}>
