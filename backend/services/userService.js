@@ -59,6 +59,53 @@ const userService = {
     return rows[0] ?? null;
   },
 
+  // Raw row by Google account id (the `sub` claim). PREFERRED over findByEmail:
+  // `sub` is immutable, while an email is a mutable alias that ICTU can rename.
+  async findByGoogleSub(googleSub) {
+    if (!googleSub) return null;
+    const [rows] = await db.query("SELECT * FROM users WHERE google_sub = ? LIMIT 1", [googleSub]);
+    return rows[0] ?? null;
+  },
+
+  // Refresh the profile facts Google owns, on every sign-in. Without this they
+  // freeze at registration: lh3.googleusercontent.com photo URLs rotate (so
+  // avatars quietly 404 over months) and a name change never reaches the UI.
+  //
+  // `email` is only passed when the user was matched by google_sub AND Google's
+  // address differs — i.e. a genuine rename of an existing account. It is skipped
+  // if another row already holds that address, since users.email is UNIQUE and a
+  // duplicate-key error here would turn a valid login into a 500.
+  async syncGoogleProfile(userId, { name, picture = null, email = null } = {}) {
+    let nextEmail = null;
+    if (email) {
+      const [[taken]] = await db.query(
+        "SELECT user_id FROM users WHERE email = ? AND user_id <> ? LIMIT 1",
+        [email, userId],
+      );
+      if (taken) {
+        console.warn(
+          `[USERS] refusing to move email ${email} to user ${userId}: already held by user ${taken.user_id}`,
+        );
+      } else {
+        nextEmail = email;
+      }
+    }
+
+    // COALESCE keeps the stored value when Google sends nothing for a field, so a
+    // missing picture never blanks an avatar the user already has.
+    await db.query(
+      `UPDATE users
+          SET name          = COALESCE(?, name),
+              profile_image = COALESCE(?, profile_image),
+              email         = COALESCE(?, email),
+              updated_at    = NOW()
+        WHERE user_id = ?`,
+      [name || null, picture, nextEmail, userId],
+    );
+
+    return { name, picture, email: nextEmail };
+  },
+
   // Create a PENDING registration from a verified Google profile (no password).
   // role is a placeholder until an admin approves and assigns the real one.
   async registerGoogleUser({ email, googleSub, name, picture = null }) {
@@ -135,8 +182,10 @@ const userService = {
     return row;
   },
 
-  // Admin: reject a pending registration. Kept (status='rejected') for the audit
-  // trail; it blocks future sign-in until an admin deletes the row to re-allow.
+  // Admin: reject a pending registration. The row is KEPT (status='rejected') for
+  // the audit trail and blocks future sign-in. To undo, set the account back to
+  // 'active' from User Management (the Enable action / the edit modal) — deleting
+  // the row is not required, and would throw the audit trail away with it.
   async rejectUser(id) {
     const [[user]] = await db.query("SELECT status FROM users WHERE user_id = ? LIMIT 1", [id]);
     if (!user) throw new Error("User not found.");
@@ -211,9 +260,16 @@ const userService = {
     };
   },
 
-  // UPDATE USER -admin
+  // UPDATE USER -admin — username / role / status only.
+  //
+  // `name` and `email` are deliberately NOT updatable: Google owns them and
+  // syncGoogleProfile() rewrites them on the user's next sign-in, so an admin's edit
+  // would silently revert. Email is also the identity key the Google login matches on.
+  // They are passed through COALESCE below purely so a caller omitting them can never
+  // blank the columns (the previous version wrote every field unconditionally, so a
+  // missing `name` would have stored NULL).
   async updateUser(id, data) {
-    const { name, username, email, role, status } = data;
+    const { username, role, status } = data;
 
     const validRoles    = ["admin", "it_staff"];
     const validStatuses = ["pending", "active", "inactive", "rejected"];
@@ -223,6 +279,20 @@ const userService = {
     }
     if (status !== undefined && !validStatuses.includes(status)) {
       throw new Error("Invalid status.");
+    }
+    if (username !== undefined && !String(username).trim()) {
+      throw new Error("Username cannot be empty.");
+    }
+
+    const nextUsername = username === undefined ? null : String(username).trim();
+
+    // username uniqueness (admins can rename users, so the same guard applies here)
+    if (nextUsername) {
+      const [[taken]] = await db.query(
+        "SELECT user_id FROM users WHERE username = ? AND user_id != ? LIMIT 1",
+        [nextUsername, id],
+      );
+      if (taken) throw new Error("Username already taken.");
     }
 
     // F-02: a role downgrade or disable must invalidate the user's existing token.
@@ -245,11 +315,14 @@ const userService = {
 
     // update user
     await db.query(
-      `UPDATE users SET name = ?, username = ?, email = ?, role = ?, status = ?,
-      token_version = token_version + ?,
-      updated_at = NOW()
-      WHERE user_id = ?`,
-      [name, username, email, role, status, mustRevoke ? 1 : 0, id],
+      `UPDATE users SET
+         username = COALESCE(?, username),
+         role     = COALESCE(?, role),
+         status   = COALESCE(?, status),
+         token_version = token_version + ?,
+         updated_at = NOW()
+       WHERE user_id = ?`,
+      [nextUsername, role ?? null, status ?? null, mustRevoke ? 1 : 0, id],
     );
 
     // get updated user
@@ -353,11 +426,15 @@ const userService = {
     return await db.query("DELETE FROM users WHERE user_id = ?", [id]);
   },
 
-  // UPDATE OWN PROFILE
-  async updateOwnProfile(userId, data) {
-    const { name, username, email, profile_image } = data;
-
-    // check user exists
+  // UPDATE OWN PROFILE — USERNAME ONLY.
+  //
+  // name / email / profile_image are owned by GOOGLE. googleAuthService calls
+  // syncGoogleProfile() on every sign-in, so anything written here would be
+  // overwritten at the next login — the change would appear to "work", then
+  // silently revert. email is also the account's identity key, so letting a user
+  // edit it could point their row at someone else's address entirely.
+  // `username` is ours alone and Google never touches it.
+  async updateOwnProfile(userId, { username }) {
     const [rows] = await db.query("SELECT * FROM users WHERE user_id = ?", [
       userId,
     ]);
@@ -368,39 +445,17 @@ const userService = {
 
     const user = rows[0];
 
-    let profileImage = user.profile_image;
-
-    // if user uploaded new image
-    if (data.profile_image) {
-      profileImage = data.profile_image;
-    }
-
-    let avatar =  user.avatar;
-
-     if (!profileImage && data.name) {
-    avatar = data.name
-      .trim()
-      .split(" ")
-      .map((w) => w[0])
-      .join("")
-      .toUpperCase()
-      .slice(0, 2);
-  }
-
-    // validations
-    if (name !== undefined && !name.trim()) {
-      throw new Error("Name cannot be empty.");
-    }
-
-    if (username !== undefined && !username.trim()) {
+    if (username === undefined || !String(username).trim()) {
       throw new Error("Username cannot be empty.");
     }
 
+    const nextUsername = String(username).trim();
+
     // username uniqueness
-    if (username && username !== user.username) {
+    if (nextUsername !== user.username) {
       const [existingUsername] = await db.query(
         "SELECT user_id FROM users WHERE username = ? AND user_id != ?",
-        [username, userId],
+        [nextUsername, userId],
       );
 
       if (existingUsername.length > 0) {
@@ -408,37 +463,9 @@ const userService = {
       }
     }
 
-    // email uniqueness
-    if (email && email !== user.email) {
-      const [existingEmail] = await db.query(
-        "SELECT user_id FROM users WHERE email = ? AND user_id != ?",
-        [email, userId],
-      );
-
-      if (existingEmail.length > 0) {
-        throw new Error("Email already exists.");
-      }
-    }
-
-    // update profile
     await db.query(
-      `UPDATE users
-       SET
-         name = ?,
-         username = ?,
-         email = ?,
-         profile_image = ?,
-         avatar = ?,
-         updated_at = NOW()
-       WHERE user_id = ?`,
-      [
-        name?.trim() ?? user.name,
-        username?.trim() ?? user.username,
-        email?.trim() ?? user.email,
-        profileImage,
-        avatar,
-        userId,
-      ],
+      `UPDATE users SET username = ?, updated_at = NOW() WHERE user_id = ?`,
+      [nextUsername, userId],
     );
 
     // fetch updated user

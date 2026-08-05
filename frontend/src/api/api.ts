@@ -144,10 +144,12 @@ export const api = {
     }
   },
 
-    // update own name, username, email
-  updateMe: async (data: FormData): Promise<ApiResult<LoginUser>> => {
+  // Update own USERNAME — the only self-editable field. Name, email and photo come
+  // from the Google ID token and are re-synced on every sign-in, so editing them
+  // here would be undone at the next login (see services/googleAuthService.js).
+  updateMe: async (username: string): Promise<ApiResult<LoginUser>> => {
     try {
-      const res = await apiClient.patch("/users/me", data);
+      const res = await apiClient.patch("/users/me", { username });
       return {
       success: true,
       data: res.data.data,

@@ -68,8 +68,11 @@ googleAuthService.authenticate()
         │ 3. email_verified === true                   ← ID token gives a real boolean
         │ 4. domain ∈ {cspc.edu.ph, my.cspc.edu.ph}    ← exact match, not endsWith
         │ 5. name + photo come from the ID token       ← no extra /userinfo call
-        │ 6. findByEmail → active? → issueSession() → app JWT
-        │                  none?   → registerGoogleUser() → pending
+        │ 6. findByGoogleSub → else findByEmail        ← sub is stable, email is renameable
+        │ 7. syncGoogleProfile()                       ← refresh name/photo every login
+        │ 8. active? → issueSession() → app JWT
+        │    none?   → registerGoogleUser() → pending
+        │    else    → recordSignInDenied() + that status
         ▼
    admin approves (assign role) / rejects in User Management
 ```
@@ -86,10 +89,15 @@ googleAuthService.authenticate()
      Workspace org (the dev case). Publishing status starts at **Testing**: only **Test users**
      you add can sign in. Add the CSPC accounts you'll log in with.
    - **Clients** → **Create client** → **Web application**. Authorized JavaScript origins =
-     your dashboard URL(s): `http://localhost:5173` (dev), plus any LAN/prod origin. Copy **both**
-     the **Client ID** (`…apps.googleusercontent.com`) and the **Client secret** (`GOCSPX-…`)
-     immediately. (No "Authorized redirect URI" is needed — the popup auth-code flow uses the
-     magic `postmessage` value.)
+     your dashboard URL(s). Copy **both** the **Client ID** (`…apps.googleusercontent.com`) and
+     the **Client secret** (`GOCSPX-…`) immediately. (No "Authorized redirect URI" is needed —
+     the popup auth-code flow uses the magic `postmessage` value.)
+
+     > ⚠️ **Google accepts only `http://localhost` or an HTTPS origin here.** A raw
+     > `http://192.168.x.x:5173` is **rejected** — you cannot simply "add the LAN origin".
+     > So `http://localhost:5173` covers dev, but the on-prem deployment needs the dashboard
+     > served over **HTTPS at a real hostname** before anyone on the LAN can sign in. This is a
+     > deployment prerequisite, not a config step — see §10.
 3. Put the Client ID in both env files (below), the Client secret in `backend/.env`, and restart
    the servers.
 
@@ -112,8 +120,11 @@ googleAuthService.authenticate()
 ```
 GOOGLE_CLIENT_ID=<...>.apps.googleusercontent.com    # public; checked as the token audience
 GOOGLE_CLIENT_SECRET=<...>                            # SECRET; used to exchange the auth code
-GOOGLE_ALLOWED_DOMAINS=cspc.edu.ph,my.cspc.edu.ph    # blank = same default
+GOOGLE_ALLOWED_DOMAINS=cspc.edu.ph,my.cspc.edu.ph    # unset OR blank = same default
 ```
+Missing `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` is reported **at backend startup**
+(`[CONFIG] Missing in backend/.env: …`) rather than only at the first sign-in; a missing
+`VITE_GOOGLE_CLIENT_ID` logs the same way in the browser console.
 `frontend/.env` (Vite reads `VITE_*` at startup — restart `npm run dev` after editing):
 ```
 VITE_GOOGLE_CLIENT_ID=<...>.apps.googleusercontent.com   # SAME id as backend
@@ -143,8 +154,9 @@ can approve others, so you are never locked into a single admin.
 | File | Role |
 |---|---|
 | `services/googleAuthService.js` | exchange the auth code (`getToken`), verify the ID token (`verifyIdToken` — audience enforced), enforce domain, read name/photo from the token, login-or-create-pending (`authenticate()`) |
-| `services/authService.js` | `issueSession(user)` — builds/signs the JWT (shared); `getMe`, `logout` |
-| `services/userService.js` | `findByEmail`, `registerGoogleUser`, `linkGoogleSub`, `listPending`, `approveUser(role)`, `rejectUser` |
+| `services/googleDomain.js` | **pure, dependency-free** domain gate: `domainOf`, `parseAllowedDomains`, `isAllowedDomain`. The whole CSPC allow-list rule in one place |
+| `services/authService.js` | `issueSession(user)` — builds/signs the JWT (shared); `recordSignInDenied()` — audits refused attempts; `getMe`, `logout` |
+| `services/userService.js` | `findByGoogleSub`, `findByEmail`, `registerGoogleUser`, `linkGoogleSub`, `syncGoogleProfile`, `listPending`, `approveUser(role)`, `rejectUser` |
 | `routes/auth.js` | `POST /api/auth/google` (only login route; body `{ code }`) + `googleLimiter`; `/me`, `/logout` |
 | `routes/users.js` | `GET /users/pending`, `POST /users/:id/approve`, `POST /users/:id/reject` (admin) |
 | `middleware/auth.js` | unchanged — already requires `status='active'` |
@@ -198,27 +210,42 @@ Common errors:
   the backend's code exchange failed. Usual cause: a missing/wrong **`GOOGLE_CLIENT_SECRET`**, a
   secret that belongs to a **different** client than `GOOGLE_CLIENT_ID`, or the backend wasn't
   restarted after editing `.env`. (If the secret is *blank*, you instead get "Google sign-in is
-  not configured on the server.") Log what `client.getToken(code)` throws to confirm.
+  not configured on the server.") **The real cause is in the backend console** —
+  `[GOOGLE_AUTH] code exchange / ID-token verification failed:` prints what Google actually
+  rejected; the browser only ever sees the generic message.
 - **"Your Google email is not verified."** — `payload.email_verified` from the ID token isn't
   `true`; check the signing-in Google account is actually verified.
 - **"Only CSPC accounts… can sign in"** — the email's domain isn't in `GOOGLE_ALLOWED_DOMAINS`.
 - **Signs in but never logs in (stuck pending)** — the account isn't `active`; approve it, or
   for the bootstrap admin confirm the migration `UPDATE` matched its email exactly (lowercase).
 - **Mobile / LAN can't sign in** — Google only allows `localhost` or an **HTTPS** origin, never
-  a raw `http://<IP>:5173`. Serve the dashboard over HTTPS (e.g. via an SSH/Cloudflare tunnel or
-  a real hostname) and add that origin to Authorized JavaScript origins.
+  a raw `http://<IP>:5173`. The dashboard has to be served over its HTTPS hostname
+  (`monitoring.cspc.edu.ph`, published by ICTU — `deployment-guide.md` §6.1) and that origin
+  added to Authorized JavaScript origins.
 
 ---
 
 ## 10. Production notes
 
-- **Publish the app** (Google Auth Platform → Audience → Publish) to drop the 100 Test-user
-  cap (and to make the consent-screen logo appear). An External app using only the basic
-  `openid`/`email`/`profile` scopes generally does **not** need Google's lengthy verification.
-- Better long-term: have **CSPC IT host the project under the Workspace org** and switch the
-  audience to **Internal** — no user cap, no verification, auto-restricted to the org.
+> 📖 **The step-by-step runbook lives in `deployment-guide.md` §6.4** ("Open the app to all
+> CSPC accounts — Internal audience"), together with the HTTPS hostname setup it depends on
+> (§6.1, provided by ICTU). Follow that at deployment time; the notes below are the rationale.
+
+- **This project uses Internal**, and the Cloud project is owned by the `cspc.edu.ph`
+  organization — no user cap, no verification review, no "unverified app" warning, and Google
+  itself restricts sign-in to CSPC accounts. ✅ Confirmed 2026-08-05 that `cspc.edu.ph`
+  (employees) and `my.cspc.edu.ph` (students) are a **single Workspace**, verified by a
+  successful `@my.cspc.edu.ph` sign-in under Internal.
+- **Do not "publish" the app.** Publishing status (Testing → In production) applies only to
+  **External** apps, to lift the 100-test-user cap. Internal has no publishing step and is live
+  for the org as soon as it's set; switching to External to "publish" would throw away the org
+  restriction. Only relevant if the Internal path ever becomes unavailable.
+- Trade-off to know: the consent-screen **logo** is gated behind app verification, which
+  Internal apps never undergo — so the app *name* renders but the logo does not. Not worth
+  switching to External over.
 - Serve the dashboard over **HTTPS at a real hostname** and add it to **Authorized JavaScript
-  origins** (also lets phones sign in without a tunnel).
+  origins** — this is what lets campus PCs and phones sign in at all. ICTU publishes that
+  endpoint; see `deployment-guide.md` §6.1.
 - Keep `GOOGLE_ALLOWED_DOMAINS` as the server-side gate regardless of Google's settings.
 
 ## 11. Status & known follow-ups
@@ -226,8 +253,32 @@ Common errors:
 - **Done:** Google-only login via the CSPC Mail button; self-register → approve/reject; Grafana
   restyle of Login + User Management; Google profile photos; "Invited" status; **Add User
   removed** (made no sense under Google-only). Verified live on desktop.
+- **Done (hardening pass):** `google_sub`-first account matching; profile re-sync on every
+  login; denied sign-ins written to `system_logs` (`action='login_denied'`); the real
+  token-exchange error logged server-side; domain gate extracted to `googleDomain.js`;
+  startup warning for missing Google env; `prompt: "select_account"` so shared
+  machines can switch account; rejected accounts re-enableable from the UI instead of only by
+  deleting the row; blank `GOOGLE_ALLOWED_DOMAINS` now falls back to the CSPC default instead of
+  denying everyone.
+- **Open — blocks on-prem go-live:** Google permits only `localhost` or **HTTPS** origins, so
+  the dashboard needs a real hostname + certificate before anyone on the campus LAN can sign in
+  (§3, §10). Nothing in this repo solves that yet.
+- **Open — fresh installs:** the schema seeds no admin row, so the first Google sign-in lands
+  `pending` with nobody able to approve it. Bootstrap instructions currently live only in
+  `migrations/2026-06-09_google_auth.sql`.
+- **Open — session length:** the JWT is 1 h with a proactive client-side logout and no refresh,
+  so an always-on wall dashboard drops to the login screen hourly and cannot self-recover.
+- **Open — approval loop:** `userPending` is socket-only, so a registration submitted while no
+  admin has the tab open is invisible; approved users are never told they can now sign in.
+- **Done:** profile editing reduced to **username only**. Because `syncGoogleProfile` refreshes
+  name/photo (and a renamed email) on every sign-in, editing them in the app was futile — the
+  change appeared to work, then reverted at the next login. Both the My Profile modal and the
+  admin Edit User modal now show name + email read-only, the avatar upload is removed, and the
+  backend accepts `username` only (`updateOwnProfile`) / `username`+`role`+`status`
+  (`updateUser`, via `COALESCE` so an omitted field can't blank a column).
 - **Still vestigial:** User Management "Reset PW" and the Profile "Change Password" panel — no
-  one logs in with an app password anymore. Candidates for removal.
+  one logs in with an app password anymore. Candidates for removal. `middleware/upload.js` is
+  now unused too, since the avatar upload was the only caller.
 - See `CLAUDE.md` (auth section) and `SESSION_NOTES.md` (Sessions 7–8) for the broader log.
 
 ---
@@ -262,10 +313,17 @@ diagram open beside you.
    - `client.getToken(code)` — exchange the code with Google for tokens (client secret).
    - `client.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID })` — verify the ID token's
      signature locally and confirm it was issued for *us* (anti-replay), then read its `payload`.
-   - `payload.email_verified === true`; then the **domain** check.
+   - `payload.email_verified === true`; then the **domain** check (`googleDomain.js`).
    - `payload.name` / `payload.picture` come straight from the token (no extra fetch).
-   - `userService.findByEmail()` → branch: active → `issueSession`; none → `registerGoogleUser`
-     (pending); pending/rejected/inactive → return that status.
+   - `userService.findByGoogleSub()` **first**, falling back to `findByEmail()`. `sub` is the
+     immutable Google account id; matching on email alone would turn a CSPC address rename into
+     a duplicate `pending` row, orphan the original `user_id`, and then collide on the unique
+     `google_sub` index. The email fallback is what lets pre-Google accounts (the bootstrap
+     admin) sign in the first time.
+   - `syncGoogleProfile()` refreshes name/photo on every login — otherwise they freeze at
+     registration and Google's rotating photo URLs eventually 404.
+   - Branch: active → `issueSession`; none → `registerGoogleUser` (pending);
+     pending/rejected/inactive → `recordSignInDenied()` + return that status.
 6. **`backend/services/authService.js`** → `issueSession(user)` — builds the JWT payload
    (`id, role, tv, …`), signs it (1 h), writes `last_login` + an audit log. *Shared* — this is the
    single place a session is minted, whatever the login path.

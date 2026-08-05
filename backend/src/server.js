@@ -33,6 +33,24 @@ import notificationRoutes from "../routes/notifications.js";
 import alertRuleRoutes from "../routes/alertRules.js";
 import historyRoutes from "../routes/history.js";
 
+// Surface missing auth config at BOOT rather than at the first sign-in attempt.
+// Login is Google-only, so an unset client id/secret means nobody can get into
+// the dashboard at all — far cheaper to learn here than from an opaque 401 in
+// the middle of a deployment.
+//
+// Deliberately a loud warning, NOT process.exit: the ingest paths (ESP32 sockets,
+// Go agents) don't need Google, and killing a monitoring backend would stop data
+// collection over a problem that only blocks the UI.
+const REQUIRED_AUTH_ENV = ["JWT_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"];
+const missingAuthEnv = REQUIRED_AUTH_ENV.filter((k) => !(process.env[k] ?? "").trim());
+if (missingAuthEnv.length > 0) {
+  console.error(
+    `[CONFIG] Missing in backend/.env: ${missingAuthEnv.join(", ")}.\n` +
+      "[CONFIG] Google sign-in will fail for EVERY user until these are set " +
+      "(the backend does not reload .env — restart after editing).",
+  );
+}
+
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, //15 mins
   max: 500, //~33 req/min per IP — headroom for multi-panel page loads (live data uses Socket.IO)
@@ -79,7 +97,7 @@ app.use("/uploads", express.static("uploads"));
 // (cross-origin responses hide custom headers from JS unless listed here).
 app.use(cors({ origin: CORS_ORIGIN, exposedHeaders: ["X-Renewed-Token"] }));
 app.use(express.json());
-app.set("trust proxy", 1);
+app.set("trust proxy", 2);
 app.use(globalLimiter);
 
 // F-01: authenticate every socket connection before events are registered

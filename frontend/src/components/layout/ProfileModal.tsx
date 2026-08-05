@@ -3,10 +3,12 @@ import { useAuth } from "../../context/AuthContext";
 import { api } from "../../api/api";
 import { initials, avatarUrl } from "../../utils/format";
 
+// Login is Google-only, and googleAuthService re-syncs name + photo (and the email,
+// on a Google-side rename) from the ID token on EVERY sign-in. Editing those here
+// would therefore last exactly until the next login, so they are shown read-only.
+// `username` is ours alone — Google never touches it — so it stays editable.
 interface ProfileForm {
-  name: string;
   username: string;
-  email: string;
 }
 
 interface ProfileModalProps {
@@ -30,76 +32,41 @@ const labelCls =
 export default function ProfileModal({ open, onClose, onSaved }: ProfileModalProps) {
   const { user, updateUser } = useAuth();
 
-  const [form, setForm] = useState<ProfileForm>({ name: "", username: "", email: "" });
-  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
-  const [avatarFile, setAvatarFile]       = useState<File | null>(null);
-  const fileRef    = useRef<HTMLInputElement>(null);
+  const [form, setForm] = useState<ProfileForm>({ username: "" });
   const [saving, setSaving]     = useState(false);
   const [profileError, setProfileError] = useState("");
   const backdropRef = useRef<HTMLDivElement>(null);
 
-  const imageSrc = avatarPreview || avatarUrl(user?.profile_image);
+  const imageSrc = avatarUrl(user?.profile_image);
 
   useEffect(() => {
     if (!open || !user) return;
-    setForm({
-      name:     String(user.name     ?? ""),
-      username: String(user.username ?? ""),
-      email:    String(user.email    ?? ""),
-    });
-    setAvatarPreview(null);
-    setAvatarFile(null);
+    setForm({ username: String(user.username ?? "") });
     setProfileError("");
   }, [open, user]);
 
   if (!open || !user) return null;
 
-  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { setProfileError("Image must be under 2 MB."); return; }
-    setAvatarFile(file);
-
-    const reader = new FileReader();
-    reader.onload = () => setAvatarPreview(reader.result as string);
-    reader.readAsDataURL(file);
-    setProfileError("");
-  };
-
   const handleSaveProfile = async () => {
-    if (!form.name.trim() || !form.username.trim()) {
-      setProfileError("Name and username are required."); return;
+    if (!form.username.trim()) {
+      setProfileError("Username is required."); return;
     }
     setSaving(true);
     setProfileError("");
 
-    const formData = new FormData();
-    formData.append("name",     form.name.trim());
-    formData.append("username", form.username.trim());
-    formData.append("email",    form.email.trim());
-    if (avatarFile) formData.append("profile_image", avatarFile);
-
-    const result = await api.updateMe(formData);
+    const result = await api.updateMe(form.username.trim());
     if (!result.success || !result.data) {
       setProfileError(result.error ?? "Failed to save profile.");
       setSaving(false);
       return;
     }
 
-    const raw = result.data;
-    updateUser({
-      name:          String(raw.name),
-      username:      String(raw.username),
-      email:         String(raw.email),
-      profile_image: raw.profile_image,
-      avatar:        raw.avatar,
-    });
+    updateUser({ username: String(result.data.username) });
 
-    setAvatarFile(null);
     setSaving(false);
     // Hand the success message to the parent, then close — the toast lives outside
     // this modal so it's still visible after we exit.
-    onSaved?.("Profile updated successfully.");
+    onSaved?.("Username updated successfully.");
     onClose();
   };
 
@@ -131,9 +98,9 @@ export default function ProfileModal({ open, onClose, onSaved }: ProfileModalPro
         <div className="overflow-y-auto flex-1 px-6 py-6">
           <div className="flex flex-col gap-6">
 
-            {/* Avatar row */}
+            {/* Avatar + identity — all of it comes from Google, none of it editable */}
             <div className="flex items-center gap-6">
-              <div className="relative flex-shrink-0">
+              <div className="flex-shrink-0">
                 {imageSrc ? (
                   <img
                     src={imageSrc}
@@ -147,43 +114,53 @@ export default function ProfileModal({ open, onClose, onSaved }: ProfileModalPro
                     className="w-24 h-24 rounded-full flex items-center justify-center text-2xl font-bold text-white select-none"
                     style={{ background: "var(--gf-accent)", border: "2px solid var(--gf-accent)" }}
                   >
-                    {initials(form.name || String(user.name ?? "?"))}
+                    {initials(String(user.name ?? "?"))}
                   </div>
                 )}
-                {avatarPreview && (
-                  <button
-                    onClick={() => { setAvatarPreview(null); setAvatarFile(null); if (fileRef.current) fileRef.current.value = ""; }}
-                    className="absolute -top-1 -right-1 w-6 h-6 rounded-full text-white text-[11px] flex items-center justify-center cursor-pointer"
-                    style={{ background: RED, border: "2px solid var(--gf-panel)" }}
-                  >✕</button>
-                )}
               </div>
-              <div className="flex flex-col gap-2">
-                <input ref={fileRef} type="file" accept="image/*" onChange={handleAvatarChange} className="hidden" />
-                <button
-                  onClick={() => fileRef.current?.click()}
-                  className="px-4 py-2 rounded-[2px] text-xs font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] hover:text-[var(--gf-text-primary)] transition cursor-pointer"
-                >
-                  Upload photo
-                </button>
-                <span className="text-[11px] text-[var(--gf-text-dim)]">JPG, PNG — max 2 MB</span>
+
+              <div className="flex flex-col gap-3 min-w-0">
+                <div>
+                  <span className={labelCls}>Full Name</span>
+                  <div className="text-sm font-semibold text-[var(--gf-text-primary)] truncate">
+                    {String(user.name ?? "—")}
+                  </div>
+                </div>
+                <div>
+                  <span className={labelCls}>Email</span>
+                  <div className="text-sm font-semibold text-[var(--gf-text-primary)] truncate">
+                    {String(user.email ?? "—")}
+                  </div>
+                </div>
               </div>
             </div>
 
-            {/* Fields */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className={labelCls}>Full Name *</label>
-                <input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} placeholder="e.g. Juan dela Cruz" className={inputCls} />
-              </div>
-              <div>
-                <label className={labelCls}>Username *</label>
-                <input value={form.username} onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))} placeholder="e.g. jdelacruz" className={inputCls} />
-              </div>
-              <div className="col-span-2">
-                <label className={labelCls}>Email</label>
-                <input type="email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} placeholder="e.g. juan@cspc.edu.ph" className={inputCls} />
-              </div>
+            {/* Why those three are fixed */}
+            <div
+              className="px-4 py-2.5 rounded-[2px] text-[11px] leading-relaxed"
+              style={{
+                color: "var(--gf-text-muted)",
+                background: "var(--gf-bg)",
+                border: "1px solid var(--gf-panel-border)",
+              }}
+            >
+              Your name, email and photo come from your CSPC Google account and refresh on every
+              sign-in — so they can't be edited here. Change them in your Google account and they
+              will update the next time you log in.
+            </div>
+
+            {/* The one field that is ours */}
+            <div>
+              <label className={labelCls}>Username *</label>
+              <input
+                value={form.username}
+                onChange={(e) => setForm({ username: e.target.value })}
+                placeholder="e.g. jdelacruz"
+                className={inputCls}
+              />
+              <span className="block text-[11px] mt-1.5 text-[var(--gf-text-dim)]">
+                Display name inside this dashboard. Must be unique.
+              </span>
             </div>
 
             {profileError && (

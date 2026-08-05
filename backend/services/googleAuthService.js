@@ -3,6 +3,7 @@ import { OAuth2Client } from "google-auth-library";
 import userService from "./userService.js";
 import authService from "./authService.js";
 import { AuthRejection, ServiceUnavailable, isTransportError } from "../utils/httpErrors.js";
+import { parseAllowedDomains, isAllowedDomain } from "./googleDomain.js";
 
 // ─── Google "Sign in with Google" (OAuth 2.0 / OpenID Connect) ────────────────
 // The frontend (custom "CSPC Mail" button) runs the OAuth 2.0 AUTHORIZATION CODE
@@ -23,12 +24,9 @@ import { AuthRejection, ServiceUnavailable, isTransportError } from "../utils/ht
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
-// Allowed CSPC domains. Exact match on the part after "@" (NOT endsWith, so a
-// look-alike like "notcspc.edu.ph" can't slip through).
-const ALLOWED_DOMAINS = (process.env.GOOGLE_ALLOWED_DOMAINS ?? "cspc.edu.ph,my.cspc.edu.ph")
-  .split(",")
-  .map((d) => d.trim().toLowerCase())
-  .filter(Boolean);
+// Allowed CSPC domains. The matching logic lives in ./googleDomain.js — pure and
+// import-free so backend/tests/ can cover it (see tests/googleDomain.test.js).
+const ALLOWED_DOMAINS = parseAllowedDomains(process.env.GOOGLE_ALLOWED_DOMAINS);
 
 // "postmessage" is the special redirect_uri Google uses for the popup auth-code
 // flow (@react-oauth/google's default ux_mode: 'popup'). It must match the value
@@ -41,9 +39,14 @@ const client = new OAuth2Client({
   redirectUri: "postmessage",
 });
 
-function domainOf(email) {
-  const at = email.lastIndexOf("@");
-  return at === -1 ? "" : email.slice(at + 1).toLowerCase();
+// Best-effort audit of a refused sign-in. Never throws: a failed audit write must
+// not turn a clean denial into a 500.
+async function recordDenial(reason, { email = null, userId = null, ip = null, userAgent = null }) {
+  try {
+    await authService.recordSignInDenied({ email, reason, userId, ip, userAgent });
+  } catch (err) {
+    console.error("[GOOGLE_AUTH] could not record denied sign-in:", err);
+  }
 }
 
 // Exchange the Google auth code, verify the ID token, enforce CSPC domain, and
@@ -86,6 +89,12 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
         "Could not reach Google to verify your sign-in. Check the server's internet connection.",
       );
     }
+    // Log the REAL cause. Everything that lands here — wrong client secret, a secret
+    // belonging to a different client, an already-used or expired code, audience
+    // mismatch, clock skew — collapses into one opaque user-facing message, so
+    // without this line a misconfigured deployment is undiagnosable server-side.
+    console.error("[GOOGLE_AUTH] code exchange / ID-token verification failed:", err);
+    await recordDenial("token_verification_failed", { ip, userAgent });
     throw new AuthRejection("Could not verify your Google sign-in. Please try again.");
   }
 
@@ -93,9 +102,11 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
   // tokeninfo string), plus name + picture — so there is no separate profile fetch.
   const email = (payload.email ?? "").trim().toLowerCase();
   if (!email || payload.email_verified !== true) {
+    await recordDenial("email_not_verified", { email: email || null, ip, userAgent });
     throw new AuthRejection("Your Google email is not verified.");
   }
-  if (!ALLOWED_DOMAINS.includes(domainOf(email))) {
+  if (!isAllowedDomain(email, ALLOWED_DOMAINS)) {
+    await recordDenial("domain_not_allowed", { email, ip, userAgent });
     // 403, not 401: we know who they are, they're just not allowed in.
     throw new AuthRejection(
       "Only CSPC accounts (@cspc.edu.ph or @my.cspc.edu.ph) can sign in.",
@@ -104,15 +115,27 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
   }
 
   const sub = payload.sub ?? null;
-  const existing = await userService.findByEmail(email);
+  const profile = {
+    name: (payload.name ?? "").trim() || email.split("@")[0],
+    picture: payload.picture ?? null,
+  };
+
+  // Match on google_sub FIRST — it is the stable Google account id. Email is a
+  // mutable alias: when ICTU renames a CSPC address, an email-only lookup misses
+  // the existing row, creates a duplicate 'pending' registration, orphans the
+  // original user_id (and its logs/alerts), then collides on the UNIQUE
+  // google_sub index. Falling back to email is what lets accounts predating
+  // Google login — the bootstrapped admin above all — sign in the first time.
+  let existing = await userService.findByGoogleSub(sub);
+  const matchedBySub = existing !== null;
+  if (!existing) existing = await userService.findByEmail(email);
 
   // First time we've seen this CSPC account → create a pending registration.
   if (!existing) {
     const user = await userService.registerGoogleUser({
       email,
       googleSub: sub,
-      name: (payload.name ?? "").trim() || email.split("@")[0],
-      picture: payload.picture ?? null,
+      ...profile,
     });
     return { outcome: "pending_created", user };
   }
@@ -123,16 +146,33 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
     await userService.linkGoogleSub(existing.user_id, sub);
   }
 
+  // Google owns the name/photo — re-sync every login so they don't freeze at
+  // registration. The email only moves when we matched by sub AND Google's
+  // address changed, i.e. a real rename of this same account.
+  const renamed = matchedBySub && existing.email !== email;
+  const synced = await userService.syncGoogleProfile(existing.user_id, {
+    ...profile,
+    email: renamed ? email : null,
+  });
+  // Mirror onto the in-memory row so the JWT minted below carries the fresh
+  // values instead of the ones we read a few lines ago.
+  existing.name = profile.name;
+  if (profile.picture) existing.profile_image = profile.picture;
+  if (synced.email) existing.email = synced.email;
+
   switch (existing.status) {
     case "active": {
       const session = await authService.issueSession(existing, { ip, userAgent });
       return { outcome: "ok", ...session };
     }
     case "pending":
+      await recordDenial("account_pending", { email, userId: existing.user_id, ip, userAgent });
       return { outcome: "pending", user: existing };
     case "rejected":
+      await recordDenial("account_rejected", { email, userId: existing.user_id, ip, userAgent });
       return { outcome: "rejected", user: existing };
     default: // 'inactive'
+      await recordDenial("account_disabled", { email, userId: existing.user_id, ip, userAgent });
       return { outcome: "disabled", user: existing };
   }
 }

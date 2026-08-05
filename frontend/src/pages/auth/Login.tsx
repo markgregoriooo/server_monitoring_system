@@ -82,6 +82,10 @@ export default function Login() {
   const startLogin = useGoogleLogin({
     flow: "auth-code", // returns a one-time auth code (not a token) — exchanged server-side
     scope: "openid email profile", // permission to read (openid, email, profile = name + photo)
+    // Always show the account chooser. Without this Google silently reuses the
+    // last signed-in account, which on a shared ICTU/lab machine means the second
+    // person is handed the first person's identity with no way to switch.
+    prompt: "select_account",
     onSuccess: (resp) => exchangeToken(resp.code),
     onError: () => {
       setLoading(false);

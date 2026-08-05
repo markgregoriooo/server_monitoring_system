@@ -3,7 +3,6 @@ import asyncHandler from "../utils/asyncHandler.js";
 import userService from "../services/userService.js";
 import { audit, clientInfo } from "../services/auditService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
-import upload from "../middleware/upload.js";
 
 const router = express.Router();
 
@@ -19,12 +18,13 @@ router.get(
   }),
 );
 
-// Logged-in user updates own profile
-router.patch("/me", authMiddleware, upload.single("profile_image"), asyncHandler(async (req, res) => {
-  
+// Logged-in user updates own profile — USERNAME ONLY.
+// Name, email and profile photo are owned by Google: googleAuthService re-syncs them
+// from the ID token on every sign-in, so accepting edits here would silently discard
+// them at the next login. The multipart/photo-upload path was removed with them.
+router.patch("/me", authMiddleware, asyncHandler(async (req, res) => {
     const updatedUser = await userService.updateOwnProfile(req.user.id, {
-      ...req.body,
-      profile_image: req.file ? `/uploads/${req.file.filename}` : undefined,
+      username: req.body?.username,
     });
 
     res.json({

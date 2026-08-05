@@ -365,11 +365,17 @@ export default function UserManagement() {
   };
 
   // ── Save edit ──
+  // Only username / role / status are sent. name + email come from the user's Google
+  // account and are re-synced on their next sign-in, so editing them here would revert.
   const handleEdit = async () => {
     if (!editUser) return;
-    if (!editForm.name.trim() || !editForm.username.trim()) { setEditError("Name and username are required."); return; }
+    if (!editForm.username.trim()) { setEditError("Username is required."); return; }
     setEditLoading(true);
-    const result = await api.updateUser(editUser.id, editForm);
+    const result = await api.updateUser(editUser.id, {
+      username: editForm.username,
+      role: editForm.role,
+      status: editForm.status,
+    });
     if (result.success && result.data) {
       setUsers((prev) => prev.map((u) => (u.id === editUser.id ? result.data.user : u)));
       setEditUser(null);
@@ -382,7 +388,10 @@ export default function UserManagement() {
 
   // ── Toggle status ──
   const handleToggleStatus = async (u: User) => {
-    const newStatus: string = u.status === "inactive" ? "active" : "inactive";
+    // Invert on "can sign in", not on the literal "inactive". The old check sent a
+    // REJECTED user to 'inactive' (offering "Disable" on an account that was
+    // already blocked); now it enables them, which is the un-reject path.
+    const newStatus: string = isEnabled(u) ? "inactive" : "active";
     try {
       const result = await api.updateUserStatus(u.id, newStatus);
       if (result.success) {
@@ -422,6 +431,10 @@ export default function UserManagement() {
     u.role === "admin" && (u.status ?? "active") === "active" && activeAdminCount <= 1;
   const isProtected = (u: User) => isSelf(u) || isLastActiveAdmin(u);
   const isAdmin     = (u: User) => u.role === "admin";
+  // "Can this account currently sign in?" — a null status counts as active, matching
+  // the stat cards and StatusBadge. Everything else (inactive AND rejected) is off,
+  // so the Enable/Disable control points the right way for a rejected registration.
+  const isEnabled   = (u: User) => !u.status || u.status === "active";
 
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -649,10 +662,10 @@ export default function UserManagement() {
                         {!isProtected(u) && (
                           <ActionBtn
                             onClick={() => handleToggleStatus(u)}
-                            title={u.status === "inactive" ? "Enable account" : "Disable account"}
-                            color={u.status === "inactive" ? GREEN : ORANGE}
+                            title={isEnabled(u) ? "Disable account" : "Enable account"}
+                            color={isEnabled(u) ? ORANGE : GREEN}
                           >
-                            {u.status === "inactive" ? "⊕ Enable" : "⊘ Disable"}
+                            {isEnabled(u) ? "⊘ Disable" : "⊕ Enable"}
                           </ActionBtn>
                         )}
                         {!isProtected(u) && (
@@ -692,18 +705,28 @@ export default function UserManagement() {
             <div className="ml-auto self-center text-[10px] italic text-[var(--gf-text-dim)]">Read-only</div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={labelCls}>Full Name *</label>
-              <input value={editForm.name} onChange={(e) => setEditForm((p) => ({ ...p, name: e.target.value }))} className={inputCls} placeholder="Full name" />
+          {/* Name + email are owned by Google and re-synced on the user's next sign-in,
+              so they're shown read-only — editing them here would silently revert. */}
+          <div className="rounded-[2px] bg-[var(--gf-bg)] border border-[var(--gf-panel-border)] px-4 py-3 flex flex-col gap-2">
+            <div className="flex gap-8 flex-wrap">
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <span className="text-[9px] uppercase tracking-widest text-[var(--gf-text-dim)]">Full Name</span>
+                <span className="text-sm font-semibold text-[var(--gf-text-primary)] truncate">{editUser?.name ?? "—"}</span>
+              </div>
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <span className="text-[9px] uppercase tracking-widest text-[var(--gf-text-dim)]">Email</span>
+                <span className="text-sm font-semibold text-[var(--gf-text-primary)] truncate">{editUser?.email ?? "—"}</span>
+              </div>
             </div>
-            <div>
+            <span className="text-[10px] text-[var(--gf-text-dim)] leading-relaxed">
+              From this user's CSPC Google account — refreshed on each sign-in, so not editable here.
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
               <label className={labelCls}>Username *</label>
               <input value={editForm.username} onChange={(e) => setEditForm((p) => ({ ...p, username: e.target.value }))} className={inputCls} placeholder="Username" />
-            </div>
-            <div className="col-span-2">
-              <label className={labelCls}>Email</label>
-              <input value={editForm.email} onChange={(e) => setEditForm((p) => ({ ...p, email: e.target.value }))} className={inputCls} placeholder="Email address" />
             </div>
             <div>
               <label className={labelCls}>Role</label>
@@ -711,7 +734,22 @@ export default function UserManagement() {
             </div>
             <div>
               <label className={labelCls}>Account Status</label>
-              <SelectField value={editForm.status} onChange={(v) => setEditForm((p) => ({ ...p, status: v }))} options={[{ value: "active", label: "Active" }, { value: "inactive", label: "Inactive" }]} />
+              <SelectField
+                value={editForm.status}
+                onChange={(v) => setEditForm((p) => ({ ...p, status: v }))}
+                options={[
+                  { value: "active",   label: "Active" },
+                  { value: "inactive", label: "Inactive" },
+                  // A rejected registration has no matching option, so the select
+                  // renders BLANK and hides the account's real state. Keep the entry
+                  // (only while it applies) so the status is visible and an admin can
+                  // switch to Active — undoing an accidental reject without having to
+                  // delete the row and lose the audit trail.
+                  ...(editForm.status === "rejected"
+                    ? [{ value: "rejected", label: "Rejected" }]
+                    : []),
+                ]}
+              />
             </div>
           </div>
 
