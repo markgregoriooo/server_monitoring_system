@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { NavLink } from "react-router";
+import { useState, useEffect, useMemo } from "react";
+import { NavLink, useLocation } from "react-router";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemeContext";
 import { useNotifications } from "../../context/NotificationContext";
@@ -11,6 +11,8 @@ import ProfileModal from "./ProfileModal";
 type RoleKey = keyof typeof roleConfig;
 
 interface NavItem { id: string; label: string; path: string; icon: React.ReactNode; }
+interface NavGroup { id: string; label: string; items: NavItem[]; }
+interface BadgeSpec { count: number; color: string; title: string; }
 interface SidebarProps {
   mobileOpen: boolean;
   onClose: () => void;
@@ -115,21 +117,70 @@ const Icons: Record<string, React.ReactNode> = {
   ),
 };
 
-const allNavItems: NavItem[] = [
-  { id: "dashboard",        label: "Dashboard",        path: "/",                icon: Icons["dashboard"] },
-  { id: "server-metrics",   label: "Server Metrics",   path: "/server-metrics",  icon: Icons["server-metrics"] },
-  { id: "network",          label: "Network",          path: "/network",         icon: Icons["network"] },
-  { id: "mikrotik",         label: "MikroTik",         path: "/mikrotik",        icon: Icons["mikrotik"] },
-  { id: "ups",              label: "UPS",              path: "/ups",             icon: Icons["ups"] },
-  { id: "environment",      label: "Environment",      path: "/environment",     icon: Icons["environment"] },
-  { id: "air-conditioner",  label: "Air Conditioner",  path: "/air-conditioner", icon: Icons["air-conditioner"] },
-  { id: "alerts",           label: "Alerts",           path: "/alerts",          icon: Icons["alerts"] },
-  { id: "history",          label: "History",          path: "/history",         icon: Icons["history"] },
-  { id: "reports",          label: "Reports",          path: "/reports",         icon: Icons["reports"] },
-  { id: "user-management",  label: "User Management",  path: "/user-management", icon: Icons["user-management"] },
-  { id: "alert-rules",      label: "Alert Rules",      path: "/alert-rules",     icon: Icons["alert-rules"] },
-  { id: "settings",         label: "Settings",         path: "/settings",        icon: Icons["settings"] },
+// ─── Nav structure ────────────────────────────────────────────────────────────
+// Thirteen flat entries was too long a list to scan. Dashboard and Settings stay
+// pinned (top / bottom); everything else lives in a collapsible group.
+//
+// Groups collapse by DEFAULT — the whole point is a short sidebar — but the group
+// owning the current route auto-expands, and open/closed state persists, so the
+// sections you actually use stay open across sessions.
+
+const NAV_DASHBOARD: NavItem =
+  { id: "dashboard", label: "Dashboard", path: "/", icon: Icons["dashboard"] };
+
+const NAV_SETTINGS: NavItem =
+  { id: "settings", label: "Settings", path: "/settings", icon: Icons["settings"] };
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    id: "infrastructure",
+    label: "Infrastructure",
+    items: [
+      { id: "server-metrics", label: "Server Metrics", path: "/server-metrics", icon: Icons["server-metrics"] },
+      { id: "network",        label: "Network",        path: "/network",        icon: Icons["network"] },
+      { id: "mikrotik",       label: "MikroTik",       path: "/mikrotik",       icon: Icons["mikrotik"] },
+      { id: "ups",            label: "UPS",            path: "/ups",            icon: Icons["ups"] },
+    ],
+  },
+  {
+    id: "server-room",
+    label: "Server Room",
+    items: [
+      { id: "environment",     label: "Environment",     path: "/environment",     icon: Icons["environment"] },
+      { id: "air-conditioner", label: "Air Conditioner", path: "/air-conditioner", icon: Icons["air-conditioner"] },
+    ],
+  },
+  {
+    id: "operations",
+    label: "Operations",
+    items: [
+      { id: "alerts",  label: "Alerts",  path: "/alerts",  icon: Icons["alerts"] },
+      { id: "history", label: "History", path: "/history", icon: Icons["history"] },
+      { id: "reports", label: "Reports", path: "/reports", icon: Icons["reports"] },
+    ],
+  },
+  {
+    // Admin-only pages. it_staff has neither, so the whole group disappears for them
+    // rather than rendering an empty header.
+    id: "administration",
+    label: "Administration",
+    items: [
+      { id: "user-management", label: "User Management", path: "/user-management", icon: Icons["user-management"] },
+      { id: "alert-rules",     label: "Alert Rules",     path: "/alert-rules",     icon: Icons["alert-rules"] },
+    ],
+  },
 ];
+
+const NAV_GROUPS_KEY = "cspc_nav_groups";
+
+function readOpenGroups(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(NAV_GROUPS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
 
 export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollapse }: SidebarProps) {
   const { user, logout } = useAuth();
@@ -143,9 +194,72 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
     setTimeout(() => setProfileToast(""), 3000);
   };
 
-  const allowed   = user ? roleConfig[user.role as RoleKey]?.pages || [] : [];
-  const navItems  = allNavItems.filter(item => allowed.includes(item.id));
-  const roleCfg   = user ? roleConfig[user.role as RoleKey] : null;
+  const location = useLocation();
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(readOpenGroups);
+
+  const allowed = user ? roleConfig[user.role as RoleKey]?.pages || [] : [];
+  const roleCfg = user ? roleConfig[user.role as RoleKey] : null;
+
+  // Role-filter every group, then drop any that ended up empty.
+  const groups = useMemo(
+    () =>
+      NAV_GROUPS
+        .map(g => ({ ...g, items: g.items.filter(i => allowed.includes(i.id)) }))
+        .filter(g => g.items.length > 0),
+    [allowed.join(",")],
+  );
+
+  const isActivePath = (p: string) =>
+    p === "/" ? location.pathname === "/" : location.pathname.startsWith(p);
+
+  // The group owning the current route — used to auto-expand it.
+  const activeGroupId = useMemo(
+    () => groups.find(g => g.items.some(i => isActivePath(i.path)))?.id ?? null,
+    [groups, location.pathname],
+  );
+
+  // Open the active group, but never auto-CLOSE the others: collapsing a section the
+  // user just opened because they navigated elsewhere is the annoying part of
+  // accordion sidebars. Sections they use simply accumulate as open.
+  useEffect(() => {
+    if (!activeGroupId) return;
+    setOpenGroups(prev => (prev[activeGroupId] ? prev : { ...prev, [activeGroupId]: true }));
+  }, [activeGroupId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(NAV_GROUPS_KEY, JSON.stringify(openGroups));
+    } catch {
+      /* private mode / quota — the sidebar still works, it just won't remember */
+    }
+  }, [openGroups]);
+
+  const toggleGroup = (id: string) =>
+    setOpenGroups(prev => ({ ...prev, [id]: !prev[id] }));
+
+  // Per-item badge. Kept in one place so the group header can reuse it.
+  const badgeFor = (id: string): BadgeSpec | null => {
+    if (id === "alerts" && openAlertCount > 0)
+      return { count: openAlertCount, color: "#F2495C", title: `${openAlertCount} alert(s) need attention` };
+    if (id === "server-metrics" && pendingAgentCount > 0)
+      return { count: pendingAgentCount, color: "var(--gf-accent)", title: `${pendingAgentCount} server(s) awaiting approval` };
+    if (id === "user-management" && pendingUserCount > 0)
+      return { count: pendingUserCount, color: "var(--gf-accent)", title: `${pendingUserCount} new registration(s)` };
+    return null;
+  };
+
+  // Roll a group's child badges up onto its header. Without this, collapsing a group
+  // would HIDE an open-alert count — the one thing the sidebar must never hide.
+  // Red wins over accent so a real alert is never disguised as a pending approval.
+  const groupBadge = (items: NavItem[]): BadgeSpec | null => {
+    const badges = items.map(i => badgeFor(i.id)).filter((b): b is BadgeSpec => b !== null);
+    if (badges.length === 0) return null;
+    return {
+      count: badges.reduce((sum, b) => sum + b.count, 0),
+      color: badges.some(b => b.color === "#F2495C") ? "#F2495C" : "var(--gf-accent)",
+      title: badges.map(b => b.title).join(" · "),
+    };
+  };
 
   return (
     <>
@@ -216,46 +330,73 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
             </span>
           </div>
 
-          {navItems.map(item => (
-            <NavLink
-              key={item.id}
-              to={item.path}
-              end={item.path === "/"}
-              onClick={onClose}
-              className="flex items-center gap-2.5 px-3 py-2 text-[11px] transition-colors"
-              style={({ isActive }) => ({
-                borderLeft:  isActive ? "2px solid var(--gf-accent)"  : "2px solid transparent",
-                background:  isActive ? "var(--gf-accent-dim)"        : "transparent",
-                color:       isActive ? "var(--gf-text-primary)"      : "var(--gf-text-muted)",
-              })}
-              onMouseEnter={e => {
-                const el = e.currentTarget;
-                if (!el.style.background.includes("var(--gf-accent")) {
-                  el.style.background = "var(--gf-hover)";
-                  el.style.color      = "var(--gf-text-primary)";
-                }
-              }}
-              onMouseLeave={e => {
-                const el = e.currentTarget;
-                if (!el.style.background.includes("var(--gf-accent")) {
-                  el.style.background = "transparent";
-                  el.style.color      = "var(--gf-text-muted)";
-                }
-              }}
-            >
-              <span style={{ opacity: 0.75 }}>{item.icon}</span>
-              {item.label}
-              {item.id === "alerts" && (
-                <NavBadge count={openAlertCount} color="#F2495C" title={`${openAlertCount} alert(s) need attention`} />
-              )}
-              {item.id === "server-metrics" && (
-                <NavBadge count={pendingAgentCount} color="var(--gf-accent)" title={`${pendingAgentCount} server(s) awaiting approval`} />
-              )}
-              {item.id === "user-management" && (
-                <NavBadge count={pendingUserCount} color="var(--gf-accent)" title={`${pendingUserCount} new registration(s)`} />
-              )}
-            </NavLink>
-          ))}
+          {allowed.includes(NAV_DASHBOARD.id) && (
+            <NavRow item={NAV_DASHBOARD} badge={badgeFor(NAV_DASHBOARD.id)} onClose={onClose} />
+          )}
+
+          {groups.map(group => {
+            const isOpen = !!openGroups[group.id];
+            const rolled = groupBadge(group.items);
+            return (
+              <div key={group.id}>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.id)}
+                  aria-expanded={isOpen}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-[11px] transition-colors"
+                  style={{
+                    borderLeft: "2px solid transparent",
+                    color: isOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)",
+                    background: "transparent",
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = "var(--gf-hover)";
+                    e.currentTarget.style.color = "var(--gf-text-primary)";
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = "transparent";
+                    e.currentTarget.style.color = isOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)";
+                  }}
+                >
+                  <svg
+                    width="10" height="10" viewBox="0 0 16 16" fill="none"
+                    style={{
+                      flexShrink: 0,
+                      opacity: 0.75,
+                      transform: isOpen ? "rotate(90deg)" : "none",
+                      transition: "transform 150ms ease",
+                    }}
+                  >
+                    <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.6"
+                      strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span className="tracking-wide">{group.label}</span>
+
+                  {/* Only when collapsed — an open group shows the counts on the rows themselves */}
+                  {!isOpen && rolled && (
+                    <NavBadge count={rolled.count} color={rolled.color} title={rolled.title} />
+                  )}
+                  {/* Closed group holding the current page: a dot marks where you are */}
+                  {!isOpen && !rolled && activeGroupId === group.id && (
+                    <span
+                      className="ml-auto w-1.5 h-1.5 rounded-full flex-shrink-0"
+                      style={{ background: "var(--gf-accent)" }}
+                      title="Contains the current page"
+                    />
+                  )}
+                </button>
+
+                {isOpen &&
+                  group.items.map(item => (
+                    <NavRow key={item.id} item={item} badge={badgeFor(item.id)} onClose={onClose} indented />
+                  ))}
+              </div>
+            );
+          })}
+
+          {allowed.includes(NAV_SETTINGS.id) && (
+            <NavRow item={NAV_SETTINGS} badge={badgeFor(NAV_SETTINGS.id)} onClose={onClose} />
+          )}
         </nav>
 
         {/* ── Bottom: theme + user ── */}
@@ -366,6 +507,51 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
         </div>
       )}
     </>
+  );
+}
+
+// A single nav link. Shared by the pinned items (Dashboard / Settings) and by the
+// rows inside a group, so active/hover styling can't drift between them.
+function NavRow({
+  item, badge, onClose, indented,
+}: {
+  item: NavItem;
+  badge: BadgeSpec | null;
+  onClose: () => void;
+  indented?: boolean;
+}) {
+  return (
+    <NavLink
+      to={item.path}
+      end={item.path === "/"}
+      onClick={onClose}
+      className="flex items-center gap-2.5 py-2 text-[11px] transition-colors"
+      style={({ isActive }) => ({
+        paddingLeft:  indented ? 30 : 12,
+        paddingRight: 12,
+        borderLeft:  isActive ? "2px solid var(--gf-accent)" : "2px solid transparent",
+        background:  isActive ? "var(--gf-accent-dim)"       : "transparent",
+        color:       isActive ? "var(--gf-text-primary)"     : "var(--gf-text-muted)",
+      })}
+      onMouseEnter={e => {
+        const el = e.currentTarget;
+        if (!el.style.background.includes("var(--gf-accent")) {
+          el.style.background = "var(--gf-hover)";
+          el.style.color      = "var(--gf-text-primary)";
+        }
+      }}
+      onMouseLeave={e => {
+        const el = e.currentTarget;
+        if (!el.style.background.includes("var(--gf-accent")) {
+          el.style.background = "transparent";
+          el.style.color      = "var(--gf-text-muted)";
+        }
+      }}
+    >
+      <span style={{ opacity: 0.75, flexShrink: 0 }}>{item.icon}</span>
+      <span className="truncate">{item.label}</span>
+      {badge && <NavBadge count={badge.count} color={badge.color} title={badge.title} />}
+    </NavLink>
   );
 }
 
