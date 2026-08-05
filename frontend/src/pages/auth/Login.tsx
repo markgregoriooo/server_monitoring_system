@@ -82,10 +82,12 @@ export default function Login() {
   const startLogin = useGoogleLogin({
     flow: "auth-code", // returns a one-time auth code (not a token) — exchanged server-side
     scope: "openid email profile", // permission to read (openid, email, profile = name + photo)
-    // Always show the account chooser. Without this Google silently reuses the
-    // last signed-in account, which on a shared ICTU/lab machine means the second
-    // person is handed the first person's identity with no way to switch.
-    prompt: "select_account",
+    // NOTE: `prompt: "select_account"` does NOT belong here. It is a field of
+    // TokenClientConfig (the implicit flow); the auth-code flow builds a
+    // CodeClientConfig, which has no `prompt` — so TypeScript rejects it and
+    // Google's initCodeClient would ignore it anyway. Google's equivalent lever for
+    // this flow is `select_account: true`, which @react-oauth/google does not yet
+    // declare in its types. Verify it in a browser before adding it.
     onSuccess: (resp) => exchangeToken(resp.code),
     onError: () => {
       setLoading(false);
