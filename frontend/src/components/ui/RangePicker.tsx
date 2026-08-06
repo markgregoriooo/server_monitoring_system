@@ -84,8 +84,8 @@ export default function RangePicker({
     : "flex gap-1 shrink-0 bg-slate-100 dark:bg-white/[0.05] rounded-md p-0.5";
   const btnCls = (active: boolean) =>
     gf
-      ? `text-[10px] px-2 py-0.5 transition-colors ${active ? "bg-[var(--gf-hover)] text-[var(--gf-text-primary)]" : "text-[var(--gf-text-muted)]"}`
-      : `px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+      ? `text-[12px] px-2 py-0.5 transition-colors ${active ? "bg-[var(--gf-hover)] text-[var(--gf-text-primary)]" : "text-[var(--gf-text-muted)]"}`
+      : `px-2.5 py-1 rounded text-[13px] font-medium transition-colors ${
           active
             ? "bg-white dark:bg-white/[0.12] text-slate-900 dark:text-white shadow-sm"
             : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
@@ -102,17 +102,17 @@ export default function RangePicker({
     ? `${popPos} rounded-[2px] p-3 flex flex-col gap-2.5 shadow-xl bg-[var(--gf-panel)] border border-[var(--gf-panel-border)]`
     : `${popPos} rounded-md p-3 flex flex-col gap-2.5 shadow-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10`;
   const labelCls = gf
-    ? "text-[9px] tracking-wider uppercase text-[var(--gf-text-muted)]"
-    : "text-[9px] tracking-wider uppercase text-slate-500 dark:text-slate-400";
+    ? "text-[11px] tracking-wider uppercase text-[var(--gf-text-muted)]"
+    : "text-[11px] tracking-wider uppercase text-slate-500 dark:text-slate-400";
   const inputCls = gf
-    ? "text-[11px] px-2 py-1 rounded-[2px] outline-none bg-[var(--gf-bg)] border border-[var(--gf-panel-border)] text-[var(--gf-text-primary)]"
-    : "text-[11px] px-2 py-1 rounded outline-none bg-slate-50 dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white";
+    ? "text-[13px] px-2 py-1 rounded-[2px] outline-none bg-[var(--gf-bg)] border border-[var(--gf-panel-border)] text-[var(--gf-text-primary)]"
+    : "text-[13px] px-2 py-1 rounded outline-none bg-slate-50 dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white";
   const chipCls = gf
-    ? "text-[9px] px-1.5 py-0.5 rounded-[2px] text-[var(--gf-text-muted)] border border-[var(--gf-panel-border)]"
-    : "text-[9px] px-1.5 py-0.5 rounded text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10";
+    ? "text-[11px] px-1.5 py-0.5 rounded-[2px] text-[var(--gf-text-muted)] border border-[var(--gf-panel-border)]"
+    : "text-[11px] px-1.5 py-0.5 rounded text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10";
   const activeWindowCls = gf
-    ? "text-[10px] tabular-nums hidden md:inline text-[var(--gf-text-muted)]"
-    : "text-[11px] tabular-nums hidden md:inline text-slate-500 dark:text-slate-400";
+    ? "text-[12px] tabular-nums hidden md:inline text-[var(--gf-text-muted)]"
+    : "text-[13px] tabular-nums hidden md:inline text-slate-500 dark:text-slate-400";
 
   // Seed the inputs from whatever is currently charted, so opening the editor starts
   // from the visible window rather than blank fields.
@@ -237,18 +237,18 @@ export default function RangePicker({
             ))}
           </div>
 
-          {shown && <div className="text-[10px] text-red-500 dark:text-red-400">{shown}</div>}
+          {shown && <div className="text-[12px] text-red-500 dark:text-red-400">{shown}</div>}
 
           {/* Bigger tap targets on touch; compact again at >=sm. */}
           <div className="flex gap-2">
-            <button onClick={apply} className="flex-1 sm:flex-none text-[11px] sm:text-[10px] px-2.5 py-2 sm:py-1 rounded font-semibold text-white bg-[#5794F2]">
+            <button onClick={apply} className="flex-1 sm:flex-none text-[13px] sm:text-[12px] px-2.5 py-2 sm:py-1 rounded font-semibold text-white bg-[#5794F2]">
               Apply
             </button>
             <button
               onClick={() => setOpen(false)}
               className={gf
-                ? "flex-1 sm:flex-none text-[11px] sm:text-[10px] px-2.5 py-2 sm:py-1 rounded-[2px] text-[var(--gf-text-muted)] border border-[var(--gf-panel-border)]"
-                : "flex-1 sm:flex-none text-[11px] sm:text-[10px] px-2.5 py-2 sm:py-1 rounded text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10"}
+                ? "flex-1 sm:flex-none text-[13px] sm:text-[12px] px-2.5 py-2 sm:py-1 rounded-[2px] text-[var(--gf-text-muted)] border border-[var(--gf-panel-border)]"
+                : "flex-1 sm:flex-none text-[13px] sm:text-[12px] px-2.5 py-2 sm:py-1 rounded text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10"}
             >
               Cancel
             </button>

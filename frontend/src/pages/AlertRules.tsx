@@ -496,7 +496,7 @@ export default function AlertRules() {
     setScopeFilter("all");
   };
 
-  const selectCls = "text-[11px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer";
+  const selectCls = "text-[13px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer";
   const liveWarn = formOpen ? coverageLossMessage() : null;
   // A per-device scope only exposes metrics that apply to THAT kind of device — a router
   // can't have a disk rule, a UPS can't have a link-utilization rule. Temperature / gas /
@@ -516,7 +516,7 @@ export default function AlertRules() {
           <h1 className="text-[16px] font-bold" style={{ color: gf.textPrimary }}>
             Alert Rules
           </h1>
-          <p className="text-[11px] mt-1 max-w-2xl" style={{ color: gf.textMuted }}>
+          <p className="text-[13px] mt-1 max-w-2xl" style={{ color: gf.textMuted }}>
             Configurable thresholds. A <b style={{ color: gf.accent }}>Global</b> rule applies to
             every server and the room; a <b style={{ color: PURPLE }}>per-server</b> rule overrides
             the global for that one server.
@@ -524,7 +524,7 @@ export default function AlertRules() {
         </div>
         <button
           onClick={() => openAdd()}
-          className="inline-flex items-center gap-2 text-[12px] font-medium whitespace-nowrap transition-colors active:translate-y-px"
+          className="inline-flex items-center gap-2 text-[14px] font-medium whitespace-nowrap transition-colors active:translate-y-px"
           style={{
             height: 32,
             padding: "0 12px",
@@ -559,7 +559,7 @@ export default function AlertRules() {
 
       {/* Rules-only reminder */}
       <div
-        className="flex items-start gap-2 text-[10.5px] px-3 py-2 mb-4 rounded-[2px]"
+        className="flex items-start gap-2 text-[12px] px-3 py-2 mb-4 rounded-[2px]"
         style={{ color: gf.textMuted, background: gf.accentDim, border: `1px solid ${gf.border}` }}
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={gf.accent} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-px">
@@ -586,7 +586,7 @@ export default function AlertRules() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search rules, metric or server…"
-            className="w-full text-[11px] pl-8 pr-2 py-1.5 rounded-[2px] outline-none"
+            className="w-full text-[13px] pl-8 pr-2 py-1.5 rounded-[2px] outline-none"
             style={inputStyle}
           />
         </div>
@@ -614,7 +614,7 @@ export default function AlertRules() {
         {filtersActive && (
           <button
             onClick={clearFilters}
-            className="text-[10.5px] px-2.5 py-1.5 rounded-[2px] transition-colors"
+            className="text-[12px] px-2.5 py-1.5 rounded-[2px] transition-colors"
             style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
           >
             Clear
@@ -624,7 +624,7 @@ export default function AlertRules() {
 
       {/* Grouped rules */}
       {loading ? (
-        <div className="rounded-lg px-3 py-10 text-center text-[12px]" style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textDim }}>
+        <div className="rounded-lg px-3 py-10 text-center text-[14px]" style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textDim }}>
           Loading…
         </div>
       ) : groups.length === 0 ? (
@@ -651,17 +651,17 @@ export default function AlertRules() {
                   <span style={{ color: isGlobal ? gf.accent : PURPLE }}>
                     {isGlobal ? <GlobeIcon /> : <ServerIcon />}
                   </span>
-                  <span className="text-[12px] font-semibold truncate" style={{ color: gf.textPrimary }}>
+                  <span className="text-[14px] font-semibold truncate" style={{ color: gf.textPrimary }}>
                     {g.name}
                   </span>
                   <span
-                    className="px-1.5 py-0.5 rounded-full text-[9px] font-medium"
+                    className="px-1.5 py-0.5 rounded-full text-[11px] font-medium"
                     style={{ color: gf.textMuted, background: gf.hoverStrong }}
                   >
                     {g.rules.length}
                   </span>
                   <span
-                    className="px-1.5 py-0.5 rounded-[2px] text-[8.5px] tracking-wider uppercase font-medium"
+                    className="px-1.5 py-0.5 rounded-[2px] text-[10px] tracking-wider uppercase font-medium"
                     style={
                       isGlobal
                         ? { color: gf.accent, background: gf.accentDim }
@@ -696,28 +696,28 @@ export default function AlertRules() {
                           </span>
                           <div className="min-w-0">
                             <div className="flex items-baseline gap-1.5 min-w-0">
-                              <span className="text-[12px] font-medium truncate" style={{ color: gf.textPrimary }}>
+                              <span className="text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>
                                 {meta.label}
                               </span>
                               {/* Port-scoped rules look identical to device-wide ones
                                   without this — same metric, same device, different reach. */}
                               {r.interfaceName && (
                                 <span
-                                  className="text-[9px] px-1.5 py-0.5 rounded-[2px] shrink-0"
+                                  className="text-[11px] px-1.5 py-0.5 rounded-[2px] shrink-0"
                                   style={{ color: gf.textMuted, background: gf.hover, border: `1px solid ${gf.divider}` }}
                                 >
                                   {r.interfaceName}
                                 </span>
                               )}
                             </div>
-                            <div className="text-[10.5px] truncate" style={{ color: gf.textMuted }}>
+                            <div className="text-[12px] truncate" style={{ color: gf.textMuted }}>
                               when value{" "}
                               <span className="font-semibold" style={{ color: gf.textPrimary }}>
                                 {r.comparison} {r.thresholdValue}
                                 {meta.unit}
                               </span>
                             </div>
-                            <div className="text-[9.5px] truncate mt-0.5" style={{ color: gf.textDim }}>
+                            <div className="text-[11px] truncate mt-0.5" style={{ color: gf.textDim }}>
                               {r.updatedByName ? (
                                 <>
                                   edited by{" "}
@@ -733,7 +733,7 @@ export default function AlertRules() {
 
                         {/* severity */}
                         <span
-                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[9px] tracking-wider uppercase font-semibold shrink-0"
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-semibold shrink-0"
                           style={{ color: sev, background: `${sev}1f` }}
                         >
                           <span className="w-1.5 h-1.5 rounded-full" style={{ background: sev }} />
@@ -743,7 +743,7 @@ export default function AlertRules() {
                         {/* active toggle */}
                         <button
                           onClick={() => toggleActive(r)}
-                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[9px] tracking-wider uppercase font-medium transition-colors shrink-0"
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-medium transition-colors shrink-0"
                           style={{
                             color: r.isActive ? GREEN : gf.textDim,
                             background: r.isActive ? `${GREEN}1f` : gf.hover,
@@ -759,7 +759,7 @@ export default function AlertRules() {
                           {confirmId === r.id ? (
                             <span className="inline-flex items-center gap-1.5 flex-wrap justify-end">
                               {deleteLossMessage(r) ? (
-                                <span className="inline-flex items-center gap-1 text-[10px] max-w-[260px]" style={{ color: ORANGE }}>
+                                <span className="inline-flex items-center gap-1 text-[12px] max-w-[260px]" style={{ color: ORANGE }}>
                                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={ORANGE} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
                                     <path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.42 0z" />
                                     <path d="M12 9v4M12 17h.01" />
@@ -767,14 +767,14 @@ export default function AlertRules() {
                                   {deleteLossMessage(r)}
                                 </span>
                               ) : (
-                                <span className="text-[10px]" style={{ color: gf.textMuted }}>
+                                <span className="text-[12px]" style={{ color: gf.textMuted }}>
                                   Delete?
                                 </span>
                               )}
-                              <button onClick={() => remove(r.id)} className="px-2 py-1 rounded-md text-[10px] font-medium" style={{ color: "#fff", background: RED }}>
+                              <button onClick={() => remove(r.id)} className="gf-raise px-2 py-1 rounded-md text-[12px] font-medium" style={{ color: "#fff", background: RED }}>
                                 {deleteLossMessage(r) ? "Delete anyway" : "Yes"}
                               </button>
-                              <button onClick={() => setConfirmId(null)} className="px-2 py-1 rounded-md text-[10px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
+                              <button onClick={() => setConfirmId(null)} className="px-2 py-1 rounded-md text-[12px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
                                 {deleteLossMessage(r) ? "Cancel" : "No"}
                               </button>
                             </span>
@@ -837,7 +837,7 @@ export default function AlertRules() {
           >
             {/* modal header */}
             <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.header }}>
-              <span className="text-[12px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>
+              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>
                 {editingId ? "Edit rule" : "New alert rule"}
               </span>
               <button onClick={() => setFormOpen(false)} className="grid place-items-center w-7 h-7 rounded-md transition-colors" style={{ color: gf.textMuted }} title="Close (Esc)">
@@ -868,7 +868,7 @@ export default function AlertRules() {
                         return { ...f, deviceId, metricName, interfaceName: "" };
                       });
                     }}
-                    className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none"
+                    className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none"
                     style={inputStyle}
                   >
                     <option value="">Global (all devices / room)</option>
@@ -902,7 +902,7 @@ export default function AlertRules() {
                     // Only per-port metrics can carry a port scope — drop it otherwise.
                     const interfaceName = PER_PORT_METRICS.has(metricName) ? f.interfaceName : "";
                     return { ...f, metricName, comparison, interfaceName };
-                  })} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
+                  })} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
                     {metricOptions.map((m) => (
                       <option key={m.value} value={m.value}>
                         {m.label} ({m.unit})
@@ -922,7 +922,7 @@ export default function AlertRules() {
                     <select
                       value={form.interfaceName}
                       onChange={(e) => setForm((f) => ({ ...f, interfaceName: e.target.value }))}
-                      className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none"
+                      className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none"
                       style={inputStyle}
                     >
                       <option value="">All ports on this device</option>
@@ -934,7 +934,7 @@ export default function AlertRules() {
                 )}
 
                 <Field label="Condition">
-                  <select value={form.comparison} onChange={(e) => setForm((f) => ({ ...f, comparison: e.target.value }))} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
+                  <select value={form.comparison} onChange={(e) => setForm((f) => ({ ...f, comparison: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
                     {COMPARISONS.map((c) => (
                       <option key={c} value={c}>
                         {c}
@@ -950,7 +950,7 @@ export default function AlertRules() {
                     onChange={(e) => setForm((f) => ({ ...f, thresholdValue: e.target.value }))}
                     placeholder="e.g. 90"
                     autoFocus
-                    className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none"
+                    className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none"
                     style={inputStyle}
                   />
                 </Field>
@@ -965,7 +965,7 @@ export default function AlertRules() {
                           key={s}
                           type="button"
                           onClick={() => setForm((f) => ({ ...f, severity: s }))}
-                          className="flex-1 text-[10px] tracking-wider uppercase font-semibold px-2 py-1.5 rounded-[2px] transition-colors"
+                          className="flex-1 text-[12px] tracking-wider uppercase font-semibold px-2 py-1.5 rounded-[2px] transition-colors"
                           style={{
                             color: on ? c : gf.textMuted,
                             background: on ? `${c}26` : gf.bg,
@@ -980,7 +980,7 @@ export default function AlertRules() {
                 </Field>
 
                 <Field label="Status">
-                  <label className="flex items-center gap-2 text-[11px] px-2 py-1.5 rounded-[2px] cursor-pointer" style={{ ...inputStyle, color: gf.textMuted }}>
+                  <label className="flex items-center gap-2 text-[13px] px-2 py-1.5 rounded-[2px] cursor-pointer" style={{ ...inputStyle, color: gf.textMuted }}>
                     <input type="checkbox" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
                     {form.isActive ? "Active (rule will fire)" : "Paused (rule disabled)"}
                   </label>
@@ -989,7 +989,7 @@ export default function AlertRules() {
 
               {/* live preview */}
               <div className="mt-4 p-3 rounded-[2px]" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
-                <div className="text-[8.5px] tracking-widest uppercase mb-1.5" style={{ color: gf.textDim }}>
+                <div className="text-[10px] tracking-widest uppercase mb-1.5" style={{ color: gf.textDim }}>
                   Preview
                 </div>
                 <RulePreview form={form} servers={servers} />
@@ -997,7 +997,7 @@ export default function AlertRules() {
 
               {/* coverage guard — last global rule for a metric */}
               {liveWarn && (
-                <div className="flex items-start gap-2 text-[10.5px] mt-3 px-3 py-2 rounded-[2px]" style={{ color: ORANGE, background: `${ORANGE}14`, border: `1px solid ${ORANGE}40` }}>
+                <div className="flex items-start gap-2 text-[12px] mt-3 px-3 py-2 rounded-[2px]" style={{ color: ORANGE, background: `${ORANGE}14`, border: `1px solid ${ORANGE}40` }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={ORANGE} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-px">
                     <path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.42 0z" />
                     <path d="M12 9v4M12 17h.01" />
@@ -1010,16 +1010,16 @@ export default function AlertRules() {
               )}
 
               {error && (
-                <div className="text-[10.5px] mt-3" style={{ color: RED }}>
+                <div className="text-[12px] mt-3" style={{ color: RED }}>
                   {error}
                 </div>
               )}
 
               <div className="flex gap-2 mt-4">
-                <button onClick={save} disabled={saving} className="text-[11px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: liveWarn ? ORANGE : gf.accent }}>
+                <button onClick={save} disabled={saving} className="text-[13px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: liveWarn ? ORANGE : gf.accent }}>
                   {saving ? "Saving…" : liveWarn ? "Save anyway" : editingId ? "Save changes" : "Create rule"}
                 </button>
-                <button onClick={() => setFormOpen(false)} className="text-[11px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
+                <button onClick={() => setFormOpen(false)} className="text-[13px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
                   Cancel
                 </button>
               </div>
@@ -1047,7 +1047,7 @@ function StatCard({ label, value, color, sub }: { label: string; value: number; 
   return (
     <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 84 }}>
       <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[10px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>
+        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>
           {label}
         </span>
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
@@ -1057,7 +1057,7 @@ function StatCard({ label, value, color, sub }: { label: string; value: number; 
           {value}
         </span>
         {sub && (
-          <div className="text-[9px] mt-1.5 tracking-widest uppercase" style={{ color: gf.textDim }}>
+          <div className="text-[11px] mt-1.5 tracking-widest uppercase" style={{ color: gf.textDim }}>
             {sub}
           </div>
         )}
@@ -1074,13 +1074,13 @@ function RulePreview({ form, servers }: { form: FormState; servers: ServerOpt[] 
   const scope = form.interfaceName ? `${deviceName} · ${form.interfaceName}` : deviceName;
   const threshold = form.thresholdValue.trim() === "" ? "…" : form.thresholdValue;
   return (
-    <div className="flex items-center gap-2.5 flex-wrap text-[11px]" style={{ color: gf.textPrimary }}>
+    <div className="flex items-center gap-2.5 flex-wrap text-[13px]" style={{ color: gf.textPrimary }}>
       <span className="grid place-items-center rounded-md shrink-0" style={{ width: 28, height: 28, background: `${meta.color}1f`, color: meta.color }}>
         <MetricIcon name={form.metricName} size={14} />
       </span>
       <span>
         Raise a{" "}
-        <span className="font-semibold tracking-wider uppercase text-[10px] px-1.5 py-0.5 rounded-[2px]" style={{ color: sev, background: `${sev}1f` }}>
+        <span className="font-semibold tracking-wider uppercase text-[12px] px-1.5 py-0.5 rounded-[2px]" style={{ color: sev, background: `${sev}1f` }}>
           {form.severity}
         </span>{" "}
         alert when <b>{meta.label}</b>{" "}
@@ -1105,26 +1105,26 @@ function EmptyState({ filtered, onAdd, onClear }: { filtered: boolean; onAdd: ()
       </span>
       {filtered ? (
         <>
-          <div className="text-[13px] font-semibold mb-1" style={{ color: gf.textPrimary }}>
+          <div className="text-[15px] font-semibold mb-1" style={{ color: gf.textPrimary }}>
             No rules match your filters
           </div>
-          <div className="text-[11px] mb-4" style={{ color: gf.textMuted }}>
+          <div className="text-[13px] mb-4" style={{ color: gf.textMuted }}>
             Try a different search or clear the filters.
           </div>
-          <button onClick={onClear} className="text-[11px] font-medium px-3 py-1.5 rounded-md" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
+          <button onClick={onClear} className="text-[13px] font-medium px-3 py-1.5 rounded-md" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
             Clear filters
           </button>
         </>
       ) : (
         <>
-          <div className="text-[13px] font-semibold mb-1" style={{ color: gf.textPrimary }}>
+          <div className="text-[15px] font-semibold mb-1" style={{ color: gf.textPrimary }}>
             No alert rules yet
           </div>
-          <div className="text-[11px] mb-4 max-w-sm" style={{ color: gf.textMuted }}>
+          <div className="text-[13px] mb-4 max-w-sm" style={{ color: gf.textMuted }}>
             With rules-only alerting, nothing will fire until you add a rule. Apply the seed migration
             or create one now.
           </div>
-          <button onClick={onAdd} className="text-[11px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: gf.accent }}>
+          <button onClick={onAdd} className="gf-raise text-[13px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: gf.accent }}>
             + Add your first rule
           </button>
         </>
@@ -1136,7 +1136,7 @@ function EmptyState({ filtered, onAdd, onClear }: { filtered: boolean; onAdd: ()
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[9px] tracking-wider uppercase" style={{ color: gf.textDim }}>
+      <span className="text-[11px] tracking-wider uppercase" style={{ color: gf.textDim }}>
         {label}
       </span>
       {children}

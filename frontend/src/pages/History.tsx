@@ -119,7 +119,7 @@ function Seg({ active, onClick, children }: { active: boolean; onClick: () => vo
   return (
     <button
       onClick={onClick}
-      className="text-[10.5px] px-2.5 py-1 rounded-[2px] transition-colors whitespace-nowrap"
+      className="text-[12px] px-2.5 py-1 rounded-[2px] transition-colors whitespace-nowrap"
       style={{
         color: active ? gf.textPrimary : gf.textMuted,
         background: active ? gf.accentDim : "transparent",
@@ -138,7 +138,7 @@ function Pill({ active, color, onClick, children }: {
   return (
     <button
       onClick={onClick}
-      className="text-[10px] px-2 py-1 rounded-[2px] capitalize transition-colors whitespace-nowrap"
+      className="text-[12px] px-2 py-1 rounded-[2px] capitalize transition-colors whitespace-nowrap"
       style={{
         color: active ? "#fff" : gf.textMuted,
         background: active ? c : "transparent",
@@ -153,7 +153,7 @@ function Pill({ active, color, onClick, children }: {
 function Tile({ label, value, color }: { label: string; value: number | string; color: string }) {
   return (
     <div className="rounded-[2px] px-3 py-2.5" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
-      <div className="text-[8.5px] tracking-widest uppercase" style={{ color: gf.textDim }}>{label}</div>
+      <div className="text-[10px] tracking-widest uppercase" style={{ color: gf.textDim }}>{label}</div>
       <div className="text-[20px] font-bold leading-tight mt-0.5" style={{ color }}>{value}</div>
     </div>
   );
@@ -162,7 +162,7 @@ function Tile({ label, value, color }: { label: string; value: number | string; 
 function Badge({ label, color, subtle }: { label: string; color: string; subtle?: boolean }) {
   return (
     <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[2px] text-[9px] tracking-wider uppercase font-medium whitespace-nowrap"
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-medium whitespace-nowrap"
       style={{ color: subtle ? color : "#fff", background: subtle ? `${color}1f` : color }}
     >
       {subtle && <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />}
@@ -268,14 +268,14 @@ function DailySummary() {
             </Seg>
           ))}
         </div>
-        <span className="text-[10px]" style={{ color: gf.textDim }}>
+        <span className="text-[12px]" style={{ color: gf.textDim }}>
           days are UTC (InfluxDB windows), so a day runs 08:00–08:00 Manila
         </span>
       </div>
 
       <div className="rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
         <div className="overflow-x-auto">
-          <table className="w-full text-[11px] border-collapse">
+          <table className="w-full text-[13px] border-collapse">
             <thead>
               <tr style={{ background: gf.header }}>
                 {["Date", "Avg temp", "Max temp", "Min temp", "Avg humidity", "Peak gas", "Alerts"].map((h) => (
@@ -290,7 +290,7 @@ function DailySummary() {
               ) : error ? (
                 <tr><td colSpan={7} className="px-3 py-10 text-center">
                   <div style={{ color: "#E02F44" }}>{error}</div>
-                  <div className="mt-1 text-[10px]" style={{ color: gf.textDim }}>
+                  <div className="mt-1 text-[12px]" style={{ color: gf.textDim }}>
                     Daily summaries read InfluxDB — check it is running and that INFLUX_BUCKET
                     matches the bucket the sensor writes to.
                   </div>
@@ -298,7 +298,7 @@ function DailySummary() {
               ) : rows.length === 0 ? (
                 <tr><td colSpan={7} className="px-3 py-10 text-center">
                   <div style={{ color: gf.textMuted }}>No environment readings in the last {days} days.</div>
-                  <div className="mt-1 text-[10px]" style={{ color: gf.textDim }}>
+                  <div className="mt-1 text-[12px]" style={{ color: gf.textDim }}>
                     Rows appear once the ESP32 has been reporting for at least one day.
                   </div>
                 </td></tr>
@@ -421,14 +421,14 @@ export default function History() {
         <div>
           <h1 className="text-[15px] font-bold" style={{ color: gf.textPrimary }}>History</h1>
           {tab === "activity" ? (
-            <p className="text-[11px] mt-1" style={{ color: gf.textMuted }}>
+            <p className="text-[13px] mt-1" style={{ color: gf.textMuted }}>
               Unified activity &amp; audit timeline — every event attributed to{" "}
               <span style={{ color: "#B877D9" }}>Admin</span>,{" "}
               <span style={{ color: "#5794F2" }}>Staff</span> or{" "}
               <span style={{ color: "#6E7B91" }}>System</span>.
             </p>
           ) : (
-            <p className="text-[11px] mt-1" style={{ color: gf.textMuted }}>
+            <p className="text-[13px] mt-1" style={{ color: gf.textMuted }}>
               Per-day server-room conditions, measured from InfluxDB.
             </p>
           )}
@@ -458,16 +458,16 @@ export default function History() {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[180px]">
-          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] pointer-events-none" style={{ color: gf.textDim }}>⌕</span>
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] pointer-events-none" style={{ color: gf.textDim }}>⌕</span>
           <input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder="Search events, actor or device…"
-            className="w-full pl-7 pr-7 py-1.5 text-[11px] rounded-[2px] focus:outline-none"
+            className="w-full pl-7 pr-7 py-1.5 text-[13px] rounded-[2px] focus:outline-none"
             style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
           />
           {searchInput && (
-            <button onClick={() => setSearchInput("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px]" style={{ color: gf.textDim }}>✕</button>
+            <button onClick={() => setSearchInput("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-[13px]" style={{ color: gf.textDim }}>✕</button>
           )}
         </div>
         <div className="flex gap-1">
@@ -495,16 +495,16 @@ export default function History() {
               value={customStart}
               max={customEnd || undefined}
               onChange={(e) => { setCustomStart(e.target.value); setPage(1); }}
-              className="text-[10.5px] px-2 py-1 rounded-[2px] focus:outline-none"
+              className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none"
               style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
             />
-            <span className="text-[10px]" style={{ color: gf.textDim }}>→</span>
+            <span className="text-[12px]" style={{ color: gf.textDim }}>→</span>
             <input
               type="date"
               value={customEnd}
               min={customStart || undefined}
               onChange={(e) => { setCustomEnd(e.target.value); setPage(1); }}
-              className="text-[10.5px] px-2 py-1 rounded-[2px] focus:outline-none"
+              className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none"
               style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
             />
           </div>
@@ -514,7 +514,7 @@ export default function History() {
       {/* Filter pills */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="flex flex-wrap items-center gap-1">
-          <span className="text-[8.5px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Category</span>
+          <span className="text-[10px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Category</span>
           {CATEGORIES.map((c) => (
             <Pill key={c} active={category === c} color={c === "all" ? gf.accent : catMeta(c).color} onClick={() => { setCategory(c); setPage(1); }}>
               {c === "all" ? "all" : catMeta(c).label}
@@ -523,18 +523,18 @@ export default function History() {
         </div>
         <div className="h-4 w-px" style={{ background: gf.border }} />
         <div className="flex flex-wrap items-center gap-1">
-          <span className="text-[8.5px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Severity</span>
+          <span className="text-[10px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Severity</span>
           {SEVERITIES.map((s) => (
             <Pill key={s} active={severity === s} color={s === "all" ? gf.accent : sevColor(s)} onClick={() => { setSeverity(s); setPage(1); }}>{s}</Pill>
           ))}
         </div>
         <div className="h-4 w-px" style={{ background: gf.border }} />
         <div className="flex flex-wrap items-center gap-1">
-          <span className="text-[8.5px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Actor</span>
+          <span className="text-[10px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Actor</span>
           <select
             value={actor}
             onChange={(e) => { setActor(e.target.value); setPage(1); }}
-            className="text-[10px] px-2 py-1 rounded-[2px] focus:outline-none"
+            className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none"
             style={{ background: gf.panel, border: `1px solid ${actor !== "all" ? gf.accent : gf.border}`, color: gf.textPrimary }}
           >
             <option value="all">All actors</option>
@@ -556,11 +556,11 @@ export default function History() {
 
       {/* Result count + live */}
       <div className="flex items-center justify-between -mt-1">
-        <span className="text-[10px]" style={{ color: gf.textDim }}>
+        <span className="text-[12px]" style={{ color: gf.textDim }}>
           {loading ? "Loading…" : total === 0 ? "No events" : `Showing ${from}–${to} of ${total}`}
         </span>
         {live && !loading && (
-          <span className="inline-flex items-center gap-1.5 text-[9px] tracking-wider uppercase" style={{ color: GREEN }}>
+          <span className="inline-flex items-center gap-1.5 text-[11px] tracking-wider uppercase" style={{ color: GREEN }}>
             <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN }} /> Live
           </span>
         )}
@@ -569,11 +569,11 @@ export default function History() {
       {/* Table */}
       <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
         <div className="overflow-x-auto">
-          <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+          <table className="w-full text-[13px]" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: gf.header, color: gf.textDim }}>
                 {["When", "Actor", "Category", "Sev", "Event", "Source"].map((h) => (
-                  <th key={h} className="text-left font-medium px-3 py-2 whitespace-nowrap tracking-wider uppercase text-[9px]"
+                  <th key={h} className="text-left font-medium px-3 py-2 whitespace-nowrap tracking-wider uppercase text-[11px]"
                     style={{ borderBottom: `1px solid ${gf.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -604,19 +604,19 @@ export default function History() {
                       <td className="px-3 py-2 whitespace-nowrap">
                         <Badge label={am.label} color={am.color} />
                         {e.actorType !== "system" && (
-                          <div className="text-[9.5px] mt-0.5 truncate max-w-[120px]" style={{ color: gf.textMuted }}>{e.actorName}</div>
+                          <div className="text-[11px] mt-0.5 truncate max-w-[120px]" style={{ color: gf.textMuted }}>{e.actorName}</div>
                         )}
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <Badge label={cm.label} color={cm.color} subtle />
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
-                        <span className="text-[9px] tracking-wider uppercase font-medium" style={{ color: sevColor(e.severity) }}>{e.severity}</span>
+                        <span className="text-[11px] tracking-wider uppercase font-medium" style={{ color: sevColor(e.severity) }}>{e.severity}</span>
                       </td>
                       <td className="px-3 py-2">
                         <div className={open ? "" : "truncate max-w-[420px]"} style={{ color: gf.textPrimary }}>{e.message}</div>
                         {open && (
-                          <div className="mt-2 flex flex-col gap-1 text-[10px]" style={{ color: gf.textMuted }}>
+                          <div className="mt-2 flex flex-col gap-1 text-[12px]" style={{ color: gf.textMuted }}>
                             <div className="flex gap-6 flex-wrap">
                               <span>action: <span style={{ color: gf.textPrimary }}>{e.action}</span></span>
                               <span>actor: <span style={{ color: am.color }}>{am.label}</span> {e.actorName}</span>
@@ -639,18 +639,18 @@ export default function History() {
       {/* Pagination */}
       {total > PAGE_SIZE && (
         <div className="flex items-center justify-between">
-          <span className="text-[10px]" style={{ color: gf.textDim }}>Page {page} of {totalPages}</span>
+          <span className="text-[12px]" style={{ color: gf.textDim }}>Page {page} of {totalPages}</span>
           <div className="flex gap-1">
             <button
               disabled={page <= 1}
               onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpanded(null); }}
-              className="text-[10.5px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-40"
+              className="text-[12px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-40"
               style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
             >← Prev</button>
             <button
               disabled={page >= totalPages}
               onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpanded(null); }}
-              className="text-[10.5px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-40"
+              className="text-[12px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-40"
               style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
             >Next →</button>
           </div>

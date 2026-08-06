@@ -27,7 +27,7 @@ const inputCls =
   "placeholder-[var(--gf-text-dim)] focus:border-[var(--gf-accent)]";
 
 const labelCls =
-  "block text-[10px] font-semibold uppercase tracking-widest mb-1.5 text-[var(--gf-text-muted)]";
+  "block text-[12px] font-semibold uppercase tracking-widest mb-1.5 text-[var(--gf-text-muted)]";
 
 export default function ProfileModal({ open, onClose, onSaved }: ProfileModalProps) {
   const { user, updateUser } = useAuth();
@@ -83,8 +83,8 @@ export default function ProfileModal({ open, onClose, onSaved }: ProfileModalPro
         {/* ── Header ── */}
         <div className="flex items-center justify-between px-6 border-b border-[var(--gf-divider)] flex-shrink-0" style={{ height: 48 }}>
           <div>
-            <div className="text-[13px] font-semibold text-[var(--gf-text-primary)]">My Profile</div>
-            <div className="text-[10px] text-[var(--gf-text-dim)] mt-0.5 tracking-widest uppercase">
+            <div className="text-[15px] font-semibold text-[var(--gf-text-primary)]">My Profile</div>
+            <div className="text-[12px] text-[var(--gf-text-dim)] mt-0.5 tracking-widest uppercase">
               {String(user.role ?? "")}
             </div>
           </div>
@@ -137,7 +137,7 @@ export default function ProfileModal({ open, onClose, onSaved }: ProfileModalPro
 
             {/* Why those three are fixed */}
             <div
-              className="px-4 py-2.5 rounded-[2px] text-[11px] leading-relaxed"
+              className="px-4 py-2.5 rounded-[2px] text-[13px] leading-relaxed"
               style={{
                 color: "var(--gf-text-muted)",
                 background: "var(--gf-bg)",
@@ -158,7 +158,7 @@ export default function ProfileModal({ open, onClose, onSaved }: ProfileModalPro
                 placeholder="e.g. jdelacruz"
                 className={inputCls}
               />
-              <span className="block text-[11px] mt-1.5 text-[var(--gf-text-dim)]">
+              <span className="block text-[13px] mt-1.5 text-[var(--gf-text-dim)]">
                 Display name inside this dashboard. Must be unique.
               </span>
             </div>
@@ -168,8 +168,8 @@ export default function ProfileModal({ open, onClose, onSaved }: ProfileModalPro
             )}
 
             <div className="flex gap-3 pt-1">
-              <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] transition cursor-pointer">Cancel</button>
-              <button onClick={handleSaveProfile} disabled={saving} className="flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold text-white border-none cursor-pointer transition hover:opacity-90 disabled:opacity-60" style={{ background: "var(--gf-accent)" }}>
+              <button onClick={onClose} className="gf-btn flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] transition cursor-pointer">Cancel</button>
+              <button onClick={handleSaveProfile} disabled={saving} className="gf-raise flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold text-white border-none cursor-pointer transition hover:opacity-90 disabled:opacity-60" style={{ background: "var(--gf-accent)" }}>
                 {saving ? "Saving…" : "Save Changes"}
               </button>
             </div>

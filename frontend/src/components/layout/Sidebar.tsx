@@ -289,17 +289,17 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
             <img src={BRAND.logoSrc} alt={BRAND.name}
               className="w-7 h-7 rounded object-contain flex-shrink-0" />
           ) : (
-            <div className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 text-[9px] font-black tracking-tight"
+            <div className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 text-[11px] font-black tracking-tight"
               style={{ background: "#F59E0B", color: "#111217" }}>
               {BRAND.logoText}
             </div>
           )}
           <div className="min-w-0" title={BRAND.fullName}>
-            <div className="text-[11px] font-bold tracking-wide"
+            <div className="text-[13px] font-bold tracking-wide"
               style={{ color: "var(--gf-text-primary)" }}>
               {BRAND.name}
             </div>
-            <div className="text-[8px] tracking-widest"
+            <div className="text-[10px] tracking-widest"
               style={{ color: "var(--gf-text-dim)" }}>
               {BRAND.subtitle}
             </div>
@@ -324,7 +324,7 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
         {/* ── Navigation ── */}
         <nav className="flex-1 py-1.5 overflow-y-auto">
           <div className="px-3 pt-2 pb-1">
-            <span className="text-[8px] tracking-widest uppercase"
+            <span className="text-[10px] tracking-widest uppercase"
               style={{ color: "var(--gf-text-dim)" }}>
               Navigation
             </span>
@@ -343,7 +343,7 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
                   type="button"
                   onClick={() => toggleGroup(group.id)}
                   aria-expanded={isOpen}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-[11px] transition-colors"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-[13px] transition-colors"
                   style={{
                     borderLeft: "2px solid transparent",
                     color: isOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)",
@@ -404,12 +404,12 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
           {/* Theme toggle */}
           <div className="flex items-center justify-between px-4 py-2.5"
             style={{ borderBottom: "1px solid var(--gf-panel-border)" }}>
-            <span className="text-[9px] tracking-widest uppercase"
+            <span className="text-[11px] tracking-widest uppercase"
               style={{ color: "var(--gf-text-dim)" }}>
               Theme
             </span>
             <button onClick={toggleTheme}
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] transition-colors"
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[12px] transition-colors"
               style={{ color: "var(--gf-text-muted)", background: "var(--gf-hover)" }}
               onMouseEnter={e => (e.currentTarget.style.color = "var(--gf-text-primary)")}
               onMouseLeave={e => (e.currentTarget.style.color = "var(--gf-text-muted)")}>
@@ -448,19 +448,19 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-cover" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[9px] font-bold text-white"
+                    <div className="w-full h-full flex items-center justify-center text-[11px] font-bold text-white"
                       style={{ background: "var(--gf-accent)" }}>
                       {user.avatar}
                     </div>
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-[10px] font-semibold truncate"
+                  <div className="text-[12px] font-semibold truncate"
                     style={{ color: "var(--gf-text-primary)" }}>
                     {user.name}
                   </div>
                   {roleCfg && (
-                    <div className="text-[8px] tracking-widest truncate"
+                    <div className="text-[10px] tracking-widest truncate"
                       style={{ color: "var(--gf-accent)" }}>
                       {roleCfg.label}
                     </div>
@@ -469,7 +469,7 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
               </button>
 
               <button onClick={logout}
-                className="w-full py-1.5 rounded text-[10px] tracking-wider transition-colors"
+                className="w-full py-1.5 rounded text-[12px] tracking-wider transition-colors"
                 style={{ color: "var(--gf-text-muted)", border: "1px solid var(--gf-panel-border)" }}
                 onMouseEnter={e => {
                   e.currentTarget.style.color      = "var(--gf-text-primary)";
@@ -525,7 +525,7 @@ function NavRow({
       to={item.path}
       end={item.path === "/"}
       onClick={onClose}
-      className="flex items-center gap-2.5 py-2 text-[11px] transition-colors"
+      className="flex items-center gap-2.5 py-2 text-[13px] transition-colors"
       style={({ isActive }) => ({
         paddingLeft:  indented ? 30 : 12,
         paddingRight: 12,
@@ -561,7 +561,7 @@ function NavBadge({ count, color, title }: { count: number; color: string; title
   if (count <= 0) return null;
   return (
     <span
-      className="ml-auto min-w-[13px] h-[13px] px-[3px] flex items-center justify-center rounded-full text-[7.5px] font-semibold leading-none"
+      className="ml-auto min-w-[13px] h-[13px] px-[3px] flex items-center justify-center rounded-full text-[10px] font-semibold leading-none"
       style={{ background: color, color: "#fff" }}
       title={title}
     >

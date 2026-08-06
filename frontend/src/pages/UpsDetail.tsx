@@ -156,7 +156,7 @@ function UpsChart({ history }: { history: UpsHistPoint[] }) {
   return (
     <div style={{ height: 200 }}>
       {history.length < 2 ? (
-        <div className="flex items-center justify-center h-full text-[11px]" style={{ color: gf.textDim }}>No data in range</div>
+        <div className="flex items-center justify-center h-full text-[13px]" style={{ color: gf.textDim }}>No data in range</div>
       ) : (
         <canvas ref={ref} />
       )}
@@ -174,7 +174,7 @@ function Panel({ title, right, children, noPad }: { title: string; right?: React
         className="flex items-center justify-between gap-x-3 gap-y-1.5 flex-wrap px-3 py-1.5 sm:py-0 shrink-0"
         style={{ minHeight: 32, borderBottom: `1px solid ${gf.divider}` }}
       >
-        <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
+        <span className="text-[13px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
         {right && <div className="flex items-center gap-2 flex-wrap">{right}</div>}
       </div>
       <div className="flex-1 min-h-0" style={{ padding: noPad ? 0 : 12 }}>{children}</div>
@@ -186,13 +186,13 @@ function Stat({ label, value, unit, color, sub }: { label: string; value: string
   return (
     <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 84 }}>
       <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[10px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
+        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
       </div>
       <div className="px-3 pt-1.5">
         <span className="text-[24px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[9px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
+        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
+        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
       </div>
     </div>
   );
@@ -214,7 +214,7 @@ function BatteryMeter({ pct, onBattery }: { pct: number | null; onBattery: boole
             style={{ width: `${v ?? 0}%`, background: color, opacity: 0.85 }}
           />
           <span
-            className="absolute inset-0 grid place-items-center text-[11px] font-bold tabular-nums"
+            className="absolute inset-0 grid place-items-center text-[13px] font-bold tabular-nums"
             style={{ color: gf.textPrimary }}
           >
             {v == null ? "—" : `${Math.round(v)}%`}
@@ -223,10 +223,10 @@ function BatteryMeter({ pct, onBattery }: { pct: number | null; onBattery: boole
         <div className="h-3 w-1 rounded-r-[2px]" style={{ background: gf.border }} />
       </div>
       <div className="min-w-0">
-        <div className="text-[11px]" style={{ color: onBattery ? RED : GREEN }}>
+        <div className="text-[13px]" style={{ color: onBattery ? RED : GREEN }}>
           {onBattery ? "Discharging" : "On mains"}
         </div>
-        <div className="text-[9px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+        <div className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
           {onBattery ? "running on battery" : "charging / float"}
         </div>
       </div>
@@ -312,7 +312,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
       <div className="flex items-center gap-x-3 gap-y-1 px-0.5 flex-wrap">
         <button
           onClick={onBack}
-          className="flex items-center gap-1.5 text-[13px] transition-colors text-[var(--gf-text-muted)] hover:text-[var(--gf-text-primary)]"
+          className="flex items-center gap-1.5 text-[15px] transition-colors text-[var(--gf-text-muted)] hover:text-[var(--gf-text-primary)]"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -321,7 +321,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
         </button>
         <div className="min-w-0">
           <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>{u.name}</h1>
-          <div className="text-[11px] truncate" style={{ color: gf.textDim }}>
+          <div className="text-[13px] truncate" style={{ color: gf.textDim }}>
             {u.location} · {u.ip}
             {[u.brand, u.model].filter(Boolean).length ? ` · ${[u.brand, u.model].filter(Boolean).join(" ")}` : ""}
             {u.batteryCapacity ? ` · ${u.batteryCapacity}` : ""}
@@ -330,9 +330,9 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
         <span className="ml-auto flex items-center gap-2 shrink-0">
           <span className="inline-flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(u.status), boxShadow: `0 0 5px ${statusColor(u.status)}` }} />
-            <span className="text-[11px]" style={{ color: gf.textMuted }}>{u.status}</span>
+            <span className="text-[13px]" style={{ color: gf.textMuted }}>{u.status}</span>
           </span>
-          <span className="text-[10px] hidden sm:inline" style={{ color: gf.textDim }}>
+          <span className="text-[12px] hidden sm:inline" style={{ color: gf.textDim }}>
             {lastUpdate
               ? `updated ${new Date(lastUpdate).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour12: false })}`
               : "awaiting poll…"}
@@ -341,7 +341,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
       </div>
 
       {onBattery && (
-        <div className="rounded-lg px-3 py-2 text-[12px] font-medium" style={{ background: "rgba(242,73,92,0.12)", border: "1px solid rgba(242,73,92,0.3)", color: RED }}>
+        <div className="rounded-lg px-3 py-2 text-[14px] font-medium" style={{ background: "rgba(242,73,92,0.12)", border: "1px solid rgba(242,73,92,0.3)", color: RED }}>
           ⚡ ON BATTERY — running on backup power, mains may be down.
           {u.runtimeRemainingMin != null && Number.isFinite(u.runtimeRemainingMin) && (
             <span style={{ color: gf.textPrimary }}> ~{Math.round(u.runtimeRemainingMin)} min remaining at the current load.</span>
@@ -349,7 +349,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
         </div>
       )}
       {health.text === "Replace" && !onBattery && (
-        <div className="rounded-lg px-3 py-2 text-[12px] font-medium" style={{ background: ORANGE + "14", border: `1px solid ${ORANGE}40`, color: ORANGE }}>
+        <div className="rounded-lg px-3 py-2 text-[14px] font-medium" style={{ background: ORANGE + "14", border: `1px solid ${ORANGE}40`, color: ORANGE }}>
           Battery reports REPLACE — it may not carry the load through the next outage, even at full charge.
         </div>
       )}
@@ -358,7 +358,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
       <Panel title="Battery">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <BatteryMeter pct={charge} onBattery={onBattery} />
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[11px]" style={{ color: gf.textMuted }}>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[13px]" style={{ color: gf.textMuted }}>
             <span>Runtime <span style={{ color: gf.textPrimary }}>{fmt(u.runtimeRemainingMin, " min")}</span></span>
             <span>Health <span style={{ color: health.color }}>{health.text}</span></span>
             <span>DC <span style={{ color: gf.textPrimary }}>{fmt(u.batteryVoltage, " V", 1)}</span></span>
@@ -381,8 +381,8 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
         title="Battery & Load History"
         right={
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[10px]" style={{ color: GREEN }}>Battery {fmt(charge, "%")}</span>
-            <span className="text-[10px]" style={{ color: ORANGE }}>Load {fmt(u.loadPct, "%")}</span>
+            <span className="text-[12px]" style={{ color: GREEN }}>Battery {fmt(charge, "%")}</span>
+            <span className="text-[12px]" style={{ color: ORANGE }}>Load {fmt(u.loadPct, "%")}</span>
             <RangePicker value={range} onChange={setRange} error={rangeError || undefined} variant="gf" />
           </div>
         }
@@ -392,7 +392,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
 
       {/* Power path — input → UPS → output, the three numbers read together */}
       <Panel title="Power">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[11px]" style={{ color: gf.textMuted }}>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[13px]" style={{ color: gf.textMuted }}>
           <span>Input <span style={{ color: onBattery ? RED : gf.textPrimary }}>{fmt(u.inputVoltage, " V")}</span></span>
           <span style={{ color: gf.textDim }}>→</span>
           <span>Output <span style={{ color: gf.textPrimary }}>{fmt(u.outputVoltage, " V")}</span></span>
@@ -400,7 +400,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
           <span>Link <span style={{ color: gf.textPrimary }}>{u.commType ? `SNMP (${u.commType})` : "SNMP"}</span></span>
           <span>Host <span style={{ color: gf.textPrimary }}>{u.ip}</span></span>
         </div>
-        <p className="text-[9px] mt-2" style={{ color: gf.textDim }}>
+        <p className="text-[11px] mt-2" style={{ color: gf.textDim }}>
           Read over SNMP via the standard UPS-MIB (RFC 1628). Input voltage falling to 0 while the
           output holds is the signature of a mains failure the UPS is riding out.
         </p>
@@ -409,11 +409,11 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
       {/* Event log */}
       <Panel title="Event Log">
         {logs.length === 0 ? (
-          <div className="text-[11px] py-3 text-center" style={{ color: gf.textDim }}>No events recorded.</div>
+          <div className="text-[13px] py-3 text-center" style={{ color: gf.textDim }}>No events recorded.</div>
         ) : (
           <div className="flex flex-col">
             {logs.slice(0, 30).map((l, i) => (
-              <div key={i} className="flex items-center gap-2 py-1.5 text-[11px]" style={{ borderBottom: i < logs.length - 1 ? `1px solid ${gf.divider}` : "none" }}>
+              <div key={i} className="flex items-center gap-2 py-1.5 text-[13px]" style={{ borderBottom: i < logs.length - 1 ? `1px solid ${gf.divider}` : "none" }}>
                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: logColor(l.log_level) }} />
                 <span className="shrink-0 w-28" style={{ color: gf.textDim }}>{fmtDateTime(l.recorded_at)}</span>
                 <span className="truncate" style={{ color: gf.textPrimary }}>{l.message}</span>
