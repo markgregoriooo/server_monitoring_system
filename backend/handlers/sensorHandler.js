@@ -34,13 +34,25 @@ async function maybeRaiseEnvAlert(data) {
       const rules = await alertRulesService.getEffectiveRules(null, key);
       const prev = alertBandState.getBand(null, key);
       const { band, rule } = alertRulesService.nextBand(rules, v, prev);
-      alertBandState.setBand(null, key, band);
 
-      // Recovery: metric back to normal → auto-resolve its open room-level alerts.
+      // Recovery needs CONFIRMATION — see agentService.checkThresholds. It matters most
+      // for GAS here: the MQ-2 is an analog sensor with genuinely noisy readings, so a
+      // single dip below the threshold is weak evidence the smoke has cleared. Note this
+      // only delays the ALL-CLEAR — escalation stays instant, so the fail-safe direction
+      // is preserved for a smoke alarm.
+      let effectiveBand = band;
       if (band === "normal" && prev !== "normal") {
-        await alertsService.autoResolveMetric(null, key);
+        if (alertBandState.confirmRecovery(null, key)) {
+          await alertsService.autoResolveMetric(null, key);
+        } else {
+          effectiveBand = prev; // not convinced yet — hold the alert open
+        }
+      } else if (band !== "normal") {
+        alertBandState.breakRecovery(null, key);
       }
-      if (SEV_RANK[band] <= SEV_RANK[prev]) continue; // only act on escalation
+      alertBandState.setBand(null, key, effectiveBand);
+
+      if (SEV_RANK[effectiveBand] <= SEV_RANK[prev]) continue; // only act on escalation
 
       // Smoke = a gas reading the firmware flags DANGER — give it a clearer title.
       const smoke = key === "gas" && data.smoke_status === "DANGER";
