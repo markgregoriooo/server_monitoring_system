@@ -840,7 +840,7 @@ async function email(id, { toUserId } = {}) {
     throw badRequest("Report is not ready to send yet.");
   }
   if (!emailService.isEnabled()) {
-    const err = new Error("Email is not configured on this server (RESEND_API_KEY).");
+    const err = new Error("Email is not configured on this server (SMTP_USER / SMTP_PASS).");
     err.status = 503;
     throw err;
   }

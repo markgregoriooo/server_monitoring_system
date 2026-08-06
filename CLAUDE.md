@@ -57,11 +57,15 @@ WEB_ORIGIN=        # allowed dashboard origins, comma-separated — or * for any
 GOOGLE_CLIENT_ID=       # Google OAuth web client ID (public). Login verifies ID tokens against it. Must match frontend VITE_GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=   # Google OAuth web client SECRET. Required: the auth-code flow exchanges the code server-side
 GOOGLE_ALLOWED_DOMAINS= # comma-separated CSPC domains allowed to sign in; blank = cspc.edu.ph,my.cspc.edu.ph
-RESEND_API_KEY=         # Resend API key for alert emails. BLANK = email channel off (bell + toast still work). See email-popup-notifications.md
-RESEND_FROM=            # sender, e.g. "CSPC ICTU Monitoring <alerts@your-verified-domain>"; blank = Resend test sender (onboarding@resend.dev)
+SMTP_HOST=              # alert/report email over SMTP; blank = smtp.gmail.com. See email-popup-notifications.md §8
+SMTP_PORT=              # 587 (STARTTLS) or 465 (implicit TLS); blank = 587
+SMTP_USER=              # FULL mailbox address. Dev: your own Gmail/CSPC account. Prod: ICTU's ictusupport@cspc.edu.ph. BLANK = email channel off (bell + toast still work)
+SMTP_PASS=              # 16-char Google App Password, NOT the account password (needs 2-Step Verification on the account). Spaces are stripped automatically. ⚠️ Revoked when the account's main password changes
+MAIL_FROM=              # "Name <addr@domain>"; blank = SMTP_USER. Sets the DISPLAY NAME — Gmail rewrites the address to the authenticated mailbox unless it's a verified "Send mail as" alias
 NOTIFY_EMAIL_MIN_SEVERITY= # min severity that triggers an email: info|warning|critical; blank = critical. Per-user override in notification_prefs
 NOTIFY_EMAIL_TO=        # optional: force ALL alert emails to this address (testing); blank = send to each active user's real email
 NOTIFY_COOLDOWN_MIN=    # de-dup window in minutes — same device+type+severity won't re-alert within it (restart-proof); blank = 30
+ALERT_RECOVERY_SAMPLES= # consecutive "normal" readings required before an alert AUTO-RESOLVES; blank = 3. Stops a metric oscillating around its threshold from producing an alert/resolve storm. Escalation is unaffected (still instant). ⚠️ Counts SAMPLES, not seconds — wall-clock = count x that source's interval: ~30s for a default Go agent (`-interval 10`, but it's per-agent, so an `-interval 60` server takes 3 MINUTES), ~9s for the ESP32 (`LOG_INTERVAL 3000`). See alertBandState.confirmRecovery
 NOTIFY_RETENTION_DAYS=  # alerts older than this are purged daily (feed rows cascade); blank = 30
 REPORT_RETENTION_DAYS=  # generated reports older than this are purged daily — MySQL row AND both files under backend/reports/; blank = 90. Longer than the alerts default on purpose: a report is an artifact someone deliberately generated. See report-page.md
 ```
@@ -87,7 +91,7 @@ Three ingest paths: ESP32 (push, Socket.IO), Go agents (push, HTTP), and an SNMP
 poller (**pull** — routers via IF-MIB, UPS via UPS-MIB). See `router-ups-monitoring.md`.
 
 ### Tech Stack
-- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, resend (alert email), net-snmp
+- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, nodemailer (alert/report email over SMTP), net-snmp
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS, JetBrains Mono font
 - **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment, server-metric, **and** router/UPS time-series)
 - **Hardware:** ESP32, DHT11, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×2 (GPIO 25/33), DS3231 RTC (optional)
@@ -114,7 +118,7 @@ backend/services/
   notificationService.js        ← raiseAlert() → de-dup cooldown (NOTIFY_COOLDOWN_MIN, restart-proof, **open-alert-scoped** — a resolved alert no longer suppresses, so recurrences re-alert) → writes `alerts` (incl. `alert_rule_id` when rule-driven) + fans out `alert_notifications` per active user + pushes `notification` to each user room + severity-gated email; listForUser/unreadCount/markRead. `init(io)` once at startup. Triggers: server CPU/mem/disk + **environment** temperature/gas/humidity (both via configurable `alert_rules` — see alertRulesService) + offline (not rule-based). See `email-popup-notifications.md`
   alertsService.js              ← alert LIFECYCLE (shared, not per-user): list/acknowledge/resolve/openCount + auto-resolve when a metric recovers (called from checkThresholds + sensorHandler); broadcasts `alertUpdated`; `init(io)` once. Backs the now-real `routes/alerts.js`. Distinct from the per-user bell (`alert_notifications.is_read`)
   alertRulesService.js          ← configurable alert thresholds (`alert_rules`). In-memory cache (reload on startup + every mutation) + `getEffectiveRules(deviceId, metric)` resolver (per-server override else global `device_id=NULL`) + `nextBand()` hysteresis-aware evaluation + admin CRUD. Rules-only: no matching rule = no alert. metric_name: cpu/mem/disk + temperature/gas/humidity + router_cpu/router_mem/router_clients/link_util/ups_charge/ups_runtime/ups_load (router/UPS/MikroTik, via deviceAlerts.js — the last two are lower-is-worse, use `<=`). See `email-popup-notifications.md`
-  emailService.js               ← Resend wrapper: sendAlertEmail(to, alert) + sendReportEmail(to, report, pdfBuffer) (inline-styled HTML; the report one attaches the stored PDF). No-op if RESEND_API_KEY unset. NOTIFY_EMAIL_TO forces all mail to one address (testing)
+  emailService.js               ← **SMTP (nodemailer)**: sendAlertEmail(to, alert) + sendReportEmail(to, report, pdfBuffer) (inline-styled HTML + plain-text alternative; the report one attaches the stored PDF as a Buffer) + verify()/close(). Sending from a mailbox ON the target domain means Google's existing SPF/DKIM already authorize it — **no DNS work to request from ICTU** — and it delivers to any recipient. Pooled connections (the per-user fan-out is concurrent). No-op if SMTP_USER/SMTP_PASS unset. NOTIFY_EMAIL_TO forces all mail to one address (testing). Check it with `npm run mail:check [recipient]`
   snmpClient.js                 ← thin net-snmp wrapper: standard OID maps (IF-MIB/UPS-MIB), v2c session, get/walkColumn, value normalize (Counter64→BigInt)
   snmpPollerService.js          ← router/UPS poll loop (load devices → SNMP collect → counter diff → handlers → status/threshold logs); + getNetworkDevices/getUpsDevices reads
   deviceAlerts.js               ← shared router/UPS/MikroTik threshold + event alerting (checkRouter/checkUps), called by the SNMP **and** MikroTik pollers. Evaluates metrics against configurable `alert_rules` (alertRulesService.nextBand, band tracked in alertBandState) → raises REAL alerts via notificationService.raiseAlert (bell/email/Alerts page) + device_logs; auto-resolves on recovery (alertsService). Boolean events (interface down, UPS on-battery, device offline/unreachable via checkReachability) raise directly like server offline. Replaced the old device-log-only poller checks

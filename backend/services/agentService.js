@@ -425,16 +425,26 @@ async function checkThresholds(deviceId, metrics) {
     const prevBand = alertBandState.getBand(id, key);
     const rules = await alertRulesService.getEffectiveRules(id, key);
     const { band, rule } = alertRulesService.nextBand(rules, v, prevBand);
-    alertBandState.setBand(id, key, band); // always track state (so a later breach re-arms)…
 
-    // Recovery: the metric returned to normal → auto-resolve its open alerts.
+    // Recovery needs CONFIRMATION — one normal sample can be a dip in a metric
+    // oscillating around its threshold. Hold the previous band until N consecutive
+    // normals (alertBandState.confirmRecovery), so a server flapping across 90% raises
+    // ONE alert instead of an alert/auto-resolve storm. Escalation is unaffected.
+    let effectiveBand = band;
     if (band === "normal" && prevBand !== "normal") {
-      await alertsService.autoResolveMetric(id, key);
+      if (alertBandState.confirmRecovery(id, key)) {
+        await alertsService.autoResolveMetric(id, key);
+      } else {
+        effectiveBand = prevBand; // not convinced yet — stay in the old band
+      }
+    } else if (band !== "normal") {
+      alertBandState.breakRecovery(id, key); // breaching again → run of normals broken
     }
+    alertBandState.setBand(id, key, effectiveBand); // always track state (so a later breach re-arms)…
 
     // …but only LOG + alert the ONSET of a worse band — not steady-state or
     // recoveries — to keep device_logs lean and the bell quiet.
-    if (SEV_RANK[band] <= SEV_RANK[prevBand]) continue;
+    if (SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) continue;
 
     const pct = Math.round(v);
     const word = band === "critical" ? "critical" : band === "warning" ? "high" : band;
