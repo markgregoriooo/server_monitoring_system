@@ -126,7 +126,7 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
       }
     }
 
-    // 5) email channel — severity-gated, per-user pref. Only when Resend is
+    // 5) email channel — severity-gated, per-user pref. Only when SMTP is
     //    configured. Concurrent + best-effort: an email failure never affects the
     //    bell/toast that already fired. Mark emailed=1 so a re-run never re-sends.
     if (emailService.isEnabled()) {
