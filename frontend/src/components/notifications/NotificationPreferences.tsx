@@ -12,15 +12,29 @@ export default function NotificationPreferences() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  // What the server currently holds. The button compares the live controls against
+  // this so it can show whether there is anything left to save — otherwise it stays
+  // blue and clickable after a save and gives no signal either way.
+  const [baseline, setBaseline] = useState<{ emailEnabled: boolean; minSeverity: Severity } | null>(null);
+
+  const dirty =
+    baseline !== null &&
+    (baseline.emailEnabled !== emailEnabled || baseline.minSeverity !== minSeverity);
 
   useEffect(() => {
     let alive = true;
     api.getNotificationPrefs().then((res) => {
       if (!alive) return;
-      if (res.success && res.data?.prefs) {
-        setEmailEnabled(Boolean(res.data.prefs.emailEnabled));
-        setMinSeverity((res.data.prefs.minEmailSeverity as Severity) ?? "critical");
-      }
+      // Seed the baseline from the SAME values we put in state — including when the
+      // fetch fails and we fall back to defaults, so the button is never stuck.
+      const prefs = res.success ? res.data?.prefs : null;
+      const next = {
+        emailEnabled: prefs ? Boolean(prefs.emailEnabled) : true,
+        minSeverity: (prefs?.minEmailSeverity as Severity) ?? "critical",
+      };
+      setEmailEnabled(next.emailEnabled);
+      setMinSeverity(next.minSeverity);
+      setBaseline(next);
       setLoading(false);
     });
     return () => { alive = false; };
@@ -31,6 +45,7 @@ export default function NotificationPreferences() {
     const res = await api.saveNotificationPrefs({ emailEnabled, minEmailSeverity: minSeverity });
     setSaving(false);
     if (res.success) {
+      setBaseline({ emailEnabled, minSeverity }); // now in sync → no longer dirty
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     }
@@ -50,17 +65,17 @@ export default function NotificationPreferences() {
       }}
     >
       <div className="text-sm font-bold mb-1" style={label}>Notification Preferences</div>
-      <div className="text-[11px] mb-4" style={sub}>
+      <div className="text-[13px] mb-4" style={sub}>
         Email alerts for this account. Bell, toast and sound are controlled from the bell menu.
       </div>
 
       {loading ? (
-        <div className="text-[12px] py-4" style={sub}>Loading…</div>
+        <div className="text-[14px] py-4" style={sub}>Loading…</div>
       ) : (
         <div className="flex flex-col gap-4">
           {/* Email toggle */}
           <label className="flex items-center justify-between cursor-pointer">
-            <span className="text-[12px]" style={label}>Email me alerts</span>
+            <span className="text-[14px]" style={label}>Email me alerts</span>
             <button
               type="button"
               role="switch"
@@ -84,12 +99,12 @@ export default function NotificationPreferences() {
 
           {/* Min severity */}
           <div className="flex items-center justify-between gap-3" style={{ opacity: emailEnabled ? 1 : 0.5 }}>
-            <span className="text-[12px]" style={label}>Email me when severity is at least</span>
+            <span className="text-[14px]" style={label}>Email me when severity is at least</span>
             <select
               value={minSeverity}
               disabled={!emailEnabled}
               onChange={(e) => setMinSeverity(e.target.value as Severity)}
-              className="text-[12px] px-2 py-1 outline-none"
+              className="text-[14px] px-2 py-1 outline-none"
               style={{
                 background: "var(--gf-bg)",
                 border: "1px solid var(--gf-panel-border)",
@@ -103,16 +118,23 @@ export default function NotificationPreferences() {
             </select>
           </div>
 
+          {/* Four states, each with its own colour so the button always says whether
+              there is unsaved work: green just after a save, blue when there are
+              changes to write, and muted + disabled when the form matches the server. */}
           <button
             onClick={save}
-            disabled={saving}
-            className="self-start text-[12px] px-3 py-1.5 transition-colors"
+            disabled={saving || !dirty}
+            title={dirty ? "Save your notification preferences" : "No unsaved changes"}
+            className="self-start text-[14px] px-3 py-1.5 transition-colors"
             style={{
-              background: saved ? "#73BF69" : "var(--gf-accent)",
-              color: "#fff", borderRadius: 2, opacity: saving ? 0.7 : 1,
+              background: saved ? "#73BF69" : dirty ? "var(--gf-accent)" : "var(--gf-hover-strong)",
+              color: saved || dirty ? "#fff" : "var(--gf-text-muted)",
+              borderRadius: 2,
+              cursor: saving || !dirty ? "default" : "pointer",
+              opacity: saving ? 0.7 : 1,
             }}
           >
-            {saved ? "✓ Saved" : saving ? "Saving…" : "Save preferences"}
+            {saved ? "✓ Saved" : saving ? "Saving…" : dirty ? "Save preferences" : "No changes"}
           </button>
         </div>
       )}
