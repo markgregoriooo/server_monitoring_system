@@ -1358,3 +1358,71 @@ acting user + ip/ua:
 - Branch not PR'd into `main`.
 
 ---
+
+## SESSION 17 — 2026-08-06
+**Branch:** `smtp-email` (off `main`)
+**Developer:** Mark Gregorio
+
+> Replaced the alert/report email transport: **Resend → SMTP (nodemailer)**, Resend removed
+> entirely. Plus **recovery confirmation** for alert auto-resolve. Re-applied onto `main` from the
+> abandoned `email-popup-notifications` branch (see "Branch note" below).
+
+### Why the transport swap
+Email carries no proof of sender, so receivers check **SPF/DKIM** DNS records on the sending
+domain. A third-party sending API must be authorized by adding *its* records to `cspc.edu.ph` — a
+DNS change on the live campus domain that ICTU is unlikely to grant a student project. Until then
+Resend only delivers to the Resend account owner's own address, so real per-user fan-out was
+impossible. Sending through a **real Workspace mailbox** needs no DNS work at all (Google already
+publishes SPF/DKIM for the domain) and delivers to anyone.
+
+### Changes
+- **`services/emailService.js`** — rewritten on nodemailer. **`sendReportEmail` preserved** and
+  ported (nodemailer takes the PDF Buffer directly; Resend needed base64), so `reportService` is
+  untouched. Both senders now share one `send()` helper. Adds `verify()`/`close()`, a pooled
+  transporter (the per-user fan-out is concurrent), plain-text alternatives alongside the HTML,
+  and whitespace stripping on `SMTP_PASS` (Google displays App Passwords in spaced groups).
+- **`scripts/mailCheck.js`** + `npm run mail:check [recipient]` — **new.** Connects/authenticates
+  on demand, optionally sends a real test. Exists because `raiseAlert` swallows email failures by
+  design, so a bad credential is otherwise invisible.
+- **Recovery confirmation** — an alert now auto-resolves only after `ALERT_RECOVERY_SAMPLES`
+  (default 3) *consecutive* normal readings; the previous band is held meanwhile.
+  `alertBandState` gained `confirmRecovery`/`breakRecovery`; `agentService.checkThresholds` and
+  `handlers/sensorHandler.js` both use it, so they cannot drift.
+  **The bug it fixes:** a RESOLVED alert deliberately stops suppressing duplicates (so genuine
+  recurrences re-alert), which meant one premature auto-resolve let the next swing raise a fresh
+  alert — an alert/email storm for a metric oscillating around its threshold. The 5% hysteresis
+  alone was the only thing standing against it. Escalation is unaffected and still instant.
+- **`.env`** — `RESEND_API_KEY`/`RESEND_FROM` out; `SMTP_HOST/PORT/USER/PASS`, `MAIL_FROM`,
+  `ALERT_RECOVERY_SAMPLES` in. `npm uninstall resend && npm install nodemailer`.
+- **`ictu-email-account-request.md`** — **new.** The request to ICTU for a production sending
+  mailbox (`ictusupport@cspc.edu.ph`): reasoning, copy-paste email, objections, fallbacks.
+- **`email-popup-notifications.md`** — condensed 691 → ~215 lines and brought up to `main`'s scope
+  (router/UPS/MikroTik triggers via `deviceAlerts.js`, report email). Design history stays here.
+
+### Branch note (important)
+The old `email-popup-notifications` branch is **abandoned, do not merge it.** Its feature is
+already in `main` (commit `8e558dd`), and it sat 82 commits behind — merging would have reverted
+`main`'s newer `agentService` (+150), `alertRulesService` (+60), `emailService.sendReportEmail`
+(+59) and dropped `deviceAlerts.js` entirely. Today's three commits were re-applied by hand onto
+`main`'s files instead; that branch now holds nothing unique.
+
+### Verified
+- `npm test` → **66/66 pass** (60 pre-existing + 6 new in `tests/alertBandState.test.js`, incl.
+  ten oscillation cycles asserting recovery is never confirmed). `node --check` on every changed
+  file. `reportService` import resolves; `emailService` still exports `sendReportEmail`.
+- **Live:** an App Password on `magregorio@my.cspc.edu.ph` (a CSPC Workspace *student* account)
+  authenticated against `smtp.gmail.com:587` and delivered to both a CSPC address and an external
+  non-CSPC address → **App Passwords are not disabled tenant-wide**, the main risk to this approach.
+
+### Still pending / not done
+- **Send the ICTU request** for `ictusupport@cspc.edu.ph`. Not a deploy blocker — blank SMTP
+  credentials disable email cleanly while bell/toast/OS popup keep working.
+- Report email not re-tested end to end after the transport swap (code path verified, not driven).
+- Full alert pipeline not yet run with mail enabled; multi-user fan-out untested (one real account).
+- Revoke the old Resend API key at resend.com — uninstalling the package does not invalidate it.
+- **`popup_enabled` pref is dead code** — stored and exposed in the API type, but nothing reads it;
+  users cannot actually disable OS popups from Settings.
+- **`alert_notifications.emailed`** is written but never read or displayed.
+- No paginated "view all" notification history; the bell shows the latest 30.
+
+---
