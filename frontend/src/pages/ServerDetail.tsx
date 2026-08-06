@@ -182,7 +182,7 @@ function GaugePanel({
   return (
     <div className="bg-slate-100 dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden flex flex-col">
       <div className="px-3 pt-2.5 pb-1 border-b border-slate-200 dark:border-white/[0.06]">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
       </div>
       <div className="flex-1 flex items-center justify-center py-1">
         <canvas ref={canvasRef} width={180} height={110} style={{ width: "100%", maxWidth: 180, height: "auto" }} />
@@ -232,7 +232,7 @@ function SparkStatPanel({
   return (
     <div className="bg-slate-100 dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden flex flex-col">
       <div className="px-3 pt-2.5 pb-1 border-b border-slate-200 dark:border-white/[0.06]">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
       </div>
       <div className="relative flex-1" style={{ minHeight: 80 }}>
         {/* Spark chart fills the whole panel */}
@@ -242,7 +242,7 @@ function SparkStatPanel({
         {/* Value overlaid bottom-left like Grafana */}
         <div className="absolute bottom-2 left-3 flex items-baseline gap-1">
           <span className="text-[22px] font-bold font-mono leading-none" style={{ color }}>{value}</span>
-          <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{unit}</span>
+          <span className="text-[13px] font-mono text-slate-500 dark:text-slate-400">{unit}</span>
         </div>
       </div>
     </div>
@@ -253,7 +253,7 @@ function SparkStatPanel({
 function InfoCard({ title, rows }: { title: string; rows: [string, string][] }) {
   return (
     <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
-      <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-3">{title}</div>
+      <div className="text-[13px] font-medium text-slate-500 dark:text-slate-400 mb-3">{title}</div>
       {rows.map(([k, v]) => (
         <div key={k} className="flex justify-between items-start gap-3 py-1.5 border-b border-slate-100 dark:border-white/[0.05] last:border-none text-xs">
           <span className="text-slate-500 dark:text-slate-400 flex-shrink-0 whitespace-nowrap">{k}</span>
@@ -271,8 +271,8 @@ function VolumesCard({ volumes }: { volumes: Volume[] }) {
   return (
     <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Volumes</span>
-        {volumes.length > 0 && <span className="text-[10px] text-slate-400">{volumes.length}</span>}
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">Volumes</span>
+        {volumes.length > 0 && <span className="text-[12px] text-slate-400">{volumes.length}</span>}
       </div>
 
       {volumes.length === 0 ? (
@@ -288,9 +288,9 @@ function VolumesCard({ volumes }: { volumes: Volume[] }) {
                 <div className="flex items-baseline justify-between gap-3 mb-1">
                   <span className="text-xs font-mono text-slate-700 dark:text-slate-200 truncate" title={v.mount}>
                     {v.mount}
-                    {v.fstype && <span className="ml-1.5 text-[10px] text-slate-400">{v.fstype}</span>}
+                    {v.fstype && <span className="ml-1.5 text-[12px] text-slate-400">{v.fstype}</span>}
                   </span>
-                  <span className="text-[11px] font-mono flex-shrink-0" style={{ color: barColor(pct) }}>
+                  <span className="text-[13px] font-mono flex-shrink-0" style={{ color: barColor(pct) }}>
                     {v.used_gb} / {v.total_gb} GB · {Math.round(pct)}%
                   </span>
                 </div>
@@ -321,10 +321,10 @@ function ChartCard({
   return (
     <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-white/[0.06]">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
         <div className="flex gap-3">
           {legend.map(l => (
-            <span key={l.label} className="flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400">
+            <span key={l.label} className="flex items-center gap-1 text-[12px] text-slate-500 dark:text-slate-400">
               <span className="w-5 h-[2px] rounded-full inline-block" style={{ background: l.color }} />
               {l.label}
             </span>
@@ -508,7 +508,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           All servers
         </button>
         <div className="flex-1" />
-        <span className="hidden sm:block truncate max-w-[45%] text-[10px] font-mono text-slate-500 dark:text-slate-400">{s.ip} · {s.region} · {s.role}</span>
+        <span className="hidden sm:block truncate max-w-[45%] text-[12px] font-mono text-slate-500 dark:text-slate-400">{s.ip} · {s.region} · {s.role}</span>
         <span className={`text-xs font-medium px-2.5 py-1 rounded-sm ${
           s.status === "Online"
             ? "bg-green-900/40 text-green-400 border border-green-700/40"
@@ -525,11 +525,11 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         <div className="w-1 h-5 rounded-full" style={{ background: barColor(s.cpu) }} />
         <div className="min-w-0">
           <div className="text-base font-semibold text-slate-900 dark:text-white font-mono truncate">{s.name}</div>
-          <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">{s.os} · {s.kernel} · {s.cores} cores</div>
+          <div className="text-[12px] text-slate-500 font-mono mt-0.5 truncate">{s.os} · {s.kernel} · {s.cores} cores</div>
         </div>
         <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
-          <span className="text-[10px] text-slate-500 font-mono">uptime</span>
-          <span className="text-[11px] font-mono font-medium text-green-400">{s.uptime}</span>
+          <span className="text-[12px] text-slate-500 font-mono">uptime</span>
+          <span className="text-[13px] font-mono font-medium text-green-400">{s.uptime}</span>
         </div>
       </div>
 
@@ -569,7 +569,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
 
       {/* Range selector */}
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">
           Performance {history.length === 0 ? "· no data for this range" : range.kind === "preset" ? `· last ${presetLabel[range.preset]}` : "· custom range"}
         </span>
         <RangePicker value={range} onChange={setRange} error={rangeError || undefined} />
@@ -635,8 +635,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
       {/* Recent events (device_logs) */}
       <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Recent events</span>
-          {logs.length > 0 && <span className="text-[10px] text-slate-400">{logs.length}</span>}
+          <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">Recent events</span>
+          {logs.length > 0 && <span className="text-[12px] text-slate-400">{logs.length}</span>}
         </div>
         {logs.length === 0 ? (
           <div className="text-xs text-slate-400 py-5 text-center">No events logged yet.</div>
@@ -647,10 +647,10 @@ export default function ServerDetail({ server: s, onBack }: Props) {
                 <span className="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: logColor(l.log_level) }} />
                 <div className="min-w-0 flex-1">
                   <div className="text-xs text-slate-700 dark:text-slate-200 break-words">{l.message}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">{fmtDateTime(l.recorded_at)}</div>
+                  <div className="text-[12px] text-slate-400 mt-0.5">{fmtDateTime(l.recorded_at)}</div>
                 </div>
                 <span
-                  className="text-[9px] uppercase font-semibold tracking-wider flex-shrink-0 mt-0.5"
+                  className="text-[11px] uppercase font-semibold tracking-wider flex-shrink-0 mt-0.5"
                   style={{ color: logColor(l.log_level) }}
                 >
                   {l.log_level}

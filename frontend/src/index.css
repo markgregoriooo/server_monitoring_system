@@ -13,9 +13,14 @@
   --gf-header:        #1a1d23;
   --gf-sidebar:       #111217;
   --gf-divider:       rgba(255,255,255,0.07);
-  --gf-text-primary:  #D9D9D9;
-  --gf-text-muted:    #6B7280;
-  --gf-text-dim:      #4B5563;
+  /* Text greys are WCAG-AA (>=4.5:1) against BOTH --gf-bg and --gf-panel. The
+     original muted/dim (#6B7280 / #4B5563) measured 3.57:1 and 2.29:1 here, so
+     secondary labels were washed out and dim text was effectively decorative.
+     Raising them costs some of the "faint" look — text that reads at 2.3:1 cannot
+     be made legible without moving it closer to the primary tone. */
+  --gf-text-primary:  #D9D9D9;  /* 12.24:1 on panel */
+  --gf-text-muted:    #9BA2AD;  /*  6.72:1 on panel (was 3.57:1) */
+  --gf-text-dim:      #8E95A0;  /*  5.72:1 on panel (was 2.29:1) */
   --gf-hover:         rgba(255,255,255,0.05);
   --gf-hover-strong:  rgba(255,255,255,0.10);
   --gf-accent:        #5794F2;
@@ -26,6 +31,18 @@
   /* elevation for floating panels (dropdowns/toasts) — on dark, a faint light ring
      makes the edge readable against the dark page; plus a soft drop shadow for depth */
   --gf-shadow: 0 8px 28px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.14);
+
+  /* Raised button surface (.gf-btn). A flat tinted rectangle doesn't read as
+     pressable, so the face sits ABOVE the panel tone and carries a top sheen +
+     drop shadow; pressing inverts that to an inset shadow. */
+  --gf-btn-face:         #24272D;
+  --gf-btn-face-hover:   #2C3037;
+  --gf-btn-border:       rgba(255,255,255,0.13);
+  --gf-btn-border-hover: rgba(255,255,255,0.24);
+  --gf-btn-sheen:        linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0));
+  --gf-btn-shadow:       0 1px 2px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
+  --gf-btn-shadow-active:inset 0 2px 4px rgba(0,0,0,0.45);
+  --gf-danger:           #E5808C;  /* destructive LABEL only — the chrome stays neutral */
 
   /* legacy aliases kept for pages that still reference --bg etc. */
   --bg:         var(--gf-bg);
@@ -43,9 +60,11 @@
   --gf-header:        #F4F5F5;
   --gf-sidebar:       #FFFFFF;
   --gf-divider:       rgba(0,0,0,0.08);
-  --gf-text-primary:  #1F2937;
-  --gf-text-muted:    #6B7280;
-  --gf-text-dim:      #9CA3AF;
+  /* Measured against the PAGE bg (#F4F5F5), which is the harder of the two
+     surfaces — passing there means it also passes on white panels. */
+  --gf-text-primary:  #1F2937;  /* 13.44:1 on bg */
+  --gf-text-muted:    #5A6270;  /*  5.63:1 on bg (was 4.43:1) */
+  --gf-text-dim:      #646B78;  /*  4.91:1 on bg (was 2.32:1 — the worst of the four) */
   --gf-hover:         rgba(0,0,0,0.04);
   --gf-hover-strong:  rgba(0,0,0,0.08);
   --gf-seg-empty:     rgba(0,0,0,0.08);
@@ -53,6 +72,17 @@
   --gf-scrollbar:     rgba(0,0,0,0.15);
   /* light mode: a darker drop shadow + subtle dark ring so the panel edge reads */
   --gf-shadow: 0 8px 28px rgba(0,0,0,0.20), 0 0 0 1px rgba(0,0,0,0.06);
+
+  /* Light buttons get the classic raised look: lit from the top, shaded at the
+     bottom, with a real border — white-on-white needs the border to exist at all. */
+  --gf-btn-face:         #FFFFFF;
+  --gf-btn-face-hover:   #F1F3F5;
+  --gf-btn-border:       rgba(0,0,0,0.18);
+  --gf-btn-border-hover: rgba(0,0,0,0.30);
+  --gf-btn-sheen:        linear-gradient(180deg, rgba(255,255,255,0.9), rgba(0,0,0,0.035));
+  --gf-btn-shadow:       0 1px 2px rgba(0,0,0,0.10), inset 0 1px 0 rgba(255,255,255,0.9);
+  --gf-btn-shadow-active:inset 0 2px 4px rgba(0,0,0,0.14);
+  --gf-danger:           #B3261E;
 
   --bg:         var(--gf-bg);
   --surface:    var(--gf-panel);
@@ -94,6 +124,112 @@
     background: var(--gf-panel);
     border: 1px solid var(--gf-panel-border);
     border-radius: 2px;
+  }
+
+  /* Raised, pressable button. Needs to be a class rather than inline styles because
+     the depth comes from :hover / :active, which inline styles cannot express. */
+  .gf-btn {
+    background-color: var(--gf-btn-face);
+    background-image: var(--gf-btn-sheen);
+    border: 1px solid var(--gf-btn-border);
+    border-radius: 2px;
+    box-shadow: var(--gf-btn-shadow);
+    transition: background-color .12s ease, border-color .12s ease,
+                box-shadow .12s ease, transform .06s ease;
+  }
+  .gf-btn:hover:not(:disabled) {
+    background-color: var(--gf-btn-face-hover);
+    border-color: var(--gf-btn-border-hover);
+  }
+  /* Pressed: drop 1px and swap the drop shadow for an inset one, so the surface
+     reads as pushed into the page rather than just changing colour. */
+  .gf-btn:active:not(:disabled) {
+    transform: translateY(1px);
+    box-shadow: var(--gf-btn-shadow-active);
+    background-image: none;
+  }
+  .gf-btn:focus-visible {
+    outline: 2px solid var(--gf-accent);
+    outline-offset: 1px;
+  }
+  .gf-btn:disabled {
+    opacity: .5;
+    cursor: default;
+    transform: none;
+    box-shadow: none;
+  }
+
+  /* Depth ONLY — no face, no border, no colour. For buttons that already carry their
+     own background (accent CTAs, coloured confirms): they keep exactly the colour they
+     had and just gain the lift + press. Use this instead of .gf-btn when the button is
+     already styled and you only want it to feel pressable. */
+  .gf-raise {
+    box-shadow: var(--gf-btn-shadow);
+    transition: box-shadow .12s ease, transform .06s ease, filter .12s ease;
+  }
+  .gf-raise:hover:not(:disabled) { filter: brightness(1.08); }
+  .gf-raise:active:not(:disabled) {
+    transform: translateY(1px);
+    box-shadow: var(--gf-btn-shadow-active);
+    filter: brightness(0.96);
+  }
+  .gf-raise:focus-visible { outline: 2px solid var(--gf-accent); outline-offset: 1px; }
+  .gf-raise:disabled { opacity: .5; cursor: default; transform: none; box-shadow: none; filter: none; }
+
+  /* Primary CTA: the accent face plus the same depth mechanics as .gf-btn. */
+  .gf-btn-primary {
+    background-color: var(--gf-accent);
+    background-image: linear-gradient(180deg, rgba(255,255,255,0.14), rgba(255,255,255,0));
+    border: 1px solid rgba(0,0,0,0.18);
+    border-radius: 2px;
+    color: #fff;
+    box-shadow: var(--gf-btn-shadow);
+    transition: filter .12s ease, box-shadow .12s ease, transform .06s ease;
+  }
+  .gf-btn-primary:hover:not(:disabled) { filter: brightness(1.10); }
+  .gf-btn-primary:active:not(:disabled) {
+    transform: translateY(1px);
+    box-shadow: var(--gf-btn-shadow-active);
+    background-image: none;
+  }
+  .gf-btn-primary:focus-visible { outline: 2px solid var(--gf-accent); outline-offset: 2px; }
+  .gf-btn-primary:disabled { opacity: .5; cursor: default; transform: none; box-shadow: none; filter: none; }
+
+  /* Square icon button (header bell, toolbar icons). Deliberately LIGHTER than
+     .gf-btn — a bare tint and hairline border rather than a raised face — because a
+     40px topbar full of embossed chrome reads as heavy. It still behaves like a
+     control: it has a box, it lifts on hover, and it presses on click. */
+  .gf-icon-btn {
+    /* No `display` here on purpose: these buttons carry responsive display classes
+       (lg:hidden, hidden lg:flex) and a display declared in the same layer would
+       fight them, showing the sidebar-collapse arrow on mobile. Callers set their
+       own display; align/justify below are inert until one of them makes it flex. */
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 2px;
+    border: 1px solid var(--gf-panel-border);
+    background: var(--gf-hover);
+    color: var(--gf-text-muted);
+    transition: background-color .12s ease, color .12s ease,
+                border-color .12s ease, box-shadow .12s ease, transform .06s ease;
+  }
+  .gf-icon-btn:hover {
+    background: var(--gf-hover-strong);
+    border-color: var(--gf-btn-border);
+    color: var(--gf-text-primary);
+  }
+  .gf-icon-btn:active {
+    transform: translateY(1px);
+    box-shadow: var(--gf-btn-shadow-active);
+  }
+  .gf-icon-btn:focus-visible { outline: 2px solid var(--gf-accent); outline-offset: 1px; }
+  /* Dropdown open — the button stays visibly engaged while its panel is showing. */
+  .gf-icon-btn.is-open {
+    background: var(--gf-accent-dim);
+    border-color: var(--gf-accent);
+    color: var(--gf-text-primary);
   }
 }
 

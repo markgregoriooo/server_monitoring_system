@@ -138,7 +138,7 @@ function Panel({
     >
       {title !== undefined && (
         <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
-          <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
+          <span className="text-[13px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
           {right && <div className="flex items-center gap-2">{right}</div>}
         </div>
       )}
@@ -151,13 +151,13 @@ function StatPanel({ label, value, unit, color, sub }: { label: string; value: s
   return (
     <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 88 }}>
       <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[10px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
+        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
       </div>
       <div className="px-3 pt-1.5">
         <span className="text-[26px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[9px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
+        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
+        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
       </div>
     </div>
   );
@@ -169,7 +169,7 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
   return (
     <button
       onClick={onClick}
-      className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
+      className="text-[13px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
       style={{ color: danger ? RED : gf.textMuted, border: `1px solid ${danger ? `${RED}55` : gf.border}`, background: "transparent" }}
     >
       {children}
@@ -180,7 +180,7 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[9px] tracking-wider uppercase" style={{ color: gf.textDim }}>{label}</span>
+      <span className="text-[11px] tracking-wider uppercase" style={{ color: gf.textDim }}>{label}</span>
       {children}
     </div>
   );
@@ -196,7 +196,7 @@ function PortChip({ label, up, util }: { label: string; up: boolean; util?: numb
   const showUtil = up && util != null && Number.isFinite(util);
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[10px]"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[12px]"
       style={{ background: gf.hover, border: `1px solid ${gf.divider}`, color: up ? gf.textMuted : gf.textDim }}
     >
       <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: up ? GREEN : RED }} />
@@ -351,13 +351,13 @@ export default function NetworkMonitoring() {
       <div className="flex items-center justify-between gap-3 px-0.5">
         <div className="flex items-baseline gap-2 min-w-0">
           <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>Network Monitoring</h1>
-          <span className="text-[11px] hidden sm:inline" style={{ color: gf.textDim }}>{total} devices · {online} online</span>
+          <span className="text-[13px] hidden sm:inline" style={{ color: gf.textDim }}>{total} devices · {online} online</span>
         </div>
         <div className="flex items-center gap-2.5 shrink-0">
           {isAdmin && (
             <button
               onClick={openAdd}
-              className="inline-flex items-center gap-1.5 text-[11px] font-medium transition-colors active:translate-y-px"
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium transition-colors active:translate-y-px"
               style={{ height: 28, padding: "0 10px", color: "#fff", background: BLUE, border: `1px solid ${BLUE}`, borderRadius: 2 }}
               onMouseEnter={(e) => { e.currentTarget.style.background = BLUE_HOVER; e.currentTarget.style.borderColor = BLUE_HOVER; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = BLUE; e.currentTarget.style.borderColor = BLUE; }}
@@ -366,7 +366,7 @@ export default function NetworkMonitoring() {
               Add router
             </button>
           )}
-          <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
+          <span className="flex items-center gap-1.5 text-[12px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
             <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN, boxShadow: `0 0 6px ${GREEN}` }} /> Live
           </span>
         </div>
@@ -390,14 +390,14 @@ export default function NetworkMonitoring() {
               <rect x="2" y="15" width="20" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
               <path d="M12 9v6M7 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
-            <p className="text-[13px] mt-3" style={{ color: gf.textMuted }}>No routers or switches monitored yet</p>
-            <p className="text-[11px] mt-1 max-w-md" style={{ color: gf.textDim }}>
+            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No routers or switches monitored yet</p>
+            <p className="text-[13px] mt-1 max-w-md" style={{ color: gf.textDim }}>
               {isAdmin
                 ? "Click “Add router” to register a managed router (with SNMP enabled) — it starts polling within a minute."
                 : "A managed router (with SNMP enabled) must be registered by an admin to see live interface metrics here."}
             </p>
             {isAdmin && (
-              <button onClick={openAdd} className="mt-4 text-[11px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: BLUE }}>
+              <button onClick={openAdd} className="gf-raise mt-4 text-[13px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: BLUE }}>
                 + Add router
               </button>
             )}
@@ -414,16 +414,16 @@ export default function NetworkMonitoring() {
               onClick={() => setDetailId(d.id)}
               right={
                 <span className="flex items-center gap-2">
-                  <span className="text-[10px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
+                  <span className="text-[12px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
                   <span className="inline-flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-                    <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
+                    <span className="text-[13px]" style={{ color: gf.textMuted }}>{d.status}</span>
                   </span>
                   {confirmId === d.id ? (
                     <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                      <span className="text-[10px]" style={{ color: gf.textMuted }}>Remove?</span>
-                      <button onClick={(e) => { e.stopPropagation(); remove(d.id); }} className="px-2 py-1 rounded-md text-[10px] font-medium" style={{ color: "#fff", background: RED }}>Yes</button>
-                      <button onClick={(e) => { e.stopPropagation(); setConfirmId(null); }} className="px-2 py-1 rounded-md text-[10px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>No</button>
+                      <span className="text-[12px]" style={{ color: gf.textMuted }}>Remove?</span>
+                      <button onClick={(e) => { e.stopPropagation(); remove(d.id); }} className="gf-raise px-2 py-1 rounded-md text-[12px] font-medium" style={{ color: "#fff", background: RED }}>Yes</button>
+                      <button onClick={(e) => { e.stopPropagation(); setConfirmId(null); }} className="px-2 py-1 rounded-md text-[12px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>No</button>
                     </span>
                   ) : (
                     <>
@@ -435,7 +435,7 @@ export default function NetworkMonitoring() {
               }
             >
               {/* Summary strip — the facts you scan before deciding to drill in. */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[12px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
                 <span className="font-mono">{d.ip}</span>
                 <span>{d.location}</span>
                 {d.sysName && <span>{d.sysName}</span>}
@@ -445,14 +445,14 @@ export default function NetworkMonitoring() {
                 <span className="ml-auto">↑ {formatUptime(d.uptimeSeconds)}</span>
               </div>
               {!d.monitored ? (
-                <div className="px-3 py-4 text-[11px]" style={{ color: ORANGE }}>SNMP not configured — reachability only (ping fallback pending).</div>
+                <div className="px-3 py-4 text-[13px]" style={{ color: ORANGE }}>SNMP not configured — reachability only (ping fallback pending).</div>
               ) : d.interfaces.length === 0 ? (
-                <div className="px-3 py-4 text-[11px]" style={{ color: gf.textDim }}>
+                <div className="px-3 py-4 text-[13px]" style={{ color: gf.textDim }}>
                   {d.status === "Online" ? "No interfaces reported." : "Offline — awaiting next poll."}
                 </div>
               ) : (
                 <div className="px-3 py-2.5 flex flex-col gap-1.5">
-                  <span className="text-[9px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                  <span className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
                     Ports · {d.interfaces.filter((i) => i.linkUp).length}/{d.interfaces.length} up
                   </span>
                   <div className="flex flex-wrap gap-1.5">
@@ -472,38 +472,38 @@ export default function NetworkMonitoring() {
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setFormOpen(false)}>
           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
             <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.panel }}>
-              <span className="text-[12px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router / switch</span>
+              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router / switch</span>
               <button onClick={() => setFormOpen(false)} className="grid place-items-center w-7 h-7 rounded-md" style={{ color: gf.textMuted }} title="Close (Esc)">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
               </button>
             </div>
             <div className="p-4 flex flex-col gap-3">
               <Field label="Name">
-                <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Core switch" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Core switch" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="IP address">
-                  <input value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.1" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.1" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
                 <Field label="SNMP port">
-                  <input value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
               </div>
               <Field label="SNMP community (read-only, v2c)">
-                <input value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <Field label="Location">
-                <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
-              <p className="text-[10px] leading-relaxed" style={{ color: gf.textDim }}>
+              <p className="text-[12px] leading-relaxed" style={{ color: gf.textDim }}>
                 Uses SNMP v2c with a read-only community. Confirm UDP {form.snmpPort || "161"} is reachable from the backend host. Polling begins on the next cycle (≤60s) — no restart needed.
               </p>
-              {formError && <div className="text-[10.5px]" style={{ color: RED }}>{formError}</div>}
+              {formError && <div className="text-[12px]" style={{ color: RED }}>{formError}</div>}
               <div className="flex gap-2 mt-1">
-                <button onClick={save} disabled={saving} className="text-[11px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: BLUE }}>
+                <button onClick={save} disabled={saving} className="gf-raise text-[13px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: BLUE }}>
                   {saving ? "Adding…" : "Add router"}
                 </button>
-                <button onClick={() => setFormOpen(false)} className="text-[11px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
+                <button onClick={() => setFormOpen(false)} className="text-[13px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
                   Cancel
                 </button>
               </div>

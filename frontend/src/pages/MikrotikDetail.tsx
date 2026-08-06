@@ -130,7 +130,7 @@ function ThroughputChart({ history }: { history: HistPoint[] }) {
   return (
     <div style={{ height: 200 }}>
       {history.length < 2 ? (
-        <div className="flex items-center justify-center h-full text-[11px]" style={{ color: gf.textDim }}>No data in range</div>
+        <div className="flex items-center justify-center h-full text-[13px]" style={{ color: gf.textDim }}>No data in range</div>
       ) : (
         <canvas ref={ref} />
       )}
@@ -142,7 +142,7 @@ function Panel({ title, right, children, noPad }: { title: string; right?: React
   return (
     <div className="flex flex-col rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
       <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
-        <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
+        <span className="text-[13px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
         {right && <div className="flex items-center gap-2">{right}</div>}
       </div>
       <div className="flex-1 min-h-0" style={{ padding: noPad ? 0 : 12 }}>{children}</div>
@@ -154,13 +154,13 @@ function Stat({ label, value, unit, color, sub }: { label: string; value: string
   return (
     <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 84 }}>
       <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[10px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
+        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
       </div>
       <div className="px-3 pt-1.5">
         <span className="text-[24px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[9px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
+        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
+        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
       </div>
     </div>
   );
@@ -185,7 +185,7 @@ function formatSpeed(mbps: number | null | undefined): string | null {
 function Th({ children, right, w }: { children: React.ReactNode; right?: boolean; w?: number }) {
   return (
     <th
-      className={`text-[9px] tracking-widest uppercase font-medium px-2 py-1.5 ${right ? "text-right" : "text-left"}`}
+      className={`text-[11px] tracking-widest uppercase font-medium px-2 py-1.5 ${right ? "text-right" : "text-left"}`}
       style={{ color: gf.textMuted, width: w, whiteSpace: "nowrap" }}
     >
       {children}
@@ -199,7 +199,7 @@ function PortRow({ i, rate }: { i: MkIface; rate?: PortRate | undefined }) {
   const speed = formatSpeed(i.speedMbps);
   const errors = (i.rxErrors ?? 0) + (i.txErrors ?? 0);
   const down = !i.linkUp;
-  const td = "px-2 py-1.5 text-[11px] tabular-nums whitespace-nowrap";
+  const td = "px-2 py-1.5 text-[13px] tabular-nums whitespace-nowrap";
   const dim = { color: gf.textDim } as const;
 
   return (
@@ -387,7 +387,7 @@ export default function MikrotikDetail({
       <div className="flex items-center gap-3 px-0.5">
         <button
           onClick={onBack}
-          className="flex items-center gap-1.5 text-[13px] transition-colors text-[var(--gf-text-muted)] hover:text-[var(--gf-text-primary)]"
+          className="flex items-center gap-1.5 text-[15px] transition-colors text-[var(--gf-text-muted)] hover:text-[var(--gf-text-primary)]"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -396,7 +396,7 @@ export default function MikrotikDetail({
         </button>
         <div className="min-w-0">
           <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>{d.name}</h1>
-          <div className="text-[11px] truncate" style={{ color: gf.textDim }}>
+          <div className="text-[13px] truncate" style={{ color: gf.textDim }}>
             {d.location} · {d.ip}
             {d.routerosVersion ? ` · RouterOS ${d.routerosVersion}` : ""}
             {d.boardModel ? ` · ${d.boardModel}` : ""}
@@ -406,7 +406,7 @@ export default function MikrotikDetail({
           {onConfigure && (
             <button
               onClick={onConfigure}
-              className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
+              className="text-[13px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
               style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
             >
               Configure
@@ -414,10 +414,10 @@ export default function MikrotikDetail({
           )}
           <span className="inline-flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-            <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
+            <span className="text-[13px]" style={{ color: gf.textMuted }}>{d.status}</span>
           </span>
           {/* Makes "live" verifiable — you can see the poll landing. */}
-          <span className="text-[10px] hidden sm:inline" style={{ color: gf.textDim }}>
+          <span className="text-[12px] hidden sm:inline" style={{ color: gf.textDim }}>
             {lastUpdate
               ? `updated ${new Date(lastUpdate).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour12: false })}`
               : "awaiting poll…"}
@@ -426,7 +426,7 @@ export default function MikrotikDetail({
       </div>
 
       {!d.monitored && (
-        <div className="text-[11px] px-3 py-2 rounded-[2px]" style={{ color: ORANGE, background: ORANGE + "14", border: `1px solid ${ORANGE}40` }}>
+        <div className="text-[13px] px-3 py-2 rounded-[2px]" style={{ color: ORANGE, background: ORANGE + "14", border: `1px solid ${ORANGE}40` }}>
           API not configured — set the read-only RouterOS login (admin) before this router can be polled.
         </div>
       )}
@@ -453,7 +453,7 @@ export default function MikrotikDetail({
             <select
               value={chartPort}
               onChange={(e) => setChartPort(e.target.value)}
-              className="text-[10px] px-1.5 py-0.5 rounded-[2px] outline-none"
+              className="text-[12px] px-1.5 py-0.5 rounded-[2px] outline-none"
               style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
             >
               <option value="">All ports</option>
@@ -463,11 +463,11 @@ export default function MikrotikDetail({
                 </option>
               ))}
             </select>
-            <span className="text-[10px]" style={{ color: BLUE }}>In {formatBps(latest?.rxBytesPerSec ?? null)}</span>
-            <span className="text-[10px]" style={{ color: GREEN }}>Out {formatBps(latest?.txBytesPerSec ?? null)}</span>
+            <span className="text-[12px]" style={{ color: BLUE }}>In {formatBps(latest?.rxBytesPerSec ?? null)}</span>
+            <span className="text-[12px]" style={{ color: GREEN }}>Out {formatBps(latest?.txBytesPerSec ?? null)}</span>
             <div className="flex rounded-md overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
               {RANGES.map((rg) => (
-                <button key={rg} onClick={() => setRange(rg)} className="text-[10px] px-2 py-0.5 transition-colors"
+                <button key={rg} onClick={() => setRange(rg)} className="text-[12px] px-2 py-0.5 transition-colors"
                   style={{ background: range === rg ? gf.hover : "transparent", color: range === rg ? gf.textPrimary : gf.textMuted }}>
                   {rangeLabel[rg]}
                 </button>
@@ -487,17 +487,17 @@ export default function MikrotikDetail({
             editLabels ? (
               <span className="flex items-center gap-2">
                 <button onClick={() => setEditLabels(false)} disabled={savingLabels}
-                  className="text-[10px] px-2 py-0.5 rounded-[2px]"
+                  className="text-[12px] px-2 py-0.5 rounded-[2px]"
                   style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>Cancel</button>
                 <button onClick={saveLabels} disabled={savingLabels}
-                  className="text-[10px] px-2 py-0.5 rounded-[2px] font-semibold"
+                  className="gf-raise text-[12px] px-2 py-0.5 rounded-[2px] font-semibold"
                   style={{ background: BLUE, color: "#fff", opacity: savingLabels ? 0.6 : 1 }}>
                   {savingLabels ? "Saving…" : "Save labels"}
                 </button>
               </span>
             ) : (
               <button onClick={startLabelEdit}
-                className="text-[10px] px-2 py-0.5 rounded-[2px]"
+                className="text-[12px] px-2 py-0.5 rounded-[2px]"
                 style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
                 Edit labels
               </button>
@@ -507,24 +507,24 @@ export default function MikrotikDetail({
         noPad
       >
         {ifaces.length === 0 ? (
-          <div className="px-3 py-4 text-[11px]" style={{ color: gf.textDim }}>
+          <div className="px-3 py-4 text-[13px]" style={{ color: gf.textDim }}>
             {d.status === "Online" ? "No ports reported." : "Offline — awaiting next poll."}
           </div>
         ) : editLabels ? (
           <div className="flex flex-col">
-            <div className="px-3 py-2 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
+            <div className="px-3 py-2 text-[12px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
               Name each port by what it connects to. Leave blank to show the raw RouterOS name.
             </div>
             {ifaces.map((i) => (
               <div key={i.name} className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: i.linkUp ? GREEN : RED }} />
-                <span className="w-28 shrink-0 text-[12px] font-medium truncate" style={{ color: gf.textPrimary }}>{i.name}</span>
+                <span className="w-28 shrink-0 text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>{i.name}</span>
                 <input
                   value={labelDraft[i.name] ?? ""}
                   maxLength={100}
                   onChange={(e) => setLabelDraft((p) => ({ ...p, [i.name]: e.target.value }))}
                   placeholder="e.g. ISP uplink, Rack A switch"
-                  className="flex-1 min-w-0 px-2 py-1 text-[12px] rounded-[2px] outline-none"
+                  className="flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
                   style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
                 />
               </div>
@@ -556,14 +556,14 @@ export default function MikrotikDetail({
 
       {/* Connection (read-only; edit via Configure) */}
       <Panel title="RouterOS Connection">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[11px]" style={{ color: gf.textMuted }}>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[13px]" style={{ color: gf.textMuted }}>
           <span>Host <span style={{ color: gf.textPrimary }}>{d.ip}</span></span>
           <span>Port <span style={{ color: gf.textPrimary }}>{d.apiPort ?? "—"}</span></span>
           <span>TLS <span style={{ color: d.useTls ? GREEN : gf.textDim }}>{d.useTls ? "on (API-SSL)" : "off"}</span></span>
           <span>User <span style={{ color: gf.textPrimary }}>{d.apiUsername || "—"}</span></span>
           <span>Uptime <span style={{ color: gf.textPrimary }}>{formatUptime(d.uptimeSeconds)}</span></span>
         </div>
-        <p className="text-[9px] mt-2" style={{ color: gf.textDim }}>
+        <p className="text-[11px] mt-2" style={{ color: gf.textDim }}>
           The API password is stored encrypted (AES-256-GCM) and is never returned to the dashboard.
         </p>
       </Panel>
@@ -571,11 +571,11 @@ export default function MikrotikDetail({
       {/* Event log */}
       <Panel title="Event Log">
         {logs.length === 0 ? (
-          <div className="text-[11px] py-3 text-center" style={{ color: gf.textDim }}>No events recorded.</div>
+          <div className="text-[13px] py-3 text-center" style={{ color: gf.textDim }}>No events recorded.</div>
         ) : (
           <div className="flex flex-col">
             {logs.slice(0, 30).map((l, i) => (
-              <div key={i} className="flex items-center gap-2 py-1.5 text-[11px]" style={{ borderBottom: i < logs.length - 1 ? `1px solid ${gf.divider}` : "none" }}>
+              <div key={i} className="flex items-center gap-2 py-1.5 text-[13px]" style={{ borderBottom: i < logs.length - 1 ? `1px solid ${gf.divider}` : "none" }}>
                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: logColor(l.log_level) }} />
                 <span className="shrink-0 w-28" style={{ color: gf.textDim }}>{fmtDateTime(l.recorded_at)}</span>
                 <span className="truncate" style={{ color: gf.textPrimary }}>{l.message}</span>

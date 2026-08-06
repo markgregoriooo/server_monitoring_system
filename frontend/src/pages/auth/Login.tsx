@@ -25,7 +25,7 @@ function GoogleG() {
 function Banner({ color, children }: { color: string; children: React.ReactNode }) {
   return (
     <div
-      className="text-[12px] leading-relaxed px-3 py-2.5 mb-4"
+      className="text-[14px] leading-relaxed px-3 py-2.5 mb-4"
       style={{ color, background: `${color}14`, border: `1px solid ${color}40`, borderRadius: 2 }}
     >
       {children}
@@ -150,13 +150,13 @@ export default function Login() {
           )}
 
           <h1
-            className="text-[13px] sm:text-[15px] font-semibold text-center leading-snug px-2"
+            className="text-[15px] sm:text-[15px] font-semibold text-center leading-snug px-2"
             style={{ color: "var(--gf-text-primary)" }}
           >
             {BRAND.fullName}
           </h1>
           <p
-            className="text-[9px] sm:text-[10px] tracking-[0.18em] mt-2 text-center uppercase px-2"
+            className="text-[11px] sm:text-[12px] tracking-[0.18em] mt-2 text-center uppercase px-2"
             style={{ color: "var(--gf-text-dim)" }}
           >
             {BRAND.tagline}
@@ -167,13 +167,13 @@ export default function Login() {
         <div style={{ background: "var(--gf-panel)", border: "1px solid var(--gf-panel-border)", borderRadius: 2 }}>
           {/* Panel header strip (Grafana panel chrome) */}
           <div className="px-4 flex items-center" style={{ height: 36, borderBottom: "1px solid var(--gf-divider)" }}>
-            <span className="text-[11px] font-medium tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>
+            <span className="text-[13px] font-medium tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>
               Sign In
             </span>
           </div>
 
           <div className="p-5 sm:p-6">
-            <p className="text-[12px] mb-5" style={{ color: "var(--gf-text-muted)" }}>
+            <p className="text-[14px] mb-5" style={{ color: "var(--gf-text-muted)" }}>
               Sign in with your CSPC GSUITE account to access the dashboard.
             </p>
 
@@ -186,7 +186,7 @@ export default function Login() {
               type="button"
               onClick={handleClick}
               disabled={loading}
-              className="w-full flex items-center justify-center gap-2.5 text-[13px] font-semibold transition-opacity hover:opacity-90 active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full flex items-center justify-center gap-2.5 text-[15px] font-semibold transition-opacity hover:opacity-90 active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed"
               style={{ height: 42, background: "#fff", color: "#1f1f1f", borderRadius: 2 }}
             >
               {loading ? (
@@ -205,14 +205,14 @@ export default function Login() {
               )}
             </button>
 
-            <p className="text-[10px] text-center leading-relaxed mt-3" style={{ color: "var(--gf-text-dim)" }}>
+            <p className="text-[12px] text-center leading-relaxed mt-3" style={{ color: "var(--gf-text-dim)" }}>
               CSPC accounts only — <span style={{ color: "var(--gf-text-muted)" }}>@cspc.edu.ph</span> /{" "}
               <span style={{ color: "var(--gf-text-muted)" }}>@my.cspc.edu.ph</span>
             </p>
           </div>
         </div>
 
-        <p className="text-center text-[10px] mt-4" style={{ color: "var(--gf-text-dim)" }}>
+        <p className="text-center text-[12px] mt-4" style={{ color: "var(--gf-text-dim)" }}>
           {BRAND.name} · ICTU · v1.0.0
         </p>
       </div>

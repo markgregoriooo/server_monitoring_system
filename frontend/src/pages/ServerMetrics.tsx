@@ -183,7 +183,7 @@ function Panel({
           className="flex items-center justify-between px-3 shrink-0"
           style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}
         >
-          <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>
+          <span className="text-[13px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>
             {title}
           </span>
           {right && <div className="flex items-center gap-2">{right}</div>}
@@ -248,13 +248,13 @@ function StatPanel({
       style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 96 }}
     >
       <div className="flex items-center justify-between px-3 pt-2.5 z-10">
-        <span className="text-[10px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
+        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
       </div>
       <div className="px-3 pt-1.5 z-10">
         <span className="text-[28px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[9px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
+        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
+        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
       </div>
       {spark && spark.length > 1 && (
         <div className="absolute inset-x-0 bottom-0 opacity-70 pointer-events-none">
@@ -275,7 +275,7 @@ function BarGauge({ label, value, status }: { label: string; value: number; stat
         {status && (
           <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: statusColor(status), boxShadow: `0 0 5px ${statusColor(status)}` }} />
         )}
-        <span className="text-[11px] truncate" style={{ color: gf.textPrimary }}>{label}</span>
+        <span className="text-[13px] truncate" style={{ color: gf.textPrimary }}>{label}</span>
       </div>
       <div className="flex-1 h-3.5 rounded-[2px] overflow-hidden" style={{ background: TRACK }}>
         <div
@@ -283,7 +283,7 @@ function BarGauge({ label, value, status }: { label: string; value: number; stat
           style={{ width: `${v}%`, background: BAR_GRADIENT, backgroundSize: `${v > 0 ? (100 / v) * 100 : 100}% 100%` }}
         />
       </div>
-      <span className="text-[11px] font-bold w-10 text-right shrink-0" style={{ color: loadColor(v) }}>{v}%</span>
+      <span className="text-[13px] font-bold w-10 text-right shrink-0" style={{ color: loadColor(v) }}>{v}%</span>
     </div>
   );
 }
@@ -297,7 +297,7 @@ function TableBar({ value }: { value: number }) {
       <div className="w-16 h-2 rounded-[2px] overflow-hidden" style={{ background: TRACK }}>
         <div className="h-full rounded-[2px] transition-all duration-500" style={{ width: `${v}%`, background: BAR_GRADIENT, backgroundSize: `${v > 0 ? (100 / v) * 100 : 100}% 100%` }} />
       </div>
-      <span className="text-[11px] font-bold w-9 text-right" style={{ color: loadColor(v) }}>{v}%</span>
+      <span className="text-[13px] font-bold w-9 text-right" style={{ color: loadColor(v) }}>{v}%</span>
     </div>
   );
 }
@@ -309,8 +309,8 @@ function MetricBar({ label, value }: { label: string; value: number }) {
   return (
     <div>
       <div className="flex items-baseline justify-between mb-1">
-        <span className="text-[9px] uppercase tracking-wider" style={{ color: gf.textDim }}>{label}</span>
-        <span className="text-[11px] font-bold font-mono" style={{ color: loadColor(v) }}>{v}%</span>
+        <span className="text-[11px] uppercase tracking-wider" style={{ color: gf.textDim }}>{label}</span>
+        <span className="text-[13px] font-bold font-mono" style={{ color: loadColor(v) }}>{v}%</span>
       </div>
       <div className="h-1.5 rounded-[2px] overflow-hidden" style={{ background: TRACK }}>
         <div className="h-full rounded-[2px] transition-all duration-500" style={{ width: `${v}%`, background: BAR_GRADIENT, backgroundSize: `${v > 0 ? (100 / v) * 100 : 100}% 100%` }} />
@@ -324,7 +324,7 @@ function StatusDot({ status }: { status: string }) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: c, boxShadow: `0 0 5px ${c}` }} />
-      <span className="text-[11px]" style={{ color: gf.textMuted }}>{status}</span>
+      <span className="text-[13px]" style={{ color: gf.textMuted }}>{status}</span>
     </span>
   );
 }
@@ -335,7 +335,7 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
   return (
     <button
       onClick={onClick}
-      className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
+      className="text-[13px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
       style={{
         color: danger ? RED : gf.textMuted,
         border: `1px solid ${danger ? "rgba(242,73,92,0.3)" : gf.border}`,
@@ -356,8 +356,8 @@ function ServerCard({ s, isAdmin, onView, onDelete, onMaintenance }: {
     <div className="rounded-lg p-3" style={{ border: `1px solid ${gf.border}` }}>
       <div className="flex items-start justify-between gap-2">
         <button onClick={onView} className="min-w-0 text-left">
-          <div className="text-[13px] font-medium truncate" style={{ color: gf.textPrimary }}>{s.name}</div>
-          <div className="text-[11px] font-mono truncate" style={{ color: gf.textMuted }}>{s.ip}</div>
+          <div className="text-[15px] font-medium truncate" style={{ color: gf.textPrimary }}>{s.name}</div>
+          <div className="text-[13px] font-mono truncate" style={{ color: gf.textMuted }}>{s.ip}</div>
         </button>
         <StatusDot status={s.status} />
       </div>
@@ -367,7 +367,7 @@ function ServerCard({ s, isAdmin, onView, onDelete, onMaintenance }: {
         <MetricBar label="Disk" value={s.diskUsed} />
       </div>
       <div className="flex items-center justify-between gap-2 mt-3 pt-2.5" style={{ borderTop: `1px solid ${gf.divider}` }}>
-        <span className="text-[11px] truncate" style={{ color: gf.textMuted }}>↑ {s.uptime}</span>
+        <span className="text-[13px] truncate" style={{ color: gf.textMuted }}>↑ {s.uptime}</span>
         <div className="flex gap-2 shrink-0">
           <GhostButton onClick={onView}>View</GhostButton>
           {isAdmin && (
@@ -442,7 +442,7 @@ function MetricCard({ icon, iconBg, iconColor, label, value, sub, percent }: Met
         <div className="w-5 h-5 rounded-[3px] flex items-center justify-center shrink-0" style={{ background: iconBg, color: iconColor }}>
           {icon}
         </div>
-        <span className="text-[11px] font-medium" style={{ color: gf.textMuted }}>{label}</span>
+        <span className="text-[13px] font-medium" style={{ color: gf.textMuted }}>{label}</span>
       </div>
       <div className="font-mono text-[18px] font-medium leading-none" style={{ color: gf.textPrimary }}>{value}</div>
       {percent !== undefined && (
@@ -450,7 +450,7 @@ function MetricCard({ icon, iconBg, iconColor, label, value, sub, percent }: Met
           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${percent}%`, background: loadColor(percent) }} />
         </div>
       )}
-      <div className="text-[11px]" style={{ color: gf.textDim }}>{sub}</div>
+      <div className="text-[13px]" style={{ color: gf.textDim }}>{sub}</div>
     </div>
   );
 }
@@ -485,7 +485,7 @@ function ServerDrawerRow({ server: s, isOpen, newestAgent }: {
             </div>
 
             {/* Agent health + per-volume usage — neither was visible anywhere before */}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2.5 text-[10px]" style={{ color: gf.textDim }}>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2.5 text-[12px]" style={{ color: gf.textDim }}>
               <span>
                 agent <span style={{ color: gf.textMuted }}>{s.agentVersion || "—"}</span>
                 {outdated && (
@@ -696,9 +696,9 @@ export default function ServerMetrics() {
       <div className="flex items-center justify-between gap-3 px-0.5">
         <div className="flex items-baseline gap-2 min-w-0">
           <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>Server Metrics</h1>
-          <span className="text-[11px] hidden sm:inline" style={{ color: gf.textDim }}>{total} hosts · {online} online</span>
+          <span className="text-[13px] hidden sm:inline" style={{ color: gf.textDim }}>{total} hosts · {online} online</span>
         </div>
-        <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textMuted }}>
+        <span className="flex items-center gap-1.5 text-[12px] tracking-widest uppercase shrink-0" style={{ color: gf.textMuted }}>
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN, boxShadow: `0 0 6px ${GREEN}` }} /> Live
         </span>
       </div>
@@ -714,22 +714,22 @@ export default function ServerMetrics() {
                 style={{ background: "rgba(255,120,10,0.06)", border: "1px solid rgba(255,120,10,0.22)" }}
               >
                 <div className="min-w-0 flex-1">
-                  <div className="text-[12px] font-medium truncate" style={{ color: gf.textPrimary }}>{a.name}</div>
-                  <div className="text-[10px] truncate" style={{ color: gf.textMuted }}>
+                  <div className="text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>{a.name}</div>
+                  <div className="text-[12px] truncate" style={{ color: gf.textMuted }}>
                     {(a.ip ?? "—")} · {(a.os ?? "—")} · {(a.arch ?? "—")} · {a.cores ?? "?"} cores
                   </div>
                 </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => handleApprove(a.id)}
-                    className="flex-1 sm:flex-none text-[11px] font-medium px-3 py-1.5 rounded-md text-white active:scale-95 transition"
+                    className="gf-raise flex-1 sm:flex-none text-[13px] font-medium px-3 py-1.5 rounded-md text-white active:scale-95 transition"
                     style={{ background: GREEN }}
                   >
                     Approve
                   </button>
                   <button
                     onClick={() => handleReject(a.id)}
-                    className="flex-1 sm:flex-none text-[11px] font-medium px-3 py-1.5 rounded-md active:scale-95 transition"
+                    className="flex-1 sm:flex-none text-[13px] font-medium px-3 py-1.5 rounded-md active:scale-95 transition"
                     style={{ background: gf.hover, color: gf.textMuted, border: `1px solid ${gf.border}` }}
                   >
                     Reject
@@ -753,12 +753,12 @@ export default function ServerMetrics() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
         <Panel title="Host CPU" noPad bodyStyle={{ padding: "6px 0" }}>
           {servers.length === 0
-            ? <div className="text-[10px] text-center py-5" style={{ color: gf.textDim }}>No hosts</div>
+            ? <div className="text-[12px] text-center py-5" style={{ color: gf.textDim }}>No hosts</div>
             : servers.map((s) => <BarGauge key={s.id} label={s.name} value={s.cpu} status={s.status} />)}
         </Panel>
         <Panel title="Host Memory" noPad bodyStyle={{ padding: "6px 0" }}>
           {servers.length === 0
-            ? <div className="text-[10px] text-center py-5" style={{ color: gf.textDim }}>No hosts</div>
+            ? <div className="text-[12px] text-center py-5" style={{ color: gf.textDim }}>No hosts</div>
             : servers.map((s) => <BarGauge key={s.id} label={s.name} value={s.memory} status={s.status} />)}
         </Panel>
       </div>
@@ -767,7 +767,7 @@ export default function ServerMetrics() {
       <Panel
         title="Servers"
         noPad
-        right={<span className="text-[10px]" style={{ color: gf.textDim }}>{online}/{total} online</span>}
+        right={<span className="text-[12px]" style={{ color: gf.textDim }}>{online}/{total} online</span>}
       >
         {servers.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-center py-12 px-4">
@@ -777,8 +777,8 @@ export default function ServerMetrics() {
               <circle cx="7" cy="7" r="1" fill="currentColor" />
               <circle cx="7" cy="17" r="1" fill="currentColor" />
             </svg>
-            <p className="text-[13px] mt-3" style={{ color: gf.textMuted }}>No servers monitored yet</p>
-            <p className="text-[11px] mt-1 max-w-xs" style={{ color: gf.textDim }}>
+            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No servers monitored yet</p>
+            <p className="text-[13px] mt-1 max-w-xs" style={{ color: gf.textDim }}>
               Install the monitoring agent on a server and approve it to see live metrics here.
             </p>
           </div>
@@ -804,7 +804,7 @@ export default function ServerMetrics() {
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${gf.divider}` }}>
                     {["Host", "IP Address", "Status", "CPU", "Memory", "Disk", "Uptime", ""].map((h) => (
-                      <th key={h} className="text-left px-3 py-2 text-[9px] tracking-widest uppercase font-medium whitespace-nowrap" style={{ color: gf.textDim }}>
+                      <th key={h} className="text-left px-3 py-2 text-[11px] tracking-widest uppercase font-medium whitespace-nowrap" style={{ color: gf.textDim }}>
                         {h}
                       </th>
                     ))}
@@ -818,16 +818,16 @@ export default function ServerMetrics() {
                         className="cursor-pointer transition-colors"
                         style={{ borderBottom: `1px solid ${gf.divider}`, background: openId === s.id ? gf.hover : i % 2 ? gf.hover : "transparent" }}
                       >
-                        <td className="px-3 py-2.5 text-[12px] font-medium whitespace-nowrap" style={{ color: gf.textPrimary }}>
+                        <td className="px-3 py-2.5 text-[14px] font-medium whitespace-nowrap" style={{ color: gf.textPrimary }}>
                           {s.name}
-                          <span className="ml-1.5 text-[10px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === s.id ? "rotate(180deg)" : "none" }}>▾</span>
+                          <span className="ml-1.5 text-[12px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === s.id ? "rotate(180deg)" : "none" }}>▾</span>
                         </td>
-                        <td className="px-3 py-2.5 text-[11px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{s.ip}</td>
+                        <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{s.ip}</td>
                         <td className="px-3 py-2.5"><StatusDot status={s.status} /></td>
                         <td className="px-3 py-2.5"><TableBar value={s.cpu} /></td>
                         <td className="px-3 py-2.5"><TableBar value={s.memory} /></td>
                         <td className="px-3 py-2.5"><TableBar value={s.diskUsed} /></td>
-                        <td className="px-3 py-2.5 text-[11px] whitespace-nowrap" style={{ color: gf.textMuted }}>{s.uptime}</td>
+                        <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{s.uptime}</td>
                         <td className="px-3 py-2.5 whitespace-nowrap text-right">
                           <GhostButton onClick={(e) => { e.stopPropagation(); setDetailServer(s); }}>View</GhostButton>
                           {isAdmin && (

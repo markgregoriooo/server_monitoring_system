@@ -173,7 +173,7 @@ function StatPanel({
       style={{ background: GF.panel, border: `1px solid ${GF.border}`, minHeight: 104 }}
     >
       <div className="flex items-center justify-between px-3 pt-2.5 z-10">
-        <span className="text-[10px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
+        <span className="text-[12px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
           {label}
         </span>
         <span className="w-1.5 h-1.5 rounded-full" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
@@ -182,9 +182,9 @@ function StatPanel({
         <span className="text-[28px] font-bold leading-none" style={{ color }}>
           {value}
         </span>
-        {unit && <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
+        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
         {sub && (
-          <div className="text-[9px] mt-1 tracking-widest" style={{ color: GF.textDim }}>
+          <div className="text-[11px] mt-1 tracking-widest" style={{ color: GF.textDim }}>
             {sub}
           </div>
         )}
@@ -295,7 +295,7 @@ function AirconCard({
             if (e.key === "Enter")  { e.preventDefault(); finishEdit(true); }
             if (e.key === "Escape") { e.preventDefault(); finishEdit(false); }
           }}
-          className="min-w-0 flex-1 px-1.5 py-0.5 text-[12px] font-semibold rounded-[2px] focus:outline-none"
+          className="min-w-0 flex-1 px-1.5 py-0.5 text-[14px] font-semibold rounded-[2px] focus:outline-none"
           style={{ background: GF.bg, color: GF.textPrimary, border: `1px solid ${GF.accent}` }}
         />
       ) : (
@@ -312,7 +312,7 @@ function AirconCard({
           onMouseEnter={(e) => { if (canManage && !renaming) e.currentTarget.style.background = GF.hover; }}
           onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
         >
-          <span className="text-[12px] font-semibold truncate" style={{ color: GF.textPrimary }}>
+          <span className="text-[14px] font-semibold truncate" style={{ color: GF.textPrimary }}>
             {renaming ? "Saving…" : ac.name}
           </span>
           {/* Visible affordance — without it the name reads as plain text and nobody
@@ -331,13 +331,13 @@ function AirconCard({
         </button>
       )}
       <span
-        className="text-[9px] px-1.5 py-0.5 rounded-[2px] tracking-widest shrink-0"
+        className="text-[11px] px-1.5 py-0.5 rounded-[2px] tracking-widest shrink-0"
         style={{ color: GF.textDim, background: GF.hover, border: `1px solid ${GF.divider}` }}
       >
         CH {ac.ir_channel}
       </span>
       <span
-        className="text-[9px] font-bold tracking-widest px-2 py-0.5 rounded-[2px] shrink-0"
+        className="text-[11px] font-bold tracking-widest px-2 py-0.5 rounded-[2px] shrink-0"
         style={{
           color: ac.enabled ? GREEN : GF.textMuted,
           background: ac.enabled ? "rgba(115,191,105,0.1)" : GF.hover,
@@ -354,7 +354,7 @@ function AirconCard({
         <button
           onClick={handleToggle}
           disabled={toggling}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] text-[10px] font-semibold transition-colors disabled:opacity-40"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] text-[12px] font-semibold transition-colors disabled:opacity-40"
           style={{
             color: ac.enabled ? RED : GREEN,
             background: ac.enabled ? "rgba(242,73,92,0.1)" : "rgba(115,191,105,0.1)",
@@ -395,8 +395,8 @@ function AirconCard({
           ["Uptime", ac.uptime],
         ].map(([label, value]) => (
           <div key={label} className="flex flex-col px-3 py-2.5 gap-0.5" style={{ background: GF.panel }}>
-            <span className="text-[8px] tracking-widest uppercase" style={{ color: GF.textDim }}>{label}</span>
-            <span className="text-[11px] font-bold" style={{ color: GF.textPrimary }}>{value}</span>
+            <span className="text-[10px] tracking-widest uppercase" style={{ color: GF.textDim }}>{label}</span>
+            <span className="text-[13px] font-bold" style={{ color: GF.textPrimary }}>{value}</span>
           </div>
         ))}
       </div>
@@ -404,22 +404,22 @@ function AirconCard({
       {/* Activity log */}
       <div className="flex flex-col p-3 gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-[9px] tracking-widest uppercase" style={{ color: GF.textDim }}>Activity Log</span>
-          {log.length > 0 && <span className="text-[9px]" style={{ color: GF.textDim }}>{log.length} entries</span>}
+          <span className="text-[11px] tracking-widest uppercase" style={{ color: GF.textDim }}>Activity Log</span>
+          {log.length > 0 && <span className="text-[11px]" style={{ color: GF.textDim }}>{log.length} entries</span>}
         </div>
         <div className="flex flex-col gap-1 overflow-y-auto" style={{ maxHeight: 160 }}>
           {log.length === 0 ? (
-            <div className="text-[10px] py-2" style={{ color: GF.textDim }}>No activity recorded.</div>
+            <div className="text-[12px] py-2" style={{ color: GF.textDim }}>No activity recorded.</div>
           ) : log.slice(0, 6).map((entry, i) => {
             const isOff = entry.action.toLowerCase().includes("off") || entry.action.toLowerCase().includes("error");
             const isWarn = entry.action.toLowerCase().includes("trigger") || entry.action.toLowerCase().includes("exceeded");
             const dot = isOff ? RED : isWarn ? ORANGE : BLUE;
             return (
               <div key={i} className="flex gap-2 items-start px-2.5 py-1.5 rounded-[2px]" style={{ background: GF.hover, borderLeft: `2px solid ${dot}` }}>
-                <span className="text-[9px] flex-shrink-0 whitespace-nowrap pt-0.5" style={{ color: GF.textDim }}>{entry.time}</span>
+                <span className="text-[11px] flex-shrink-0 whitespace-nowrap pt-0.5" style={{ color: GF.textDim }}>{entry.time}</span>
                 <div className="min-w-0">
-                  <div className="text-[10px] font-semibold truncate" style={{ color: GF.textPrimary }}>{entry.action}</div>
-                  <div className="text-[9px]" style={{ color: GF.textMuted }}>{entry.reason}</div>
+                  <div className="text-[12px] font-semibold truncate" style={{ color: GF.textPrimary }}>{entry.action}</div>
+                  <div className="text-[11px]" style={{ color: GF.textMuted }}>{entry.reason}</div>
                 </div>
               </div>
             );
@@ -489,10 +489,10 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
         <div className="flex items-center justify-between px-5 py-3.5"
           style={{ borderBottom: `1px solid ${GF.divider}` }}>
           <div>
-            <div className="text-[12px] font-semibold" style={{ color: GF.textPrimary }}>
+            <div className="text-[14px] font-semibold" style={{ color: GF.textPrimary }}>
               Add Air Conditioner
             </div>
-            <div className="text-[10px] mt-0.5" style={{ color: GF.textMuted }}>
+            <div className="text-[12px] mt-0.5" style={{ color: GF.textMuted }}>
               Register a new IR-controlled unit
             </div>
           </div>
@@ -515,19 +515,19 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
                 <path d="M7 1L13 12H1L7 1Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
                 <path d="M7 5v3M7 10v.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
               </svg>
-              <p className="text-[10px] leading-relaxed" style={{ color: ORANGE }}>
+              <p className="text-[12px] leading-relaxed" style={{ color: ORANGE }}>
                 ESP32 offline — GPIO assignments unavailable.
               </p>
             </div>
           )}
 
           <div className="flex flex-col gap-1.5">
-            <label className="text-[9px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
+            <label className="text-[11px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
               Unit Name
             </label>
             <input type="text" value={name} onChange={e => setName(e.target.value)}
               placeholder="e.g. AC Unit 3"
-              className="w-full px-3 py-2 rounded-[2px] text-[12px] focus:outline-none"
+              className="w-full px-3 py-2 rounded-[2px] text-[14px] focus:outline-none"
               style={{
                 background:   GF.hover,
                 border:       `1px solid ${GF.divider}`,
@@ -540,7 +540,7 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label className="text-[9px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
+            <label className="text-[11px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
               IR Channel
             </label>
             <div className="flex flex-col gap-1.5">
@@ -558,7 +558,7 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
                       border:     `1px solid ${selected ? GF.accent : GF.divider}`,
                     }}>
                     <div className="flex items-center gap-3">
-                      <span className="w-6 h-6 rounded-[2px] flex items-center justify-center text-[11px] font-bold"
+                      <span className="w-6 h-6 rounded-[2px] flex items-center justify-center text-[13px] font-bold"
                         style={{
                           background: selected ? GF.accent : GF.hoverStrong,
                           color:      selected ? "#fff" : GF.textMuted,
@@ -566,17 +566,17 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
                         {ch}
                       </span>
                       <div>
-                        <div className="text-[11px] font-semibold" style={{ color: GF.textPrimary }}>
+                        <div className="text-[13px] font-semibold" style={{ color: GF.textPrimary }}>
                           Channel {ch}
                         </div>
                         {esp32Online && gpio > 0 && (
-                          <div className="text-[10px]" style={{ color: GF.textMuted }}>
+                          <div className="text-[12px]" style={{ color: GF.textMuted }}>
                             Wire IR TX → <span className="font-bold" style={{ color: GF.accent }}>GPIO {gpio}</span>
                           </div>
                         )}
                       </div>
                     </div>
-                    <span className="text-[9px] font-bold tracking-widest px-2 py-0.5 rounded-[2px]"
+                    <span className="text-[11px] font-bold tracking-widest px-2 py-0.5 rounded-[2px]"
                       style={{
                         color:      inUse ? GF.textDim : GREEN,
                         background: inUse ? GF.hover    : "rgba(115,191,105,0.1)",
@@ -590,7 +590,7 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
           </div>
 
           {error && (
-            <p className="text-[11px] px-3 py-2 rounded-[2px]"
+            <p className="text-[13px] px-3 py-2 rounded-[2px]"
               style={{ color: RED, background: "rgba(242,73,92,0.08)", border: "1px solid rgba(242,73,92,0.2)" }}>
               {error}
             </p>
@@ -598,14 +598,14 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
 
           <div className="flex gap-2 pt-1">
             <button type="button" onClick={onClose}
-              className="flex-1 py-2 rounded-[2px] text-[12px] transition-colors"
+              className="flex-1 py-2 rounded-[2px] text-[14px] transition-colors"
               style={{ color: GF.textMuted, border: `1px solid ${GF.divider}`, background: "transparent" }}
               onMouseEnter={e => (e.currentTarget.style.background = GF.hover)}
               onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
               Cancel
             </button>
             <button type="submit" disabled={saving || !channel}
-              className="flex-1 py-2 rounded-[2px] text-[12px] font-bold transition-colors disabled:opacity-40"
+              className="gf-raise flex-1 py-2 rounded-[2px] text-[14px] font-bold transition-colors disabled:opacity-40"
               style={{ background: GF.accent, color: "#fff" }}
               onMouseEnter={e => (e.currentTarget.style.background = "#4a82d8")}
               onMouseLeave={e => (e.currentTarget.style.background = GF.accent)}>
@@ -772,21 +772,21 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: z.color }} />
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 min-w-0">
-            <span className="text-[11px] font-semibold shrink-0" style={{ color: z.color }}>{z.name}</span>
-            <span className="text-[9px] truncate" style={{ color: GF.textDim }}>{z.meaning}</span>
+            <span className="text-[13px] font-semibold shrink-0" style={{ color: z.color }}>{z.name}</span>
+            <span className="text-[11px] truncate" style={{ color: GF.textDim }}>{z.meaning}</span>
           </div>
-          <div className="text-[10px] tabular-nums" style={{ color: GF.textMuted }}>
+          <div className="text-[12px] tabular-nums" style={{ color: GF.textMuted }}>
             {valid ? zoneRange(i) : "—"}
           </div>
         </div>
         {active && (
-          <span className="text-[8px] tracking-widest uppercase shrink-0 px-1.5 py-0.5 rounded-[2px]"
+          <span className="text-[10px] tracking-widest uppercase shrink-0 px-1.5 py-0.5 rounded-[2px]"
             style={{ color: z.color, background: z.color + "22" }}>now</span>
         )}
         <div className="flex items-baseline gap-1.5 shrink-0">
-          <span className="text-[10px]" style={{ color: GF.textDim }}>set AC to</span>
+          <span className="text-[12px]" style={{ color: GF.textDim }}>set AC to</span>
           <span className="text-[14px] font-bold tabular-nums" style={{ color: GF.textPrimary }}>{z.target}</span>
-          <span className="text-[9px] px-1.5 py-0.5 rounded-[2px]"
+          <span className="text-[11px] px-1.5 py-0.5 rounded-[2px]"
             style={{ color: GF.textMuted, background: GF.hover }}>{z.fan}</span>
         </div>
       </div>
@@ -798,12 +798,12 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
   const boundaryInput = (key: keyof typeof form) => (
     <div className="flex items-center gap-2 px-3 py-1.5 flex-wrap"
       style={{ background: GF.bg, borderTop: `1px solid ${GF.divider}`, borderBottom: `1px solid ${GF.divider}` }}>
-      <span className="text-[10px] shrink-0" style={{ color: GF.textMuted }}>when the room reaches</span>
+      <span className="text-[12px] shrink-0" style={{ color: GF.textMuted }}>when the room reaches</span>
       <div className="flex items-stretch rounded-[2px] overflow-hidden"
         style={{ border: `1px solid ${bad[key] || oor(key) ? RED : GF.divider}`, background: GF.panel, opacity: isAdmin ? 1 : 0.6 }}>
         {isAdmin && (
           <button type="button" onClick={() => adjust(key, -0.5)} title="−0.5°C"
-            className="w-6 flex items-center justify-center text-[13px] font-bold transition-colors"
+            className="w-6 flex items-center justify-center text-[15px] font-bold transition-colors"
             style={{ color: GF.textMuted, borderRight: `1px solid ${GF.divider}` }}
             onMouseEnter={(e) => (e.currentTarget.style.color = GF.accent)}
             onMouseLeave={(e) => (e.currentTarget.style.color = GF.textMuted)}>−</button>
@@ -811,24 +811,24 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
         <input
           type="number" step="0.5" value={form[key]} disabled={!isAdmin}
           onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))}
-          className="w-14 px-1 py-1 text-[12px] text-center focus:outline-none"
+          className="w-14 px-1 py-1 text-[14px] text-center focus:outline-none"
           style={{ background: "transparent", border: "none", color: GF.textPrimary, fontFamily: "monospace" }}
         />
-        <span className="flex items-center pr-1.5 text-[10px]" style={{ color: GF.textDim }}>°C</span>
+        <span className="flex items-center pr-1.5 text-[12px]" style={{ color: GF.textDim }}>°C</span>
         {isAdmin && (
           <button type="button" onClick={() => adjust(key, 0.5)} title="+0.5°C"
-            className="w-6 flex items-center justify-center text-[13px] font-bold transition-colors"
+            className="w-6 flex items-center justify-center text-[15px] font-bold transition-colors"
             style={{ color: GF.textMuted, borderLeft: `1px solid ${GF.divider}` }}
             onMouseEnter={(e) => (e.currentTarget.style.color = GF.accent)}
             onMouseLeave={(e) => (e.currentTarget.style.color = GF.textMuted)}>+</button>
         )}
       </div>
       {oor(key) ? (
-        <span className="text-[9px]" style={{ color: RED }}>
+        <span className="text-[11px]" style={{ color: RED }}>
           must be between {MIN_C}°C and {MAX_C}°C
         </span>
       ) : bad[key] ? (
-        <span className="text-[9px]" style={{ color: RED }}>
+        <span className="text-[11px]" style={{ color: RED }}>
           each step must be warmer than the one above it
         </span>
       ) : null}
@@ -837,9 +837,9 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
 
   const title = (
     <>
-      <span className="text-[12px] font-semibold" style={{ color: GF.textPrimary }}>Auto-Cooling Thresholds</span>
+      <span className="text-[14px] font-semibold" style={{ color: GF.textPrimary }}>Auto-Cooling Thresholds</span>
       {dirty && !loading && (
-        <span className="text-[9px] tracking-widest uppercase px-1.5 py-0.5 rounded-[2px]"
+        <span className="text-[11px] tracking-widest uppercase px-1.5 py-0.5 rounded-[2px]"
           style={{ color: ORANGE, background: "rgba(255,120,10,0.12)" }}>● Unsaved</span>
       )}
     </>
@@ -848,7 +848,7 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
   return (
     <Panel title={title}>
       {loading ? (
-        <div className="text-[11px] py-2" style={{ color: GF.textDim }}>Loading…</div>
+        <div className="text-[13px] py-2" style={{ color: GF.textDim }}>Loading…</div>
       ) : (
         <div className="flex flex-col gap-4">
           {/* One plain sentence is always visible; the rest is opt-in, so the card no
@@ -856,28 +856,28 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
           <div className="flex flex-col gap-2 px-3 py-2 rounded-[2px]"
             style={{ background: GF.hover, border: `1px solid ${GF.divider}` }}>
             <div className="flex items-start justify-between gap-3">
-              <p className="text-[10px] leading-relaxed" style={{ color: GF.textMuted }}>
+              <p className="text-[12px] leading-relaxed" style={{ color: GF.textMuted }}>
                 As the room warms up, the AC is automatically set colder. You choose
                 {" "}<span style={{ color: GF.textPrimary }}>at which room temperature</span> each step kicks in.
               </p>
               <button type="button" onClick={() => setShowHelp((s) => !s)}
-                className="text-[10px] shrink-0 underline underline-offset-2"
+                className="text-[12px] shrink-0 underline underline-offset-2"
                 style={{ color: GF.accent, background: "none", border: "none", cursor: "pointer" }}>
                 {showHelp ? "Hide details" : "How this works"}
               </button>
             </div>
             {showHelp && (
               <div className="flex flex-col gap-1.5 pt-1.5" style={{ borderTop: `1px solid ${GF.divider}` }}>
-                <p className="text-[10px] leading-relaxed" style={{ color: GF.textDim }}>
+                <p className="text-[12px] leading-relaxed" style={{ color: GF.textDim }}>
                   <span style={{ color: GREEN }}>You can change</span> the room temperature at which each
                   step starts. Saving pushes it to the ESP32 straight away — no reflashing.
                 </p>
-                <p className="text-[10px] leading-relaxed" style={{ color: GF.textDim }}>
+                <p className="text-[12px] leading-relaxed" style={{ color: GF.textDim }}>
                   <span style={{ color: ORANGE }}>You can't change</span> what the AC gets set to
                   (28 / 26 / 24 / 22 / 20°C). Each one is a recorded button-press from the physical
                   remote, so a different value needs a new recording and a firmware update.
                 </p>
-                <p className="text-[10px] leading-relaxed" style={{ color: GF.textDim }}>
+                <p className="text-[12px] leading-relaxed" style={{ color: GF.textDim }}>
                   <span style={{ color: GF.textMuted }}>Tip:</span> keep these at or below your{" "}
                   <span style={{ color: GF.textMuted }}>Alert Rules</span> temperatures, so cooling ramps
                   up before the room raises an alarm.
@@ -890,7 +890,7 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
           {liveTemp != null && ZONES[activeZone] && (() => {
             const az = ZONES[activeZone]!;
             return (
-              <div className="flex items-center gap-2 flex-wrap text-[11px] px-3 py-2 rounded-[2px]"
+              <div className="flex items-center gap-2 flex-wrap text-[13px] px-3 py-2 rounded-[2px]"
                 style={{ background: GF.hover, border: `1px solid ${GF.divider}` }}>
                 <span className="w-1.5 h-1.5 rounded-full" style={{ background: az.color, boxShadow: `0 0 6px ${az.color}` }} />
                 <span style={{ color: GF.textMuted }}>Room</span>
@@ -908,7 +908,7 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
               {/* live room-temp marker */}
               {liveTemp != null && (
                 <>
-                  <div className="absolute top-0 -translate-x-1/2 text-[9px] font-bold px-1 py-0.5 rounded-[2px] whitespace-nowrap z-20"
+                  <div className="absolute top-0 -translate-x-1/2 text-[11px] font-bold px-1 py-0.5 rounded-[2px] whitespace-nowrap z-20"
                     style={{ left: `${posPct(liveTemp)}%`, color: "#fff", background: "rgba(0,0,0,0.75)", border: `1px solid ${GF.border}` }}>
                     {liveTemp.toFixed(1)}°
                   </div>
@@ -930,8 +930,8 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
                         borderTop: `2px solid ${z.color}`,
                         boxShadow: active ? `inset 0 0 0 1px ${z.color}` : "none",
                       }}>
-                      <span className="text-[9px] font-bold leading-tight truncate max-w-full" style={{ color: z.color }}>{z.name}</span>
-                      <span className="text-[9px] leading-tight whitespace-nowrap" style={{ color: GF.textDim }}>AC → {z.target}</span>
+                      <span className="text-[11px] font-bold leading-tight truncate max-w-full" style={{ color: z.color }}>{z.name}</span>
+                      <span className="text-[11px] leading-tight whitespace-nowrap" style={{ color: GF.textDim }}>AC → {z.target}</span>
                     </div>
                   );
                 })}
@@ -939,7 +939,7 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
               {/* boundary tick labels */}
               <div className="relative" style={{ height: 16 }}>
                 {boundaries.map((b, i) => (
-                  <span key={i} className="absolute -translate-x-1/2 text-[9px] font-bold pt-0.5 tabular-nums"
+                  <span key={i} className="absolute -translate-x-1/2 text-[11px] font-bold pt-0.5 tabular-nums"
                     style={{ left: `${posPct(b)}%`, color: GF.textPrimary }}>
                     {b}°
                   </span>
@@ -947,13 +947,13 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
               </div>
               {/* Name the axis explicitly — the bar is ROOM temperature, while the
                   "AC →" figure inside each block is what the unit gets set to. */}
-              <div className="text-[9px] tracking-widest uppercase text-center pt-0.5"
+              <div className="text-[11px] tracking-widest uppercase text-center pt-0.5"
                 style={{ color: GF.textDim }}>
                 room temperature →
               </div>
             </div>
           ) : (
-            <div className="text-[10px] px-3 py-2 rounded-[2px]"
+            <div className="text-[12px] px-3 py-2 rounded-[2px]"
               style={{ color: ORANGE, background: "rgba(255,120,10,0.08)", border: "1px solid rgba(255,120,10,0.2)" }}>
               Each switching temperature must be warmer than the one above it. Fix the highlighted values below to preview the zone map.
             </div>
@@ -966,10 +966,10 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
           <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${GF.divider}` }}>
             <div className="flex items-center gap-3 px-3 py-1.5"
               style={{ background: GF.header, borderBottom: `1px solid ${GF.divider}` }}>
-              <span className="flex-1 text-[9px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
+              <span className="flex-1 text-[11px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
                 When the room is
               </span>
-              <span className="text-[9px] tracking-widest uppercase shrink-0" style={{ color: GF.textMuted }}>
+              <span className="text-[11px] tracking-widest uppercase shrink-0" style={{ color: GF.textMuted }}>
                 The AC is set to
               </span>
             </div>
@@ -988,11 +988,11 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
           {dirty && changes.length > 0 && (
             <div className="flex flex-col gap-1 px-3 py-2 rounded-[2px]"
               style={{ background: "rgba(255,120,10,0.08)", border: "1px solid rgba(255,120,10,0.2)" }}>
-              <span className="text-[9px] tracking-widest uppercase" style={{ color: ORANGE }}>
+              <span className="text-[11px] tracking-widest uppercase" style={{ color: ORANGE }}>
                 Unsaved changes
               </span>
               {changes.map((k) => (
-                <span key={k} className="text-[10px] tabular-nums" style={{ color: GF.textMuted }}>
+                <span key={k} className="text-[12px] tabular-nums" style={{ color: GF.textMuted }}>
                   {LINE_LABEL[k]}:{" "}
                   <span style={{ color: GF.textDim }}>{initial[k] || "—"}°C</span>
                   {" → "}
@@ -1003,14 +1003,14 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
           )}
 
           {error && (
-            <div className="text-[11px] px-3 py-2 rounded-[2px]" style={{ color: RED, background: "rgba(242,73,92,0.08)", border: "1px solid rgba(242,73,92,0.2)" }}>
+            <div className="text-[13px] px-3 py-2 rounded-[2px]" style={{ color: RED, background: "rgba(242,73,92,0.08)", border: "1px solid rgba(242,73,92,0.2)" }}>
               {error}
             </div>
           )}
 
           {/* ── Footer ── */}
           <div className="flex items-center justify-between gap-3 flex-wrap">
-            <span className="text-[9px]" style={{ color: GF.textDim }}>
+            <span className="text-[11px]" style={{ color: GF.textDim }}>
               {meta.updatedByName ? `Edited by ${meta.updatedByName}` : "System default"}
               {meta.updatedAt ? ` · ${new Date(meta.updatedAt).toLocaleString("en-PH", { timeZone: "Asia/Manila", hour12: false })}` : ""}
             </span>
@@ -1018,7 +1018,7 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setForm(DEFAULTS)} disabled={saving}
-                  className="px-3 py-1.5 rounded-[2px] text-[11px] transition-colors disabled:opacity-50"
+                  className="px-3 py-1.5 rounded-[2px] text-[13px] transition-colors disabled:opacity-50"
                   style={{ color: GF.textMuted, border: `1px solid ${GF.divider}`, background: "transparent" }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = GF.hover)}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
@@ -1026,13 +1026,13 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
                 </button>
                 <button
                   onClick={save} disabled={saving || !valid || !dirty}
-                  className="px-3 py-1.5 rounded-[2px] text-[11px] font-semibold transition-colors disabled:opacity-50"
+                  className="px-3 py-1.5 rounded-[2px] text-[13px] font-semibold transition-colors disabled:opacity-50"
                   style={{ background: saved ? GREEN : GF.accent, color: "#fff" }}>
                   {saved ? "✓ Saved" : saving ? "Saving…" : "Save thresholds"}
                 </button>
               </div>
             ) : (
-              <span className="text-[9px] tracking-widest uppercase" style={{ color: GF.textDim }}>Admin only</span>
+              <span className="text-[11px] tracking-widest uppercase" style={{ color: GF.textDim }}>Admin only</span>
             )}
           </div>
         </div>
@@ -1158,7 +1158,7 @@ export default function AirConditioner() {
   const esp32Online  = channelMap.length > 0;
   const onlineColor  = total === 0 ? MUTED : online === total ? GREEN : online === 0 ? RED : ORANGE;
 
-  const pill = "flex items-center gap-1.5 h-7 px-2.5 rounded-[2px] text-[11px]";
+  const pill = "flex items-center gap-1.5 h-7 px-2.5 rounded-[2px] text-[13px]";
   const pillStyle: React.CSSProperties = { color: GF.textMuted, border: `1px solid ${GF.divider}`, background: GF.panel };
 
   return (
@@ -1168,7 +1168,7 @@ export default function AirConditioner() {
       {/* ── Toolbar ── */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2.5">
-          <span className="text-[9px] px-1.5 py-0.5 rounded-[2px] tracking-widest uppercase"
+          <span className="text-[11px] px-1.5 py-0.5 rounded-[2px] tracking-widest uppercase"
             style={{ color: GF.accent, background: "rgba(87,148,242,0.12)" }}>
             {total} unit{total !== 1 ? "s" : ""}
           </span>
@@ -1184,7 +1184,7 @@ export default function AirConditioner() {
 
           {canManage && (
             <button onClick={() => setShowModal(true)}
-              className="flex items-center gap-1.5 h-7 px-3 rounded-[2px] text-[11px] font-semibold transition-colors"
+              className="gf-raise flex items-center gap-1.5 h-7 px-3 rounded-[2px] text-[13px] font-semibold transition-colors"
               style={{ background: GF.accent, color: "#fff" }}
               onMouseEnter={e => (e.currentTarget.style.background = "#4a82d8")}
               onMouseLeave={e => (e.currentTarget.style.background = GF.accent)}>
@@ -1199,7 +1199,7 @@ export default function AirConditioner() {
 
       {loading ? (
         <div className="flex items-center justify-center py-20">
-          <span className="text-[11px] tracking-widest" style={{ color: GF.textDim }}>Loading…</span>
+          <span className="text-[13px] tracking-widest" style={{ color: GF.textDim }}>Loading…</span>
         </div>
       ) : (
         <>
@@ -1245,10 +1245,10 @@ export default function AirConditioner() {
                 <rect x="2" y="6" width="20" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
                 <path d="M8 10h8M8 14h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
-              <span className="text-[11px]" style={{ color: GF.textMuted }}>No aircon units registered.</span>
+              <span className="text-[13px]" style={{ color: GF.textMuted }}>No aircon units registered.</span>
               {canManage && (
                 <button onClick={() => setShowModal(true)}
-                  className="text-[11px] font-semibold transition-colors"
+                  className="text-[13px] font-semibold transition-colors"
                   style={{ color: GF.accent }}
                   onMouseEnter={e => (e.currentTarget.style.opacity = "0.8")}
                   onMouseLeave={e => (e.currentTarget.style.opacity = "1")}>

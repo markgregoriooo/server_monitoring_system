@@ -131,7 +131,7 @@ function Panel({
     >
       {title !== undefined && (
         <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
-          <span className="text-[11px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
+          <span className="text-[13px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
           {right && <div className="flex items-center gap-2">{right}</div>}
         </div>
       )}
@@ -144,13 +144,13 @@ function StatPanel({ label, value, unit, color, sub }: { label: string; value: s
   return (
     <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 88 }}>
       <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[10px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
+        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
       </div>
       <div className="px-3 pt-1.5">
         <span className="text-[26px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[9px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
+        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
+        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
       </div>
     </div>
   );
@@ -162,7 +162,7 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
   return (
     <button
       onClick={onClick}
-      className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
+      className="text-[13px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
       style={{ color: danger ? RED : gf.textMuted, border: `1px solid ${danger ? `${RED}55` : gf.border}`, background: "transparent" }}
     >
       {children}
@@ -178,7 +178,7 @@ function PortChip({ label, up, util }: { label: string; up: boolean; util?: numb
   const showUtil = up && util != null && Number.isFinite(util);
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[10px]"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[12px]"
       style={{ background: gf.hover, border: `1px solid ${gf.divider}`, color: up ? gf.textMuted : gf.textDim }}
     >
       <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: up ? GREEN : RED }} />
@@ -209,7 +209,7 @@ function PasswordField({
     <div className="relative">
       <input
         type={show ? "text" : "password"}
-        className="w-full pl-2 pr-8 py-1.5 text-[12px] rounded-[2px] outline-none"
+        className="w-full pl-2 pr-8 py-1.5 text-[14px] rounded-[2px] outline-none"
         style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -311,15 +311,15 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
     else setErr(r.error || "Add failed — did you run the migration?");
   };
 
-  const labelCls = "text-[10px] tracking-widest uppercase mb-1 block";
-  const inputCls = "w-full px-2 py-1.5 text-[12px] rounded-[2px] outline-none";
+  const labelCls = "text-[12px] tracking-widest uppercase mb-1 block";
+  const inputCls = "w-full px-2 py-1.5 text-[14px] rounded-[2px] outline-none";
   const inputStyle = { background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary } as const;
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
       <div className="w-full max-w-md rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-4" style={{ height: 40, borderBottom: `1px solid ${gf.divider}` }}>
-          <span className="text-[12px] font-semibold" style={{ color: gf.textPrimary }}>Add MikroTik</span>
+          <span className="text-[14px] font-semibold" style={{ color: gf.textPrimary }}>Add MikroTik</span>
           <button onClick={onClose} className="text-[18px] leading-none" style={{ color: gf.textMuted }}>×</button>
         </div>
         <div className="p-4 flex flex-col gap-3">
@@ -342,7 +342,7 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
               <label className={labelCls} style={{ color: gf.textMuted }}>API Port</label>
               <input type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
             </div>
-            <label className="flex items-center gap-2 text-[12px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
+            <label className="flex items-center gap-2 text-[14px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
               <input
                 type="checkbox"
                 checked={useTls}
@@ -366,23 +366,23 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Password</label>
             <PasswordField value={apiPassword} onChange={setApiPassword} placeholder="RouterOS API password" />
-            <p className="text-[9px] mt-1" style={{ color: gf.textDim }}>Stored encrypted (AES-256-GCM).</p>
+            <p className="text-[11px] mt-1" style={{ color: gf.textDim }}>Stored encrypted (AES-256-GCM).</p>
           </div>
           {err && (
-            <div className="text-[11px] px-2 py-1.5 rounded-[2px]" style={{ color: RED, background: RED + "14", border: `1px solid ${RED}40` }}>{err}</div>
+            <div className="text-[13px] px-2 py-1.5 rounded-[2px]" style={{ color: RED, background: RED + "14", border: `1px solid ${RED}40` }}>{err}</div>
           )}
           {testResult && (
-            <div className="text-[11px] px-2 py-1.5 rounded-[2px]" style={{ color: testResult.ok ? GREEN : RED, background: (testResult.ok ? GREEN : RED) + "14", border: `1px solid ${(testResult.ok ? GREEN : RED)}40` }}>
+            <div className="text-[13px] px-2 py-1.5 rounded-[2px]" style={{ color: testResult.ok ? GREEN : RED, background: (testResult.ok ? GREEN : RED) + "14", border: `1px solid ${(testResult.ok ? GREEN : RED)}40` }}>
               {testResult.msg}
             </div>
           )}
           <div className="flex items-center justify-between gap-2 pt-1">
-            <button onClick={test} disabled={testing || busy} className="text-[11px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, opacity: testing || busy ? 0.6 : 1 }}>
+            <button onClick={test} disabled={testing || busy} className="text-[13px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, opacity: testing || busy ? 0.6 : 1 }}>
               {testing ? "Testing…" : "Test connection"}
             </button>
             <div className="flex items-center gap-2">
-            <button onClick={onClose} className="text-[11px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted }}>Cancel</button>
-            <button onClick={submit} disabled={busy || !name.trim() || !ip.trim()} className="text-[11px] px-3 py-1.5 rounded-[2px] font-semibold" style={{ background: BLUE, color: "#fff", opacity: busy || !name.trim() || !ip.trim() ? 0.6 : 1 }}>
+            <button onClick={onClose} className="text-[13px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted }}>Cancel</button>
+            <button onClick={submit} disabled={busy || !name.trim() || !ip.trim()} className="gf-raise text-[13px] px-3 py-1.5 rounded-[2px] font-semibold" style={{ background: BLUE, color: "#fff", opacity: busy || !name.trim() || !ip.trim() ? 0.6 : 1 }}>
               {busy ? "Adding…" : "Add MikroTik"}
             </button>
             </div>
@@ -445,15 +445,15 @@ function ConnectionModal({
     }
   };
 
-  const labelCls = "text-[10px] tracking-widest uppercase mb-1 block";
-  const inputCls = "w-full px-2 py-1.5 text-[12px] rounded-[2px] outline-none";
+  const labelCls = "text-[12px] tracking-widest uppercase mb-1 block";
+  const inputCls = "w-full px-2 py-1.5 text-[14px] rounded-[2px] outline-none";
   const inputStyle = { background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary } as const;
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
       <div className="w-full max-w-md rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-4" style={{ height: 40, borderBottom: `1px solid ${gf.divider}` }}>
-          <span className="text-[12px] font-semibold truncate" style={{ color: gf.textPrimary }}>RouterOS connection · {device.name}</span>
+          <span className="text-[14px] font-semibold truncate" style={{ color: gf.textPrimary }}>RouterOS connection · {device.name}</span>
           <button onClick={onClose} className="text-[18px] leading-none" style={{ color: gf.textMuted }}>×</button>
         </div>
         <div className="p-4 flex flex-col gap-3">
@@ -462,7 +462,7 @@ function ConnectionModal({
               <label className={labelCls} style={{ color: gf.textMuted }}>API Port</label>
               <input type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
             </div>
-            <label className="flex items-center gap-2 text-[12px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
+            <label className="flex items-center gap-2 text-[14px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
               <input
                 type="checkbox"
                 checked={useTls}
@@ -486,27 +486,27 @@ function ConnectionModal({
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Password</label>
             <PasswordField value={apiPassword} onChange={setApiPassword} placeholder="leave blank to keep current" />
-            <p className="text-[9px] mt-1" style={{ color: gf.textDim }}>Stored encrypted (AES-256-GCM); never shown again.</p>
+            <p className="text-[11px] mt-1" style={{ color: gf.textDim }}>Stored encrypted (AES-256-GCM); never shown again.</p>
           </div>
 
           {result && (
-            <div className="text-[11px] px-2 py-1.5 rounded-[2px]" style={{ color: result.ok ? GREEN : RED, background: (result.ok ? GREEN : RED) + "14", border: `1px solid ${(result.ok ? GREEN : RED)}40` }}>
+            <div className="text-[13px] px-2 py-1.5 rounded-[2px]" style={{ color: result.ok ? GREEN : RED, background: (result.ok ? GREEN : RED) + "14", border: `1px solid ${(result.ok ? GREEN : RED)}40` }}>
               {result.msg}
             </div>
           )}
 
           <div className="flex items-center justify-between gap-2 pt-1">
-            <button onClick={test} disabled={busy !== ""} className="text-[11px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, opacity: busy ? 0.6 : 1 }}>
+            <button onClick={test} disabled={busy !== ""} className="text-[13px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, opacity: busy ? 0.6 : 1 }}>
               {busy === "test" ? "Testing…" : "Test connection"}
             </button>
             <div className="flex items-center gap-2">
-              <button onClick={onClose} className="text-[11px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted }}>Cancel</button>
-              <button onClick={save} disabled={busy !== "" || !apiUsername.trim()} className="text-[11px] px-3 py-1.5 rounded-[2px] font-semibold" style={{ background: BLUE, color: "#fff", opacity: busy || !apiUsername.trim() ? 0.6 : 1 }}>
+              <button onClick={onClose} className="text-[13px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted }}>Cancel</button>
+              <button onClick={save} disabled={busy !== "" || !apiUsername.trim()} className="gf-raise text-[13px] px-3 py-1.5 rounded-[2px] font-semibold" style={{ background: BLUE, color: "#fff", opacity: busy || !apiUsername.trim() ? 0.6 : 1 }}>
                 {busy === "save" ? "Saving…" : "Save"}
               </button>
             </div>
           </div>
-          <p className="text-[9px]" style={{ color: gf.textDim }}>Test uses what's typed above — no need to save first. Leave the password blank to test the stored one.</p>
+          <p className="text-[11px]" style={{ color: gf.textDim }}>Test uses what's typed above — no need to save first. Leave the password blank to test the stored one.</p>
         </div>
       </div>
     </div>
@@ -645,7 +645,7 @@ export default function MikrotikMonitoring() {
       <div className="flex items-center justify-between gap-3 px-0.5">
         <div className="flex items-baseline gap-2 min-w-0">
           <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>MikroTik Network</h1>
-          <span className="text-[11px] hidden sm:inline" style={{ color: gf.textDim }}>
+          <span className="text-[13px] hidden sm:inline" style={{ color: gf.textDim }}>
             per-port traffic · {portsUp}/{allIfaces.length} ports up
           </span>
         </div>
@@ -653,7 +653,7 @@ export default function MikrotikMonitoring() {
           {isAdmin && (
             <button
               onClick={() => setAdding(true)}
-              className="inline-flex items-center gap-1.5 text-[11px] font-medium"
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium"
               style={{ height: 28, padding: "0 10px", color: "#fff", background: BLUE, border: `1px solid ${BLUE}`, borderRadius: 2 }}
               onMouseEnter={(e) => { e.currentTarget.style.background = BLUE_HOVER; e.currentTarget.style.borderColor = BLUE_HOVER; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = BLUE; e.currentTarget.style.borderColor = BLUE; }}
@@ -662,7 +662,7 @@ export default function MikrotikMonitoring() {
               Add MikroTik
             </button>
           )}
-          <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
+          <span className="flex items-center gap-1.5 text-[12px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
             <span className="w-1.5 h-1.5 rounded-full" style={{ background: online > 0 ? GREEN : RED, boxShadow: `0 0 6px ${online > 0 ? GREEN : RED}` }} /> Live
           </span>
         </div>
@@ -684,12 +684,12 @@ export default function MikrotikMonitoring() {
               <rect x="2" y="14" width="20" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
               <path d="M6 7h.01M6 17h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
             </svg>
-            <p className="text-[13px] mt-3" style={{ color: gf.textMuted }}>No MikroTik registered yet</p>
-            <p className="text-[11px] mt-1 max-w-md" style={{ color: gf.textDim }}>
+            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No MikroTik registered yet</p>
+            <p className="text-[13px] mt-1 max-w-md" style={{ color: gf.textDim }}>
               Add your router below and set its read-only RouterOS login.
             </p>
             {isAdmin && (
-              <button onClick={() => setAdding(true)} className="mt-4 text-[12px] px-3 py-1.5 rounded-[2px] font-medium" style={{ background: BLUE, color: "#fff" }}>
+              <button onClick={() => setAdding(true)} className="gf-raise mt-4 text-[14px] px-3 py-1.5 rounded-[2px] font-medium" style={{ background: BLUE, color: "#fff" }}>
                 + Add MikroTik
               </button>
             )}
@@ -710,22 +710,22 @@ export default function MikrotikMonitoring() {
                   <span className="flex items-center gap-2">
                     <span className="inline-flex items-center gap-1.5">
                       <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-                      <span className="text-[11px]" style={{ color: gf.textMuted }}>{d.status}</span>
+                      <span className="text-[13px]" style={{ color: gf.textMuted }}>{d.status}</span>
                     </span>
                     {confirmId === d.id ? (
                       <span className="flex items-center gap-1.5">
-                        <span className="text-[10px]" style={{ color: RED }}>Remove?</span>
+                        <span className="text-[12px]" style={{ color: RED }}>Remove?</span>
                         <button
                           onClick={(e) => { e.stopPropagation(); void remove(d.id); }}
                           disabled={removing === d.id}
-                          className="px-2 py-1 rounded-md text-[10px] font-medium"
+                          className="px-2 py-1 rounded-md text-[12px] font-medium"
                           style={{ color: RED, border: `1px solid ${RED}55`, background: "transparent", opacity: removing === d.id ? 0.6 : 1 }}
                         >
                           {removing === d.id ? "Removing…" : "Yes"}
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); setConfirmId(null); }}
-                          className="px-2 py-1 rounded-md text-[10px]"
+                          className="px-2 py-1 rounded-md text-[12px]"
                           style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
                         >
                           No
@@ -746,7 +746,7 @@ export default function MikrotikMonitoring() {
                 }
               >
                 {/* summary strip */}
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[10px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[12px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
                   <span className="font-mono">{d.ip}</span>
                   <span>{d.location}</span>
                   <span>CPU <span style={{ color: loadColor(Math.round(d.cpuPercent ?? 0)) }}>{d.cpuPercent != null ? `${Math.round(d.cpuPercent)}%` : "—"}</span></span>
@@ -758,14 +758,14 @@ export default function MikrotikMonitoring() {
 
                 {/* ports at a glance — full utilization bars live in the detail view */}
                 {!d.monitored ? (
-                  <div className="px-3 py-3 text-[11px]" style={{ color: ORANGE }}>API not configured — set the read-only RouterOS login (admin).</div>
+                  <div className="px-3 py-3 text-[13px]" style={{ color: ORANGE }}>API not configured — set the read-only RouterOS login (admin).</div>
                 ) : d.interfaces.length === 0 ? (
-                  <div className="px-3 py-3 text-[11px]" style={{ color: gf.textDim }}>
+                  <div className="px-3 py-3 text-[13px]" style={{ color: gf.textDim }}>
                     {d.status === "Online" ? "No ports reported." : "Offline — awaiting next poll."}
                   </div>
                 ) : (
                   <div className="px-3 py-2.5 flex flex-col gap-1.5">
-                    <span className="text-[9px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                    <span className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
                       Ports · {up}/{d.interfaces.length} up
                     </span>
                     <div className="flex flex-wrap gap-1.5">

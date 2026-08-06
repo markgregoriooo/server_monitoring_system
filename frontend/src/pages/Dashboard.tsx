@@ -142,7 +142,7 @@ function Panel({
           style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}
         >
           <span
-            className="text-[11px] font-medium tracking-wide truncate"
+            className="text-[13px] font-medium tracking-wide truncate"
             style={{ color: gf.textPrimary, opacity: 0.85 }}
           >
             {title}
@@ -243,7 +243,7 @@ function StatPanel({
     >
       <div className="flex items-center justify-between px-3 pt-2.5 z-10">
         <span
-          className="text-[10px] tracking-widest uppercase"
+          className="text-[12px] tracking-widest uppercase"
           style={{ color: gf.textMuted }}
         >
           {label}
@@ -261,12 +261,12 @@ function StatPanel({
           {value}
         </span>
         {unit && (
-          <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>
+          <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>
             {unit}
           </span>
         )}
         {sub && (
-          <div className="text-[9px] mt-1 tracking-widest" style={{ color: gf.textDim }}>
+          <div className="text-[11px] mt-1 tracking-widest" style={{ color: gf.textDim }}>
             {sub}
           </div>
         )}
@@ -392,7 +392,7 @@ function BarGauge({
           />
         )}
         <span
-          className="text-[11px] truncate"
+          className="text-[13px] truncate"
           style={{ color: gf.textPrimary }}
         >
           {label}
@@ -414,7 +414,7 @@ function BarGauge({
         />
       </div>
       <span
-        className="text-[11px] font-bold w-10 text-right shrink-0"
+        className="text-[13px] font-bold w-10 text-right shrink-0"
         style={{ color: loadColor(v) }}
       >
         {v}%
@@ -762,7 +762,7 @@ export default function Dashboard() {
   };
 
   const pill =
-    "flex items-center gap-1.5 h-7 px-2.5 rounded-[2px] text-[11px] transition-colors";
+    "flex items-center gap-1.5 h-7 px-2.5 rounded-[2px] text-[13px] transition-colors";
   const pillStyle: React.CSSProperties = {
     color: gf.textMuted,
     border: `1px solid ${gf.divider}`,
@@ -782,13 +782,13 @@ export default function Dashboard() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2.5">
           <span
-            className="text-[13px] font-semibold"
+            className="text-[15px] font-semibold"
             style={{ color: gf.textPrimary }}
           >
             Server Room — Overview
           </span>
           <span
-            className="text-[9px] px-1.5 py-0.5 rounded-[2px] tracking-widest uppercase"
+            className="text-[11px] px-1.5 py-0.5 rounded-[2px] tracking-widest uppercase"
             style={{ color: gf.accent, background: "rgba(87,148,242,0.12)" }}
           >
             CSPC · ICTU
@@ -902,7 +902,7 @@ export default function Dashboard() {
                 [ORANGE, typeof liveTemp === "number" ? `${liveTemp.toFixed(1)}°C` : "--", "Temp"],
                 [BLUE, typeof liveHum === "number" ? `${liveHum.toFixed(1)}%` : "--", "Hum"],
               ] as [string, string, string][]).map(([color, val, label]) => (
-                <span key={label} className="flex items-center gap-1.5 text-[11px]">
+                <span key={label} className="flex items-center gap-1.5 text-[13px]">
                   <span
                     className="w-3 h-0.5 rounded-full"
                     style={{ background: color }}
@@ -915,7 +915,7 @@ export default function Dashboard() {
               ))}
               <button
                 onClick={resetZoom}
-                className="flex items-center gap-1 text-[10px] px-2 h-6 rounded-[2px]"
+                className="flex items-center gap-1 text-[12px] px-2 h-6 rounded-[2px]"
                 style={{ color: gf.textMuted, border: `1px solid ${gf.divider}` }}
               >
                 <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
@@ -963,7 +963,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Panel title="Host CPU" noPad bodyStyle={{ padding: "8px 0" }}>
           {servers.length === 0 ? (
-            <div className="text-[10px] text-center py-6" style={{ color: gf.textDim }}>
+            <div className="text-[12px] text-center py-6" style={{ color: gf.textDim }}>
               No hosts
             </div>
           ) : (
@@ -974,7 +974,7 @@ export default function Dashboard() {
         </Panel>
         <Panel title="Host Memory" noPad bodyStyle={{ padding: "8px 0" }}>
           {servers.length === 0 ? (
-            <div className="text-[10px] text-center py-6" style={{ color: gf.textDim }}>
+            <div className="text-[12px] text-center py-6" style={{ color: gf.textDim }}>
               No hosts
             </div>
           ) : (
@@ -993,7 +993,7 @@ export default function Dashboard() {
           noPad
           right={
             <span
-              className="flex items-center gap-1.5 text-[10px]"
+              className="flex items-center gap-1.5 text-[12px]"
               style={{ color: gf.textMuted }}
             >
               <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN }} />
@@ -1008,7 +1008,7 @@ export default function Dashboard() {
                   {["Server", "Status", "CPU", "Memory", "Uptime"].map((h) => (
                     <th
                       key={h}
-                      className="text-left px-3 py-2 text-[9px] tracking-widest uppercase"
+                      className="text-left px-3 py-2 text-[11px] tracking-widest uppercase"
                       style={{ color: gf.textDim }}
                     >
                       {h}
@@ -1026,7 +1026,7 @@ export default function Dashboard() {
                     }}
                   >
                     <td
-                      className="px-3 py-2.5 text-[11px] font-semibold"
+                      className="px-3 py-2.5 text-[13px] font-semibold"
                       style={{ color: gf.textPrimary }}
                     >
                       {s.name}
@@ -1036,7 +1036,7 @@ export default function Dashboard() {
                     </td>
                     <td className="px-3 py-2.5">
                       <span
-                        className="text-[11px] font-bold"
+                        className="text-[13px] font-bold"
                         style={{ color: loadColor(s.cpu) }}
                       >
                         {s.cpu}%
@@ -1044,20 +1044,20 @@ export default function Dashboard() {
                     </td>
                     <td className="px-3 py-2.5">
                       <span
-                        className="text-[11px] font-bold"
+                        className="text-[13px] font-bold"
                         style={{ color: loadColor(s.memory) }}
                       >
                         {s.memory}%
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-[10px]" style={{ color: gf.textMuted }}>
+                    <td className="px-3 py-2.5 text-[12px]" style={{ color: gf.textMuted }}>
                       {s.uptime}
                     </td>
                   </tr>
                 ))}
                 {servers.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="text-center py-6 text-[10px]" style={{ color: gf.textDim }}>
+                    <td colSpan={5} className="text-center py-6 text-[12px]" style={{ color: gf.textDim }}>
                       No data
                     </td>
                   </tr>
@@ -1072,7 +1072,7 @@ export default function Dashboard() {
           noPad
           right={
             lastUpdate && (
-              <span className="text-[9px]" style={{ color: gf.textDim }}>
+              <span className="text-[11px]" style={{ color: gf.textDim }}>
                 upd {lastUpdate.toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour12: false })}
               </span>
             )
@@ -1091,14 +1091,14 @@ export default function Dashboard() {
                   }}
                 >
                   <div className="flex-1 min-w-0">
-                    <div className="text-[11px] font-semibold" style={{ color: gf.textPrimary }}>
+                    <div className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
                       {a.title}
                     </div>
-                    <div className="text-[9px] mt-0.5" style={{ color: gf.textMuted }}>
+                    <div className="text-[11px] mt-0.5" style={{ color: gf.textMuted }}>
                       {a.message}
                     </div>
                   </div>
-                  <span className="text-[9px] shrink-0" style={{ color: gf.textDim }}>
+                  <span className="text-[11px] shrink-0" style={{ color: gf.textDim }}>
                     {relativeTime(a.sentAt || a.createdAt)}
                   </span>
                 </div>
@@ -1111,7 +1111,7 @@ export default function Dashboard() {
                     <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </span>
-                <div className="text-[10px]" style={{ color: gf.textDim }}>
+                <div className="text-[12px]" style={{ color: gf.textDim }}>
                   No active alerts
                 </div>
               </div>
@@ -1123,7 +1123,7 @@ export default function Dashboard() {
       {/* ── Row 5: Air conditioner units ── */}
       <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
         {aircons.length === 0 ? (
-          <div className="text-[10px] text-center py-4" style={{ color: gf.textDim }}>
+          <div className="text-[12px] text-center py-4" style={{ color: gf.textDim }}>
             No AC units registered
           </div>
         ) : (
@@ -1151,12 +1151,12 @@ export default function Dashboard() {
                         style={{ background: ac.enabled ? GREEN : gf.textMuted }}
                       />
                     </span>
-                    <span className="text-[11px] font-semibold" style={{ color: gf.textPrimary }}>
+                    <span className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
                       {ac.name}
                     </span>
                   </div>
                   <span
-                    className="text-[9px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
+                    className="text-[11px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
                     style={{
                       color: ac.enabled ? GREEN : gf.textMuted,
                       background: ac.enabled ? "rgba(115,191,105,0.12)" : gf.hover,
@@ -1176,10 +1176,10 @@ export default function Dashboard() {
                       className="flex flex-col px-2 py-2 gap-0.5"
                       style={{ background: gf.panel }}
                     >
-                      <span className="text-[8px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                      <span className="text-[10px] tracking-widest uppercase" style={{ color: gf.textDim }}>
                         {lbl}
                       </span>
-                      <span className="text-[11px] font-bold" style={{ color: gf.textPrimary }}>
+                      <span className="text-[13px] font-bold" style={{ color: gf.textPrimary }}>
                         {val}
                       </span>
                     </div>
