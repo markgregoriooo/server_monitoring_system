@@ -144,7 +144,6 @@ backend/sockets/connectionHandler.js  ← all socket events, device vs browser s
 backend/middleware/
   auth.js                       ← authMiddleware, requireRole(...roles), JWT_SECRET export
   agentAuth.js                  ← Bearer `AGT-…` token auth for agent metric POSTs
-  upload.js                     ← multer: JPEG/PNG/WebP, 2 MB cap
 
 frontend/src/
   index.css                     ← Grafana --gf-* design tokens + JetBrains Mono
@@ -207,7 +206,7 @@ SESSION_NOTES.md                ← per-session work log
 
 > Login no longer uses passwords. `users.hash_password` is now nullable; `users.status` gained `pending`/`rejected`; new columns `google_sub` + `auth_provider`. The User Management "Add User"/"Reset PW" and Profile "Change Password" UIs are now vestigial.
 
-> **Profile editing is username-only.** `name`, `email` and `profile_image` belong to Google — `googleAuthService` re-syncs them from the ID token on **every** sign-in (`userService.syncGoogleProfile`), so an edit would silently revert at the next login, and `email` is the identity key the login matches on. Both the **My Profile** modal (`components/layout/ProfileModal.tsx`) and the admin **Edit User** modal show them read-only; the avatar **upload** path is gone (`PATCH /users/me` no longer takes multipart, and `middleware/upload.js` is now unused). `userService.updateOwnProfile` accepts `username` only, and `updateUser` accepts `username`/`role`/`status` only — the latter now uses `COALESCE` so an omitted field can never blank a column.
+> **Profile editing is username-only.** `name`, `email` and `profile_image` belong to Google — `googleAuthService` re-syncs them from the ID token on **every** sign-in (`userService.syncGoogleProfile`), so an edit would silently revert at the next login, and `email` is the identity key the login matches on. Both the **My Profile** modal (`components/layout/ProfileModal.tsx`) and the admin **Edit User** modal show them read-only; the avatar **upload** path is gone (`PATCH /users/me` no longer takes multipart, and `middleware/upload.js` has been deleted). `userService.updateOwnProfile` accepts `username` only, and `updateUser` accepts `username`/`role`/`status` only — the latter now uses `COALESCE` so an omitted field can never blank a column.
 
 ### Formerly-mock endpoints (all now real)
 - `routes/environment.js` is **no longer mock.** GET `/history` + `/logs` (random data / five rows hardcoded to March 2025) are **removed**; `GET /daily` returns a real InfluxDB-backed per-day summary via `services/environmentService.js`, and live sensor history remains a Socket.IO concern (`changeRange` → `sensorHistory`). The file also serves `POST /calibrate-gas` and `GET /sensor-status` (see ESP32 Firmware Notes).

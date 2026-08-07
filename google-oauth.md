@@ -277,8 +277,8 @@ Common errors:
   backend accepts `username` only (`updateOwnProfile`) / `username`+`role`+`status`
   (`updateUser`, via `COALESCE` so an omitted field can't blank a column).
 - **Still vestigial:** User Management "Reset PW" and the Profile "Change Password" panel — no
-  one logs in with an app password anymore. Candidates for removal. `middleware/upload.js` is
-  now unused too, since the avatar upload was the only caller.
+  one logs in with an app password anymore. Candidates for removal. `middleware/upload.js` has
+  since been **deleted** — the avatar upload was its only caller.
 - See `CLAUDE.md` (auth section) and `SESSION_NOTES.md` (Sessions 7–8) for the broader log.
 
 ---

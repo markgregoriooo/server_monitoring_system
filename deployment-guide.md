@@ -429,9 +429,10 @@ server {
     root /opt/cspc/frontend-dist;            # the `npm run build` output from §5.2
     index index.html;
 
-    # Profile photo uploads are capped at 2 MB by the app (middleware/upload.js).
-    # nginx defaults to 1m and would reject a 1.5 MB avatar with 413 before it ever
-    # reaches the backend. ICTU's proxy needs the same allowance.
+    # Headroom only. The avatar-upload path (and middleware/upload.js) is gone —
+    # profile photos now come from Google — so nothing the app accepts is anywhere
+    # near this: agent metric batches are deliberately kept under express.json()'s
+    # 100kb default. Safe to drop to nginx's 1m default; kept as slack.
     client_max_body_size 4m;
 
     # React SPA — serve the file if it exists, else fall back to index.html

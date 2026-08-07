@@ -137,8 +137,7 @@ server-infrastructure-monitoring-system-webSystem/
 │   │   └── serverHistoryHandler.js ← Flux query on server_metrics for /history
 │   ├── middleware/
 │   │   ├── auth.js                 ← authMiddleware, requireRole(...), JWT_SECRET
-│   │   ├── agentAuth.js            ← Bearer AGT-… token auth for agent POSTs
-│   │   └── upload.js               ← multer config
+│   │   └── agentAuth.js            ← Bearer AGT-… token auth for agent POSTs
 │   └── sockets/connectionHandler.js← all socket events, device vs browser segregation
 │
 ├── frontend/
