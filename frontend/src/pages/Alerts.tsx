@@ -120,16 +120,22 @@ export default function Alerts() {
         <div className="flex gap-1">
           {/* inline-flex + gap so the tab can carry the acknowledged count badge; the
               12px sizing and the `capitalize` moved onto the inner span both come from
-              main's readability pass. */}
+              main's readability pass.
+              These are TOGGLES, so the two states get opposite depth — unselected sits
+              raised on .gf-btn's face, selected is pushed IN with the inset shadow.
+              Same treatment as the History page's filters, so the two pages' filter
+              rows behave identically. */}
           {FILTERS.map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
-              className="inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1 rounded-[2px] transition-colors"
+              aria-pressed={filter === f}
+              className="gf-btn inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1"
               style={{
                 color: filter === f ? gf.textPrimary : gf.textMuted,
-                background: filter === f ? gf.accentDim : "transparent",
-                border: `1px solid ${filter === f ? gf.accent : gf.border}`,
+                ...(filter === f
+                  ? { background: gf.accentDim, borderColor: gf.accent, boxShadow: "var(--gf-btn-shadow-active)" }
+                  : {}),
               }}
             >
               <span className="capitalize">{f}</span>

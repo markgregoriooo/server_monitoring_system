@@ -162,8 +162,8 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
   return (
     <button
       onClick={onClick}
-      className="text-[13px] font-medium px-2.5 py-1 rounded-md transition-colors active:scale-95"
-      style={{ color: danger ? RED : gf.textMuted, border: `1px solid ${danger ? `${RED}55` : gf.border}`, background: "transparent" }}
+      className="gf-btn text-[13px] font-medium px-2.5 py-1"
+      style={danger ? { color: RED, borderColor: `${RED}55` } : { color: gf.textMuted }}
     >
       {children}
     </button>
