@@ -40,10 +40,16 @@ export interface TileDef {
 export const MAX_TILES = 16;
 
 // ── shared tile chrome ──
-function Shell({ label, children }: { label: string; children: ReactNode }) {
+// `stale` = this tile's data source has gone quiet (see LiveSummaryContext). It dims
+// the reading and flags the label rather than hiding the value: the last known number
+// is still useful, it just must not be mistaken for a current one. ORANGE, not red —
+// "don't trust this" is a warning, not a failure, and red is already spoken for by
+// genuine critical states inside the tiles.
+function Shell({ label, children, stale = false }: { label: string; children: ReactNode; stale?: boolean }) {
   return (
     <div
       className="flex flex-col gap-0.5 px-2.5 py-2 h-full"
+      title={stale ? `${label}: no update recently — value may be out of date` : undefined}
       style={{
         background: "var(--gf-panel)",
         border: "1px solid var(--gf-panel-border)",
@@ -62,10 +68,21 @@ function Shell({ label, children }: { label: string; children: ReactNode }) {
         boxShadow: "var(--gf-btn-shadow)",
       }}
     >
-      <span className="text-[8px] tracking-widest uppercase" style={{ color: T_MUTED }}>
-        {label}
+      <span className="flex items-center justify-between gap-1 min-w-0">
+        <span className="text-[8px] tracking-widest uppercase truncate" style={{ color: stale ? ORANGE : T_MUTED }}>
+          {label}
+        </span>
+        {stale && (
+          <span className="text-[8px] tracking-widest uppercase flex-shrink-0" style={{ color: ORANGE }}>
+            stale
+          </span>
+        )}
       </span>
-      {children}
+      {/* Dimmed, not hidden — the last known value is still worth something, it just
+          shouldn't read as live. */}
+      <div className="flex flex-col gap-0.5 min-w-0" style={{ opacity: stale ? 0.45 : 1 }}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -84,23 +101,23 @@ const Dim = () => (
 
 // ── Environment ──
 const TempTile: FC = () => {
-  const { env } = useLiveSummary();
-  return <Shell label="Temp">{env ? <Big color={tempColor(env.temperature)}>{env.temperature.toFixed(1)}°C</Big> : <Dim />}</Shell>;
+  const { env, stale } = useLiveSummary();
+  return <Shell label="Temp" stale={stale.env}>{env ? <Big color={tempColor(env.temperature)}>{env.temperature.toFixed(1)}°C</Big> : <Dim />}</Shell>;
 };
 const HumidityTile: FC = () => {
-  const { env } = useLiveSummary();
-  return <Shell label="Humidity">{env ? <Big color={humColor(env.humidity)}>{Math.round(env.humidity)}%</Big> : <Dim />}</Shell>;
+  const { env, stale } = useLiveSummary();
+  return <Shell label="Humidity" stale={stale.env}>{env ? <Big color={humColor(env.humidity)}>{Math.round(env.humidity)}%</Big> : <Dim />}</Shell>;
 };
 const GasTile: FC = () => {
-  const { env } = useLiveSummary();
+  const { env, stale } = useLiveSummary();
   if (!env) return (
-    <Shell label="Gas">
+    <Shell label="Gas" stale={stale.env}>
       <Dim />
     </Shell>
   );
   const c = gasColor(env.smokeStatus);
   return (
-    <Shell label="Gas">
+    <Shell label="Gas" stale={stale.env}>
       <Big color={c}>
         {Math.round(env.gas)}
         <span className="text-[9px] font-normal"> ppm</span>
@@ -112,9 +129,9 @@ const GasTile: FC = () => {
 
 // ── Servers ──
 const ServersTile: FC = () => {
-  const { serversOnline, serversTotal, worstCpu, worstMem } = useLiveSummary();
+  const { serversOnline, serversTotal, worstCpu, worstMem, stale } = useLiveSummary();
   return (
-    <Shell label="Servers">
+    <Shell label="Servers" stale={stale.servers}>
       <div className="flex items-baseline gap-1">
         <Big color={serversTotal === 0 ? T_DIM : serversOnline < serversTotal ? ORANGE : GREEN}>
           {serversOnline}/{serversTotal}
@@ -139,7 +156,7 @@ const ServersTile: FC = () => {
 const worstLoad = (s: { cpu: number; memory: number }) => Math.max(s.cpu, s.memory);
 
 const ServerListTile: FC = () => {
-  const { servers } = useLiveSummary();
+  const { servers, stale } = useLiveSummary();
   const rows = [...servers].sort((a, b) => {
     const ao = a.status === "Offline";
     const bo = b.status === "Offline";
@@ -149,7 +166,7 @@ const ServerListTile: FC = () => {
   });
 
   return (
-    <Shell label="Servers">
+    <Shell label="Servers" stale={stale.servers}>
       {rows.length === 0 ? (
         <span className="text-[10px]" style={{ color: T_MUTED }}>No servers</span>
       ) : (
@@ -242,10 +259,10 @@ const LatestAlertTile: FC = () => {
 const chargeColor = (pct: number) => (pct < 40 ? RED : pct < 70 ? ORANGE : GREEN);
 
 const UpsTile: FC = () => {
-  const { upsList, upsOnBattery, lowestCharge, lowestRuntime } = useLiveSummary();
+  const { upsList, upsOnBattery, lowestCharge, lowestRuntime, stale } = useLiveSummary();
   if (upsList.length === 0) {
     return (
-      <Shell label="UPS">
+      <Shell label="UPS" stale={stale.ups}>
         <span className="text-[10px]" style={{ color: T_MUTED }}>No UPS</span>
       </Shell>
     );
@@ -255,7 +272,7 @@ const UpsTile: FC = () => {
 
   if (onBattery) {
     return (
-      <Shell label={label}>
+      <Shell label={label} stale={stale.ups}>
         <div className="flex items-baseline gap-1">
           <Big color={RED}>{lowestRuntime != null ? `${Math.round(lowestRuntime)}` : "—"}</Big>
           <span className="text-[9px]" style={{ color: RED }}>min left</span>
@@ -268,7 +285,7 @@ const UpsTile: FC = () => {
     );
   }
   return (
-    <Shell label={label}>
+    <Shell label={label} stale={stale.ups}>
       <div className="flex items-baseline gap-1">
         <Big color={lowestCharge != null ? chargeColor(lowestCharge) : T_DIM}>
           {lowestCharge != null ? `${Math.round(lowestCharge)}%` : "—"}
@@ -286,10 +303,10 @@ const UpsTile: FC = () => {
 // Counts PORTS, not devices: a router that answers SNMP while three buildings' links
 // are down is "online" by device count and broken by any measure that matters.
 const NetworkTile: FC = () => {
-  const { routers, routersOnline, routersTotal, portsUp, portsTotal } = useLiveSummary();
+  const { routers, routersOnline, routersTotal, portsUp, portsTotal, stale } = useLiveSummary();
   if (routersTotal === 0) {
     return (
-      <Shell label="Network">
+      <Shell label="Network" stale={stale.network}>
         <span className="text-[10px]" style={{ color: T_MUTED }}>No routers</span>
       </Shell>
     );
@@ -301,7 +318,7 @@ const NetworkTile: FC = () => {
     .reduce<number | null>((m, r) => (m == null || (r.worstUtil as number) > m ? (r.worstUtil as number) : m), null);
 
   return (
-    <Shell label="Network">
+    <Shell label="Network" stale={stale.network}>
       <div className="flex items-baseline gap-1">
         <Big color={routerDown > 0 ? RED : portsDown > 0 ? ORANGE : GREEN}>
           {portsUp}/{portsTotal}
@@ -335,7 +352,7 @@ function Row({ color, name, right }: { color: string; name: string; right: React
 }
 
 const UpsListTile: FC = () => {
-  const { upsList } = useLiveSummary();
+  const { upsList, stale } = useLiveSummary();
   const rows = [...upsList].sort((a, b) => {
     const ab = a.onBattery === true, bb = b.onBattery === true;
     if (ab !== bb) return ab ? -1 : 1;                       // discharging first
@@ -344,7 +361,7 @@ const UpsListTile: FC = () => {
     return a.name.localeCompare(b.name);
   });
   return (
-    <Shell label="UPS">
+    <Shell label="UPS" stale={stale.ups}>
       {rows.length === 0 ? (
         <span className="text-[10px]" style={{ color: T_MUTED }}>No UPS</span>
       ) : (
@@ -373,7 +390,7 @@ const UpsListTile: FC = () => {
 };
 
 const NetworkListTile: FC = () => {
-  const { routers } = useLiveSummary();
+  const { routers, stale } = useLiveSummary();
   const rows = [...routers].sort((a, b) => {
     const ao = a.status === "Offline", bo = b.status === "Offline";
     if (ao !== bo) return ao ? -1 : 1;                                   // offline first
@@ -382,7 +399,7 @@ const NetworkListTile: FC = () => {
     return a.name.localeCompare(b.name);
   });
   return (
-    <Shell label="Routers">
+    <Shell label="Routers" stale={stale.network}>
       {rows.length === 0 ? (
         <span className="text-[10px]" style={{ color: T_MUTED }}>No routers</span>
       ) : (
@@ -416,6 +433,8 @@ const NetworkListTile: FC = () => {
 // the live list" — they show a dim Unavailable rather than vanishing, because a tile
 // silently disappearing looks like a bug, while this points at the fix (remove it in
 // the builder).
+// Not marked stale: "this device is gone from the list" is a different condition from
+// "its stream went quiet", and flagging both at once would just muddy the signal.
 function Unavailable({ label }: { label: string }) {
   return (
     <Shell label={label}>
@@ -426,12 +445,12 @@ function Unavailable({ label }: { label: string }) {
 }
 
 const UpsDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
-  const { upsList } = useLiveSummary();
+  const { upsList, stale } = useLiveSummary();
   const u = upsList.find((x) => x.id === deviceId);
   if (!u) return <Unavailable label={`UPS #${deviceId}`} />;
   if (u.status === "Offline") {
     return (
-      <Shell label={u.name}>
+      <Shell label={u.name} stale={stale.ups}>
         <Big color={RED}>offline</Big>
         <span className="text-[9px]" style={{ color: T_MUTED }}>not responding</span>
       </Shell>
@@ -439,7 +458,7 @@ const UpsDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
   }
   if (u.onBattery === true) {
     return (
-      <Shell label={u.name}>
+      <Shell label={u.name} stale={stale.ups}>
         <div className="flex items-baseline gap-1">
           <Big color={RED}>{u.runtimeMin != null ? Math.round(u.runtimeMin) : "—"}</Big>
           <span className="text-[9px]" style={{ color: RED }}>min left</span>
@@ -451,7 +470,7 @@ const UpsDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
     );
   }
   return (
-    <Shell label={u.name}>
+    <Shell label={u.name} stale={stale.ups}>
       <div className="flex items-baseline gap-1">
         <Big color={u.chargePct != null ? chargeColor(u.chargePct) : T_DIM}>
           {u.chargePct != null ? `${Math.round(u.chargePct)}%` : "—"}
@@ -467,12 +486,12 @@ const UpsDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
 };
 
 const NetDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
-  const { routers } = useLiveSummary();
+  const { routers, stale } = useLiveSummary();
   const r = routers.find((x) => x.id === deviceId);
   if (!r) return <Unavailable label={`Router #${deviceId}`} />;
   if (r.status === "Offline") {
     return (
-      <Shell label={r.name}>
+      <Shell label={r.name} stale={stale.network}>
         <Big color={RED}>offline</Big>
         <span className="text-[9px]" style={{ color: T_MUTED }}>unreachable</span>
       </Shell>
@@ -480,7 +499,7 @@ const NetDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
   }
   const down = r.portsTotal - r.portsUp;
   return (
-    <Shell label={r.name}>
+    <Shell label={r.name} stale={stale.network}>
       <div className="flex items-baseline gap-1">
         <Big color={down > 0 ? ORANGE : GREEN}>{r.portsUp}/{r.portsTotal}</Big>
         <span className="text-[9px]" style={{ color: T_MUTED }}>ports up</span>

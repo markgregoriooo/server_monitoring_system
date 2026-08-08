@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
@@ -77,7 +77,37 @@ export interface LiveSummary {
   routersTotal: number;
   portsUp: number;
   portsTotal: number;
+  // Per-stream "we haven't heard anything in a suspiciously long time". A stream that
+  // has never produced data is NOT stale — that is an empty state, and the tiles
+  // already say "No UPS" / "—" for it.
+  stale: Record<StreamKey, boolean>;
 }
+
+// ─── Staleness ────────────────────────────────────────────────────────────────
+// The connection dot reflects the SOCKET, not each data source. If a collector dies
+// while the socket stays healthy — the SNMP poller crashing, the ESP32 dropping off —
+// nothing emits an offline status (the poller is what would have emitted it), so a
+// tile freezes on its last reading and goes on looking green. On a glance surface
+// whose whole job is "is anything wrong", a confidently-wrong number is worse than an
+// obvious gap, so each stream is timed out independently.
+//
+// Thresholds are a generous multiple of each source's real cadence, because a missed
+// sample is normal and only a RUN of them means something. Device-level failure is
+// already covered elsewhere (the offline sweep for servers, poller reachability for
+// routers/UPS) — this catches the layer above, where the collector itself is gone.
+export type StreamKey = "env" | "servers" | "ups" | "network";
+
+const STALE_AFTER_MS: Record<StreamKey, number> = {
+  env: 60_000, // ESP32 pushes every ~3s
+  servers: 210_000, // Go agents push every 10s by default, but -interval is PER AGENT
+  //                   and 60s is a supported setting — 3x that, plus slack
+  ups: 240_000, // SNMP poll ~60s
+  network: 240_000, // SNMP ~60s / RouterOS ~30s
+};
+
+// How often staleness is re-evaluated. It cannot be derived on render alone: the whole
+// point is detecting that NOTHING arrived, so without a tick the flag would never flip.
+const STALE_TICK_MS = 10_000;
 
 const LiveSummaryContext = createContext<LiveSummary | null>(null);
 
@@ -123,6 +153,24 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
   const [aircons, setAircons] = useState<AirconLive[]>([]);
   const [upsList, setUpsList] = useState<UpsLive[]>([]);
   const [routers, setRouters] = useState<NetLive[]>([]);
+  // Last time each stream produced anything. null = nothing yet (an empty state, not a
+  // stale one). A REST seed counts as an update, or a freshly opened widget would look
+  // stale for up to a full poll interval before the first push landed.
+  const [lastAt, setLastAt] = useState<Record<StreamKey, number | null>>({
+    env: null,
+    servers: null,
+    ups: null,
+    network: null,
+  });
+  const mark = useCallback((k: StreamKey) => setLastAt((p) => ({ ...p, [k]: Date.now() })), []);
+
+  // Re-evaluate on a timer: staleness is the ABSENCE of events, so nothing else would
+  // ever trigger the re-render that flips the flag.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), STALE_TICK_MS);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -131,13 +179,19 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
       setAircons([]);
       setUpsList([]);
       setRouters([]);
+      // Logging out must clear the clocks too, or signing back in would show every
+      // stream stale until its first sample arrives.
+      setLastAt({ env: null, servers: null, ups: null, network: null });
       return;
     }
     let alive = true;
 
     const seedServers = () =>
       api.getServers().then((r) => {
-        if (alive && r.success && r.data) setServers((r.data.servers ?? []) as ServerLive[]);
+        if (alive && r.success && r.data) {
+          setServers((r.data.servers ?? []) as ServerLive[]);
+          mark("servers");
+        }
       });
     seedServers();
 
@@ -148,7 +202,10 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
     // they share the networkMetrics/networkStatus events downstream.
     const seedUps = () =>
       api.getUpsDevices().then((r) => {
-        if (alive && r.success && r.data) setUpsList(((r.data.ups ?? r.data.devices ?? []) as any[]).map(mapUps));
+        if (alive && r.success && r.data) {
+          setUpsList(((r.data.ups ?? r.data.devices ?? []) as any[]).map(mapUps));
+          mark("ups");
+        }
       });
     const seedRouters = () =>
       Promise.all([api.getNetworkDevices(), api.getMikrotikDevices()]).then(([net, mk]) => {
@@ -157,6 +214,7 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
         if (net.success && net.data) rows.push(...((net.data.devices ?? []) as any[]).map((d) => mapNet(d, "router")));
         if (mk.success && mk.data) rows.push(...((mk.data.devices ?? []) as any[]).map((d) => mapNet(d, "mikrotik")));
         setRouters(rows);
+        mark("network");
       });
     seedUps();
     seedRouters();
@@ -171,7 +229,7 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const onSensor = (d: any) =>
+    const onSensor = (d: any) => {
       setEnv({
         temperature: d.temperature,
         humidity: d.humidity,
@@ -180,6 +238,8 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
         envStatus: d.environment_status ?? "NORMAL",
         updatedAt: Date.now(),
       });
+      mark("env");
+    };
 
     // serverMetrics arrives as a single-server update: { server: {...} }. Merge by id.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -200,6 +260,7 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
         next[idx] = { ...next[idx], ...incoming };
         return next;
       });
+      mark("servers");
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -244,6 +305,7 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
         next[idx] = { ...next[idx], ...incoming };
         return next;
       });
+      mark("ups");
     };
     // Unreachable → zero the live values rather than leaving the last-known charge on
     // screen, which would read as a healthy UPS that simply stopped being polled.
@@ -280,6 +342,7 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
           : { ...row, name: incoming.name, status: incoming.status, type: incoming.type };
         return next;
       });
+      mark("network");
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const onNetStatus = (d: any) =>
@@ -338,7 +401,19 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
     };
-  }, [user]);
+    // `mark` is a stable useCallback, so this still re-subscribes only on login/logout.
+  }, [user, mark]);
+
+  // A stream with no data yet is NOT stale — that's an empty state, and the tiles
+  // already render "No UPS" / "—" for it. Only a stream that WAS reporting and then
+  // went quiet counts.
+  const isStale = useCallback(
+    (k: StreamKey) => {
+      const at = lastAt[k];
+      return at != null && nowTick - at > STALE_AFTER_MS[k];
+    },
+    [lastAt, nowTick],
+  );
 
   const value = useMemo<LiveSummary>(() => {
     const online = servers.filter((s) => s.status !== "Offline");
@@ -367,8 +442,14 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
       routersTotal: routers.length,
       portsUp: routers.reduce((n, r) => n + r.portsUp, 0),
       portsTotal: routers.reduce((n, r) => n + r.portsTotal, 0),
+      stale: {
+        env: isStale("env"),
+        servers: isStale("servers"),
+        ups: isStale("ups"),
+        network: isStale("network"),
+      },
     };
-  }, [connected, env, servers, aircons, upsList, routers]);
+  }, [connected, env, servers, aircons, upsList, routers, isStale]);
 
   return <LiveSummaryContext.Provider value={value}>{children}</LiveSummaryContext.Provider>;
 }

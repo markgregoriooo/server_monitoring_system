@@ -351,6 +351,25 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
         an action, not a setting). A dropdown rather than one "+" per unit because a campus
         with a dozen routers would otherwise bury the static tiles above them. ✅
 
+- [x] **Post-1.0 — per-stream staleness.** The connection dot reflects the SOCKET, not each
+      data source. If a collector died while the socket stayed healthy — the SNMP poller
+      crashing, the ESP32 dropping off — nothing emitted an offline status (the poller is what
+      would have emitted it), so a tile froze on its last reading and went on looking green.
+      On a glance surface, a confidently-wrong number is worse than an obvious gap.
+      `LiveSummaryContext` now timestamps every stream (`env` / `servers` / `ups` / `network`,
+      REST seeds included) and exposes a `stale` flag per stream; `Shell` dims the reading to
+      45% and marks the label orange. Notes:
+      - Thresholds are a generous multiple of each source's real cadence (env 60s, servers
+        210s — `-interval` is per-agent and 60s is supported — UPS/network 240s), because a
+        missed sample is normal and only a RUN of them means anything.
+      - Re-evaluated on a 10s tick: staleness is the ABSENCE of events, so nothing else would
+        ever trigger the render that flips the flag.
+      - A stream that has never reported is **not** stale — that's an empty state, and the
+        tiles already say "No UPS" / "—".
+      - Alerts / Aircon / Clock are exempt: they're event-driven, so "no update recently"
+        carries no information there. Device-level failure is still covered by the offline
+        sweep and poller reachability — this catches the layer above them. ✅
+
 > **Feature complete.** Remaining manual step: run `migrations/2026-06-17_widget_prefs.sql`
 > in phpMyAdmin so layouts persist server-side (cross-device). Until then it works off the
 > localStorage cache. Verify the pop-out in Chrome/Edge (see below).
