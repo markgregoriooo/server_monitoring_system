@@ -158,8 +158,8 @@ const ServerListTile: FC = () => {
           <div className="flex items-center gap-1.5 pb-0.5">
             <span className="w-1.5 flex-shrink-0" />
             <span className="flex-1" />
-            <span className="w-11 text-right text-[7px] tracking-wide whitespace-nowrap" style={{ color: T_DIM }}>CPU·MEM</span>
-            <span className="w-12 text-center text-[7px] tracking-wide" style={{ color: T_DIM }}>LOAD</span>
+            <span className="w-14 text-right text-[8px] tracking-wide whitespace-nowrap" style={{ color: T_DIM }}>CPU·MEM</span>
+            <span className="w-12 text-center text-[8px] tracking-wide" style={{ color: T_DIM }}>LOAD</span>
           </div>
           {rows.map((s) => {
             const offline = s.status === "Offline";
@@ -175,10 +175,13 @@ const ServerListTile: FC = () => {
                   {s.name}
                 </span>
                 {offline ? (
-                  <span className="text-[8px]" style={{ color: RED }}>offline</span>
+                  <span className="text-[10px]" style={{ color: RED }}>offline</span>
                 ) : (
+                  // The numbers ARE the measurement, so they lead the row — they were
+                  // 8px, smaller than the server name beside them. w-14 (not w-11) so
+                  // a double-digit pair like "100·100" still fits on one line at 11px.
                   <>
-                    <span className="w-11 text-right text-[8px] tabular-nums whitespace-nowrap">
+                    <span className="w-14 text-right text-[11px] tabular-nums whitespace-nowrap">
                       <b style={{ color: loadColor(s.cpu) }}>{s.cpu}</b>
                       <span style={{ color: T_DIM }}>·</span>
                       <b style={{ color: loadColor(s.memory) }}>{s.memory}</b>
@@ -319,11 +322,13 @@ const NetworkTile: FC = () => {
 // glanceable at realistic counts without scrolling. Problem-first sort so trouble is
 // always the top row — for UPS that ordering is on-battery, then lowest runtime, since
 // a discharging unit outranks a merely low one that is still on mains.
+// Type scale matches ServerListTile's rows on purpose — these sit in the same widget,
+// and a UPS reading has no reason to be smaller than a server's.
 function Row({ color, name, right }: { color: string; name: string; right: ReactNode }) {
   return (
-    <div className="flex items-center gap-1.5 py-0.5" style={{ borderTop: "1px solid var(--gf-divider)" }}>
-      <span className="w-1 h-1 rounded-full flex-shrink-0" style={{ background: color }} />
-      <span className="text-[9px] truncate flex-1" style={{ color: "var(--gf-text-primary)" }}>{name}</span>
+    <div className="flex items-center gap-1.5 py-1" style={{ borderTop: "1px solid var(--gf-divider)" }}>
+      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
+      <span className="text-[10px] truncate flex-1" style={{ color: "var(--gf-text-primary)" }} title={name}>{name}</span>
       {right}
     </div>
   );
@@ -354,7 +359,7 @@ const UpsListTile: FC = () => {
                 color={color}
                 name={u.name}
                 right={
-                  <span className="text-[9px] tabular-nums flex-shrink-0" style={{ color }}>
+                  <span className="text-[11px] tabular-nums flex-shrink-0" style={{ color }}>
                     {off ? "offline" : batt ? `⚡ ${u.runtimeMin != null ? `${Math.round(u.runtimeMin)}m` : "—"}` : u.chargePct != null ? `${Math.round(u.chargePct)}%` : "—"}
                   </span>
                 }
@@ -392,7 +397,7 @@ const NetworkListTile: FC = () => {
                 color={color}
                 name={r.name}
                 right={
-                  <span className="text-[9px] tabular-nums flex-shrink-0" style={{ color }}>
+                  <span className="text-[11px] tabular-nums flex-shrink-0" style={{ color }}>
                     {off ? "offline" : `${r.portsUp}/${r.portsTotal}`}
                   </span>
                 }
