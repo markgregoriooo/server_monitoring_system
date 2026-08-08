@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { Fragment, useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
@@ -269,6 +269,66 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
   );
 }
 
+// ─── Drawer row (expands under a table row) ───────────────────────────────────
+// The bars and voltages that used to fill every card, shown only for the unit you
+// actually clicked. Same max-height slide as ServerMetrics' drawer.
+function UpsDrawerRow({ u, isOpen, colSpan }: { u: UpsDevice; isOpen: boolean; colSpan: number }) {
+  const charge = u.batteryChargePct ?? 0;
+  const load = u.loadPct ?? 0;
+  const health = batteryHealth(u.batteryStatus);
+  return (
+    <tr>
+      <td colSpan={colSpan} className="p-0">
+        <div
+          className="overflow-hidden transition-all duration-300 ease-in-out"
+          style={{ maxHeight: isOpen ? 260 : 0, borderBottom: isOpen ? `1px solid ${gf.divider}` : "none" }}
+        >
+          <div className="p-3" style={{ background: gf.bg }}>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] mb-2.5" style={{ color: gf.textDim }}>
+              <span className="font-mono">{u.ip}</span>
+              <span>{u.location}</span>
+              {[u.brand, u.model].filter(Boolean).length > 0 && <span>{[u.brand, u.model].filter(Boolean).join(" ")}</span>}
+              {health.text !== "—" && <span>Batt <span style={{ color: health.color }}>{health.text}</span></span>}
+            </div>
+
+            {!u.monitored ? (
+              <div className="text-[13px]" style={{ color: ORANGE }}>
+                {u.commType ? `${u.commType.toUpperCase()} UPS` : "USB/serial UPS"} — not reachable over SNMP (needs a network/SNMP card).
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-3">
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <div className="flex items-baseline justify-between mb-1">
+                      <span className="text-[11px] uppercase tracking-wider" style={{ color: gf.textDim }}>Battery</span>
+                      <span className="text-[14px] font-bold" style={{ color: batteryColor(charge) }}>{fmt(u.batteryChargePct, "%")}</span>
+                    </div>
+                    <Bar value={charge} color={batteryColor(charge)} />
+                  </div>
+                  <div>
+                    <div className="flex items-baseline justify-between mb-1">
+                      <span className="text-[11px] uppercase tracking-wider" style={{ color: gf.textDim }}>Load</span>
+                      <span className="text-[14px] font-bold" style={{ color: loadColor(load) }}>{fmt(u.loadPct, "%")}</span>
+                    </div>
+                    <Bar value={load} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 content-start">
+                  <Detail label="Runtime" value={fmt(u.runtimeRemainingMin, " min")} />
+                  <Detail label="Input" value={fmt(u.inputVoltage, " V")} />
+                  <Detail label="Output" value={fmt(u.outputVoltage, " V")} />
+                  <Detail label="Battery V" value={fmt(u.batteryVoltage, " V", 1)} />
+                  {u.temperature != null && <Detail label="Temp" value={fmt(u.temperature, " °C")} />}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-2">
@@ -295,6 +355,9 @@ export default function UpsMonitoring() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Which row's drawer is open (one at a time), same as ServerMetrics.
+  const [openId, setOpenId] = useState<string | null>(null);
+  const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
   const [toast, setToast] = useState("");
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -506,21 +569,111 @@ export default function UpsMonitoring() {
           </div>
         </Panel>
       ) : (
-        /* UPS cards — click any card (or "View →") to open its full detail */
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-          {devices.map((u) => (
-            <UpsCard
-              key={u.id}
-              u={u}
-              onView={() => setDetailId(u.id)}
-              isAdmin={isAdmin}
-              confirming={confirmId === u.id}
-              onAskRemove={() => setConfirmId(u.id)}
-              onCancelRemove={() => setConfirmId(null)}
-              onRemove={() => remove(u.id)}
-            />
-          ))}
-        </div>
+        /* Wide list + expandable drawer, matching the Server Metrics front page. The
+           three-up card grid gave every UPS a full block of bars and voltages, so with
+           several units the one that mattered — the one on battery — was no more
+           prominent than the rest. In a table it's a row you can scan to. */
+        <Panel
+          title="UPS units"
+          noPad
+          right={<span className="text-[12px]" style={{ color: gf.textDim }}>{online}/{total} online</span>}
+        >
+          {/* Mobile: the existing card is already the right shape for a phone */}
+          <div className="md:hidden flex flex-col gap-2.5 p-2.5">
+            {devices.map((u) => (
+              <UpsCard
+                key={u.id}
+                u={u}
+                onView={() => setDetailId(u.id)}
+                isAdmin={isAdmin}
+                confirming={confirmId === u.id}
+                onAskRemove={() => setConfirmId(u.id)}
+                onCancelRemove={() => setConfirmId(null)}
+                onRemove={() => remove(u.id)}
+              />
+            ))}
+          </div>
+
+          {/* Desktop: table + drawer */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${gf.divider}` }}>
+                  {["UPS", "IP Address", "Location", "Status", "Battery", "Runtime", "Load", ""].map((h) => (
+                    <th key={h} className="text-left px-3 py-2 text-[11px] tracking-widest uppercase font-medium whitespace-nowrap" style={{ color: gf.textDim }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {devices.map((u, i) => {
+                  const onBattery = u.onBattery === true;
+                  return (
+                    <Fragment key={u.id}>
+                      <tr
+                        onClick={() => toggleDrawer(u.id)}
+                        className="cursor-pointer transition-colors"
+                        style={{
+                          borderBottom: `1px solid ${gf.divider}`,
+                          // On battery outranks the zebra stripe: a discharging unit is
+                          // the one row that must catch the eye without being opened.
+                          background: onBattery
+                            ? "rgba(242,73,92,0.12)"
+                            : openId === u.id ? gf.hover : i % 2 ? gf.hover : "transparent",
+                        }}
+                      >
+                        <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: gf.textPrimary }}>
+                          <div className="text-[14px] font-medium">
+                            {u.name}
+                            <span className="ml-1.5 text-[12px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === u.id ? "rotate(180deg)" : "none" }}>▾</span>
+                          </div>
+                          {onBattery && <div className="text-[12px] font-medium" style={{ color: RED }}>⚡ on battery</div>}
+                        </td>
+                        <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{u.ip}</td>
+                        <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{u.location}</td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(u.status), boxShadow: `0 0 5px ${statusColor(u.status)}` }} />
+                            <span className="text-[13px]" style={{ color: gf.textMuted }}>{u.status}</span>
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <span className="text-[13px] font-bold tabular-nums" style={{ color: batteryColor(u.batteryChargePct ?? 0) }}>
+                            {fmt(u.batteryChargePct, "%")}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-[13px] tabular-nums whitespace-nowrap" style={{ color: onBattery ? RED : gf.textMuted }}>
+                          {fmt(u.runtimeRemainingMin, " min")}
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <span className="text-[13px] tabular-nums" style={{ color: loadColor(u.loadPct ?? 0) }}>{fmt(u.loadPct, "%")}</span>
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                            {confirmId === u.id ? (
+                              <>
+                                <span className="text-[12px]" style={{ color: RED }}>Remove?</span>
+                                <button onClick={() => remove(u.id)} className="gf-btn px-2 py-1 text-[12px] font-medium" style={{ color: RED }}>Yes</button>
+                                <button onClick={() => setConfirmId(null)} className="gf-btn px-2 py-1 text-[12px]" style={{ color: gf.textMuted }}>No</button>
+                              </>
+                            ) : (
+                              <>
+                                <GhostButton onClick={() => setDetailId(u.id)}>View</GhostButton>
+                                {isAdmin && <GhostButton danger onClick={() => setConfirmId(u.id)}>Remove</GhostButton>}
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      <UpsDrawerRow u={u} isOpen={openId === u.id} colSpan={8} />
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
       )}
 
       {/* Add-UPS modal (admin) */}

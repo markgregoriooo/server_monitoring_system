@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { Fragment, useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
@@ -118,23 +118,17 @@ function mergeNetLive(prev: NetDevice | undefined, p: any): NetDevice {
 // ─── Panel ────────────────────────────────────────────────────────────────────
 
 function Panel({
-  title, right, children, noPad, onClick,
+  title, right, children, noPad,
 }: {
   title?: string;
   right?: React.ReactNode;
   children: React.ReactNode;
   noPad?: boolean;
-  onClick?: () => void;
 }) {
   return (
     <div
-      onClick={onClick}
-      className={`flex flex-col rounded-lg overflow-hidden${onClick ? " cursor-pointer transition-colors" : ""}`}
+      className="flex flex-col rounded-lg overflow-hidden"
       style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
-      // Border highlight on hover is the affordance that the whole card is clickable —
-      // without it only the "View" button looks interactive. Matches MikrotikMonitoring.
-      onMouseEnter={onClick ? (e) => (e.currentTarget.style.borderColor = "rgba(87,148,242,0.45)") : undefined}
-      onMouseLeave={onClick ? (e) => (e.currentTarget.style.borderColor = "var(--gf-panel-border)") : undefined}
     >
       {title !== undefined && (
         <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
@@ -211,6 +205,67 @@ function PortChip({ label, up, util }: { label: string; up: boolean; util?: numb
   );
 }
 
+// ─── Drawer row (expands under a table row) ───────────────────────────────────
+// Mirrors ServerMetrics' ServerDrawerRow: the table shows what you SCAN, the drawer
+// holds what you'd otherwise have to open the detail page for. Animated by max-height
+// rather than conditional rendering, so it slides instead of snapping.
+function NetDrawerRow({ d, isOpen, colSpan }: { d: NetDevice; isOpen: boolean; colSpan: number }) {
+  const up = d.interfaces.filter((i) => i.linkUp).length;
+  return (
+    <tr>
+      <td colSpan={colSpan} className="p-0">
+        <div
+          className="overflow-hidden transition-all duration-300 ease-in-out"
+          style={{ maxHeight: isOpen ? 260 : 0, borderBottom: isOpen ? `1px solid ${gf.divider}` : "none" }}
+        >
+          <div className="p-3" style={{ background: gf.bg }}>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] mb-2" style={{ color: gf.textDim }}>
+              <span className="font-mono">{d.ip}</span>
+              <span>{d.location}</span>
+              {d.sysName && <span>{d.sysName}</span>}
+              {d.descr && <span className="truncate" style={{ maxWidth: 320 }}>{d.descr}</span>}
+              <span>↑ {formatUptime(d.uptimeSeconds)}</span>
+            </div>
+            {!d.monitored ? (
+              <div className="text-[13px]" style={{ color: ORANGE }}>
+                SNMP not configured — reachability only (ping fallback pending).
+              </div>
+            ) : d.interfaces.length === 0 ? (
+              <div className="text-[13px]" style={{ color: gf.textDim }}>
+                {d.status === "Online" ? "No interfaces reported." : "Offline — awaiting next poll."}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                  Ports · {up}/{d.interfaces.length} up
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {d.interfaces.map((i) => (
+                    <PortChip key={`${d.id}:${i.name}`} label={i.locationLabel || i.name} up={i.linkUp} util={i.utilizationPct} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// Compact ports figure for the table cell — the count is the scannable bit, the chips
+// live in the drawer.
+function PortsCell({ d }: { d: NetDevice }) {
+  const up = d.interfaces.filter((i) => i.linkUp).length;
+  const total = d.interfaces.length;
+  const color = total === 0 ? gf.textDim : up === total ? GREEN : up === 0 ? RED : ORANGE;
+  return (
+    <span className="text-[13px] tabular-nums" style={{ color }}>
+      {total === 0 ? "—" : `${up}/${total}`}
+    </span>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function NetworkMonitoring() {
@@ -228,6 +283,9 @@ export default function NetworkMonitoring() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Which row's drawer is open (one at a time), same as ServerMetrics.
+  const [openId, setOpenId] = useState<string | null>(null);
+  const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
   const [toast, setToast] = useState("");
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -415,67 +473,97 @@ export default function NetworkMonitoring() {
           </div>
         </Panel>
       ) : (
-        /* Per-device interface panels — click a panel (or "View →") to open its full detail */
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
-          {devices.map((d) => (
-            <Panel
-              key={d.id}
-              title={d.name}
-              noPad
-              onClick={() => setDetailId(d.id)}
-              right={
-                <span className="flex items-center gap-2">
-                  <span className="text-[12px] font-mono" style={{ color: gf.textDim }}>{d.ip}</span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-                    <span className="text-[13px]" style={{ color: gf.textMuted }}>{d.status}</span>
-                  </span>
-                  {confirmId === d.id ? (
-                    <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                      <span className="text-[12px]" style={{ color: gf.textMuted }}>Remove?</span>
-                      <button onClick={(e) => { e.stopPropagation(); remove(d.id); }} className="gf-raise px-2 py-1 rounded-md text-[12px] font-medium" style={{ color: "#fff", background: RED }}>Yes</button>
-                      <button onClick={(e) => { e.stopPropagation(); setConfirmId(null); }} className="px-2 py-1 rounded-md text-[12px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>No</button>
-                    </span>
-                  ) : (
-                    <>
-                      <GhostButton onClick={(e) => { e.stopPropagation(); setDetailId(d.id); }}>View</GhostButton>
-                      {isAdmin && <GhostButton danger onClick={(e) => { e.stopPropagation(); setConfirmId(d.id); }}>Remove</GhostButton>}
-                    </>
-                  )}
-                </span>
-              }
-            >
-              {/* Summary strip — the facts you scan before deciding to drill in. */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[12px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
-                <span className="font-mono">{d.ip}</span>
-                <span>{d.location}</span>
-                {d.sysName && <span>{d.sysName}</span>}
-                <span>
-                  {d.interfaces.filter((i) => i.linkUp).length}/{d.interfaces.length} up
-                </span>
-                <span className="ml-auto">↑ {formatUptime(d.uptimeSeconds)}</span>
+        /* Wide list + expandable drawer, matching the Server Metrics front page: one
+           full-width table you can scan down, with each row clicking open to reveal the
+           ports. The old two-up card grid showed every port for every router at once,
+           which meant scrolling past detail you hadn't asked for to find the one router
+           you cared about. */
+        <Panel
+          title="Routers & switches"
+          noPad
+          right={<span className="text-[12px]" style={{ color: gf.textDim }}>{online}/{total} online</span>}
+        >
+          {/* Mobile: one card per router (a table can't shrink to a phone) */}
+          <div className="md:hidden flex flex-col gap-2 p-2.5">
+            {devices.map((d) => (
+              <div key={d.id} className="rounded-[2px] p-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
+                  <span className="text-[14px] font-medium truncate flex-1" style={{ color: gf.textPrimary }}>{d.name}</span>
+                  <PortsCell d={d} />
+                </div>
+                <div className="text-[12px] font-mono mt-0.5 truncate" style={{ color: gf.textDim }}>{d.ip} · ↑ {formatUptime(d.uptimeSeconds)}</div>
+                <div className="flex gap-2 mt-2">
+                  <GhostButton onClick={() => setDetailId(d.id)}>View</GhostButton>
+                  {isAdmin && <GhostButton danger onClick={() => setConfirmId(d.id)}>Remove</GhostButton>}
+                </div>
               </div>
-              {!d.monitored ? (
-                <div className="px-3 py-4 text-[13px]" style={{ color: ORANGE }}>SNMP not configured — reachability only (ping fallback pending).</div>
-              ) : d.interfaces.length === 0 ? (
-                <div className="px-3 py-4 text-[13px]" style={{ color: gf.textDim }}>
-                  {d.status === "Online" ? "No interfaces reported." : "Offline — awaiting next poll."}
-                </div>
-              ) : (
-                <div className="px-3 py-2.5 flex flex-col gap-1.5">
-                  <span className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
-                    Ports · {d.interfaces.filter((i) => i.linkUp).length}/{d.interfaces.length} up
-                  </span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {d.interfaces.map((i) => (
-                      <PortChip key={`${d.id}:${i.name}`} label={i.locationLabel || i.name} up={i.linkUp} util={i.utilizationPct} />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </Panel>
-          ))}
-        </div>
+            ))}
+          </div>
+
+          {/* Desktop: table + drawer */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${gf.divider}` }}>
+                  {["Router", "IP Address", "Location", "Status", "Ports", "Uptime", ""].map((h) => (
+                    <th key={h} className="text-left px-3 py-2 text-[11px] tracking-widest uppercase font-medium whitespace-nowrap" style={{ color: gf.textDim }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {devices.map((d, i) => (
+                  <Fragment key={d.id}>
+                    <tr
+                      onClick={() => toggleDrawer(d.id)}
+                      className="cursor-pointer transition-colors"
+                      style={{ borderBottom: `1px solid ${gf.divider}`, background: openId === d.id ? gf.hover : i % 2 ? gf.hover : "transparent" }}
+                    >
+                      <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: gf.textPrimary }}>
+                        <div className="text-[14px] font-medium">
+                          {d.name}
+                          <span className="ml-1.5 text-[12px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === d.id ? "rotate(180deg)" : "none" }}>▾</span>
+                        </div>
+                        {d.sysName && d.sysName !== d.name && (
+                          <div className="text-[12px] font-mono font-normal" style={{ color: gf.textDim }}>{d.sysName}</div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{d.ip}</td>
+                      <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{d.location}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
+                          <span className="text-[13px]" style={{ color: gf.textMuted }}>{d.status}</span>
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 whitespace-nowrap"><PortsCell d={d} /></td>
+                      <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{formatUptime(d.uptimeSeconds)}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                          {confirmId === d.id ? (
+                            <>
+                              <span className="text-[12px]" style={{ color: RED }}>Remove?</span>
+                              <button onClick={() => remove(d.id)} className="gf-btn px-2 py-1 text-[12px] font-medium" style={{ color: RED }}>Yes</button>
+                              <button onClick={() => setConfirmId(null)} className="gf-btn px-2 py-1 text-[12px]" style={{ color: gf.textMuted }}>No</button>
+                            </>
+                          ) : (
+                            <>
+                              <GhostButton onClick={() => setDetailId(d.id)}>View</GhostButton>
+                              {isAdmin && <GhostButton danger onClick={() => setConfirmId(d.id)}>Remove</GhostButton>}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    <NetDrawerRow d={d} isOpen={openId === d.id} colSpan={7} />
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
       )}
 
       {/* Add-router modal (admin) */}
