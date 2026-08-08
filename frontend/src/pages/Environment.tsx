@@ -7,8 +7,15 @@ import type { ChartOptions, ChartData, ScriptableContext } from "chart.js";
 import { socket } from "../socket/socket";
 import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
+import RangePicker, { DEFAULT_RANGE } from "../components/ui/RangePicker";
+import type { RangeValue } from "../components/ui/RangePicker";
 
 Chart.register(...registerables);
+
+// The `changeRange` socket event takes either a quick-range string or an absolute
+// { start, stop } window, which is exactly the shape RangeValue already carries.
+const rangePayload = (r: RangeValue) =>
+  r.kind === "preset" ? r.preset : { start: r.start, stop: r.stop };
 
 // ─── Gas sensor recalibration ─────────────────────────────────────────────────
 // The MQ-2 needs a "clean air" reference (Ro) that differs per sensor and per room.
@@ -86,12 +93,8 @@ function RecalibrateGas({ isDark }: { isDark: boolean }) {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type QuickRangeType = "-30m" | "-1h" | "-3h" | "-6h" | "-12h" | "-24h" | "-2d" | "-7d" | "-30d";
-type RangeType      = QuickRangeType | "custom";
 type AlertLevel     = "NORMAL" | "WARNING" | "DANGER";
 type TempLevel      = "TOO_COLD" | "NORMAL" | "WARNING" | "DANGER" | "CRITICAL";
-
-interface CustomRange { start: string; stop: string; }
 
 interface SensorData {
   temperature:        number;
@@ -118,24 +121,6 @@ interface HistoryData {
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-const QUICK_RANGES: { label: string; value: QuickRangeType }[] = [
-  { label: "Last 30 minutes", value: "-30m"  },
-  { label: "Last 1 hour",     value: "-1h"   },
-  { label: "Last 3 hours",    value: "-3h"   },
-  { label: "Last 6 hours",    value: "-6h"   },
-  { label: "Last 12 hours",   value: "-12h"  },
-  { label: "Last 24 hours",   value: "-24h"  },
-  { label: "Last 2 days",     value: "-2d"   },
-  { label: "Last 7 days",     value: "-7d"   },
-  { label: "Last 30 days",    value: "-30d"  },
-];
-
-const RANGE_LABEL: Record<QuickRangeType, string> = {
-  "-30m": "Last 30 minutes", "-1h": "Last 1 hour",   "-3h": "Last 3 hours",
-  "-6h":  "Last 6 hours",    "-12h": "Last 12 hours", "-24h": "Last 24 hours",
-  "-2d":  "Last 2 days",     "-7d": "Last 7 days",   "-30d": "Last 30 days",
-};
 
 const STATUS_COLOR: Record<string, string> = {
   NORMAL:   "#73BF69",
@@ -824,249 +809,6 @@ const TimeScroll = React.memo(function TimeScroll({ hour, onHour, scrollRef }: {
   );
 });
 
-// ─── CustomRangePicker ────────────────────────────────────────────────────────
-
-function CustomRangePicker({ onApply, onClose }: {
-  onApply: (start: string, stop: string) => void;
-  onClose: () => void;
-}) {
-  const now   = new Date();
-  const start = new Date(now.getTime() - 60 * 60 * 1000);
-
-  const [startMonth, setStartMonth] = useState(new Date(start.getFullYear(), start.getMonth(), 1));
-  const [stopMonth,  setStopMonth]  = useState(new Date(now.getFullYear(), now.getMonth(), 1));
-  const [startDay,   setStartDay]   = useState(start.getDate());
-  const [stopDay,    setStopDay]    = useState(now.getDate());
-  const [startHour,  setStartHour]  = useState(start.getHours());
-  const [stopHour,   setStopHour]   = useState(now.getHours());
-  const startMin = start.getMinutes();
-  const stopMin  = now.getMinutes();
-
-  const timeRef1 = useRef<HTMLDivElement>(null);
-  const timeRef2 = useRef<HTMLDivElement>(null);
-
-  // Scroll to the selected hour once on mount — does NOT re-run on state change
-  useEffect(() => {
-    const t = setTimeout(() => {
-      timeRef1.current?.scrollTo({ top: startHour * 32, behavior: "instant" as ScrollBehavior });
-      timeRef2.current?.scrollTo({ top: stopHour  * 32, behavior: "instant" as ScrollBehavior });
-    }, 60);
-    return () => clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const buildISO = (month: Date, day: number, hour: number, min: number) =>
-    new Date(month.getFullYear(), month.getMonth(), day, hour, min, 0).toISOString();
-
-  const fmtDisplay = (month: Date, day: number, hour: number) =>
-    `${month.getFullYear()}-${String(month.getMonth()+1).padStart(2,"0")}-${String(day).padStart(2,"0")}  ${String(hour).padStart(2,"0")}:00`;
-
-  const panels = [
-    { label: "FROM" as const, month: startMonth, day: startDay, onDay: setStartDay,
-      hour: startHour, onHour: setStartHour, scrollRef: timeRef1,
-      onPrev: () => setStartMonth(p => new Date(p.getFullYear(), p.getMonth() - 1, 1)),
-      onNext: () => setStartMonth(p => new Date(p.getFullYear(), p.getMonth() + 1, 1)) },
-    { label: "TO"   as const, month: stopMonth,  day: stopDay,  onDay: setStopDay,
-      hour: stopHour,  onHour: setStopHour,  scrollRef: timeRef2,
-      onPrev: () => setStopMonth(p => new Date(p.getFullYear(), p.getMonth() - 1, 1)),
-      onNext: () => setStopMonth(p => new Date(p.getFullYear(), p.getMonth() + 1, 1)) },
-  ];
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4"
-      style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }}>
-      <div className="rounded-lg shadow-2xl flex flex-col"
-        style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}`, width: 620, maxWidth: "95vw", maxHeight: "90vh", overflowY: "auto" }}>
-
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3"
-          style={{ borderBottom: `1px solid ${GF.divider}` }}>
-          <div className="flex items-center gap-2.5">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ color: "#5794F2" }}>
-              <rect x="1" y="3" width="14" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
-              <path d="M1 7h14M5 1v3M11 1v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-            <span className="text-[14px] font-mono font-semibold" style={{ color: GF.textPrimary }}>Custom time range</span>
-          </div>
-          <button onClick={onClose}
-            className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold transition-colors"
-            style={{ background: "var(--gf-hover)", color: GF.textMuted }}
-            onMouseEnter={e => { e.currentTarget.style.background = "var(--gf-hover-strong)"; e.currentTarget.style.color = GF.textPrimary; }}
-            onMouseLeave={e => { e.currentTarget.style.background = "var(--gf-hover)"; e.currentTarget.style.color = GF.textMuted; }}>
-            ✕
-          </button>
-        </div>
-
-        {/* FROM / TO display bar */}
-        <div className="grid grid-cols-1 sm:grid-cols-2" style={{ borderBottom: `1px solid ${GF.divider}` }}>
-          {panels.map((p, i) => (
-            <div key={p.label}
-              className={`px-5 py-3 ${i === 0 ? "border-b sm:border-b-0 sm:border-r" : ""}`}
-              style={{ borderColor: GF.divider }}>
-              <div className="text-[11px] font-mono tracking-widest uppercase mb-1" style={{ color: GF.textDim }}>{p.label}</div>
-              <div className="text-[14px] font-mono font-semibold" style={{ color: "#5794F2" }}>
-                {fmtDisplay(p.month, p.day, p.hour)}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Calendar + hour scroll */}
-        <div className="grid grid-cols-1 sm:grid-cols-2">
-          {panels.map((p, i) => (
-            <div key={p.label}
-              className={`flex gap-3 p-4 ${i === 0 ? "border-b sm:border-b-0 sm:border-r" : ""}`}
-              style={{ borderColor: GF.divider }}>
-              <CalendarGrid
-                month={p.month} selectedDay={p.day} onSelectDay={p.onDay}
-                onPrev={p.onPrev} onNext={p.onNext}
-              />
-              <TimeScroll hour={p.hour} onHour={p.onHour} scrollRef={p.scrollRef} />
-            </div>
-          ))}
-        </div>
-
-        {/* Apply */}
-        <div className="px-5 pb-5 pt-3" style={{ borderTop: `1px solid ${GF.divider}` }}>
-          <button
-            onClick={() => onApply(
-              buildISO(startMonth, startDay, startHour, startMin),
-              buildISO(stopMonth,  stopDay,  stopHour,  stopMin),
-            )}
-            className="w-full py-2.5 rounded font-bold font-mono text-[14px] tracking-widest transition-colors"
-            style={{ background: "#5794F2", color: "#fff" }}
-            onMouseEnter={e => (e.currentTarget.style.background = "#4a82d8")}
-            onMouseLeave={e => (e.currentTarget.style.background = "#5794F2")}>
-            APPLY TIME RANGE
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── RangePicker (Grafana time picker style) ──────────────────────────────────
-
-function RangePicker({ range, customLabel, onChange, onCustom, onRefresh, isRefreshing }: {
-  range: RangeType; customLabel: string;
-  onChange: (r: QuickRangeType) => void;
-  onCustom: () => void; onRefresh: () => void;
-  isRefreshing?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  const currentLabel = range === "custom" ? customLabel : RANGE_LABEL[range as QuickRangeType];
-
-  const step = (dir: 1 | -1) => {
-    if (range === "custom") return;
-    const idx  = QUICK_RANGES.findIndex(r => r.value === range);
-    const next = QUICK_RANGES[idx + dir];
-    if (next) onChange(next.value);
-  };
-
-  const btnBase: React.CSSProperties = {
-    background: "transparent",
-    color: GF.textMuted,
-    border: "none",
-    cursor: "pointer",
-    fontFamily: "monospace",
-    fontSize: 11,
-    transition: "color 0.15s",
-  };
-
-  return (
-    <div ref={wrapRef} className="relative flex items-center">
-      {/* Refresh */}
-      <button onClick={onRefresh}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-l text-[13px] font-mono transition-colors"
-        style={{ background: GF.header, border: `1px solid ${GF.panelBorder}`, color: isRefreshing ? GF.textPrimary : GF.textMuted, borderRight: "none" }}
-        onMouseEnter={e => (e.currentTarget.style.color = GF.textPrimary)}
-        onMouseLeave={e => { if (!isRefreshing) e.currentTarget.style.color = GF.textMuted; }}>
-        <svg width="11" height="11" viewBox="0 0 14 14" fill="none"
-          className={isRefreshing ? "animate-spin" : ""}
-          style={{ transformOrigin: "center" }}>
-          <path d="M12 7A5 5 0 1 1 7 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          <path d="M12 2v5h-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        Refresh
-      </button>
-
-      {/* Prev / Label / Next */}
-      <div className="flex items-center" style={{ border: `1px solid ${GF.panelBorder}`, background: GF.header }}>
-        <button style={{ ...btnBase, padding: "6px 8px" }}
-          onMouseEnter={e => (e.currentTarget.style.color = GF.textPrimary)}
-          onMouseLeave={e => (e.currentTarget.style.color = GF.textMuted)}
-          onClick={() => step(-1)}>‹</button>
-
-        <button onClick={() => setOpen(o => !o)}
-          className="flex items-center gap-2 px-3 py-1.5 text-[13px] font-mono transition-colors"
-          style={{ color: GF.textPrimary, minWidth: 160, background: "transparent", border: "none", cursor: "pointer" }}>
-          <svg width="11" height="11" viewBox="0 0 14 14" fill="none" style={{ color: GF.textMuted, flexShrink: 0 }}>
-            <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.5" />
-            <path d="M7 4v3l2 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-          <span className="truncate flex-1 text-left">{currentLabel}</span>
-          <svg width="8" height="8" viewBox="0 0 10 10" fill="none" style={{ color: GF.textMuted, flexShrink: 0 }}>
-            <path d={open ? "M2 7l3-3 3 3" : "M2 3l3 3 3-3"} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-        </button>
-
-        <button style={{ ...btnBase, padding: "6px 8px" }}
-          onMouseEnter={e => (e.currentTarget.style.color = GF.textPrimary)}
-          onMouseLeave={e => (e.currentTarget.style.color = GF.textMuted)}
-          onClick={() => step(1)}>›</button>
-      </div>
-
-      {/* Zoom-to-data / rounded right */}
-      <div className="w-2 rounded-r" style={{ background: GF.header, border: `1px solid ${GF.panelBorder}`, borderLeft: "none", height: 32 }} />
-
-      {/* Dropdown */}
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 w-56 rounded shadow-2xl overflow-hidden"
-          style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}` }}>
-          <div className="px-3 py-2" style={{ borderBottom: `1px solid ${GF.divider}` }}>
-            <span className="text-[11px] font-mono tracking-widest uppercase" style={{ color: GF.textDim }}>Time Range</span>
-          </div>
-          <button onClick={() => { onCustom(); setOpen(false); }}
-            className="w-full text-left px-4 py-2.5 text-[13px] font-mono transition-colors"
-            style={{
-              background: range === "custom" ? "rgba(87,148,242,0.12)" : "transparent",
-              color: range === "custom" ? "#5794F2" : GF.textMuted,
-              borderBottom: `1px solid ${GF.divider}`,
-            }}
-            onMouseEnter={e => { if (range !== "custom") e.currentTarget.style.background = "var(--gf-hover)"; }}
-            onMouseLeave={e => { if (range !== "custom") e.currentTarget.style.background = "transparent"; }}>
-            Custom time range
-          </button>
-          <div className="overflow-y-auto" style={{ maxHeight: 280, scrollbarWidth: "thin" }}>
-            {QUICK_RANGES.map(r => (
-              <button key={r.value} onClick={() => { onChange(r.value); setOpen(false); }}
-                className="w-full text-left px-4 py-2.5 text-[13px] font-mono transition-colors"
-                style={{
-                  background: range === r.value ? "rgba(87,148,242,0.12)" : "transparent",
-                  color: range === r.value ? "#5794F2" : GF.textMuted,
-                }}
-                onMouseEnter={e => { if (range !== r.value) e.currentTarget.style.background = "var(--gf-hover)"; }}
-                onMouseLeave={e => { if (range !== r.value) e.currentTarget.style.background = "transparent"; }}>
-                {r.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function Environment() {
@@ -1094,10 +836,10 @@ export default function Environment() {
   const [sensorOnline,   setSensorOnline]   = useState<boolean | null>(null);
   const [sensorLastSeen, setSensorLastSeen] = useState<string | null>(null);
 
-  const [range,       setRange]       = useState<RangeType>("-1h");
-  const [customRange, setCustomRange] = useState<CustomRange | null>(null);
-  const [customLabel, setCustomLabel] = useState("Custom Range");
-  const [showCustom,  setShowCustom]  = useState(false);
+  // One RangeValue instead of the old range / customRange / customLabel / showCustom
+  // quartet — the shared picker owns the preset-vs-custom distinction and its own
+  // popover, so none of that has to be tracked here any more.
+  const [range, setRange] = useState<RangeValue>(DEFAULT_RANGE);
   const [isDark,      setIsDark]      = useState(() => document.documentElement.classList.contains("dark"));
   const [isMobile,    setIsMobile]    = useState(() => window.matchMedia("(max-width: 640px)").matches);
 
@@ -1116,7 +858,6 @@ export default function Environment() {
   const smokeChartRef = useRef<any>(null);
   const isZoomedRef   = useRef(false);
   const [zoomInfo,     setZoomInfo]     = useState<{ start: string; end: string; chart: "combined" | "smoke" } | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const resetZoom = useCallback((ref: React.RefObject<any>) => {
@@ -1215,30 +956,18 @@ export default function Environment() {
 
     socket.on("sensorHistory", handleHistory);
     socket.on("sensorData",    handleLive);
-    socket.emit("changeRange", customRange ?? range);
+    socket.emit("changeRange", rangePayload(range));
     return () => {
       socket.off("sensorHistory", handleHistory);
       socket.off("sensorData",    handleLive);
     };
-  }, [range, customRange]);
+  }, [range]);
 
-  const changeRange = (r: QuickRangeType) => {
-    setRange(r); setCustomRange(null);
-    socket.emit("changeRange", r);
-  };
-
-  const handleRefresh = () => {
-    socket.emit("changeRange", customRange ?? range);
-    setIsRefreshing(true);
-    setTimeout(() => setIsRefreshing(false), 800);
-  };
-
+  // Drag-zoom on a chart applies its selection as a custom window. Setting state is
+  // enough — the effect above re-emits on every `range` change, so this no longer
+  // emits by hand (the old version did both, which sent the range twice).
   const applyCustomRange = useCallback((start: string, stop: string) => {
-    const cr: CustomRange = { start, stop };
-    setCustomRange(cr); setRange("custom"); setShowCustom(false);
-    const fmt = (d: Date) => d.toLocaleDateString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-    setCustomLabel(`${fmt(new Date(start))} → ${fmt(new Date(stop))}`);
-    socket.emit("changeRange", cr);
+    setRange({ kind: "custom", start, stop });
   }, []);
 
   // ── Derived ────────────────────────────────────────────────────────────────
@@ -1360,7 +1089,10 @@ export default function Environment() {
       <div className="flex items-center justify-end px-4 py-2.5 flex-wrap gap-3"
         style={{ background: GF.header, borderBottom: `1px solid ${GF.panelBorder}` }}>
         <RecalibrateGas isDark={isDark} />
-        <RangePicker range={range} customLabel={customLabel} onChange={changeRange} onCustom={() => setShowCustom(true)} onRefresh={handleRefresh} isRefreshing={isRefreshing} />
+        {/* Same shared picker the Server Metrics / detail pages use, so the range
+            control is identical everywhere. No refresh button: `sensorData` streams in
+            live every ~3s, so the view is never stale enough to need one. */}
+        <RangePicker value={range} onChange={setRange} variant="gf" />
       </div>
 
       {/* ── Sensor-offline banner ──────────────────────────────────────────────
@@ -1515,10 +1247,6 @@ export default function Environment() {
         </div>
 
       </div>
-
-      {showCustom && (
-        <CustomRangePicker onApply={applyCustomRange} onClose={() => setShowCustom(false)} />
-      )}
     </div>
   );
 }
