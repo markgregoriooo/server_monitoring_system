@@ -11,6 +11,8 @@ const ALLOWED_TILES = new Set([
   "env.gas",
   "servers.summary",
   "servers.list",
+  "ups.summary",
+  "network.summary",
   "alerts.count",
   "alerts.latest",
   "aircon.summary",

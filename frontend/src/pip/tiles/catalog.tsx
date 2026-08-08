@@ -25,7 +25,7 @@ const gasColor = (smoke: string) => (smoke === "DANGER" ? RED : smoke === "WARNI
 export interface TileDef {
   id: string;
   label: string;
-  group: "Environment" | "Servers" | "Alerts" | "Aircon" | "General";
+  group: "Environment" | "Servers" | "Network" | "UPS" | "Alerts" | "Aircon" | "General";
   span?: 1 | 2;
   Render: FC;
 }
@@ -202,6 +202,93 @@ const LatestAlertTile: FC = () => {
   );
 };
 
+// ── UPS ──
+// The one metric on this widget with a DEADLINE attached. An alert can tell you mains
+// dropped; only this tells you how long you have left, which is the whole reason to
+// have it on a glance surface. So "on battery" is the headline and everything else is
+// subordinate to it: while discharging, runtime leads and is always red.
+//
+// Fleet-worst rather than per-unit — one UPS on battery is the story regardless of how
+// many others are fine, and the widget has no room for a per-unit list at realistic
+// counts. Drill into /ups for the breakdown.
+const chargeColor = (pct: number) => (pct < 40 ? RED : pct < 70 ? ORANGE : GREEN);
+
+const UpsTile: FC = () => {
+  const { upsList, upsOnBattery, lowestCharge, lowestRuntime } = useLiveSummary();
+  if (upsList.length === 0) {
+    return (
+      <Shell label="UPS">
+        <span className="text-[10px]" style={{ color: T_MUTED }}>No UPS</span>
+      </Shell>
+    );
+  }
+  const onBattery = upsOnBattery > 0;
+  const label = upsList.length > 1 ? `UPS · worst of ${upsList.length}` : "UPS";
+
+  if (onBattery) {
+    return (
+      <Shell label={label}>
+        <div className="flex items-baseline gap-1">
+          <Big color={RED}>{lowestRuntime != null ? `${Math.round(lowestRuntime)}` : "—"}</Big>
+          <span className="text-[9px]" style={{ color: RED }}>min left</span>
+        </div>
+        <span className="text-[9px] font-semibold" style={{ color: RED }}>
+          ⚡ ON BATTERY{upsOnBattery > 1 ? ` ×${upsOnBattery}` : ""}
+          {lowestCharge != null ? ` · ${Math.round(lowestCharge)}%` : ""}
+        </span>
+      </Shell>
+    );
+  }
+  return (
+    <Shell label={label}>
+      <div className="flex items-baseline gap-1">
+        <Big color={lowestCharge != null ? chargeColor(lowestCharge) : T_DIM}>
+          {lowestCharge != null ? `${Math.round(lowestCharge)}%` : "—"}
+        </Big>
+        <span className="text-[9px]" style={{ color: T_MUTED }}>battery</span>
+      </div>
+      <span className="text-[9px]" style={{ color: T_MUTED }}>
+        {lowestRuntime != null ? `${Math.round(lowestRuntime)} min runtime` : "on mains"}
+      </span>
+    </Shell>
+  );
+};
+
+// ── Network (SNMP routers + MikroTik — both arrive on the shared networkMetrics) ──
+// Counts PORTS, not devices: a router that answers SNMP while three buildings' links
+// are down is "online" by device count and broken by any measure that matters.
+const NetworkTile: FC = () => {
+  const { routers, routersOnline, routersTotal, portsUp, portsTotal } = useLiveSummary();
+  if (routersTotal === 0) {
+    return (
+      <Shell label="Network">
+        <span className="text-[10px]" style={{ color: T_MUTED }}>No routers</span>
+      </Shell>
+    );
+  }
+  const routerDown = routersTotal - routersOnline;
+  const portsDown = portsTotal - portsUp;
+  const worstUtil = routers
+    .filter((r) => r.status !== "Offline" && r.worstUtil != null)
+    .reduce<number | null>((m, r) => (m == null || (r.worstUtil as number) > m ? (r.worstUtil as number) : m), null);
+
+  return (
+    <Shell label="Network">
+      <div className="flex items-baseline gap-1">
+        <Big color={routerDown > 0 ? RED : portsDown > 0 ? ORANGE : GREEN}>
+          {portsUp}/{portsTotal}
+        </Big>
+        <span className="text-[9px]" style={{ color: T_MUTED }}>ports up</span>
+      </div>
+      <span className="text-[9px]" style={{ color: routerDown > 0 ? RED : T_MUTED }}>
+        {routerDown > 0
+          ? `${routerDown} of ${routersTotal} router${routersTotal > 1 ? "s" : ""} offline`
+          : `${routersTotal} router${routersTotal > 1 ? "s" : ""} · peak link ${worstUtil != null ? `${Math.round(worstUtil)}%` : "—"}`}
+      </span>
+    </Shell>
+  );
+};
+
 // ── Aircon ──
 const AirconTile: FC = () => {
   const { airconsOn, airconsTotal } = useLiveSummary();
@@ -243,6 +330,8 @@ export const TILE_CATALOG: TileDef[] = [
   { id: "env.gas", label: "Gas", group: "Environment", span: 1, Render: GasTile },
   { id: "servers.summary", label: "Servers summary", group: "Servers", span: 2, Render: ServersTile },
   { id: "servers.list", label: "Server list (names)", group: "Servers", span: 2, Render: ServerListTile },
+  { id: "ups.summary", label: "UPS battery", group: "UPS", span: 1, Render: UpsTile },
+  { id: "network.summary", label: "Network ports", group: "Network", span: 1, Render: NetworkTile },
   { id: "alerts.count", label: "Open alerts", group: "Alerts", span: 1, Render: AlertCountTile },
   { id: "alerts.latest", label: "Latest alert", group: "Alerts", span: 2, Render: LatestAlertTile },
   { id: "aircon.summary", label: "Aircon", group: "Aircon", span: 1, Render: AirconTile },

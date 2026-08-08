@@ -30,12 +30,36 @@ export interface AirconLive {
   enabled: boolean;
   mode?: string;
 }
+// One UPS. `onBattery` is the field that matters most on a glance surface: it means
+// mains is gone and `runtimeMin` is a countdown, not a steady-state reading.
+export interface UpsLive {
+  id: number;
+  name: string;
+  status: string;
+  chargePct: number | null;
+  runtimeMin: number | null;
+  loadPct: number | null;
+  onBattery: boolean | null;
+}
+// One router — SNMP or MikroTik. `type` is carried so a tile can tell them apart;
+// both arrive on the SAME `networkMetrics` event (the collectors share it).
+export interface NetLive {
+  id: number;
+  name: string;
+  type: string; // "router" | "mikrotik"
+  status: string;
+  portsUp: number;
+  portsTotal: number;
+  worstUtil: number | null;
+}
 
 export interface LiveSummary {
   connected: boolean;
   env: EnvLive | null;
   servers: ServerLive[];
   aircons: AirconLive[];
+  upsList: UpsLive[];
+  routers: NetLive[];
   // derived conveniences
   serversOnline: number;
   serversTotal: number;
@@ -43,9 +67,53 @@ export interface LiveSummary {
   worstMem: number | null;
   airconsOn: number;
   airconsTotal: number;
+  // UPS: the worst case across the fleet, since one unit on battery is the headline
+  // regardless of how many are healthy.
+  upsOnBattery: number;
+  lowestCharge: number | null;
+  lowestRuntime: number | null;
+  // Routers: ports are what actually carry traffic, so count those rather than devices.
+  routersOnline: number;
+  routersTotal: number;
+  portsUp: number;
+  portsTotal: number;
 }
 
 const LiveSummaryContext = createContext<LiveSummary | null>(null);
+
+// REST rows and socket payloads carry the same field names for these, so one mapper
+// serves both paths (see UpsMonitoring.mapUps / NetworkMonitoring.mapNet).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapUps(r: any): UpsLive {
+  return {
+    id: Number(r.id),
+    name: r.name ?? "—",
+    status: r.status ?? "Offline",
+    chargePct: r.batteryChargePct ?? null,
+    runtimeMin: r.runtimeRemainingMin ?? null,
+    loadPct: r.loadPct ?? null,
+    onBattery: r.onBattery ?? null,
+  };
+}
+
+// `fallbackType` is used only when the payload omits `type` — the SNMP list endpoint
+// doesn't stamp one, while the shared networkMetrics event always does.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapNet(r: any, fallbackType = "router"): NetLive {
+  const ifaces: any[] = Array.isArray(r.interfaces) ? r.interfaces : [];
+  const utils = ifaces
+    .filter((i) => i.linkUp && i.utilizationPct != null && Number.isFinite(Number(i.utilizationPct)))
+    .map((i) => Number(i.utilizationPct));
+  return {
+    id: Number(r.id),
+    name: r.name ?? "—",
+    type: r.type ?? fallbackType,
+    status: r.status ?? "Offline",
+    portsUp: ifaces.filter((i) => i.linkUp).length,
+    portsTotal: ifaces.length,
+    worstUtil: utils.length ? Math.max(...utils) : null,
+  };
+}
 
 export function LiveSummaryProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
@@ -53,12 +121,16 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
   const [env, setEnv] = useState<EnvLive | null>(null);
   const [servers, setServers] = useState<ServerLive[]>([]);
   const [aircons, setAircons] = useState<AirconLive[]>([]);
+  const [upsList, setUpsList] = useState<UpsLive[]>([]);
+  const [routers, setRouters] = useState<NetLive[]>([]);
 
   useEffect(() => {
     if (!user) {
       setEnv(null);
       setServers([]);
       setAircons([]);
+      setUpsList([]);
+      setRouters([]);
       return;
     }
     let alive = true;
@@ -68,6 +140,26 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
         if (alive && r.success && r.data) setServers((r.data.servers ?? []) as ServerLive[]);
       });
     seedServers();
+
+    // UPS + routers are POLLED server-side (60s SNMP / 30s RouterOS), so unlike the
+    // push streams there may be a long wait before the first event. Seed from REST so
+    // a freshly-opened widget shows real values immediately instead of dashes.
+    // MikroTiks come from their own endpoint but merge into the same `routers` list —
+    // they share the networkMetrics/networkStatus events downstream.
+    const seedUps = () =>
+      api.getUpsDevices().then((r) => {
+        if (alive && r.success && r.data) setUpsList(((r.data.ups ?? r.data.devices ?? []) as any[]).map(mapUps));
+      });
+    const seedRouters = () =>
+      Promise.all([api.getNetworkDevices(), api.getMikrotikDevices()]).then(([net, mk]) => {
+        if (!alive) return;
+        const rows: NetLive[] = [];
+        if (net.success && net.data) rows.push(...((net.data.devices ?? []) as any[]).map((d) => mapNet(d, "router")));
+        if (mk.success && mk.data) rows.push(...((mk.data.devices ?? []) as any[]).map((d) => mapNet(d, "mikrotik")));
+        setRouters(rows);
+      });
+    seedUps();
+    seedRouters();
     api.getAircon().then((r) => {
       if (!alive || !r.success || !r.data) return;
       const units: AirconLive[] = Array.isArray(r.data.aircons)
@@ -139,9 +231,77 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
       );
     };
 
+    // ── UPS (SNMP poll, ~60s) ──
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onUps = (d: any) => {
+      const u = d?.ups;
+      if (!u) return;
+      const incoming = mapUps(u);
+      setUpsList((prev) => {
+        const idx = prev.findIndex((x) => x.id === incoming.id);
+        if (idx === -1) return [...prev, incoming];
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...incoming };
+        return next;
+      });
+    };
+    // Unreachable → zero the live values rather than leaving the last-known charge on
+    // screen, which would read as a healthy UPS that simply stopped being polled.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onUpsStatus = (d: any) =>
+      setUpsList((prev) =>
+        prev.map((u) =>
+          u.id === Number(d?.id)
+            ? d?.status === "Offline"
+              ? { ...u, status: "Offline", chargePct: null, runtimeMin: null, loadPct: null, onBattery: null }
+              : { ...u, status: d?.status }
+            : u,
+        ),
+      );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onUpsRemoved = (d: any) => setUpsList((prev) => prev.filter((u) => u.id !== Number(d?.id)));
+
+    // ── Routers: SNMP *and* MikroTik both arrive here (shared collector events) ──
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onNet = (d: any) => {
+      const dev = d?.device;
+      if (!dev) return;
+      const incoming = mapNet(dev);
+      setRouters((prev) => {
+        const idx = prev.findIndex((x) => x.id === incoming.id);
+        const row = idx === -1 ? undefined : prev[idx];
+        if (!row) return [...prev, incoming];
+        const next = [...prev];
+        // A payload without `interfaces` (e.g. a connection edit, which re-emits the
+        // device) must not wipe the port counts, so only take the port fields when this
+        // sample actually carried them.
+        next[idx] = dev.interfaces
+          ? { ...row, ...incoming }
+          : { ...row, name: incoming.name, status: incoming.status, type: incoming.type };
+        return next;
+      });
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onNetStatus = (d: any) =>
+      setRouters((prev) =>
+        prev.map((r) =>
+          r.id === Number(d?.id)
+            ? d?.status === "Offline"
+              ? { ...r, status: "Offline", portsUp: 0, worstUtil: null }
+              : { ...r, status: d?.status }
+            : r,
+        ),
+      );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onNetRemoved = (d: any) => setRouters((prev) => prev.filter((r) => r.id !== Number(d?.id)));
+
     const onConnect = () => {
       setConnected(true);
-      seedServers(); // re-sync lists after a reconnect so nothing is stale
+      // re-sync lists after a reconnect so nothing is stale. Matters more for the
+      // POLLED sources: a missed push can be a full minute from being corrected.
+      seedServers();
+      seedUps();
+      seedRouters();
     };
     const onDisconnect = () => setConnected(false);
 
@@ -151,6 +311,12 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
     socket.on("serverRemoved", onRemoved);
     socket.on("serverRenamed", onRenamed);
     socket.on("airconStatus", onAircon);
+    socket.on("upsMetrics", onUps);
+    socket.on("upsStatus", onUpsStatus);
+    socket.on("upsRemoved", onUpsRemoved);
+    socket.on("networkMetrics", onNet);
+    socket.on("networkStatus", onNetStatus);
+    socket.on("networkRemoved", onNetRemoved);
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
     setConnected(socket.connected);
@@ -163,6 +329,12 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
       socket.off("serverRemoved", onRemoved);
       socket.off("serverRenamed", onRenamed);
       socket.off("airconStatus", onAircon);
+      socket.off("upsMetrics", onUps);
+      socket.off("upsStatus", onUpsStatus);
+      socket.off("upsRemoved", onUpsRemoved);
+      socket.off("networkMetrics", onNet);
+      socket.off("networkStatus", onNetStatus);
+      socket.off("networkRemoved", onNetRemoved);
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
     };
@@ -170,19 +342,33 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<LiveSummary>(() => {
     const online = servers.filter((s) => s.status !== "Offline");
+    // Only reachable units carry a meaningful reading — an offline UPS reports null,
+    // and including it would drag "lowest charge" to a number nobody measured.
+    const upsOnline = upsList.filter((u) => u.status !== "Offline");
+    const charges = upsOnline.map((u) => u.chargePct).filter((v): v is number => v != null);
+    const runtimes = upsOnline.map((u) => u.runtimeMin).filter((v): v is number => v != null);
     return {
       connected,
       env,
       servers,
       aircons,
+      upsList,
+      routers,
       serversOnline: online.length,
       serversTotal: servers.length,
       worstCpu: online.length ? Math.max(...online.map((s) => s.cpu)) : null,
       worstMem: online.length ? Math.max(...online.map((s) => s.memory)) : null,
       airconsOn: aircons.filter((a) => a.enabled).length,
       airconsTotal: aircons.length,
+      upsOnBattery: upsList.filter((u) => u.onBattery === true).length,
+      lowestCharge: charges.length ? Math.min(...charges) : null,
+      lowestRuntime: runtimes.length ? Math.min(...runtimes) : null,
+      routersOnline: routers.filter((r) => r.status !== "Offline").length,
+      routersTotal: routers.length,
+      portsUp: routers.reduce((n, r) => n + r.portsUp, 0),
+      portsTotal: routers.reduce((n, r) => n + r.portsTotal, 0),
     };
-  }, [connected, env, servers, aircons]);
+  }, [connected, env, servers, aircons, upsList, routers]);
 
   return <LiveSummaryContext.Provider value={value}>{children}</LiveSummaryContext.Provider>;
 }

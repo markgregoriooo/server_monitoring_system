@@ -381,7 +381,8 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
       Interface **error rate** (`link_errors`) was added on 2026-07-31 — seeded by
       `migrations/2026-07-31_link_errors_alert_rule.sql`, measured as the per-poll DELTA so a
       long-running router isn't permanently in alarm over old errors.
-- [ ] **Phase 6 — Polish.** PiP `network.summary` tile; live test on the dev MikroTik then campus.
+- [ ] **Phase 6 — Polish.** ~~PiP `network.summary` tile~~ ✅ (see §13.6); live test on the dev
+      MikroTik then campus still outstanding.
 
 > **Removed:** the `MIKROTIK_MOCK` synthetic-data mode (built during scaffolding, dropped at request
 > — live RouterOS only). `node-routeros` is now a required backend dependency.
@@ -523,6 +524,8 @@ Still open:
 - **Per-port history is device-wide by default.** `GET /:id/history?interface=ether3` charts one
   port, but the *alert* rules for `link_util` / `link_errors` are still per-DEVICE — one threshold
   covers every port on that router. Per-interface rules would need a different rule model.
-- **PiP `network.summary` tile.**
+- ~~PiP `network.summary` tile~~ — shipped. Counts **ports** up/total across SNMP routers *and*
+  MikroTiks (they share the `networkMetrics` stream) plus peak link utilization. Opt-in from
+  Settings → Customize Widget. See `pip-widget.md` §3.1.
 - **Production hardening:** API-SSL with a real certificate, and the API firewalled to the backend
   host only. See §3 and `mikrotik-dev-setup.md`.

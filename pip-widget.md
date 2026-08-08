@@ -69,6 +69,8 @@ First-cut catalog:
 | `env.gas` | gas band (NORMAL/WARN/DANGER) | `sensorData` |
 | `servers.summary` | online count + worst CPU/mem | `serverMetrics` / `serverStatus` |
 | `servers.list` | each server **by name** on one divider-separated line, **problem-first sorted** (offline → busiest), with exact `cpu·mem` + a single **LOAD bar gauge** (worst of the two). Names follow the admin display label, live via `serverRenamed` | `serverMetrics` / `serverStatus` / `serverRenamed` |
+| `ups.summary` | fleet-worst battery %, runtime and an **ON BATTERY** state. While discharging, **runtime leads and is red** — it is the only metric on the widget with a deadline attached. Fleet-worst, not per-unit: one UPS on battery is the story regardless of how many are healthy | `upsMetrics` / `upsStatus` / `upsRemoved` |
+| `network.summary` | **ports** up/total across every router — SNMP *and* MikroTik — plus peak link utilization, or an offline-router count when one is unreachable. Counts ports rather than devices: a router answering SNMP while three buildings' links are down is "online" by device count and broken by any measure that matters | `networkMetrics` / `networkStatus` / `networkRemoved` |
 | `alerts.count` | open-alert badge (red when >0) | `useNotifications().openAlertCount` |
 | `alerts.latest` | most recent alert title + severity | `useNotifications().items[0]` |
 | `aircon.summary` | how many AC units on + mode | `airconStatus` |
@@ -310,6 +312,18 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
       LOAD bar, divider between rows. Names follow the admin display label and stay live
       (`LiveSummaryContext` now handles `serverRenamed`). Added to `DEFAULT_LAYOUT` + the backend
       tile allow-list. Existing saved layouts must add it from **Settings → Customize Widget**. ✅
+
+- [x] **Post-1.0 — `ups.summary` + `network.summary` tiles.** The catalog was frozen when this
+      branch forked (2026-06-15), so every monitoring domain built afterwards was invisible to
+      the widget even though its streams were already reaching the browser. `LiveSummaryContext`
+      now also consumes `upsMetrics`/`upsStatus`/`upsRemoved` and
+      `networkMetrics`/`networkStatus`/`networkRemoved` (SNMP routers **and** MikroTik share the
+      latter), seeded from REST on mount and re-seeded on reconnect — these sources are POLLED
+      (60s SNMP / 30s RouterOS), so without a seed a freshly-opened widget would show dashes for
+      up to a minute. Both tiles are **opt-in** from Settings → Customize Widget, matching how
+      `servers.list` shipped; `DEFAULT_LAYOUT` is unchanged. ✅
+      ⚠️ Adding a tile means editing **two** allow-lists — `tiles/catalog.tsx` and
+      `backend/services/widgetPrefsService.js` — or the server silently strips it on save.
 
 > **Feature complete.** Remaining manual step: run `migrations/2026-06-17_widget_prefs.sql`
 > in phpMyAdmin so layouts persist server-side (cross-device). Until then it works off the
