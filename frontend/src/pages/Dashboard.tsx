@@ -59,6 +59,14 @@ const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
 
+// A server parked for planned maintenance is not a fault — showing it red reads
+// as "down" and hides real outages in a sea of red.
+function hostDotColor(status: string) {
+  if (status === "Online") return GREEN;
+  if (status === "Maintenance") return BLUE;
+  return RED;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function loadColor(v: number) {
@@ -134,7 +142,7 @@ function Panel({
           style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}
         >
           <span
-            className="text-[11px] font-medium tracking-wide truncate"
+            className="text-[13px] font-medium tracking-wide truncate"
             style={{ color: gf.textPrimary, opacity: 0.85 }}
           >
             {title}
@@ -235,7 +243,7 @@ function StatPanel({
     >
       <div className="flex items-center justify-between px-3 pt-2.5 z-10">
         <span
-          className="text-[10px] tracking-widest uppercase"
+          className="text-[12px] tracking-widest uppercase"
           style={{ color: gf.textMuted }}
         >
           {label}
@@ -253,12 +261,12 @@ function StatPanel({
           {value}
         </span>
         {unit && (
-          <span className="text-[13px] ml-1" style={{ color: color + "AA" }}>
+          <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>
             {unit}
           </span>
         )}
         {sub && (
-          <div className="text-[9px] mt-1 tracking-widest" style={{ color: gf.textDim }}>
+          <div className="text-[11px] mt-1 tracking-widest" style={{ color: gf.textDim }}>
             {sub}
           </div>
         )}
@@ -378,13 +386,13 @@ function BarGauge({
           <span
             className="w-1.5 h-1.5 rounded-full shrink-0"
             style={{
-              background: status === "Online" ? GREEN : RED,
-              boxShadow: `0 0 5px ${status === "Online" ? GREEN : RED}`,
+              background: hostDotColor(status),
+              boxShadow: `0 0 5px ${hostDotColor(status)}`,
             }}
           />
         )}
         <span
-          className="text-[11px] truncate"
+          className="text-[13px] truncate"
           style={{ color: gf.textPrimary }}
         >
           {label}
@@ -406,7 +414,7 @@ function BarGauge({
         />
       </div>
       <span
-        className="text-[11px] font-bold w-10 text-right shrink-0"
+        className="text-[13px] font-bold w-10 text-right shrink-0"
         style={{ color: loadColor(v) }}
       >
         {v}%
@@ -422,6 +430,14 @@ export default function Dashboard() {
   // Real notification feed (replaces the old mock /api/alerts panel).
   const { items: notifications, unreadCount } = useNotifications();
   const [aircons, setAircons] = useState<Aircon[]>([]);
+  // Routers + UPS (SNMP poller). The Dashboard summarised servers, environment and
+  // aircon but not these two, so a router or UPS incident was invisible on the page
+  // people actually leave open. Only the counts are needed here — the Network / UPS
+  // pages own the detail.
+  const [netDevices, setNetDevices] = useState<{ id: number | string; status: string }[]>([]);
+  const [upsDevices, setUpsDevices] = useState<
+    { id: number | string; status: string; batteryChargePct: number | null; onBattery: boolean | null }[]
+  >([]);
   const [liveTemp, setLiveTemp] = useState<number | string>("--");
   const [liveHum, setLiveHum] = useState<number | string>("--");
   const [chartTemps, setChartTemps] = useState<number[]>([]);
@@ -459,6 +475,48 @@ export default function Dashboard() {
       attributeFilter: ["class"],
     });
     return () => obs.disconnect();
+  }, []);
+
+  // Routers + UPS: initial load, then keep the counts live off the poller's
+  // broadcasts (same events the Network/UPS pages use, ~60s cadence).
+  useEffect(() => {
+    api.getNetworkDevices().then((r) => {
+      if (r.success && r.data) setNetDevices(r.data.devices ?? []);
+    });
+    api.getUpsDevices().then((r) => {
+      if (r.success && r.data) setUpsDevices(r.data.devices ?? []);
+    });
+
+    const upsertBy = <T extends { id: number | string }>(list: T[], row: T): T[] => {
+      const i = list.findIndex((x) => String(x.id) === String(row.id));
+      if (i === -1) return [...list, row];
+      const next = [...list];
+      next[i] = { ...next[i], ...row };
+      return next;
+    };
+    const onNet = (d: any) => d?.device && setNetDevices((p) => upsertBy(p, d.device));
+    const onUps = (d: any) => d?.ups && setUpsDevices((p) => upsertBy(p, d.ups));
+    const onNetStatus = (d: any) =>
+      setNetDevices((p) => p.map((x) => (String(x.id) === String(d?.id) ? { ...x, status: d.status } : x)));
+    const onUpsStatus = (d: any) =>
+      setUpsDevices((p) => p.map((x) => (String(x.id) === String(d?.id) ? { ...x, status: d.status } : x)));
+    const onNetRemoved = (d: any) => setNetDevices((p) => p.filter((x) => String(x.id) !== String(d?.id)));
+    const onUpsRemoved = (d: any) => setUpsDevices((p) => p.filter((x) => String(x.id) !== String(d?.id)));
+
+    socket.on("networkMetrics", onNet);
+    socket.on("upsMetrics", onUps);
+    socket.on("networkStatus", onNetStatus);
+    socket.on("upsStatus", onUpsStatus);
+    socket.on("networkRemoved", onNetRemoved);
+    socket.on("upsRemoved", onUpsRemoved);
+    return () => {
+      socket.off("networkMetrics", onNet);
+      socket.off("upsMetrics", onUps);
+      socket.off("networkStatus", onNetStatus);
+      socket.off("upsStatus", onUpsStatus);
+      socket.off("networkRemoved", onNetRemoved);
+      socket.off("upsRemoved", onUpsRemoved);
+    };
   }, []);
 
   useEffect(() => {
@@ -575,6 +633,15 @@ export default function Dashboard() {
     : 0;
   const online = servers.filter((s) => s.status === "Online").length;
   const acOnline = aircons.filter((a) => a.enabled).length;
+  const netOnline = netDevices.filter((d) => d.status === "Online").length;
+  const upsOnline = upsDevices.filter((d) => d.status === "Online").length;
+  // The UPS tile leads with the WORST unit, not an average — one UPS on battery or
+  // near-flat is the whole story, and averaging would bury it behind healthy units.
+  const upsOnBattery = upsDevices.filter((d) => d.onBattery === true).length;
+  const upsCharges = upsDevices
+    .map((d) => d.batteryChargePct)
+    .filter((c): c is number => typeof c === "number");
+  const worstCharge = upsCharges.length ? Math.min(...upsCharges) : null;
 
   const maxTempY = chartTemps.length
     ? Math.ceil(Math.max(...chartTemps)) + 3
@@ -704,7 +771,7 @@ export default function Dashboard() {
   };
 
   const pill =
-    "flex items-center gap-1.5 h-7 px-2.5 rounded-[2px] text-[11px] transition-colors";
+    "flex items-center gap-1.5 h-7 px-2.5 rounded-[2px] text-[13px] transition-colors";
   const pillStyle: React.CSSProperties = {
     color: gf.textMuted,
     border: `1px solid ${gf.divider}`,
@@ -724,13 +791,13 @@ export default function Dashboard() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2.5">
           <span
-            className="text-[13px] font-semibold"
+            className="text-[15px] font-semibold"
             style={{ color: gf.textPrimary }}
           >
             Server Room — Overview
           </span>
           <span
-            className="text-[9px] px-1.5 py-0.5 rounded-[2px] tracking-widest uppercase"
+            className="text-[11px] px-1.5 py-0.5 rounded-[2px] tracking-widest uppercase"
             style={{ color: gf.accent, background: "rgba(87,148,242,0.12)" }}
           >
             CSPC · ICTU
@@ -777,7 +844,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── Row 1: Stat panels ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
         <StatPanel
           label="Room Temp"
           value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : "--"}
@@ -801,6 +868,31 @@ export default function Dashboard() {
           sub={`${servers.length - online} offline`}
         />
         <StatPanel
+          label="Routers Online"
+          value={netDevices.length ? `${netOnline}/${netDevices.length}` : "--"}
+          color={
+            !netDevices.length ? gf.textMuted : netOnline === netDevices.length ? GREEN : RED
+          }
+          sub={netDevices.length ? `${netDevices.length - netOnline} unreachable` : "none registered"}
+        />
+        <StatPanel
+          label="UPS Battery"
+          value={worstCharge == null ? "--" : String(Math.round(worstCharge))}
+          {...(worstCharge != null ? { unit: "%" } : {})}
+          color={
+            !upsDevices.length ? gf.textMuted
+              : upsOnBattery > 0 ? RED
+                : worstCharge != null && worstCharge <= 20 ? RED
+                  : worstCharge != null && worstCharge <= 50 ? ORANGE
+                    : GREEN
+          }
+          sub={
+            !upsDevices.length ? "none registered"
+              : upsOnBattery > 0 ? `${upsOnBattery} ON BATTERY`
+                : `${upsOnline}/${upsDevices.length} online${upsCharges.length > 1 ? " · lowest" : ""}`
+          }
+        />
+        <StatPanel
           label="Active Alerts"
           value={String(unreadCount)}
           color={unreadCount === 0 ? GREEN : unreadCount > 2 ? RED : ORANGE}
@@ -819,7 +911,7 @@ export default function Dashboard() {
                 [ORANGE, typeof liveTemp === "number" ? `${liveTemp.toFixed(1)}°C` : "--", "Temp"],
                 [BLUE, typeof liveHum === "number" ? `${liveHum.toFixed(1)}%` : "--", "Hum"],
               ] as [string, string, string][]).map(([color, val, label]) => (
-                <span key={label} className="flex items-center gap-1.5 text-[11px]">
+                <span key={label} className="flex items-center gap-1.5 text-[13px]">
                   <span
                     className="w-3 h-0.5 rounded-full"
                     style={{ background: color }}
@@ -832,7 +924,7 @@ export default function Dashboard() {
               ))}
               <button
                 onClick={resetZoom}
-                className="flex items-center gap-1 text-[10px] px-2 h-6 rounded-[2px]"
+                className="flex items-center gap-1 text-[12px] px-2 h-6 rounded-[2px]"
                 style={{ color: gf.textMuted, border: `1px solid ${gf.divider}` }}
               >
                 <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
@@ -880,7 +972,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Panel title="Host CPU" noPad bodyStyle={{ padding: "8px 0" }}>
           {servers.length === 0 ? (
-            <div className="text-[10px] text-center py-6" style={{ color: gf.textDim }}>
+            <div className="text-[12px] text-center py-6" style={{ color: gf.textDim }}>
               No hosts
             </div>
           ) : (
@@ -891,7 +983,7 @@ export default function Dashboard() {
         </Panel>
         <Panel title="Host Memory" noPad bodyStyle={{ padding: "8px 0" }}>
           {servers.length === 0 ? (
-            <div className="text-[10px] text-center py-6" style={{ color: gf.textDim }}>
+            <div className="text-[12px] text-center py-6" style={{ color: gf.textDim }}>
               No hosts
             </div>
           ) : (
@@ -910,7 +1002,7 @@ export default function Dashboard() {
           noPad
           right={
             <span
-              className="flex items-center gap-1.5 text-[10px]"
+              className="flex items-center gap-1.5 text-[12px]"
               style={{ color: gf.textMuted }}
             >
               <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN }} />
@@ -925,7 +1017,7 @@ export default function Dashboard() {
                   {["Server", "Status", "CPU", "Memory", "Uptime"].map((h) => (
                     <th
                       key={h}
-                      className="text-left px-3 py-2 text-[9px] tracking-widest uppercase"
+                      className="text-left px-3 py-2 text-[11px] tracking-widest uppercase"
                       style={{ color: gf.textDim }}
                     >
                       {h}
@@ -943,7 +1035,7 @@ export default function Dashboard() {
                     }}
                   >
                     <td
-                      className="px-3 py-2.5 text-[11px] font-semibold"
+                      className="px-3 py-2.5 text-[13px] font-semibold"
                       style={{ color: gf.textPrimary }}
                     >
                       {s.name}
@@ -953,7 +1045,7 @@ export default function Dashboard() {
                     </td>
                     <td className="px-3 py-2.5">
                       <span
-                        className="text-[11px] font-bold"
+                        className="text-[13px] font-bold"
                         style={{ color: loadColor(s.cpu) }}
                       >
                         {s.cpu}%
@@ -961,20 +1053,20 @@ export default function Dashboard() {
                     </td>
                     <td className="px-3 py-2.5">
                       <span
-                        className="text-[11px] font-bold"
+                        className="text-[13px] font-bold"
                         style={{ color: loadColor(s.memory) }}
                       >
                         {s.memory}%
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-[10px]" style={{ color: gf.textMuted }}>
+                    <td className="px-3 py-2.5 text-[12px]" style={{ color: gf.textMuted }}>
                       {s.uptime}
                     </td>
                   </tr>
                 ))}
                 {servers.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="text-center py-6 text-[10px]" style={{ color: gf.textDim }}>
+                    <td colSpan={5} className="text-center py-6 text-[12px]" style={{ color: gf.textDim }}>
                       No data
                     </td>
                   </tr>
@@ -989,7 +1081,7 @@ export default function Dashboard() {
           noPad
           right={
             lastUpdate && (
-              <span className="text-[9px]" style={{ color: gf.textDim }}>
+              <span className="text-[11px]" style={{ color: gf.textDim }}>
                 upd {lastUpdate.toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour12: false })}
               </span>
             )
@@ -1008,14 +1100,14 @@ export default function Dashboard() {
                   }}
                 >
                   <div className="flex-1 min-w-0">
-                    <div className="text-[11px] font-semibold" style={{ color: gf.textPrimary }}>
+                    <div className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
                       {a.title}
                     </div>
-                    <div className="text-[9px] mt-0.5" style={{ color: gf.textMuted }}>
+                    <div className="text-[11px] mt-0.5" style={{ color: gf.textMuted }}>
                       {a.message}
                     </div>
                   </div>
-                  <span className="text-[9px] shrink-0" style={{ color: gf.textDim }}>
+                  <span className="text-[11px] shrink-0" style={{ color: gf.textDim }}>
                     {relativeTime(a.sentAt || a.createdAt)}
                   </span>
                 </div>
@@ -1028,7 +1120,7 @@ export default function Dashboard() {
                     <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </span>
-                <div className="text-[10px]" style={{ color: gf.textDim }}>
+                <div className="text-[12px]" style={{ color: gf.textDim }}>
                   No active alerts
                 </div>
               </div>
@@ -1040,7 +1132,7 @@ export default function Dashboard() {
       {/* ── Row 5: Air conditioner units ── */}
       <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
         {aircons.length === 0 ? (
-          <div className="text-[10px] text-center py-4" style={{ color: gf.textDim }}>
+          <div className="text-[12px] text-center py-4" style={{ color: gf.textDim }}>
             No AC units registered
           </div>
         ) : (
@@ -1068,12 +1160,12 @@ export default function Dashboard() {
                         style={{ background: ac.enabled ? GREEN : gf.textMuted }}
                       />
                     </span>
-                    <span className="text-[11px] font-semibold" style={{ color: gf.textPrimary }}>
+                    <span className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
                       {ac.name}
                     </span>
                   </div>
                   <span
-                    className="text-[9px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
+                    className="text-[11px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
                     style={{
                       color: ac.enabled ? GREEN : gf.textMuted,
                       background: ac.enabled ? "rgba(115,191,105,0.12)" : gf.hover,
@@ -1093,10 +1185,10 @@ export default function Dashboard() {
                       className="flex flex-col px-2 py-2 gap-0.5"
                       style={{ background: gf.panel }}
                     >
-                      <span className="text-[8px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                      <span className="text-[10px] tracking-widest uppercase" style={{ color: gf.textDim }}>
                         {lbl}
                       </span>
-                      <span className="text-[11px] font-bold" style={{ color: gf.textPrimary }}>
+                      <span className="text-[13px] font-bold" style={{ color: gf.textPrimary }}>
                         {val}
                       </span>
                     </div>

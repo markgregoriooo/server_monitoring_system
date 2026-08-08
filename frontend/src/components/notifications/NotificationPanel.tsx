@@ -52,14 +52,14 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
         className="flex items-center justify-between px-3.5 py-2.5 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--gf-divider)" }}
       >
-        <span className="text-[12px] font-semibold tracking-wide" style={{ color: "var(--gf-text-primary)" }}>
+        <span className="text-[14px] font-semibold tracking-wide" style={{ color: "var(--gf-text-primary)" }}>
           NOTIFICATIONS{unreadCount > 0 ? ` (${unreadCount})` : ""}
         </span>
         <div className="flex items-center gap-2.5">
           {unreadCount > 0 && (
             <button
               onClick={() => markAllRead()}
-              className="text-[11px] transition-colors"
+              className="text-[13px] transition-colors"
               style={{ color: "var(--gf-accent)" }}
               onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.8")}
               onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
@@ -70,7 +70,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
           {items.length > 0 && (
             <button
               onClick={() => clearAll()}
-              className="text-[11px] transition-colors"
+              className="text-[13px] transition-colors"
               style={{ color: "var(--gf-text-muted)" }}
               onMouseEnter={(e) => (e.currentTarget.style.color = "var(--gf-text-primary)")}
               onMouseLeave={(e) => (e.currentTarget.style.color = "var(--gf-text-muted)")}
@@ -116,7 +116,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
             <button
               key={t.key}
               onClick={() => setFilter(t.key)}
-              className="text-[11px] px-2.5 py-1 transition-colors"
+              className="text-[13px] px-2.5 py-1 transition-colors"
               style={{
                 borderRadius: 2,
                 background: active ? "var(--gf-accent)" : "transparent",
@@ -135,7 +135,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
       {perm === "default" && (
         <button
           onClick={async () => setPerm(await requestDesktopPermission())}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] w-full transition-colors flex-shrink-0"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] w-full transition-colors flex-shrink-0"
           style={{ color: "var(--gf-accent)", borderBottom: "1px solid var(--gf-divider)" }}
           onMouseEnter={(e) => (e.currentTarget.style.background = "var(--gf-hover)")}
           onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -150,7 +150,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
       {/* List */}
       <div className="overflow-y-auto pb-2">
         {visibleItems.length === 0 ? (
-          <div className="px-3 py-10 text-center text-[12px]" style={{ color: "var(--gf-text-muted)" }}>
+          <div className="px-3 py-10 text-center text-[14px]" style={{ color: "var(--gf-text-muted)" }}>
             {filter === "unread" ? "No unread notifications" : "No notifications"}
           </div>
         ) : (
@@ -176,24 +176,24 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
                 />
                 <span className="flex-1 min-w-0">
                   <span className="flex items-center justify-between gap-2">
-                    <span className="text-[12px] font-semibold truncate" style={{ color: "var(--gf-text-primary)" }}>
+                    <span className="text-[14px] font-semibold truncate" style={{ color: "var(--gf-text-primary)" }}>
                       {n.title}
                     </span>
-                    <span className="text-[10px] flex-shrink-0" style={{ color: "var(--gf-text-dim)" }}>
+                    <span className="text-[12px] flex-shrink-0" style={{ color: "var(--gf-text-dim)" }}>
                       {relativeTime(n.sentAt || n.createdAt)}
                     </span>
                   </span>
-                  <span className="block text-[11px] mt-0.5 truncate" style={{ color: "var(--gf-text-muted)" }}>
+                  <span className="block text-[13px] mt-0.5 truncate" style={{ color: "var(--gf-text-muted)" }}>
                     {n.message}
                   </span>
                   {n.deviceName && (
-                    <span className="block text-[10px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
+                    <span className="block text-[12px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
                       {n.deviceName}
                     </span>
                   )}
                   {n.status && n.status !== "active" && (
                     <span
-                      className="flex items-center gap-1 text-[10px] mt-1 font-medium"
+                      className="flex items-center gap-1 text-[12px] mt-1 font-medium"
                       style={{ color: n.status === "resolved" ? "#73BF69" : "var(--gf-accent)" }}
                     >
                       {n.status === "resolved" ? (

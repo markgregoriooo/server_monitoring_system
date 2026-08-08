@@ -4,6 +4,9 @@ import Chart from "../chart/ChartConfig";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useTheme } from "../context/ThemeContext";
+import RangePicker, { DEFAULT_RANGE, rangeSpanSec, presetLabel } from "../components/ui/RangePicker";
+import type { RangeValue } from "../components/ui/RangePicker";
+import type { Volume } from "./ServerMetrics";
 
 interface Server {
   id: string;
@@ -17,6 +20,11 @@ interface Server {
   memoryTotalGB: number;
   diskUsed: number;
   diskTotalGB: number;
+  volumes: Volume[];
+  processCount: number | null;
+  agentVersion: string;
+  lastSeen: string | null;
+  metricIntervalSec: number | null;
   uptime: string;
   os: string;
   kernel: string;
@@ -48,14 +56,19 @@ interface HistoryPoint {
   netRecv: number | null;  // cumulative bytes
 }
 
-const RANGES = [
-  { key: "-1h",  label: "1h" },
-  { key: "-6h",  label: "6h" },
-  { key: "-24h", label: "24h" },
-];
+// Windows spanning more than a day need the DATE on the axis — bare "14:00" repeats
+// every day and makes a 30d chart unreadable. Driven by the window's actual SPAN
+// rather than a list of preset keys, so a custom 5-day window gets dates too.
+const MULTI_DAY_SEC = 86400 * 2;
 
-function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString("en-PH", {
+function fmtTime(iso: string, spanSec: number) {
+  const d = new Date(iso);
+  if (spanSec >= MULTI_DAY_SEC) {
+    return d.toLocaleString("en-PH", {
+      timeZone: "Asia/Manila", month: "short", day: "2-digit", hour: "2-digit", hour12: false,
+    });
+  }
+  return d.toLocaleTimeString("en-PH", {
     timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false,
   });
 }
@@ -171,7 +184,7 @@ function GaugePanel({
   return (
     <div className="bg-slate-100 dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden flex flex-col">
       <div className="px-3 pt-2.5 pb-1 border-b border-slate-200 dark:border-white/[0.06]">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
       </div>
       <div className="flex-1 flex items-center justify-center py-1">
         <canvas ref={canvasRef} width={180} height={110} style={{ width: "100%", maxWidth: 180, height: "auto" }} />
@@ -221,7 +234,7 @@ function SparkStatPanel({
   return (
     <div className="bg-slate-100 dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden flex flex-col">
       <div className="px-3 pt-2.5 pb-1 border-b border-slate-200 dark:border-white/[0.06]">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
       </div>
       <div className="relative flex-1" style={{ minHeight: 80 }}>
         {/* Spark chart fills the whole panel */}
@@ -231,7 +244,7 @@ function SparkStatPanel({
         {/* Value overlaid bottom-left like Grafana */}
         <div className="absolute bottom-2 left-3 flex items-baseline gap-1">
           <span className="text-[22px] font-bold font-mono leading-none" style={{ color }}>{value}</span>
-          <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{unit}</span>
+          <span className="text-[13px] font-mono text-slate-500 dark:text-slate-400">{unit}</span>
         </div>
       </div>
     </div>
@@ -242,13 +255,58 @@ function SparkStatPanel({
 function InfoCard({ title, rows }: { title: string; rows: [string, string][] }) {
   return (
     <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
-      <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-3">{title}</div>
+      <div className="text-[13px] font-medium text-slate-500 dark:text-slate-400 mb-3">{title}</div>
       {rows.map(([k, v]) => (
         <div key={k} className="flex justify-between items-start gap-3 py-1.5 border-b border-slate-100 dark:border-white/[0.05] last:border-none text-xs">
           <span className="text-slate-500 dark:text-slate-400 flex-shrink-0 whitespace-nowrap">{k}</span>
           <span className="font-mono font-medium text-slate-900 dark:text-white text-right break-words min-w-0">{v}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── VolumesCard ──────────────────────────────────────────────────────────────
+// Every fixed volume the agent reported. The disk gauge above is only the ROOT
+// volume, so without this a full data/log drive is invisible on this page.
+function VolumesCard({ volumes }: { volumes: Volume[] }) {
+  return (
+    <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">Volumes</span>
+        {volumes.length > 0 && <span className="text-[12px] text-slate-400">{volumes.length}</span>}
+      </div>
+
+      {volumes.length === 0 ? (
+        <div className="text-xs text-slate-400 py-5 text-center">
+          No volume data yet — arrives with the next agent report.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {volumes.map((v) => {
+            const pct = Math.min(Math.max(v.percent, 0), 100);
+            return (
+              <div key={v.mount}>
+                <div className="flex items-baseline justify-between gap-3 mb-1">
+                  <span className="text-xs font-mono text-slate-700 dark:text-slate-200 truncate" title={v.mount}>
+                    {v.mount}
+                    {v.fstype && <span className="ml-1.5 text-[12px] text-slate-400">{v.fstype}</span>}
+                  </span>
+                  <span className="text-[13px] font-mono flex-shrink-0" style={{ color: barColor(pct) }}>
+                    {v.used_gb} / {v.total_gb} GB · {Math.round(pct)}%
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full overflow-hidden bg-slate-200 dark:bg-white/[0.08]">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{ width: `${pct}%`, background: barColor(pct) }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -265,10 +323,10 @@ function ChartCard({
   return (
     <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-white/[0.06]">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
         <div className="flex gap-3">
           {legend.map(l => (
-            <span key={l.label} className="flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400">
+            <span key={l.label} className="flex items-center gap-1 text-[12px] text-slate-500 dark:text-slate-400">
               <span className="w-5 h-[2px] rounded-full inline-block" style={{ background: l.color }} />
               {l.label}
             </span>
@@ -290,7 +348,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   const diskRef = useRef<HTMLCanvasElement>(null);
   const netRef  = useRef<HTMLCanvasElement>(null);
 
-  const [range, setRange]     = useState("-1h");
+  const [range, setRange]     = useState<RangeValue>(DEFAULT_RANGE);
+  const [rangeError, setRangeError] = useState("");
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [logs, setLogs]       = useState<DeviceLog[]>([]);
 
@@ -302,8 +361,11 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   // appending each incoming serverMetrics point for this server.
   useEffect(() => {
     let alive = true;
-    api.getServerHistory(Number(s.id), range).then((r) => {
-      if (!alive || !r.success || !r.data) return;
+    const custom = range.kind === "custom" ? { start: range.start, stop: range.stop } : undefined;
+    api.getServerHistory(Number(s.id), range.kind === "preset" ? range.preset : "", custom).then((r) => {
+      if (!alive) return;
+      if (!r.success || !r.data) { setRangeError(r.error || "Could not load history."); return; }
+      setRangeError("");
       setHistory(
         (r.data.history ?? []).map((p: any) => ({
           time: p.time,
@@ -351,7 +413,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
     return () => { alive = false; socket.off("deviceLog", onLog); };
   }, [s.id]);
 
-  const labels   = history.map((p) => fmtTime(p.time));
+  const spanSec  = rangeSpanSec(range);
+  const labels   = history.map((p) => fmtTime(p.time, spanSec));
   const cpuData  = history.map((p) => p.cpu ?? 0);
   const memData  = history.map((p) => p.mem ?? 0);
   const diskData = history.map((p) => p.disk ?? 0);
@@ -447,11 +510,13 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           All servers
         </button>
         <div className="flex-1" />
-        <span className="hidden sm:block truncate max-w-[45%] text-[10px] font-mono text-slate-500 dark:text-slate-400">{s.ip} · {s.region} · {s.role}</span>
+        <span className="hidden sm:block truncate max-w-[45%] text-[12px] font-mono text-slate-500 dark:text-slate-400">{s.ip} · {s.region} · {s.role}</span>
         <span className={`text-xs font-medium px-2.5 py-1 rounded-sm ${
           s.status === "Online"
             ? "bg-green-900/40 text-green-400 border border-green-700/40"
-            : "bg-red-900/40 text-red-400 border border-red-700/40"
+            : s.status === "Maintenance"
+              ? "bg-blue-900/40 text-blue-400 border border-blue-700/40"
+              : "bg-red-900/40 text-red-400 border border-red-700/40"
         }`}>
           {s.status}
         </span>
@@ -462,14 +527,15 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         <div className="w-1 h-5 rounded-full" style={{ background: barColor(s.cpu) }} />
         <div className="min-w-0">
           <div className="text-base font-semibold text-slate-900 dark:text-white font-mono truncate">{s.name}</div>
+          {/* Real hostname, shown only when an admin display label is masking it. */}
           {s.displayName && s.hostname && s.hostname !== s.name && (
-            <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">host: {s.hostname}</div>
+            <div className="text-[12px] text-slate-500 font-mono mt-0.5 truncate">host: {s.hostname}</div>
           )}
-          <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">{s.os} · {s.kernel} · {s.cores} cores</div>
+          <div className="text-[12px] text-slate-500 font-mono mt-0.5 truncate">{s.os} · {s.kernel} · {s.cores} cores</div>
         </div>
         <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
-          <span className="text-[10px] text-slate-500 font-mono">uptime</span>
-          <span className="text-[11px] font-mono font-medium text-green-400">{s.uptime}</span>
+          <span className="text-[12px] text-slate-500 font-mono">uptime</span>
+          <span className="text-[13px] font-mono font-medium text-green-400">{s.uptime}</span>
         </div>
       </div>
 
@@ -509,24 +575,10 @@ export default function ServerDetail({ server: s, onBack }: Props) {
 
       {/* Range selector */}
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-          Performance {history.length === 0 ? "· no data for this range" : `· last ${RANGES.find((r) => r.key === range)?.label}`}
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">
+          Performance {history.length === 0 ? "· no data for this range" : range.kind === "preset" ? `· last ${presetLabel[range.preset]}` : "· custom range"}
         </span>
-        <div className="flex gap-1 bg-slate-100 dark:bg-white/[0.05] rounded-md p-0.5">
-          {RANGES.map((r) => (
-            <button
-              key={r.key}
-              onClick={() => setRange(r.key)}
-              className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
-                range === r.key
-                  ? "bg-white dark:bg-white/[0.12] text-slate-900 dark:text-white shadow-sm"
-                  : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
-              }`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
+        <RangePicker value={range} onChange={setRange} error={rangeError || undefined} />
       </div>
 
       {/* Chart panels — 2 columns like Grafana */}
@@ -557,15 +609,19 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         />
       </div>
 
+      {/* Volumes — every fixed disk, not just the root one the gauge shows */}
+      <VolumesCard volumes={s.volumes ?? []} />
+
       {/* Info rows */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <InfoCard title="System info" rows={[
-          ["OS",     s.os],
-          ["Kernel", s.kernel],
-          ["Cores",  String(s.cores)],
-          ["Arch",   s.arch],
-          ["Memory", `${s.memoryTotalGB} GB`],
-          ["Disk",   `${s.diskTotalGB} GB`],
+          ["OS",        s.os],
+          ["Kernel",    s.kernel],
+          ["Cores",     String(s.cores)],
+          ["Arch",      s.arch],
+          ["Memory",    `${s.memoryTotalGB} GB`],
+          ["Disk",      `${s.diskTotalGB} GB`],
+          ["Processes", s.processCount != null ? String(s.processCount) : "—"],
         ]} />
         <InfoCard title="Network info" rows={[
           ["IP address", s.ip],
@@ -573,13 +629,20 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           ["DNS",        s.dns],
           ["Region",     s.region],
         ]} />
+        {/* Agent health — until now you couldn't tell from the dashboard which
+            agents were outdated or when one last checked in. */}
+        <InfoCard title="Monitoring agent" rows={[
+          ["Version",    s.agentVersion || "—"],
+          ["Last report", s.lastSeen ? fmtDateTime(s.lastSeen) : "—"],
+          ["Interval",   s.metricIntervalSec ? `${s.metricIntervalSec}s` : "—"],
+        ]} />
       </div>
 
       {/* Recent events (device_logs) */}
       <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Recent events</span>
-          {logs.length > 0 && <span className="text-[10px] text-slate-400">{logs.length}</span>}
+          <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">Recent events</span>
+          {logs.length > 0 && <span className="text-[12px] text-slate-400">{logs.length}</span>}
         </div>
         {logs.length === 0 ? (
           <div className="text-xs text-slate-400 py-5 text-center">No events logged yet.</div>
@@ -590,10 +653,10 @@ export default function ServerDetail({ server: s, onBack }: Props) {
                 <span className="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: logColor(l.log_level) }} />
                 <div className="min-w-0 flex-1">
                   <div className="text-xs text-slate-700 dark:text-slate-200 break-words">{l.message}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">{fmtDateTime(l.recorded_at)}</div>
+                  <div className="text-[12px] text-slate-400 mt-0.5">{fmtDateTime(l.recorded_at)}</div>
                 </div>
                 <span
-                  className="text-[9px] uppercase font-semibold tracking-wider flex-shrink-0 mt-0.5"
+                  className="text-[11px] uppercase font-semibold tracking-wider flex-shrink-0 mt-0.5"
                   style={{ color: logColor(l.log_level) }}
                 >
                   {l.log_level}

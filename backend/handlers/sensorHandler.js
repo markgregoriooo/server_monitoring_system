@@ -3,6 +3,8 @@ import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
 import alertBandState from "../services/alertBandState.js";
+import esp32Monitor from "../services/esp32Monitor.js";
+import backupService from "../services/backupService.js";
 
 const SEV_RANK = alertRulesService.SEV_RANK;
 
@@ -32,13 +34,25 @@ async function maybeRaiseEnvAlert(data) {
       const rules = await alertRulesService.getEffectiveRules(null, key);
       const prev = alertBandState.getBand(null, key);
       const { band, rule } = alertRulesService.nextBand(rules, v, prev);
-      alertBandState.setBand(null, key, band);
 
-      // Recovery: metric back to normal → auto-resolve its open room-level alerts.
+      // Recovery needs CONFIRMATION — see agentService.checkThresholds. It matters most
+      // for GAS here: the MQ-2 is an analog sensor with genuinely noisy readings, so a
+      // single dip below the threshold is weak evidence the smoke has cleared. Note this
+      // only delays the ALL-CLEAR — escalation stays instant, so the fail-safe direction
+      // is preserved for a smoke alarm.
+      let effectiveBand = band;
       if (band === "normal" && prev !== "normal") {
-        await alertsService.autoResolveMetric(null, key);
+        if (alertBandState.confirmRecovery(null, key)) {
+          await alertsService.autoResolveMetric(null, key);
+        } else {
+          effectiveBand = prev; // not convinced yet — hold the alert open
+        }
+      } else if (band !== "normal") {
+        alertBandState.breakRecovery(null, key);
       }
-      if (SEV_RANK[band] <= SEV_RANK[prev]) continue; // only act on escalation
+      alertBandState.setBand(null, key, effectiveBand);
+
+      if (SEV_RANK[effectiveBand] <= SEV_RANK[prev]) continue; // only act on escalation
 
       // Smoke = a gas reading the firmware flags DANGER — give it a clearer title.
       const smoke = key === "gas" && data.smoke_status === "DANGER";
@@ -83,6 +97,10 @@ export async function sensorHandler(socket, data) {
     return;
   }
 
+  // A valid reading is the ESP32's heartbeat — this is what keeps the sensor "online"
+  // and auto-resolves an open offline alert the instant it comes back.
+  esp32Monitor.markSeen();
+
   const timestamp = new Date();   // precision: ms (matches writeClient config)
 
   console.log(
@@ -111,6 +129,18 @@ export async function sensorHandler(socket, data) {
   } catch (error) {
     console.error("[SENSOR] InfluxDB Error:", error);
   }
+
+  // ---- On-site backup copy (independent of InfluxDB) ----
+  backupService.record("env", {
+    temperature: data.temperature,
+    humidity: data.humidity,
+    mq2_1_ppm: data.mq2_1_ppm,
+    mq2_2_ppm: data.mq2_2_ppm,
+    heat_index: data.heat_index,
+    smoke_status: data.smoke_status,
+    temp_status: data.temp_status,
+    environment_status: data.environment_status,
+  });
 
   // ---- Broadcast to dashboard ----
   try {

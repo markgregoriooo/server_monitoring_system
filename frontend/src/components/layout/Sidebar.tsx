@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { NavLink } from "react-router";
+import { useState, useEffect, useMemo } from "react";
+import { NavLink, useLocation } from "react-router";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemeContext";
 import { useNotifications } from "../../context/NotificationContext";
@@ -11,6 +11,8 @@ import ProfileModal from "./ProfileModal";
 type RoleKey = keyof typeof roleConfig;
 
 interface NavItem { id: string; label: string; path: string; icon: React.ReactNode; }
+interface NavGroup { id: string; label: string; items: NavItem[]; }
+interface BadgeSpec { count: number; color: string; title: string; }
 interface SidebarProps {
   mobileOpen: boolean;
   onClose: () => void;
@@ -35,6 +37,28 @@ const Icons: Record<string, React.ReactNode> = {
       <rect x="1" y="10" width="14" height="4" rx="1" stroke="currentColor" strokeWidth="1.4"/>
       <circle cx="12" cy="4" r="1" fill="currentColor"/>
       <circle cx="12" cy="12" r="1" fill="currentColor"/>
+    </svg>
+  ),
+  network: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <rect x="1" y="2" width="14" height="4" rx="1" stroke="currentColor" strokeWidth="1.4"/>
+      <rect x="1" y="10" width="14" height="4" rx="1" stroke="currentColor" strokeWidth="1.4"/>
+      <path d="M8 6v4" stroke="currentColor" strokeWidth="1.4"/>
+      <circle cx="3.5" cy="4" r="0.8" fill="currentColor"/>
+      <circle cx="3.5" cy="12" r="0.8" fill="currentColor"/>
+    </svg>
+  ),
+  mikrotik: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <rect x="1.5" y="8.5" width="13" height="5.5" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
+      <path d="M4 11.2h.01M11.5 11.2h.01" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M5.2 5.6a4 4 0 0 1 5.6 0M6.8 7.1a1.7 1.7 0 0 1 2.4 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+    </svg>
+  ),
+  ups: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <rect x="1.5" y="3" width="13" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
+      <path d="M9 5.5L6.5 8.5H8.5L7 10.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   ),
   environment: (
@@ -93,18 +117,70 @@ const Icons: Record<string, React.ReactNode> = {
   ),
 };
 
-const allNavItems: NavItem[] = [
-  { id: "dashboard",        label: "Dashboard",        path: "/",                icon: Icons["dashboard"] },
-  { id: "server-metrics",   label: "Server Metrics",   path: "/server-metrics",  icon: Icons["server-metrics"] },
-  { id: "environment",      label: "Environment",      path: "/environment",     icon: Icons["environment"] },
-  { id: "air-conditioner",  label: "Air Conditioner",  path: "/air-conditioner", icon: Icons["air-conditioner"] },
-  { id: "alerts",           label: "Alerts",           path: "/alerts",          icon: Icons["alerts"] },
-  { id: "history",          label: "History",          path: "/history",         icon: Icons["history"] },
-  { id: "reports",          label: "Reports",          path: "/reports",         icon: Icons["reports"] },
-  { id: "user-management",  label: "User Management",  path: "/user-management", icon: Icons["user-management"] },
-  { id: "alert-rules",      label: "Alert Rules",      path: "/alert-rules",     icon: Icons["alert-rules"] },
-  { id: "settings",         label: "Settings",         path: "/settings",        icon: Icons["settings"] },
+// ─── Nav structure ────────────────────────────────────────────────────────────
+// Thirteen flat entries was too long a list to scan. Dashboard and Settings stay
+// pinned (top / bottom); everything else lives in a collapsible group.
+//
+// Groups collapse by DEFAULT — the whole point is a short sidebar — but the group
+// owning the current route auto-expands, and open/closed state persists, so the
+// sections you actually use stay open across sessions.
+
+const NAV_DASHBOARD: NavItem =
+  { id: "dashboard", label: "Dashboard", path: "/", icon: Icons["dashboard"] };
+
+const NAV_SETTINGS: NavItem =
+  { id: "settings", label: "Settings", path: "/settings", icon: Icons["settings"] };
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    id: "infrastructure",
+    label: "Infrastructure",
+    items: [
+      { id: "server-metrics", label: "Server Metrics", path: "/server-metrics", icon: Icons["server-metrics"] },
+      { id: "network",        label: "Network",        path: "/network",        icon: Icons["network"] },
+      { id: "mikrotik",       label: "MikroTik",       path: "/mikrotik",       icon: Icons["mikrotik"] },
+      { id: "ups",            label: "UPS",            path: "/ups",            icon: Icons["ups"] },
+    ],
+  },
+  {
+    id: "server-room",
+    label: "Server Room",
+    items: [
+      { id: "environment",     label: "Environment",     path: "/environment",     icon: Icons["environment"] },
+      { id: "air-conditioner", label: "Air Conditioner", path: "/air-conditioner", icon: Icons["air-conditioner"] },
+    ],
+  },
+  {
+    id: "operations",
+    label: "Operations",
+    items: [
+      { id: "alerts",  label: "Alerts",  path: "/alerts",  icon: Icons["alerts"] },
+      { id: "history", label: "History", path: "/history", icon: Icons["history"] },
+      { id: "reports", label: "Reports", path: "/reports", icon: Icons["reports"] },
+    ],
+  },
+  {
+    // Admin-only pages. it_staff has neither, so the whole group disappears for them
+    // rather than rendering an empty header.
+    id: "administration",
+    label: "Administration",
+    items: [
+      { id: "user-management", label: "User Management", path: "/user-management", icon: Icons["user-management"] },
+      { id: "alert-rules",     label: "Alert Rules",     path: "/alert-rules",     icon: Icons["alert-rules"] },
+    ],
+  },
 ];
+
+const NAV_GROUPS_KEY = "cspc_nav_groups";
+
+function readOpenGroups(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(NAV_GROUPS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
 
 export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollapse }: SidebarProps) {
   const { user, logout } = useAuth();
@@ -118,9 +194,72 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
     setTimeout(() => setProfileToast(""), 3000);
   };
 
-  const allowed   = user ? roleConfig[user.role as RoleKey]?.pages || [] : [];
-  const navItems  = allNavItems.filter(item => allowed.includes(item.id));
-  const roleCfg   = user ? roleConfig[user.role as RoleKey] : null;
+  const location = useLocation();
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(readOpenGroups);
+
+  const allowed = user ? roleConfig[user.role as RoleKey]?.pages || [] : [];
+  const roleCfg = user ? roleConfig[user.role as RoleKey] : null;
+
+  // Role-filter every group, then drop any that ended up empty.
+  const groups = useMemo(
+    () =>
+      NAV_GROUPS
+        .map(g => ({ ...g, items: g.items.filter(i => allowed.includes(i.id)) }))
+        .filter(g => g.items.length > 0),
+    [allowed.join(",")],
+  );
+
+  const isActivePath = (p: string) =>
+    p === "/" ? location.pathname === "/" : location.pathname.startsWith(p);
+
+  // The group owning the current route — used to auto-expand it.
+  const activeGroupId = useMemo(
+    () => groups.find(g => g.items.some(i => isActivePath(i.path)))?.id ?? null,
+    [groups, location.pathname],
+  );
+
+  // Open the active group, but never auto-CLOSE the others: collapsing a section the
+  // user just opened because they navigated elsewhere is the annoying part of
+  // accordion sidebars. Sections they use simply accumulate as open.
+  useEffect(() => {
+    if (!activeGroupId) return;
+    setOpenGroups(prev => (prev[activeGroupId] ? prev : { ...prev, [activeGroupId]: true }));
+  }, [activeGroupId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(NAV_GROUPS_KEY, JSON.stringify(openGroups));
+    } catch {
+      /* private mode / quota — the sidebar still works, it just won't remember */
+    }
+  }, [openGroups]);
+
+  const toggleGroup = (id: string) =>
+    setOpenGroups(prev => ({ ...prev, [id]: !prev[id] }));
+
+  // Per-item badge. Kept in one place so the group header can reuse it.
+  const badgeFor = (id: string): BadgeSpec | null => {
+    if (id === "alerts" && openAlertCount > 0)
+      return { count: openAlertCount, color: "#F2495C", title: `${openAlertCount} alert(s) need attention` };
+    if (id === "server-metrics" && pendingAgentCount > 0)
+      return { count: pendingAgentCount, color: "var(--gf-accent)", title: `${pendingAgentCount} server(s) awaiting approval` };
+    if (id === "user-management" && pendingUserCount > 0)
+      return { count: pendingUserCount, color: "var(--gf-accent)", title: `${pendingUserCount} new registration(s)` };
+    return null;
+  };
+
+  // Roll a group's child badges up onto its header. Without this, collapsing a group
+  // would HIDE an open-alert count — the one thing the sidebar must never hide.
+  // Red wins over accent so a real alert is never disguised as a pending approval.
+  const groupBadge = (items: NavItem[]): BadgeSpec | null => {
+    const badges = items.map(i => badgeFor(i.id)).filter((b): b is BadgeSpec => b !== null);
+    if (badges.length === 0) return null;
+    return {
+      count: badges.reduce((sum, b) => sum + b.count, 0),
+      color: badges.some(b => b.color === "#F2495C") ? "#F2495C" : "var(--gf-accent)",
+      title: badges.map(b => b.title).join(" · "),
+    };
+  };
 
   return (
     <>
@@ -150,17 +289,17 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
             <img src={BRAND.logoSrc} alt={BRAND.name}
               className="w-7 h-7 rounded object-contain flex-shrink-0" />
           ) : (
-            <div className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 text-[9px] font-black tracking-tight"
+            <div className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 text-[11px] font-black tracking-tight"
               style={{ background: "#F59E0B", color: "#111217" }}>
               {BRAND.logoText}
             </div>
           )}
           <div className="min-w-0" title={BRAND.fullName}>
-            <div className="text-[11px] font-bold tracking-wide"
+            <div className="text-[13px] font-bold tracking-wide"
               style={{ color: "var(--gf-text-primary)" }}>
               {BRAND.name}
             </div>
-            <div className="text-[8px] tracking-widest"
+            <div className="text-[10px] tracking-widest"
               style={{ color: "var(--gf-text-dim)" }}>
               {BRAND.subtitle}
             </div>
@@ -185,52 +324,79 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
         {/* ── Navigation ── */}
         <nav className="flex-1 py-1.5 overflow-y-auto">
           <div className="px-3 pt-2 pb-1">
-            <span className="text-[8px] tracking-widest uppercase"
+            <span className="text-[10px] tracking-widest uppercase"
               style={{ color: "var(--gf-text-dim)" }}>
               Navigation
             </span>
           </div>
 
-          {navItems.map(item => (
-            <NavLink
-              key={item.id}
-              to={item.path}
-              end={item.path === "/"}
-              onClick={onClose}
-              className="flex items-center gap-2.5 px-3 py-2 text-[11px] transition-colors"
-              style={({ isActive }) => ({
-                borderLeft:  isActive ? "2px solid var(--gf-accent)"  : "2px solid transparent",
-                background:  isActive ? "var(--gf-accent-dim)"        : "transparent",
-                color:       isActive ? "var(--gf-text-primary)"      : "var(--gf-text-muted)",
-              })}
-              onMouseEnter={e => {
-                const el = e.currentTarget;
-                if (!el.style.background.includes("var(--gf-accent")) {
-                  el.style.background = "var(--gf-hover)";
-                  el.style.color      = "var(--gf-text-primary)";
-                }
-              }}
-              onMouseLeave={e => {
-                const el = e.currentTarget;
-                if (!el.style.background.includes("var(--gf-accent")) {
-                  el.style.background = "transparent";
-                  el.style.color      = "var(--gf-text-muted)";
-                }
-              }}
-            >
-              <span style={{ opacity: 0.75 }}>{item.icon}</span>
-              {item.label}
-              {item.id === "alerts" && (
-                <NavBadge count={openAlertCount} color="#F2495C" title={`${openAlertCount} alert(s) need attention`} />
-              )}
-              {item.id === "server-metrics" && (
-                <NavBadge count={pendingAgentCount} color="var(--gf-accent)" title={`${pendingAgentCount} server(s) awaiting approval`} />
-              )}
-              {item.id === "user-management" && (
-                <NavBadge count={pendingUserCount} color="var(--gf-accent)" title={`${pendingUserCount} new registration(s)`} />
-              )}
-            </NavLink>
-          ))}
+          {allowed.includes(NAV_DASHBOARD.id) && (
+            <NavRow item={NAV_DASHBOARD} badge={badgeFor(NAV_DASHBOARD.id)} onClose={onClose} />
+          )}
+
+          {groups.map(group => {
+            const isOpen = !!openGroups[group.id];
+            const rolled = groupBadge(group.items);
+            return (
+              <div key={group.id}>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.id)}
+                  aria-expanded={isOpen}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-[13px] transition-colors"
+                  style={{
+                    borderLeft: "2px solid transparent",
+                    color: isOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)",
+                    background: "transparent",
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = "var(--gf-hover)";
+                    e.currentTarget.style.color = "var(--gf-text-primary)";
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = "transparent";
+                    e.currentTarget.style.color = isOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)";
+                  }}
+                >
+                  <svg
+                    width="10" height="10" viewBox="0 0 16 16" fill="none"
+                    style={{
+                      flexShrink: 0,
+                      opacity: 0.75,
+                      transform: isOpen ? "rotate(90deg)" : "none",
+                      transition: "transform 150ms ease",
+                    }}
+                  >
+                    <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.6"
+                      strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span className="tracking-wide">{group.label}</span>
+
+                  {/* Only when collapsed — an open group shows the counts on the rows themselves */}
+                  {!isOpen && rolled && (
+                    <NavBadge count={rolled.count} color={rolled.color} title={rolled.title} />
+                  )}
+                  {/* Closed group holding the current page: a dot marks where you are */}
+                  {!isOpen && !rolled && activeGroupId === group.id && (
+                    <span
+                      className="ml-auto w-1.5 h-1.5 rounded-full flex-shrink-0"
+                      style={{ background: "var(--gf-accent)" }}
+                      title="Contains the current page"
+                    />
+                  )}
+                </button>
+
+                {isOpen &&
+                  group.items.map(item => (
+                    <NavRow key={item.id} item={item} badge={badgeFor(item.id)} onClose={onClose} indented />
+                  ))}
+              </div>
+            );
+          })}
+
+          {allowed.includes(NAV_SETTINGS.id) && (
+            <NavRow item={NAV_SETTINGS} badge={badgeFor(NAV_SETTINGS.id)} onClose={onClose} />
+          )}
         </nav>
 
         {/* ── Bottom: theme + user ── */}
@@ -238,12 +404,12 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
           {/* Theme toggle */}
           <div className="flex items-center justify-between px-4 py-2.5"
             style={{ borderBottom: "1px solid var(--gf-panel-border)" }}>
-            <span className="text-[9px] tracking-widest uppercase"
+            <span className="text-[11px] tracking-widest uppercase"
               style={{ color: "var(--gf-text-dim)" }}>
               Theme
             </span>
             <button onClick={toggleTheme}
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] transition-colors"
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[12px] transition-colors"
               style={{ color: "var(--gf-text-muted)", background: "var(--gf-hover)" }}
               onMouseEnter={e => (e.currentTarget.style.color = "var(--gf-text-primary)")}
               onMouseLeave={e => (e.currentTarget.style.color = "var(--gf-text-muted)")}>
@@ -282,19 +448,19 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-cover" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[9px] font-bold text-white"
+                    <div className="w-full h-full flex items-center justify-center text-[11px] font-bold text-white"
                       style={{ background: "var(--gf-accent)" }}>
                       {user.avatar}
                     </div>
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-[10px] font-semibold truncate"
+                  <div className="text-[12px] font-semibold truncate"
                     style={{ color: "var(--gf-text-primary)" }}>
                     {user.name}
                   </div>
                   {roleCfg && (
-                    <div className="text-[8px] tracking-widest truncate"
+                    <div className="text-[10px] tracking-widest truncate"
                       style={{ color: "var(--gf-accent)" }}>
                       {roleCfg.label}
                     </div>
@@ -303,7 +469,7 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
               </button>
 
               <button onClick={logout}
-                className="w-full py-1.5 rounded text-[10px] tracking-wider transition-colors"
+                className="w-full py-1.5 rounded text-[12px] tracking-wider transition-colors"
                 style={{ color: "var(--gf-text-muted)", border: "1px solid var(--gf-panel-border)" }}
                 onMouseEnter={e => {
                   e.currentTarget.style.color      = "var(--gf-text-primary)";
@@ -344,13 +510,58 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
   );
 }
 
+// A single nav link. Shared by the pinned items (Dashboard / Settings) and by the
+// rows inside a group, so active/hover styling can't drift between them.
+function NavRow({
+  item, badge, onClose, indented,
+}: {
+  item: NavItem;
+  badge: BadgeSpec | null;
+  onClose: () => void;
+  indented?: boolean;
+}) {
+  return (
+    <NavLink
+      to={item.path}
+      end={item.path === "/"}
+      onClick={onClose}
+      className="flex items-center gap-2.5 py-2 text-[13px] transition-colors"
+      style={({ isActive }) => ({
+        paddingLeft:  indented ? 30 : 12,
+        paddingRight: 12,
+        borderLeft:  isActive ? "2px solid var(--gf-accent)" : "2px solid transparent",
+        background:  isActive ? "var(--gf-accent-dim)"       : "transparent",
+        color:       isActive ? "var(--gf-text-primary)"     : "var(--gf-text-muted)",
+      })}
+      onMouseEnter={e => {
+        const el = e.currentTarget;
+        if (!el.style.background.includes("var(--gf-accent")) {
+          el.style.background = "var(--gf-hover)";
+          el.style.color      = "var(--gf-text-primary)";
+        }
+      }}
+      onMouseLeave={e => {
+        const el = e.currentTarget;
+        if (!el.style.background.includes("var(--gf-accent")) {
+          el.style.background = "transparent";
+          el.style.color      = "var(--gf-text-muted)";
+        }
+      }}
+    >
+      <span style={{ opacity: 0.75, flexShrink: 0 }}>{item.icon}</span>
+      <span className="truncate">{item.label}</span>
+      {badge && <NavBadge count={badge.count} color={badge.color} title={badge.title} />}
+    </NavLink>
+  );
+}
+
 // Small count pill shown on a nav item (alerts = red, pending approvals = accent).
 // Self-hides when count is 0.
 function NavBadge({ count, color, title }: { count: number; color: string; title: string }) {
   if (count <= 0) return null;
   return (
     <span
-      className="ml-auto min-w-[13px] h-[13px] px-[3px] flex items-center justify-center rounded-full text-[7.5px] font-semibold leading-none"
+      className="ml-auto min-w-[13px] h-[13px] px-[3px] flex items-center justify-center rounded-full text-[10px] font-semibold leading-none"
       style={{ background: color, color: "#fff" }}
       title={title}
     >

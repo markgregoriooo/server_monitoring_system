@@ -74,11 +74,24 @@ function roleCfg(role: string) {
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 // Grafana status/role pill (tinted background + dot).
-function Pill({ color, dot, children }: { color: string; dot?: boolean; children: React.ReactNode }) {
+// `neutral` keeps the chrome grey and lets the DOT carry the colour, so a table of
+// statuses reads as one calm column instead of a row of coloured blocks. The signal
+// is still there — it's just one small dot per row rather than a tinted rectangle.
+function Pill({
+  color, dot, neutral, children,
+}: { color: string; dot?: boolean; neutral?: boolean; children: React.ReactNode }) {
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[10px] font-semibold whitespace-nowrap"
-      style={{ color, background: `${color}1A`, border: `1px solid ${color}40` }}
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[12px] font-semibold whitespace-nowrap"
+      style={
+        neutral
+          ? {
+              color: "var(--gf-text-primary)",
+              background: "var(--gf-hover)",
+              border: "1px solid var(--gf-panel-border)",
+            }
+          : { color, background: `${color}1A`, border: `1px solid ${color}40` }
+      }
     >
       {dot && <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />}
       {children}
@@ -95,16 +108,16 @@ function StatusBadge({ status, lastLogin }: { status?: string; lastLogin?: strin
   // rather than green "Active" — it's enabled, but the user hasn't logged in yet.
   // (Disabled accounts still read "Inactive" regardless, so the two stay distinct.)
   if ((status === "active" || !status) && !lastLogin) {
-    return <Pill color={BLUE} dot>Invited</Pill>;
+    return <Pill color={BLUE} dot neutral>Invited</Pill>;
   }
   const s = STATUS[status || "active"] ?? STATUS_INACTIVE;
-  return <Pill color={s.color} dot>{s.label}</Pill>;
+  return <Pill color={s.color} dot neutral>{s.label}</Pill>;
 }
 
 function StatPanel({ label, value, color }: { label: string; value: number; color: string }) {
   return (
     <div className="p-3 rounded-[2px] bg-[var(--gf-panel)] border border-[var(--gf-panel-border)]">
-      <div className="text-[9px] uppercase tracking-widest mb-1.5 text-[var(--gf-text-muted)]">{label}</div>
+      <div className="text-[11px] uppercase tracking-widest mb-1.5 text-[var(--gf-text-muted)]">{label}</div>
       <div className="text-2xl font-bold leading-none" style={{ color }}>{value}</div>
     </div>
   );
@@ -120,7 +133,7 @@ function Panel({
     <div className="rounded-[2px] overflow-hidden bg-[var(--gf-panel)] border border-[var(--gf-panel-border)]">
       {title !== undefined && (
         <div className="flex items-center justify-between px-3 border-b border-[var(--gf-divider)]" style={{ height: 32 }}>
-          <span className="text-[11px] font-medium tracking-widest uppercase text-[var(--gf-text-muted)]">{title}</span>
+          <span className="text-[13px] font-medium tracking-widest uppercase text-[var(--gf-text-muted)]">{title}</span>
           {right}
         </div>
       )}
@@ -137,7 +150,7 @@ const inputCls =
   "placeholder-[var(--gf-text-dim)] focus:border-[var(--gf-accent)]";
 
 const labelCls =
-  "block text-[10px] font-semibold uppercase tracking-widest mb-1.5 text-[var(--gf-text-muted)]";
+  "block text-[12px] font-semibold uppercase tracking-widest mb-1.5 text-[var(--gf-text-muted)]";
 
 // ─── SelectField ──────────────────────────────────────────────────────────────
 
@@ -194,7 +207,7 @@ function Modal({
         style={{ fontFamily: "'JetBrains Mono', monospace" }}
       >
         <div className="flex items-center justify-between px-5 sm:px-6 border-b border-[var(--gf-divider)] flex-shrink-0" style={{ height: 44 }}>
-          <span className="text-[13px] font-semibold tracking-wide text-[var(--gf-text-primary)]">{title}</span>
+          <span className="text-[15px] font-semibold tracking-wide text-[var(--gf-text-primary)]">{title}</span>
           <button
             onClick={onClose}
             className="w-7 h-7 flex items-center justify-center rounded-[2px] text-[var(--gf-text-muted)] hover:text-[var(--gf-text-primary)] hover:bg-[var(--gf-hover)] transition cursor-pointer"
@@ -220,12 +233,12 @@ function ConfirmDialog({
         className="w-full max-w-sm rounded-[2px] bg-[var(--gf-panel)] border border-[var(--gf-panel-border)] shadow-2xl p-5 flex flex-col gap-4"
         style={{ fontFamily: "'JetBrains Mono', monospace" }}
       >
-        <div className="text-[13px] text-[var(--gf-text-primary)] leading-relaxed">{message}</div>
+        <div className="text-[15px] text-[var(--gf-text-primary)] leading-relaxed">{message}</div>
         <div className="flex gap-2 justify-end">
-          <button onClick={onCancel} className="px-4 py-2 rounded-[2px] text-xs font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] transition cursor-pointer">
+          <button onClick={onCancel} className="gf-btn px-4 py-2 rounded-[2px] text-xs font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] transition cursor-pointer">
             Cancel
           </button>
-          <button onClick={onConfirm} className="px-4 py-2 rounded-[2px] text-xs font-semibold text-white border-none cursor-pointer transition hover:opacity-90" style={{ background: confirmColor }}>
+          <button onClick={onConfirm} className="gf-raise px-4 py-2 rounded-[2px] text-xs font-semibold text-white border-none cursor-pointer transition hover:opacity-90" style={{ background: confirmColor }}>
             {confirmLabel}
           </button>
         </div>
@@ -235,18 +248,21 @@ function ConfirmDialog({
 }
 
 // Small action button used in the table actions cell.
+// Row actions share ONE neutral, raised surface (.gf-btn) — a tinted rectangle per
+// action turned the column into a colour chart and made every button shout equally.
+// `danger` tints only the LABEL, so Delete still reads as destructive without the
+// chrome competing; removing that signal entirely would be worse than the noise.
 function ActionBtn({
-  onClick, title, color, children,
+  onClick, title, danger, children,
 }: {
-  onClick: () => void; title: string; color?: string; children: React.ReactNode;
+  onClick: () => void; title: string; danger?: boolean; children: React.ReactNode;
 }) {
-  const c = color ?? "var(--gf-text-muted)";
   return (
     <button
       onClick={onClick}
       title={title}
-      className="px-2.5 py-1 rounded-[2px] text-[10px] font-semibold transition cursor-pointer whitespace-nowrap hover:opacity-80"
-      style={{ color: c, border: `1px solid ${color ? `${color}40` : "var(--gf-panel-border)"}`, background: color ? `${color}14` : "transparent" }}
+      className="gf-btn px-2.5 py-1 text-[12px] font-semibold cursor-pointer whitespace-nowrap"
+      style={{ color: danger ? "var(--gf-danger)" : "var(--gf-text-primary)" }}
     >
       {children}
     </button>
@@ -365,11 +381,17 @@ export default function UserManagement() {
   };
 
   // ── Save edit ──
+  // Only username / role / status are sent. name + email come from the user's Google
+  // account and are re-synced on their next sign-in, so editing them here would revert.
   const handleEdit = async () => {
     if (!editUser) return;
-    if (!editForm.name.trim() || !editForm.username.trim()) { setEditError("Name and username are required."); return; }
+    if (!editForm.username.trim()) { setEditError("Username is required."); return; }
     setEditLoading(true);
-    const result = await api.updateUser(editUser.id, editForm);
+    const result = await api.updateUser(editUser.id, {
+      username: editForm.username,
+      role: editForm.role,
+      status: editForm.status,
+    });
     if (result.success && result.data) {
       setUsers((prev) => prev.map((u) => (u.id === editUser.id ? result.data.user : u)));
       setEditUser(null);
@@ -382,7 +404,10 @@ export default function UserManagement() {
 
   // ── Toggle status ──
   const handleToggleStatus = async (u: User) => {
-    const newStatus: string = u.status === "inactive" ? "active" : "inactive";
+    // Invert on "can sign in", not on the literal "inactive". The old check sent a
+    // REJECTED user to 'inactive' (offering "Disable" on an account that was
+    // already blocked); now it enables them, which is the un-reject path.
+    const newStatus: string = isEnabled(u) ? "inactive" : "active";
     try {
       const result = await api.updateUserStatus(u.id, newStatus);
       if (result.success) {
@@ -422,6 +447,10 @@ export default function UserManagement() {
     u.role === "admin" && (u.status ?? "active") === "active" && activeAdminCount <= 1;
   const isProtected = (u: User) => isSelf(u) || isLastActiveAdmin(u);
   const isAdmin     = (u: User) => u.role === "admin";
+  // "Can this account currently sign in?" — a null status counts as active, matching
+  // the stat cards and StatusBadge. Everything else (inactive AND rejected) is off,
+  // so the Enable/Disable control points the right way for a rejected registration.
+  const isEnabled   = (u: User) => !u.status || u.status === "active";
 
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -448,7 +477,7 @@ export default function UserManagement() {
       {/* ── Toolbar ── */}
       <div className="flex items-baseline gap-2 min-w-0 px-0.5">
         <h1 className="text-[15px] font-semibold truncate text-[var(--gf-text-primary)]">User Management</h1>
-        <span className="text-[11px] hidden sm:inline text-[var(--gf-text-dim)]">
+        <span className="text-[13px] hidden sm:inline text-[var(--gf-text-dim)]">
           {users.length} user{users.length !== 1 ? "s" : ""}
         </span>
       </div>
@@ -472,7 +501,7 @@ export default function UserManagement() {
                 <span className="w-1.5 h-1.5 rounded-full" style={{ background: c }} />
                 {cfg.label}
               </div>
-              <div className="text-[10px] leading-relaxed text-[var(--gf-text-dim)]">
+              <div className="text-[12px] leading-relaxed text-[var(--gf-text-dim)]">
                 {cfg.pages.map((p) => p.replace("-", " ")).join(" · ")}
               </div>
             </div>
@@ -488,7 +517,7 @@ export default function UserManagement() {
             <span className="text-xs font-semibold" style={{ color: ORANGE }}>
               Pending registrations · {pending.length}
             </span>
-            <span className="text-[10px] ml-1" style={{ color: `${ORANGE}B0` }}>awaiting your approval</span>
+            <span className="text-[12px] ml-1" style={{ color: `${ORANGE}B0` }}>awaiting your approval</span>
           </div>
           <div className="flex flex-col">
             {pending.map((p) => (
@@ -501,7 +530,7 @@ export default function UserManagement() {
                   </div>
                   <div className="min-w-0">
                     <div className="text-xs font-semibold truncate text-[var(--gf-text-primary)]">{p.name}</div>
-                    <div className="text-[10px] truncate text-[var(--gf-text-muted)]">{p.email}</div>
+                    <div className="text-[12px] truncate text-[var(--gf-text-muted)]">{p.email}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
@@ -517,7 +546,7 @@ export default function UserManagement() {
                   <button
                     onClick={() => handleApprove(p)}
                     disabled={pendingBusy === p.id}
-                    className="px-3 py-1.5 rounded-[2px] text-[11px] font-semibold text-white border-none cursor-pointer transition hover:opacity-90 disabled:opacity-60 whitespace-nowrap"
+                    className="gf-raise px-3 py-1.5 rounded-[2px] text-[13px] font-semibold text-white border-none cursor-pointer transition hover:opacity-90 disabled:opacity-60 whitespace-nowrap"
                     style={{ background: GREEN }}
                   >
                     {pendingBusy === p.id ? "…" : "✓ Approve"}
@@ -525,7 +554,7 @@ export default function UserManagement() {
                   <button
                     onClick={() => handleReject(p)}
                     disabled={pendingBusy === p.id}
-                    className="px-3 py-1.5 rounded-[2px] text-[11px] font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] cursor-pointer transition disabled:opacity-60 whitespace-nowrap"
+                    className="gf-btn px-3 py-1.5 rounded-[2px] text-[13px] font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] cursor-pointer transition disabled:opacity-60 whitespace-nowrap"
                   >
                     ✕ Reject
                   </button>
@@ -580,7 +609,7 @@ export default function UserManagement() {
       <Panel
         title="Accounts"
         noPad
-        right={<span className="text-[10px] text-[var(--gf-text-dim)]">{filtered.length} of {users.length}</span>}
+        right={<span className="text-[12px] text-[var(--gf-text-dim)]">{filtered.length} of {users.length}</span>}
       >
         {loading ? (
           <div className="text-center py-14 text-[var(--gf-text-muted)] text-sm">Loading…</div>
@@ -592,7 +621,7 @@ export default function UserManagement() {
               <thead>
                 <tr>
                   {["User", "Username", "Email", "Role", "Status", "Last Login", "Actions"].map((h) => (
-                    <th key={h} className="text-left px-4 py-2.5 text-[9px] uppercase tracking-widest font-medium border-b border-[var(--gf-divider)] whitespace-nowrap text-[var(--gf-text-dim)]">
+                    <th key={h} className="text-left px-4 py-2.5 text-[11px] uppercase tracking-widest font-medium border-b border-[var(--gf-divider)] whitespace-nowrap text-[var(--gf-text-dim)]">
                       {h}
                     </th>
                   ))}
@@ -617,12 +646,12 @@ export default function UserManagement() {
                           <div className="text-xs font-semibold leading-tight text-[var(--gf-text-primary)]">
                             {u.name}
                             {isProtected(u) && (
-                              <span className="ml-1.5 text-[9px] text-[var(--gf-text-muted)] bg-[var(--gf-hover)] px-1.5 py-0.5 rounded-[2px]">
+                              <span className="ml-1.5 text-[11px] text-[var(--gf-text-muted)] bg-[var(--gf-hover)] px-1.5 py-0.5 rounded-[2px]">
                                 {isLastActiveAdmin(u) ? "last admin" : "you"}
                               </span>
                             )}
                           </div>
-                          <div className="text-[10px] text-[var(--gf-text-dim)]">#{String(u.id).padStart(3, "0")}</div>
+                          <div className="text-[12px] text-[var(--gf-text-dim)]">#{String(u.id).padStart(3, "0")}</div>
                         </div>
                       </div>
                     </td>
@@ -633,7 +662,7 @@ export default function UserManagement() {
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap"><RoleBadge role={u.role} /></td>
                     <td className="px-4 py-3 whitespace-nowrap"><StatusBadge status={u.status} lastLogin={u.last_login} /></td>
-                    <td className="px-4 py-3 text-[10px] text-[var(--gf-text-muted)] whitespace-nowrap">
+                    <td className="px-4 py-3 text-[12px] text-[var(--gf-text-muted)] whitespace-nowrap">
                       {u.last_login
                         ? new Date(u.last_login).toLocaleDateString("en-PH", { month: "short", day: "2-digit", year: "numeric" })
                         : <span className="text-[var(--gf-text-dim)]">Never</span>
@@ -649,17 +678,16 @@ export default function UserManagement() {
                         {!isProtected(u) && (
                           <ActionBtn
                             onClick={() => handleToggleStatus(u)}
-                            title={u.status === "inactive" ? "Enable account" : "Disable account"}
-                            color={u.status === "inactive" ? GREEN : ORANGE}
+                            title={isEnabled(u) ? "Disable account" : "Enable account"}
                           >
-                            {u.status === "inactive" ? "⊕ Enable" : "⊘ Disable"}
+                            {isEnabled(u) ? "⊘ Disable" : "⊕ Enable"}
                           </ActionBtn>
                         )}
                         {!isProtected(u) && (
-                          <ActionBtn onClick={() => setDeleteTarget(u)} title="Delete user" color={RED}>✕ Delete</ActionBtn>
+                          <ActionBtn onClick={() => setDeleteTarget(u)} title="Delete user" danger>✕ Delete</ActionBtn>
                         )}
                         {isProtected(u) && isAdmin(u) && (
-                          <span className="text-[10px] text-[var(--gf-text-dim)] px-1">Protected</span>
+                          <span className="text-[12px] text-[var(--gf-text-dim)] px-1">Protected</span>
                         )}
                       </div>
                     </td>
@@ -685,25 +713,35 @@ export default function UserManagement() {
               ["Last Login", editUser?.last_login   ? new Date(editUser.last_login).toLocaleDateString("en-PH")  : "Never"],
             ].map(([k, v]) => (
               <div key={k} className="flex flex-col gap-0.5">
-                <span className="text-[9px] uppercase tracking-widest text-[var(--gf-text-dim)]">{k}</span>
+                <span className="text-[11px] uppercase tracking-widest text-[var(--gf-text-dim)]">{k}</span>
                 <span className="text-sm font-semibold text-[var(--gf-text-primary)]">{v}</span>
               </div>
             ))}
-            <div className="ml-auto self-center text-[10px] italic text-[var(--gf-text-dim)]">Read-only</div>
+            <div className="ml-auto self-center text-[12px] italic text-[var(--gf-text-dim)]">Read-only</div>
+          </div>
+
+          {/* Name + email are owned by Google and re-synced on the user's next sign-in,
+              so they're shown read-only — editing them here would silently revert. */}
+          <div className="rounded-[2px] bg-[var(--gf-bg)] border border-[var(--gf-panel-border)] px-4 py-3 flex flex-col gap-2">
+            <div className="flex gap-8 flex-wrap">
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <span className="text-[11px] uppercase tracking-widest text-[var(--gf-text-dim)]">Full Name</span>
+                <span className="text-sm font-semibold text-[var(--gf-text-primary)] truncate">{editUser?.name ?? "—"}</span>
+              </div>
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <span className="text-[11px] uppercase tracking-widest text-[var(--gf-text-dim)]">Email</span>
+                <span className="text-sm font-semibold text-[var(--gf-text-primary)] truncate">{editUser?.email ?? "—"}</span>
+              </div>
+            </div>
+            <span className="text-[12px] text-[var(--gf-text-dim)] leading-relaxed">
+              From this user's CSPC Google account — refreshed on each sign-in, so not editable here.
+            </span>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={labelCls}>Full Name *</label>
-              <input value={editForm.name} onChange={(e) => setEditForm((p) => ({ ...p, name: e.target.value }))} className={inputCls} placeholder="Full name" />
-            </div>
-            <div>
+            <div className="col-span-2">
               <label className={labelCls}>Username *</label>
               <input value={editForm.username} onChange={(e) => setEditForm((p) => ({ ...p, username: e.target.value }))} className={inputCls} placeholder="Username" />
-            </div>
-            <div className="col-span-2">
-              <label className={labelCls}>Email</label>
-              <input value={editForm.email} onChange={(e) => setEditForm((p) => ({ ...p, email: e.target.value }))} className={inputCls} placeholder="Email address" />
             </div>
             <div>
               <label className={labelCls}>Role</label>
@@ -711,7 +749,22 @@ export default function UserManagement() {
             </div>
             <div>
               <label className={labelCls}>Account Status</label>
-              <SelectField value={editForm.status} onChange={(v) => setEditForm((p) => ({ ...p, status: v }))} options={[{ value: "active", label: "Active" }, { value: "inactive", label: "Inactive" }]} />
+              <SelectField
+                value={editForm.status}
+                onChange={(v) => setEditForm((p) => ({ ...p, status: v }))}
+                options={[
+                  { value: "active",   label: "Active" },
+                  { value: "inactive", label: "Inactive" },
+                  // A rejected registration has no matching option, so the select
+                  // renders BLANK and hides the account's real state. Keep the entry
+                  // (only while it applies) so the status is visible and an admin can
+                  // switch to Active — undoing an accidental reject without having to
+                  // delete the row and lose the audit trail.
+                  ...(editForm.status === "rejected"
+                    ? [{ value: "rejected", label: "Rejected" }]
+                    : []),
+                ]}
+              />
             </div>
           </div>
 
@@ -720,8 +773,8 @@ export default function UserManagement() {
           )}
 
           <div className="flex gap-3 pt-1">
-            <button onClick={() => setEditUser(null)} className="flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] transition cursor-pointer">Cancel</button>
-            <button onClick={handleEdit} disabled={editLoading} className="flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold text-white border-none cursor-pointer transition hover:opacity-90 disabled:opacity-60" style={{ background: "var(--gf-accent)" }}>
+            <button onClick={() => setEditUser(null)} className="gf-btn flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold border border-[var(--gf-panel-border)] text-[var(--gf-text-muted)] hover:bg-[var(--gf-hover)] transition cursor-pointer">Cancel</button>
+            <button onClick={handleEdit} disabled={editLoading} className="gf-raise flex-1 px-4 py-2.5 rounded-[2px] text-sm font-semibold text-white border-none cursor-pointer transition hover:opacity-90 disabled:opacity-60" style={{ background: "var(--gf-accent)" }}>
               {editLoading ? "Saving…" : "Save Changes"}
             </button>
           </div>

@@ -21,7 +21,7 @@ const authService = {
       tv: user.token_version ?? 0,   // F-02: session-revocation version
     };
 
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "1h" });
+    const token = jwt.sign(payload, JWT_SECRET, { algorithm: "HS256", expiresIn: "1h" });
 
     await db.query(`UPDATE users SET last_login = NOW() WHERE user_id = ?`, [user.user_id]);
     await db.query(
@@ -32,6 +32,36 @@ const authService = {
     );
 
     return { token, user: { ...payload, permissions } };
+  },
+
+  // Record a DENIED sign-in attempt. issueSession above logs every SUCCESS, so
+  // without this the trail only ever shows who got in — never who was turned
+  // away (non-CSPC domain, unverified email, pending/rejected/disabled account,
+  // failed token exchange), which is exactly what's worth reviewing on a campus
+  // system. system_logs.user_id is nullable, so an attempt from an account we've
+  // never seen still records, with the email preserved in the description.
+  //
+  // Callers treat this as best-effort: an audit-write failure must never turn a
+  // clean "you're not allowed" into a 500.
+  async recordSignInDenied({
+    email = null,
+    reason = "denied",
+    userId = null,
+    ip = null,
+    userAgent = null,
+  } = {}) {
+    await db.query(
+      `INSERT INTO system_logs
+         (user_id, module, action, description, ip_address, user_agent, log_level, created_at)
+       VALUES (?, 'auth', 'login_denied', ?, ?, ?, 'warning', NOW())`,
+      [
+        userId,
+        `Google sign-in denied (${reason}) for ${email ?? "unknown account"}`,
+        ip,
+        userAgent,
+      ],
+    );
+    return true;
   },
 
   // GET CURRENT USER (for /me route)

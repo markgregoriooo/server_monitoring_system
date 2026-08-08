@@ -11,11 +11,19 @@ import agentService from "../services/agentService.js";
 import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
+import esp32Monitor from "../services/esp32Monitor.js";
+import snmpPollerService from "../services/snmpPollerService.js";
+import mikrotikPollerService from "../services/mikrotikPollerService.js";
+import backupService from "../services/backupService.js";
+import reportService from "../services/reportService.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
 import serverRoutes from "../routes/servers.js";
 import agentRoutes from "../routes/agents.js";
+import networkRoutes from "../routes/network.js";
+import upsRoutes from "../routes/ups.js";
+import mikrotikRoutes from "../routes/mikrotik.js";
 import environmentRoutes from "../routes/environment.js";
 import airconRoutes from "../routes/aircon.js";
 import userRoutes from "../routes/users.js";
@@ -24,6 +32,25 @@ import reportRoutes from "../routes/reports.js";
 import notificationRoutes from "../routes/notifications.js";
 import alertRuleRoutes from "../routes/alertRules.js";
 import widgetLayoutRoutes from "../routes/widgetLayout.js";
+import historyRoutes from "../routes/history.js";
+
+// Surface missing auth config at BOOT rather than at the first sign-in attempt.
+// Login is Google-only, so an unset client id/secret means nobody can get into
+// the dashboard at all — far cheaper to learn here than from an opaque 401 in
+// the middle of a deployment.
+//
+// Deliberately a loud warning, NOT process.exit: the ingest paths (ESP32 sockets,
+// Go agents) don't need Google, and killing a monitoring backend would stop data
+// collection over a problem that only blocks the UI.
+const REQUIRED_AUTH_ENV = ["JWT_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"];
+const missingAuthEnv = REQUIRED_AUTH_ENV.filter((k) => !(process.env[k] ?? "").trim());
+if (missingAuthEnv.length > 0) {
+  console.error(
+    `[CONFIG] Missing in backend/.env: ${missingAuthEnv.join(", ")}.\n` +
+      "[CONFIG] Google sign-in will fail for EVERY user until these are set " +
+      "(the backend does not reload .env — restart after editing).",
+  );
+}
 
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, //15 mins
@@ -33,7 +60,9 @@ const globalLimiter = rateLimit({
    ipv6Subnet: 56,
   // Agent metric ingestion has its own (more generous) limiter in routes/servers.js.
   // Exempt it here so a busy fleet of agents never consumes the dashboard's budget.
-  skip: (req) => req.method === "POST" && req.path === "/api/servers/metrics",
+  // Covers /metrics AND /metrics/batch — a fleet reconnecting after an outage
+  // backfills in a burst, which is exactly when the dashboard is being watched.
+  skip: (req) => req.method === "POST" && req.path.startsWith("/api/servers/metrics"),
   handler: (req, res) => {
     res.status(429).json({ error: "Too many requests. Please try again later." });
   },
@@ -65,9 +94,11 @@ const io = new Server(server, {
 });
 
 app.use("/uploads", express.static("uploads"));
-app.use(cors({ origin: CORS_ORIGIN }));
+// exposedHeaders lets the browser READ our sliding-session renewal header
+// (cross-origin responses hide custom headers from JS unless listed here).
+app.use(cors({ origin: CORS_ORIGIN, exposedHeaders: ["X-Renewed-Token"] }));
 app.use(express.json());
-app.set("trust proxy", 1);
+app.set("trust proxy", 2);
 app.use(globalLimiter);
 
 // F-01: authenticate every socket connection before events are registered
@@ -92,7 +123,7 @@ io.use(async (socket, next) => {
   if (!token) return next(new Error("Unauthorized"));
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
     //  reject sockets whose session has since been revoked/disabled.
     const [[user]] = await db.query(
       "SELECT status, token_version FROM users WHERE user_id = ? LIMIT 1",
@@ -117,6 +148,18 @@ app.set("io", io);
 // threading `io` through every call.
 notificationService.init(io);
 alertsService.init(io); // so acknowledge/resolve + auto-resolve can broadcast alertUpdated
+reportService.init(io); // so a background report build can push reportUpdated when done
+
+// ESP32 liveness. Seeds from the newest InfluxDB reading so a restart doesn't forget
+// whether the sensor was alive (and so a box with no hardware attached stays quiet).
+esp32Monitor.init(io).catch((e) =>
+  console.error("[ESP32] liveness init failed:", e.message),
+);
+
+// On-site backup writer — mirrors every ingested sample (env/server/router/UPS) to
+// rotating NDJSON files on BACKUP_DIR (a micro SD / USB drive on the backend, or a
+// local folder). An independent copy that survives a DB wipe + a power outage.
+backupService.init();
 
 // Warm the configurable-threshold cache so the first metric POST evaluates against
 // rules without a cold DB read (getEffectiveRules also lazy-loads as a fallback).
@@ -133,6 +176,9 @@ io.on("connection", (socket) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/servers", serverRoutes);
 app.use("/api/agents", agentRoutes);
+app.use("/api/network", networkRoutes);
+app.use("/api/ups", upsRoutes);
+app.use("/api/mikrotik", mikrotikRoutes);
 app.use("/api/environment", environmentRoutes);
 app.use("/api/aircon", airconRoutes);
 app.use("/api/users", userRoutes);
@@ -141,6 +187,7 @@ app.use("/api/reports", reportRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/alert-rules", alertRuleRoutes);
 app.use("/api/widget-layout", widgetLayoutRoutes);
+app.use("/api/history", historyRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" })
@@ -192,6 +239,14 @@ setInterval(async () => {
   }
 }, OFFLINE_SWEEP_MS);
 
+// ESP32 liveness sweep — the environment sensor's equivalent of the offline sweep
+// above. The ESP32 has no `devices` row (so last_seen can't cover it) and pushes
+// `sensorData` every ~3s; this flips it Offline once those stop, raising a room-level
+// alert so a dead sensor can't masquerade as a calm room. Recovery is handled by the
+// reading itself (esp32Monitor.markSeen), not here, so it's instant.
+const ESP32_SWEEP_MS = 10_000;
+setInterval(() => esp32Monitor.sweep(), ESP32_SWEEP_MS);
+
 // Notification retention — purge alerts (and, via cascade, their per-user feed
 // rows) older than NOTIFY_RETENTION_DAYS so the tables don't grow unbounded.
 // Runs at startup and daily.
@@ -207,3 +262,36 @@ const runNotificationPurge = async () => {
 };
 runNotificationPurge();
 setInterval(runNotificationPurge, PURGE_INTERVAL_MS);
+
+// Report retention — reports write a CSV + PDF to BACKUP_DIR-adjacent local disk
+// (backend/reports/), so without this they accumulate on the SD/USB drive forever.
+// Purges the row AND both files. Default is longer than the alerts one: a report is
+// something a person deliberately generated. Same startup + daily cadence.
+const REPORT_RETENTION_DAYS = Number(process.env.REPORT_RETENTION_DAYS) || 90;
+const runReportPurge = async () => {
+  try {
+    const purged = await reportService.purgeOld(REPORT_RETENTION_DAYS);
+    if (purged) console.log(`[reports] purged ${purged} report(s) older than ${REPORT_RETENTION_DAYS}d`);
+  } catch (err) {
+    console.error("[reports] purge error:", err.message);
+  }
+};
+runReportPurge();
+setInterval(runReportPurge, PURGE_INTERVAL_MS);
+
+// SNMP poller — pulls metrics from routers (IF-MIB) + UPS units (UPS-MIB) on a
+// timer (the pull mirror of the push-based Go agents). Self-gating: pollAll loads
+// the router/ups devices each cycle and is a near-no-op (one empty SELECT) until
+// such a device is registered, so this is harmless when none exist yet.
+const SNMP_POLL_INTERVAL_MS = Number(process.env.SNMP_POLL_INTERVAL_MS) || 60_000;
+setInterval(() => {
+  snmpPollerService.pollAll(io).catch((err) => console.error("[SNMP_POLLER] error:", err));
+}, SNMP_POLL_INTERVAL_MS);
+
+// MikroTik poller — pulls metrics from the one campus router over the RouterOS API
+// (data source B; pull mirror of the Go agents). Same self-gating as the SNMP poller:
+// a near-no-op (one SELECT) until a device_type='mikrotik' row with credentials exists.
+const MIKROTIK_POLL_INTERVAL_MS = Number(process.env.MIKROTIK_POLL_INTERVAL_MS) || 30_000;
+setInterval(() => {
+  mikrotikPollerService.pollAll(io).catch((err) => console.error("[MIKROTIK_POLLER] error:", err));
+}, MIKROTIK_POLL_INTERVAL_MS);

@@ -62,14 +62,14 @@ export default function ToastHost() {
           role="alert"
         >
           <span className="flex-1 min-w-0">
-            <span className="block text-[11px] font-semibold truncate" style={{ color: "var(--gf-text-primary)" }}>
+            <span className="block text-[13px] font-semibold truncate" style={{ color: "var(--gf-text-primary)" }}>
               {n.title}
             </span>
-            <span className="block text-[10px] mt-0.5" style={{ color: "var(--gf-text-muted)" }}>
+            <span className="block text-[12px] mt-0.5" style={{ color: "var(--gf-text-muted)" }}>
               {n.message}
             </span>
             {n.deviceName && (
-              <span className="block text-[9px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
+              <span className="block text-[11px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
                 {n.deviceName}
               </span>
             )}

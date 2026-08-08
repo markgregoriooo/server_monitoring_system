@@ -5,8 +5,86 @@ import { Chart, registerables } from "chart.js";
 import "../chart/ChartConfig";
 import type { ChartOptions, ChartData, ScriptableContext } from "chart.js";
 import { socket } from "../socket/socket";
+import { api } from "../api/api";
+import { useAuth } from "../context/AuthContext";
 
 Chart.register(...registerables);
+
+// ─── Gas sensor recalibration ─────────────────────────────────────────────────
+// The MQ-2 needs a "clean air" reference (Ro) that differs per sensor and per room.
+// It used to require editing RO_CLEAN_AIR_* in the firmware and reflashing on every
+// move; the ESP32 now measures and stores it itself, and this button asks it to
+// re-measure. Admin-only, confirmed, because the device records whatever it smells
+// AT THAT MOMENT as clean — calibrating in poor air makes it under-report smoke.
+
+function RecalibrateGas({ isDark }: { isDark: boolean }) {
+  const { user } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    const onDone = (d: { ok?: boolean; ro1?: number; ro2?: number }) => {
+      setBusy(false);
+      setResult(
+        d?.ok
+          ? { ok: true, msg: `Calibrated — Ro1 ${Number(d.ro1).toFixed(2)} kΩ · Ro2 ${Number(d.ro2).toFixed(2)} kΩ` }
+          : { ok: false, msg: "Rejected — reading out of range. Previous baseline kept." },
+      );
+      setTimeout(() => setResult(null), 8000);
+    };
+    socket.on("gasCalibrated", onDone);
+    return () => { socket.off("gasCalibrated", onDone); };
+  }, []);
+
+  if (user?.role !== "admin") return null;
+
+  const run = async () => {
+    if (!confirm(
+      "Re-measure the gas sensor's clean-air baseline?\n\n" +
+      "The ESP32 will treat the air RIGHT NOW as clean. Only do this when the room is " +
+      "well ventilated and nothing is burning, soldering or smoking nearby.\n\n" +
+      "Calibrating in poor air makes the sensor under-report real smoke.",
+    )) return;
+
+    setBusy(true);
+    setResult(null);
+    const r = await api.calibrateGasSensor();
+    if (!r.success) {
+      setBusy(false);
+      setResult({ ok: false, msg: r.error ?? "Could not request calibration." });
+      setTimeout(() => setResult(null), 8000);
+    }
+    // On success we stay "busy" until the ESP32 reports back via `gasCalibrated`.
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      {result && (
+        <span className="text-[12px] px-2 py-1 rounded-[2px] whitespace-nowrap"
+          style={{
+            color: result.ok ? "#73BF69" : "#F2495C",
+            background: (result.ok ? "#73BF69" : "#F2495C") + "14",
+            border: `1px solid ${(result.ok ? "#73BF69" : "#F2495C")}40`,
+          }}>
+          {result.msg}
+        </span>
+      )}
+      <button
+        onClick={run}
+        disabled={busy}
+        title="Re-measure the MQ-2 clean-air baseline (admin) — use after moving the sensor"
+        className="text-[13px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-60"
+        style={{
+          color: "var(--gf-text-muted)",
+          border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"}`,
+          background: "transparent",
+        }}
+      >
+        {busy ? "Calibrating…" : "Recalibrate gas"}
+      </button>
+    </div>
+  );
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -327,18 +405,18 @@ function ZoomRangeBox({ start, end, onClose, onApply }: {
   onApply: (start: string, end: string) => void;
 }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-2 text-[11px] font-mono flex-wrap"
+    <div className="flex items-center gap-3 px-4 py-2 text-[13px] font-mono flex-wrap"
       style={{ background: "rgba(87,148,242,0.07)", borderBottom: "1px solid rgba(87,148,242,0.22)" }}>
       <svg width="10" height="10" viewBox="0 0 14 14" fill="none" style={{ color: "#5794F2", flexShrink: 0 }}>
         <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.5" />
         <path d="M7 4v3l2 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
       </svg>
-      <span className="text-[9px] tracking-widest uppercase font-semibold" style={{ color: "#5794F2" }}>Selection</span>
+      <span className="text-[11px] tracking-widest uppercase font-semibold" style={{ color: "#5794F2" }}>Selection</span>
       <span className="flex-1" style={{ color: GF.textPrimary }}>{start} → {end}</span>
       <div className="flex items-center gap-2">
         <button
           onClick={() => onApply(start, end)}
-          className="px-2.5 py-1 rounded text-[10px] font-bold tracking-wider transition-colors"
+          className="gf-raise px-2.5 py-1 rounded text-[12px] font-bold tracking-wider transition-colors"
           style={{ background: "#5794F2", color: "#fff" }}
           onMouseEnter={e => (e.currentTarget.style.background = "#4a82d8")}
           onMouseLeave={e => (e.currentTarget.style.background = "#5794F2")}>
@@ -346,7 +424,7 @@ function ZoomRangeBox({ start, end, onClose, onApply }: {
         </button>
         <button
           onClick={onClose}
-          className="px-1 text-[12px] transition-colors"
+          className="px-1 text-[14px] transition-colors"
           style={{ color: GF.textMuted }}
           onMouseEnter={e => (e.currentTarget.style.color = GF.textPrimary)}
           onMouseLeave={e => (e.currentTarget.style.color = GF.textMuted)}>
@@ -366,7 +444,7 @@ function LiveDot() {
         <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ background: "#73BF69" }} />
         <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ background: "#73BF69" }} />
       </span>
-      <span className="text-[9px] font-mono tracking-widest uppercase" style={{ color: "#73BF69" }}>Live</span>
+      <span className="text-[11px] font-mono tracking-widest uppercase" style={{ color: "#73BF69" }}>Live</span>
     </span>
   );
 }
@@ -378,7 +456,7 @@ function StatusDot({ status }: { status: string }) {
   return (
     <span className="flex items-center gap-2">
       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}80` }} />
-      <span className="text-[11px] font-mono font-semibold tracking-wider" style={{ color }}>{status}</span>
+      <span className="text-[13px] font-mono font-semibold tracking-wider" style={{ color }}>{status}</span>
     </span>
   );
 }
@@ -389,7 +467,7 @@ function StatusBadge({ status }: { status: string }) {
   const color = STATUS_COLOR[status] ?? STATUS_COLOR["NORMAL"];
   const bg    = STATUS_BG[status]    ?? STATUS_BG["NORMAL"];
   return (
-    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded tracking-widest"
+    <span className="text-[12px] font-mono font-bold px-2 py-0.5 rounded tracking-widest"
       style={{ color, background: bg }}>
       {status}
     </span>
@@ -514,7 +592,7 @@ function StatPanel({ title, value, unit, color, segPct, sparkData, max, avg, min
       {/* Panel title bar */}
       <div className="flex items-center justify-between px-3 pt-2.5 pb-1.5"
         style={{ borderBottom: `1px solid ${GF.divider}` }}>
-        <span className="text-[10px] font-mono tracking-widest uppercase" style={{ color: GF.textMuted }}>{title}</span>
+        <span className="text-[12px] font-mono tracking-widest uppercase" style={{ color: GF.textMuted }}>{title}</span>
         <span className="w-1.5 h-1.5 rounded-full" style={{ background: color, boxShadow: `0 0 5px ${color}` }} />
       </div>
 
@@ -533,8 +611,8 @@ function StatPanel({ title, value, unit, color, segPct, sparkData, max, avg, min
         style={{ borderTop: `1px solid ${GF.divider}` }}>
         {([["MAX", max], ["AVG", avg], ["MIN", min]] as [string, string][]).map(([k, v]) => (
           <div key={k} className="flex flex-col items-center gap-0.5">
-            <span className="text-[9px] font-mono tracking-widest" style={{ color: GF.textDim }}>{k}</span>
-            <span className="text-[11px] font-mono font-semibold" style={{ color }}>{v}</span>
+            <span className="text-[11px] font-mono tracking-widest" style={{ color: GF.textDim }}>{k}</span>
+            <span className="text-[13px] font-mono font-semibold" style={{ color }}>{v}</span>
           </div>
         ))}
       </div>
@@ -559,7 +637,7 @@ function StatePanel({
       {/* Panel title */}
       <div className="flex items-center px-3 pt-2.5 pb-1.5"
         style={{ borderBottom: `1px solid ${GF.divider}` }}>
-        <span className="text-[10px] font-mono tracking-widest uppercase" style={{ color: GF.textMuted }}>System Status</span>
+        <span className="text-[12px] font-mono tracking-widest uppercase" style={{ color: GF.textMuted }}>System Status</span>
       </div>
 
       {/* State rows */}
@@ -571,7 +649,7 @@ function StatePanel({
         ] as [string, string][]).map(([label, status]) => (
           <div key={label} className="flex items-center justify-between py-2"
             style={{ borderBottom: `1px solid ${GF.divider}` }}>
-            <span className="text-[11px] font-mono" style={{ color: GF.textMuted }}>{label}</span>
+            <span className="text-[13px] font-mono" style={{ color: GF.textMuted }}>{label}</span>
             <StatusDot status={status} />
           </div>
         ))}
@@ -579,7 +657,7 @@ function StatePanel({
 
       {/* Heat index */}
       <div className="flex items-center justify-between px-3 pb-3 pt-2">
-        <span className="text-[10px] font-mono tracking-widest uppercase" style={{ color: GF.textDim }}>Heat Index</span>
+        <span className="text-[12px] font-mono tracking-widest uppercase" style={{ color: GF.textDim }}>Heat Index</span>
         <span className="text-[16px] font-bold font-mono" style={{ color: heatColor }}>
           {typeof liveHeatIndex === "number" ? `${liveHeatIndex.toFixed(1)} °C` : liveHeatIndex}
         </span>
@@ -604,7 +682,7 @@ function GraphPanel({
       <div className="flex items-center justify-between px-4 py-2.5 flex-wrap gap-2"
         style={{ borderBottom: `1px solid ${GF.divider}` }}>
         <div className="flex items-center gap-4 flex-wrap">
-          <span className="text-[11px] font-mono tracking-widest uppercase" style={{ color: GF.textMuted }}>{title}</span>
+          <span className="text-[13px] font-mono tracking-widest uppercase" style={{ color: GF.textMuted }}>{title}</span>
           {legend}
         </div>
         <div className="flex items-center gap-3">
@@ -623,7 +701,7 @@ function GraphPanel({
 function ResetZoomBtn({ onClick }: { onClick: () => void }) {
   return (
     <button onClick={onClick}
-      className="flex items-center gap-1 text-[10px] font-mono px-2.5 py-1 rounded transition-colors"
+      className="flex items-center gap-1 text-[12px] font-mono px-2.5 py-1 rounded transition-colors"
       style={{ color: GF.textMuted, border: `1px solid ${GF.divider}`, background: "transparent" }}
       onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = GF.textPrimary; }}
       onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = GF.textMuted; }}>
@@ -640,7 +718,7 @@ function ResetZoomBtn({ onClick }: { onClick: () => void }) {
 
 function LegendItem({ color, label, value }: { color: string; label: string; value: string }) {
   return (
-    <span className="flex items-center gap-1.5 text-[11px] font-mono">
+    <span className="flex items-center gap-1.5 text-[13px] font-mono">
       <span className="w-3 h-[2px] rounded-full flex-shrink-0" style={{ background: color }} />
       <span style={{ color: GF.textMuted }}>{label}</span>
       <span className="font-semibold" style={{ color }}>{value}</span>
@@ -672,7 +750,7 @@ function CalendarGrid({ month, selectedDay, onSelectDay, onPrev, onNext }: {
           onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = GF.textMuted; }}>
           ‹
         </button>
-        <span className="text-[11px] font-mono font-semibold" style={{ color: GF.textPrimary }}>{label}</span>
+        <span className="text-[13px] font-mono font-semibold" style={{ color: GF.textPrimary }}>{label}</span>
         <button onClick={onNext}
           className="w-6 h-6 flex items-center justify-center rounded text-xs transition-colors"
           style={{ color: GF.textMuted }}
@@ -683,11 +761,11 @@ function CalendarGrid({ month, selectedDay, onSelectDay, onPrev, onNext }: {
       </div>
       <div className="grid grid-cols-7 text-center gap-y-0.5">
         {["S","M","T","W","T","F","S"].map((d, i) => (
-          <div key={i} className="text-[9px] font-mono pb-1.5" style={{ color: "#5794F2" }}>{d}</div>
+          <div key={i} className="text-[11px] font-mono pb-1.5" style={{ color: "#5794F2" }}>{d}</div>
         ))}
         {cells.map((day, i) => (
           <button key={i} disabled={!day} onClick={() => day && onSelectDay(day)}
-            className="text-[11px] font-mono rounded transition-colors leading-none"
+            className="text-[13px] font-mono rounded transition-colors leading-none"
             style={{
               visibility: day ? "visible" : "hidden",
               padding: "5px 0",
@@ -712,7 +790,7 @@ const TimeScroll = React.memo(function TimeScroll({ hour, onHour, scrollRef }: {
 }) {
   return (
     <div className="flex flex-col flex-shrink-0" style={{ width: 60 }}>
-      <div className="text-[9px] font-mono tracking-widest text-center mb-2 uppercase"
+      <div className="text-[11px] font-mono tracking-widest text-center mb-2 uppercase"
         style={{ color: GF.textDim }}>Hour</div>
       <div
         ref={scrollRef}
@@ -731,7 +809,7 @@ const TimeScroll = React.memo(function TimeScroll({ hour, onHour, scrollRef }: {
               onHour(h);
               scrollRef.current?.scrollTo({ top: h * 32, behavior: "smooth" });
             }}
-            className="text-[11px] font-mono cursor-pointer text-center transition-colors select-none"
+            className="text-[13px] font-mono cursor-pointer text-center transition-colors select-none"
             style={{
               padding: "6px 0",
               background: h === hour ? "rgba(87,148,242,0.22)" : "transparent",
@@ -810,7 +888,7 @@ function CustomRangePicker({ onApply, onClose }: {
               <rect x="1" y="3" width="14" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
               <path d="M1 7h14M5 1v3M11 1v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
             </svg>
-            <span className="text-[12px] font-mono font-semibold" style={{ color: GF.textPrimary }}>Custom time range</span>
+            <span className="text-[14px] font-mono font-semibold" style={{ color: GF.textPrimary }}>Custom time range</span>
           </div>
           <button onClick={onClose}
             className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold transition-colors"
@@ -827,8 +905,8 @@ function CustomRangePicker({ onApply, onClose }: {
             <div key={p.label}
               className={`px-5 py-3 ${i === 0 ? "border-b sm:border-b-0 sm:border-r" : ""}`}
               style={{ borderColor: GF.divider }}>
-              <div className="text-[9px] font-mono tracking-widest uppercase mb-1" style={{ color: GF.textDim }}>{p.label}</div>
-              <div className="text-[12px] font-mono font-semibold" style={{ color: "#5794F2" }}>
+              <div className="text-[11px] font-mono tracking-widest uppercase mb-1" style={{ color: GF.textDim }}>{p.label}</div>
+              <div className="text-[14px] font-mono font-semibold" style={{ color: "#5794F2" }}>
                 {fmtDisplay(p.month, p.day, p.hour)}
               </div>
             </div>
@@ -857,7 +935,7 @@ function CustomRangePicker({ onApply, onClose }: {
               buildISO(startMonth, startDay, startHour, startMin),
               buildISO(stopMonth,  stopDay,  stopHour,  stopMin),
             )}
-            className="w-full py-2.5 rounded font-bold font-mono text-[12px] tracking-widest transition-colors"
+            className="w-full py-2.5 rounded font-bold font-mono text-[14px] tracking-widest transition-colors"
             style={{ background: "#5794F2", color: "#fff" }}
             onMouseEnter={e => (e.currentTarget.style.background = "#4a82d8")}
             onMouseLeave={e => (e.currentTarget.style.background = "#5794F2")}>
@@ -911,7 +989,7 @@ function RangePicker({ range, customLabel, onChange, onCustom, onRefresh, isRefr
     <div ref={wrapRef} className="relative flex items-center">
       {/* Refresh */}
       <button onClick={onRefresh}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-l text-[11px] font-mono transition-colors"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-l text-[13px] font-mono transition-colors"
         style={{ background: GF.header, border: `1px solid ${GF.panelBorder}`, color: isRefreshing ? GF.textPrimary : GF.textMuted, borderRight: "none" }}
         onMouseEnter={e => (e.currentTarget.style.color = GF.textPrimary)}
         onMouseLeave={e => { if (!isRefreshing) e.currentTarget.style.color = GF.textMuted; }}>
@@ -932,7 +1010,7 @@ function RangePicker({ range, customLabel, onChange, onCustom, onRefresh, isRefr
           onClick={() => step(-1)}>‹</button>
 
         <button onClick={() => setOpen(o => !o)}
-          className="flex items-center gap-2 px-3 py-1.5 text-[11px] font-mono transition-colors"
+          className="flex items-center gap-2 px-3 py-1.5 text-[13px] font-mono transition-colors"
           style={{ color: GF.textPrimary, minWidth: 160, background: "transparent", border: "none", cursor: "pointer" }}>
           <svg width="11" height="11" viewBox="0 0 14 14" fill="none" style={{ color: GF.textMuted, flexShrink: 0 }}>
             <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.5" />
@@ -958,10 +1036,10 @@ function RangePicker({ range, customLabel, onChange, onCustom, onRefresh, isRefr
         <div className="absolute right-0 top-full mt-1 z-50 w-56 rounded shadow-2xl overflow-hidden"
           style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}` }}>
           <div className="px-3 py-2" style={{ borderBottom: `1px solid ${GF.divider}` }}>
-            <span className="text-[9px] font-mono tracking-widest uppercase" style={{ color: GF.textDim }}>Time Range</span>
+            <span className="text-[11px] font-mono tracking-widest uppercase" style={{ color: GF.textDim }}>Time Range</span>
           </div>
           <button onClick={() => { onCustom(); setOpen(false); }}
-            className="w-full text-left px-4 py-2.5 text-[11px] font-mono transition-colors"
+            className="w-full text-left px-4 py-2.5 text-[13px] font-mono transition-colors"
             style={{
               background: range === "custom" ? "rgba(87,148,242,0.12)" : "transparent",
               color: range === "custom" ? "#5794F2" : GF.textMuted,
@@ -974,7 +1052,7 @@ function RangePicker({ range, customLabel, onChange, onCustom, onRefresh, isRefr
           <div className="overflow-y-auto" style={{ maxHeight: 280, scrollbarWidth: "thin" }}>
             {QUICK_RANGES.map(r => (
               <button key={r.value} onClick={() => { onChange(r.value); setOpen(false); }}
-                className="w-full text-left px-4 py-2.5 text-[11px] font-mono transition-colors"
+                className="w-full text-left px-4 py-2.5 text-[13px] font-mono transition-colors"
                 style={{
                   background: range === r.value ? "rgba(87,148,242,0.12)" : "transparent",
                   color: range === r.value ? "#5794F2" : GF.textMuted,
@@ -1011,6 +1089,13 @@ export default function Environment() {
   const [liveTempStatus,        setLiveTempStatus]        = useState<TempLevel>("NORMAL");
   const [liveEnvironmentStatus, setLiveEnvironmentStatus] = useState<AlertLevel>("NORMAL");
 
+  // Is the ESP32 actually reporting? Without this every reading below is the LAST one
+  // received, with nothing to say how old it is — a dead sensor renders exactly like a
+  // stable room. Seeded from REST (the socket only fires on a transition, which may
+  // never come while the page is open) and then kept live by `esp32Status`.
+  const [sensorOnline,   setSensorOnline]   = useState<boolean | null>(null);
+  const [sensorLastSeen, setSensorLastSeen] = useState<string | null>(null);
+
   const [range,       setRange]       = useState<RangeType>("-1h");
   const [customRange, setCustomRange] = useState<CustomRange | null>(null);
   const [customLabel, setCustomLabel] = useState("Custom Range");
@@ -1046,6 +1131,41 @@ export default function Environment() {
     const obs = new MutationObserver(() => setIsDark(document.documentElement.classList.contains("dark")));
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => obs.disconnect();
+  }, []);
+
+  // ESP32 liveness: initial state over REST, then live transitions over the socket.
+  useEffect(() => {
+    let cancelled = false;
+
+    const resync = () => {
+      api.getSensorStatus().then((res) => {
+        if (cancelled || !res.success || !res.data) return;
+        setSensorOnline(Boolean(res.data.online));
+        setSensorLastSeen(res.data.lastSeen ?? null);
+      });
+    };
+    resync();
+
+    const onStatus = (s: { online?: boolean; lastSeen?: string | null }) => {
+      setSensorOnline(Boolean(s?.online));
+      setSensorLastSeen(s?.lastSeen ?? null);
+    };
+    socket.on("esp32Status", onStatus);
+
+    // `esp32Status` only fires on a TRANSITION, so a client that was disconnected or
+    // backgrounded when it fired never learns — and the banner silently stays wrong
+    // until a manual refresh. Re-pull the authoritative state whenever we could have
+    // missed one: on (re)connect, and when the tab regains focus.
+    socket.on("connect", resync);
+    const onVisible = () => { if (document.visibilityState === "visible") resync(); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      cancelled = true;
+      socket.off("esp32Status", onStatus);
+      socket.off("connect", resync);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -1241,8 +1361,40 @@ export default function Environment() {
       {/* ── Toolbar (range picker) — page title comes from the global Header ── */}
       <div className="flex items-center justify-end px-4 py-2.5 flex-wrap gap-3"
         style={{ background: GF.header, borderBottom: `1px solid ${GF.panelBorder}` }}>
+        <RecalibrateGas isDark={isDark} />
         <RangePicker range={range} customLabel={customLabel} onChange={changeRange} onCustom={() => setShowCustom(true)} onRefresh={handleRefresh} isRefreshing={isRefreshing} />
       </div>
+
+      {/* ── Sensor-offline banner ──────────────────────────────────────────────
+          Everything below renders the LAST reading received. When the ESP32 stops
+          reporting those numbers freeze, and without this banner a dead sensor is
+          indistinguishable from a calm, stable room — the single most dangerous
+          failure mode on this page. */}
+      {sensorOnline === false && (
+        <div
+          className="mx-4 mt-3 flex items-start gap-3 px-4 py-3"
+          style={{
+            background: "rgba(224,47,68,0.10)",
+            border: "1px solid rgba(224,47,68,0.35)",
+            borderRadius: 2,
+          }}
+          role="alert"
+        >
+          <span style={{ color: "#E02F44", fontSize: 14, lineHeight: "18px" }}>■</span>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[14px] font-bold" style={{ color: "#E02F44" }}>
+              Environment sensor offline — readings below are stale
+            </span>
+            <span className="text-[13px]" style={{ color: "var(--gf-text-muted)" }}>
+              The ESP32 has stopped reporting, so temperature, humidity and smoke are
+              not being monitored.
+              {sensorLastSeen
+                ? ` Last reading ${new Date(sensorLastSeen).toLocaleString()}.`
+                : " No readings have been received."}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* ── Panel grid ── */}
       <div className="flex flex-col gap-3 p-4">
@@ -1344,7 +1496,7 @@ export default function Environment() {
             />
           ) : undefined}>
           {/* Threshold legend */}
-          <div className="flex gap-5 px-4 pt-2 text-[9px] font-mono">
+          <div className="flex gap-5 px-4 pt-2 text-[11px] font-mono">
             <span className="flex items-center gap-1.5">
               <span className="w-5 h-px inline-block" style={{ background: "#FF780A" }} />
               <span style={{ color: GF.textDim }}>WARNING 150 ppm</span>
@@ -1360,7 +1512,7 @@ export default function Environment() {
         </GraphPanel>
 
         {/* Footer hint */}
-        <div className="text-center text-[9px] font-mono tracking-widest pb-2" style={{ color: GF.textDim }}>
+        <div className="text-center text-[11px] font-mono tracking-widest pb-2" style={{ color: GF.textDim }}>
           SCROLL TO ZOOM · DRAG TO SELECT RANGE · CLICK RESET TO FIT
         </div>
 

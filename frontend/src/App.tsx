@@ -23,6 +23,9 @@ import Header from "./components/layout/Header";
 import ToastHost from "./components/notifications/ToastHost";
 import Dashboard from "./pages/Dashboard";
 import ServerMetrics from "./pages/ServerMetrics";
+import NetworkMonitoring from "./pages/NetworkMonitoring";
+import MikrotikMonitoring from "./pages/MikrotikMonitoring";
+import UpsMonitoring from "./pages/UpsMonitoring";
 import Environment from "./pages/Environment";
 import AirConditioner from "./pages/AirConditioner";
 import History from "./pages/History";
@@ -35,6 +38,9 @@ import Alerts from "./pages/Alerts";
 const pageTitles: Record<string, string> = {
   "/": "Server Environment Monitoring & Control System",
   "/server-metrics": "Server Metrics",
+  "/network": "Network Monitoring",
+  "/mikrotik": "MikroTik Network",
+  "/ups": "UPS Monitoring",
   "/environment": "Environment Monitoring",
   "/air-conditioner": "Air Conditioner Control",
   "/history": "History Logs",
@@ -134,6 +140,24 @@ function AppShell() {
             <Route path="/server-metrics" element={
               <ProtectedRoute>
                 <ServerMetrics />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/network" element={
+              <ProtectedRoute>
+                <NetworkMonitoring />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/mikrotik" element={
+              <ProtectedRoute>
+                <MikrotikMonitoring />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/ups" element={
+              <ProtectedRoute>
+                <UpsMonitoring />
               </ProtectedRoute>
             } />
 

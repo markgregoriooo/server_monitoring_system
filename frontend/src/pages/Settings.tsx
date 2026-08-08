@@ -39,14 +39,14 @@ export default function Settings() {
   return (
     <div className="p-4 lg:p-6 flex flex-col gap-4">
 
-      <div className="text-[11px] tracking-widest uppercase" style={subColor}>
+      <div className="text-[13px] tracking-widest uppercase" style={subColor}>
         Personal settings — these apply to your account only.
       </div>
 
       {/* ── Profile (your users row) — edit via the shared ProfileModal ── */}
       <div className="p-5" style={panelStyle}>
         <div className="text-sm font-bold mb-1" style={titleColor}>Profile</div>
-        <div className="text-[11px] mb-4" style={subColor}>Your account identity.</div>
+        <div className="text-[13px] mb-4" style={subColor}>Your account identity.</div>
 
         <div className="flex items-center gap-4">
           {imageSrc ? (
@@ -66,14 +66,14 @@ export default function Settings() {
             </div>
           )}
           <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-semibold truncate" style={titleColor}>{String(user?.name ?? "")}</div>
-            <div className="text-[12px] truncate" style={subColor}>{String(user?.email ?? "")}</div>
-            <div className="text-[10px] mt-0.5 tracking-widest uppercase" style={{ color: "var(--gf-accent)" }}>{roleLabel}</div>
+            <div className="text-[15px] font-semibold truncate" style={titleColor}>{String(user?.name ?? "")}</div>
+            <div className="text-[14px] truncate" style={subColor}>{String(user?.email ?? "")}</div>
+            <div className="text-[12px] mt-0.5 tracking-widest uppercase" style={{ color: "var(--gf-accent)" }}>{roleLabel}</div>
           </div>
           <button
             type="button"
             onClick={() => setProfileOpen(true)}
-            className="text-[12px] px-3 py-1.5 transition-colors flex-shrink-0 hover:opacity-90"
+            className="gf-raise text-[14px] px-3 py-1.5 transition-colors flex-shrink-0 hover:opacity-90"
             style={{ background: "var(--gf-accent)", color: "#fff", borderRadius: 2 }}
           >
             Edit profile
@@ -90,9 +90,9 @@ export default function Settings() {
       {/* ── Appearance (per-user, persisted in localStorage: cspc_theme) ── */}
       <div className="p-5" style={panelStyle}>
         <div className="text-sm font-bold mb-1" style={titleColor}>Appearance</div>
-        <div className="text-[11px] mb-4" style={subColor}>Theme for this browser.</div>
+        <div className="text-[13px] mb-4" style={subColor}>Theme for this browser.</div>
         <div className="flex items-center justify-between">
-          <span className="text-[12px]" style={titleColor}>Theme</span>
+          <span className="text-[14px]" style={titleColor}>Theme</span>
           <div
             className="flex"
             style={{ border: "1px solid var(--gf-panel-border)", borderRadius: 2, overflow: "hidden" }}
@@ -104,7 +104,7 @@ export default function Settings() {
                   key={t}
                   type="button"
                   onClick={() => { if (!active) toggleTheme(); }}
-                  className="text-[12px] px-3 py-1 capitalize transition-colors"
+                  className="text-[14px] px-3 py-1 capitalize transition-colors"
                   style={{
                     background: active ? "var(--gf-accent)" : "transparent",
                     color: active ? "#fff" : "var(--gf-text-muted)",

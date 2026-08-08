@@ -112,17 +112,20 @@ export default function Alerts() {
           <h1 className="text-[15px] font-bold" style={{ color: gf.textPrimary }}>
             Alerts
           </h1>
-          <p className="text-[11px] mt-1" style={{ color: gf.textMuted }}>
+          <p className="text-[13px] mt-1" style={{ color: gf.textMuted }}>
             Incident list. Acknowledge when you're handling it; resolve when it's over
             (alerts also auto-resolve when the metric recovers).
           </p>
         </div>
         <div className="flex gap-1">
+          {/* inline-flex + gap so the tab can carry the acknowledged count badge; the
+              12px sizing and the `capitalize` moved onto the inner span both come from
+              main's readability pass. */}
           {FILTERS.map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
-              className="inline-flex items-center gap-1.5 text-[10.5px] px-2.5 py-1 rounded-[2px] transition-colors"
+              className="inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1 rounded-[2px] transition-colors"
               style={{
                 color: filter === f ? gf.textPrimary : gf.textMuted,
                 background: filter === f ? gf.accentDim : "transparent",
@@ -146,13 +149,13 @@ export default function Alerts() {
       {/* Table */}
       <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
         <div className="overflow-x-auto">
-          <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+          <table className="w-full text-[13px]" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: gf.header, color: gf.textDim }}>
                 {["Severity", "Alert", "Source", "When", "Status", ""].map((h) => (
                   <th
                     key={h}
-                    className="text-left font-medium px-3 py-2 whitespace-nowrap tracking-wider uppercase text-[9px]"
+                    className="text-left font-medium px-3 py-2 whitespace-nowrap tracking-wider uppercase text-[11px]"
                     style={{ borderBottom: `1px solid ${gf.border}` }}
                   >
                     {h}
@@ -185,7 +188,7 @@ export default function Alerts() {
                   >
                     <td className="px-3 py-2 whitespace-nowrap">
                       <span
-                        className="px-1.5 py-0.5 rounded-[2px] text-[9px] tracking-wider uppercase font-medium"
+                        className="px-1.5 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-medium"
                         style={{
                           color: SEV_COLOR[a.severity] ?? gf.textMuted,
                           background: `${SEV_COLOR[a.severity] ?? "#888"}1f`,
@@ -196,7 +199,7 @@ export default function Alerts() {
                     </td>
                     <td className="px-3 py-2 max-w-[320px]">
                       <div className="font-medium truncate">{a.title}</div>
-                      <div className="truncate text-[10px]" style={{ color: gf.textMuted }}>
+                      <div className="truncate text-[12px]" style={{ color: gf.textMuted }}>
                         {a.message}
                       </div>
                     </td>
@@ -208,7 +211,7 @@ export default function Alerts() {
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <span
-                        className="px-1.5 py-0.5 rounded-[2px] text-[9px] tracking-wider uppercase font-medium"
+                        className="px-1.5 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-medium"
                         style={{
                           color: STATUS_COLOR[a.status] ?? gf.textMuted,
                           background: `${STATUS_COLOR[a.status] ?? "#888"}1f`,
@@ -217,7 +220,7 @@ export default function Alerts() {
                         {a.status}
                       </span>
                       {a.acknowledgedByName && a.status !== "active" && (
-                        <div className="text-[9px] mt-0.5" style={{ color: gf.textDim }}>
+                        <div className="text-[11px] mt-0.5" style={{ color: gf.textDim }}>
                           by {a.acknowledgedByName}
                           {a.status === "resolved" && a.resolvedAt
                             ? ` · ${relativeTime(a.resolvedAt)}`
@@ -233,7 +236,7 @@ export default function Alerts() {
                           <button
                             onClick={() => act(a.id, "acknowledge")}
                             disabled={busyId === a.id}
-                            className="px-2 py-1 rounded-md text-[10px] transition-colors disabled:opacity-50"
+                            className="px-2 py-1 rounded-md text-[12px] transition-colors disabled:opacity-50"
                             style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
                           >
                             Acknowledge
@@ -243,7 +246,7 @@ export default function Alerts() {
                           <button
                             onClick={() => act(a.id, "resolve")}
                             disabled={busyId === a.id}
-                            className="px-2 py-1 rounded-md text-[10px] transition-colors disabled:opacity-50"
+                            className="gf-raise px-2 py-1 rounded-md text-[12px] transition-colors disabled:opacity-50"
                             style={{ color: "#fff", background: GREEN }}
                           >
                             Resolve

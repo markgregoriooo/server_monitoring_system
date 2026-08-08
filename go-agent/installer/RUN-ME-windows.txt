@@ -1,0 +1,122 @@
+CSPC-ICTU SERVER MONITORING AGENT  —  Windows install
+=====================================================
+
+Copy OR download this WHOLE folder to the Windows computer you want to monitor,
+then follow Option A (quick test) or Option B (permanent install).
+
+WHAT'S IN HERE
+  go-agent-windows-amd64.exe   the agent program (nothing else to install)
+  install.ps1                  installs it as a background service (runs at boot)
+  RUN-ME.txt                   this file
+
+WHAT THIS AGENT REPORTS
+  CPU, memory, uptime and process count, plus:
+    - EVERY fixed drive (C:, D:, ...), not just the system drive. A data drive
+      filling up while C: looks healthy is the usual real incident.
+    - Its own hardware details (IP, RAM, disk size), re-sent hourly, so the
+      dashboard stays right after a network or hardware change.
+  If the backend goes down it KEEPS the readings it couldn't send (about 40
+  minutes' worth) and fills them in once the backend is back — so an outage
+  leaves a gap in the live view, but not in the stored history.
+
+BEFORE YOU START
+  - The backend PC must be turned ON and on the SAME network as this computer.
+  - Backend address:  http://192.168.100.9:3000
+  - Test it FIRST: open  http://192.168.100.9:3000  in THIS computer's web browser.
+       You should see:  {"error":"Route not found"}
+       If it does NOT load -> wrong network, or the firewall on the backend PC is
+       blocking port 3000. Fix that before continuing.
+
+  - DID YOU DOWNLOAD THIS FOLDER (Google Drive, email, browser) instead of copying
+    it from a USB stick? Windows tags downloaded files as "from the internet" and may
+    block them. In the PowerShell window you open below, run this ONCE, first:
+         Get-ChildItem -Recurse | Unblock-File
+    The agent is also unsigned, so SmartScreen may say "Windows protected your PC" ->
+    click "More info" -> "Run anyway" (and allow it in antivirus if it is flagged).
+    (Folders copied from a USB stick do NOT need this step.)
+
+-----------------------------------------------------------------------
+OPTION A  —  QUICK TEST  (run by hand so you can watch the logs)
+-----------------------------------------------------------------------
+  1) Open this folder, hold SHIFT + right-click -> "Open PowerShell window here".
+
+  2) Enroll the agent (one long line). It registers, then waits for approval:
+       .\go-agent-windows-amd64.exe --register -api-url http://192.168.100.9:3000 -install-key "<AGENT_INSTALL_KEY>" -conf agent.conf
+     -> it prints "waiting for admin approval..." and keeps checking.
+
+  3) On the backend dashboard, logged in as an ADMIN:
+       Server Metrics page -> refresh -> "Pending agent approvals" -> APPROVE this PC.
+
+     That's it - NO second command. After you approve, the SAME window keeps
+     running and starts sending metrics automatically: you'll see
+     "metrics sent (cpu=.. mem=.. disk=..)" every 10 seconds, and this PC appears
+     LIVE on the Server Metrics page. Leave the window open (or use Option B).
+
+  (To run it again later, once already enrolled:
+       .\go-agent-windows-amd64.exe -conf agent.conf )
+
+-----------------------------------------------------------------------
+OPTION B  —  PERMANENT INSTALL  (starts automatically at boot)
+-----------------------------------------------------------------------
+  Do this only after Option A worked.
+
+  1) Right-click PowerShell -> "Run as administrator", then cd into this folder.
+
+  2) If you get an execution-policy error, run this once:
+       Set-ExecutionPolicy -Scope Process Bypass
+
+  3) Install:
+       .\install.ps1 -ApiUrl "http://192.168.100.9:3000" -InstallKey "<AGENT_INSTALL_KEY>"
+
+  4) Approve it in the dashboard (same as Option A, step 3).
+
+-----------------------------------------------------------------------
+ALREADY HAVE AN OLDER AGENT ON THIS PC?  —  UPGRADING
+-----------------------------------------------------------------------
+  Do NOT re-register. The PC keeps its existing enrolment and approval; you are
+  only swapping the program file.
+
+  Symptom you are fixing: the dashboard shows the server fine, but its "Volumes"
+  panel says "No volume data yet". That means an OLDER program is still running —
+  it cannot send what it doesn't collect.
+
+  (The version number does not help you here: pre-release builds all report 1.0.0,
+   so the Volumes panel is the reliable way to tell old from new.)
+
+  In an ADMINISTRATOR PowerShell, from this folder:
+
+       Stop-Process -Name go-agent -Force
+       .\install.ps1 -ApiUrl "http://192.168.100.9:3000" -InstallKey "<AGENT_INSTALL_KEY>"
+
+  Stopping it first is REQUIRED: Windows locks a running program file, so the
+  copy fails with "file in use" if you skip it. install.ps1 skips enrolment when
+  agent.conf already exists, so nothing needs approving again.
+
+  Confirm on the dashboard: the Volumes panel fills in within about 10 seconds,
+  listing every drive on this PC.
+
+-----------------------------------------------------------------------
+TROUBLESHOOTING
+-----------------------------------------------------------------------
+  "Invalid install key"          -> the key here must match AGENT_INSTALL_KEY in the
+                                    backend's .env (and the backend must be restarted
+                                    after that line was added).
+  "Volumes" panel stays empty    -> an OLDER agent is still running on this PC.
+                                    See "UPGRADING" above. (A brand-new install
+                                    shows drives within ~10 seconds.)
+  "file in use" during install   -> the agent is still running. Stop it first:
+                                    Stop-Process -Name go-agent -Force
+  Server shows "Maintenance"     -> an admin parked it on purpose; it keeps
+                                    recording but won't raise alerts. Click
+                                    "Resume" on the Server Metrics page.
+  "send attempt 1/3 failed"      -> backend not running, wrong address, or firewall.
+  Browser test won't load        -> not on the same network, or port 3000 blocked.
+  PC never shows on the page      -> you didn't Approve it, or didn't run step 4.
+  Stops reporting on battery /    -> Windows blocks scheduled tasks on battery by default
+   UPS power, or after a reboot       (a UPS outage counts as "on battery"). Re-run Option B
+                                     (install.ps1 as administrator) -- this build keeps the
+                                     agent running on battery.
+
+NOTE: keep this folder private (USB, Google Drive, or email) — the install key is a
+      shared secret. If you share it on Google Drive, share to specific people only,
+      NOT "Anyone with the link". Never upload an agent.conf file (it holds a device token).

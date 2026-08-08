@@ -9,6 +9,7 @@ interface Rule {
   id: number;
   deviceId: number | null;
   deviceName: string | null;
+  interfaceName: string | null; // null = every port on the device
   metricName: string;
   thresholdValue: number;
   comparison: string;
@@ -18,13 +19,24 @@ interface Rule {
   updatedAt?: string | null;
 }
 
+// Every device class that can carry a per-device threshold override. The room-level
+// environment metrics have no device at all, so they aren't a kind.
+type DeviceKind = "server" | "network" | "ups";
+
 interface ServerOpt {
   id: number;
   name: string;
+  kind: DeviceKind;
+  // Physical ports, for network devices only — populates the per-port scope dropdown.
+  interfaces?: string[];
 }
 
+// Metrics measured per PORT rather than per device. Only these offer an interface scope.
+const PER_PORT_METRICS = new Set(["link_util", "link_errors"]);
+
 interface FormState {
-  deviceId: string; // "" = global default, else the server id
+  deviceId: string; // "" = global default, else the device id
+  interfaceName: string; // "" = whole device; else one port on that device
   metricName: string;
   thresholdValue: string;
   comparison: string;
@@ -37,17 +49,48 @@ interface MetricMeta {
   label: string;
   unit: string;
   color: string;
-  env?: boolean; // room-level (ESP32) metric — global only, never per-server
+  env?: boolean; // room-level (ESP32) metric — global only, never per-device
+  // Which class of device this metric applies to. Drives the scope dropdown: picking a
+  // router only offers router metrics, picking a UPS only offers UPS metrics. Metrics
+  // used to be server-only here, which forced every router/UPS threshold to be global.
+  scope?: DeviceKind;
+  lowerIsWorse?: boolean; // smaller value = worse (battery charge / runtime) → default the condition to '<='
 }
 
 const METRICS: MetricMeta[] = [
-  { value: "cpu", label: "CPU usage", unit: "%", color: "#5794F2" },
-  { value: "mem", label: "Memory usage", unit: "%", color: "#B877D9" },
-  { value: "disk", label: "Disk usage", unit: "%", color: "#FFA94D" },
+  { value: "cpu", label: "CPU usage", unit: "%", color: "#5794F2", scope: "server" },
+  { value: "mem", label: "Memory usage", unit: "%", color: "#B877D9", scope: "server" },
+  { value: "disk", label: "Disk usage", unit: "%", color: "#FFA94D", scope: "server" },
   { value: "temperature", label: "Temperature", unit: "°C", color: "#FF6B6B", env: true },
   { value: "gas", label: "Gas / smoke", unit: "ppm", color: "#9AA0A6", env: true },
   { value: "humidity", label: "Humidity", unit: "%", color: "#3CC8E8", env: true },
+  // Router / UPS metrics (SNMP + MikroTik pollers → services/deviceAlerts.js). Global
+  // defaults ship seeded in the base schema (v12cspc-ictu-monitoring-system.sql); per-device
+  // overrides are now selectable here too.
+  { value: "router_cpu", label: "Router CPU", unit: "%", color: "#5794F2", scope: "network" },
+  { value: "router_mem", label: "Router memory", unit: "%", color: "#B877D9", scope: "network" },
+  { value: "router_clients", label: "Connected clients", unit: "", color: "#73BF69", scope: "network" },
+  { value: "link_util", label: "Link utilization", unit: "%", color: "#FF9830", scope: "network" },
+  // Errors ADDED since the previous poll (rx+tx), not the lifetime counter — so the
+  // sensible threshold depends on the poll cadence. See
+  // the seeded `link_errors` rule in the base schema.
+  { value: "link_errors", label: "Link errors", unit: "/poll", color: "#F2495C", scope: "network" },
+  { value: "ups_charge", label: "UPS battery", unit: "%", color: "#73BF69", scope: "ups", lowerIsWorse: true },
+  { value: "ups_runtime", label: "UPS runtime", unit: "min", color: "#5794F2", scope: "ups", lowerIsWorse: true },
+  { value: "ups_load", label: "UPS load", unit: "%", color: "#FF780A", scope: "ups" },
 ];
+
+const KIND_LABEL: Record<DeviceKind, string> = {
+  server: "Servers",
+  network: "Routers / MikroTik",
+  ups: "UPS",
+};
+// First metric offered when the scope switches to a device of this kind.
+const KIND_DEFAULT_METRIC: Record<DeviceKind, string> = {
+  server: "cpu",
+  network: "router_cpu",
+  ups: "ups_charge",
+};
 const COMPARISONS = [">=", ">", "<=", "<"];
 const SEVERITIES = ["info", "warning", "critical"];
 const SEV_COLOR: Record<string, string> = { critical: "#E02F44", warning: "#FF780A", info: "#5794F2" };
@@ -76,6 +119,7 @@ const gf = {
 
 const EMPTY_FORM: FormState = {
   deviceId: "",
+  interfaceName: "",
   metricName: "cpu",
   thresholdValue: "",
   comparison: ">=",
@@ -163,6 +207,28 @@ function MetricIcon({ name, size = 15 }: { name: string; size?: number }) {
           <path d="M12 2.7s6 6.3 6 10.3a6 6 0 0 1-12 0c0-4 6-10.3 6-10.3z" />
         </svg>
       );
+    case "router_cpu":
+    case "router_mem":
+    case "router_clients":
+    case "link_util":
+    case "link_errors":
+      return (
+        <svg {...p}>
+          <rect x="3" y="13" width="18" height="7" rx="1.5" />
+          <path d="M7 16.5h.01M10.5 16.5h.01" />
+          <path d="M12 10V6M9 8a4 4 0 0 1 6 0" />
+        </svg>
+      );
+    case "ups_charge":
+    case "ups_runtime":
+    case "ups_load":
+      return (
+        <svg {...p}>
+          <rect x="2" y="8" width="18" height="9" rx="1.5" />
+          <path d="M22 11v3" />
+          <path d="M10 9.5l-2 3.5h3l-2 3" />
+        </svg>
+      );
     default:
       return (
         <svg {...p}>
@@ -198,14 +264,35 @@ export default function AlertRules() {
   };
 
   const load = async () => {
-    const [rulesRes, serversRes] = await Promise.all([api.getAlertRules(), api.getServers()]);
+    // Every device class that can hold an override, so the scope dropdown isn't limited
+    // to servers. Each list is independent — one failing shouldn't blank the others.
+    const [rulesRes, serversRes, netRes, upsRes, mkRes] = await Promise.all([
+      api.getAlertRules(),
+      api.getServers(),
+      api.getNetworkDevices(),
+      api.getUpsDevices(),
+      api.getMikrotikDevices(),
+    ]);
     if (rulesRes.success && rulesRes.data) setRules(rulesRes.data.rules ?? []);
     else setError(rulesRes.error || "Failed to load alert rules.");
-    if (serversRes.success && serversRes.data) {
-      setServers(
-        (serversRes.data.servers ?? []).map((s: any) => ({ id: Number(s.id), name: s.name })),
-      );
-    }
+
+    const opts: ServerOpt[] = [];
+    const push = (rows: any[] | undefined, kind: DeviceKind) => {
+      for (const r of rows ?? []) {
+        const entry: ServerOpt = { id: Number(r.id), name: r.name, kind };
+        // Network devices carry their ports so a rule can target one of them.
+        const ports = (r.interfaces ?? []).map((i: any) => i?.name).filter(Boolean);
+        if (kind === "network" && ports.length) entry.interfaces = ports;
+        opts.push(entry);
+      }
+    };
+    if (serversRes.success) push(serversRes.data?.servers, "server");
+    // Routers and MikroTiks share the router_* / link_* metric vocabulary.
+    if (netRes.success) push(netRes.data?.devices, "network");
+    if (mkRes.success) push(mkRes.data?.devices, "network");
+    if (upsRes.success) push(upsRes.data?.devices, "ups");
+    setServers(opts);
+
     setLoading(false);
   };
 
@@ -233,6 +320,7 @@ export default function AlertRules() {
     setEditingId(r.id);
     setForm({
       deviceId: r.deviceId == null ? "" : String(r.deviceId),
+      interfaceName: r.interfaceName ?? "",
       metricName: r.metricName,
       thresholdValue: String(r.thresholdValue),
       comparison: r.comparison,
@@ -259,6 +347,9 @@ export default function AlertRules() {
       comparison: form.comparison,
       severity: form.severity,
       isActive: form.isActive,
+      // "" → null so the rule applies to the whole device. Always sent, so clearing a
+      // port on an existing rule actually clears it rather than being ignored.
+      interfaceName: form.interfaceName || null,
     };
     const res = editingId
       ? await api.updateAlertRule(editingId, payload)
@@ -352,7 +443,7 @@ export default function AlertRules() {
         const meta = metricMeta(r.metricName);
         const scopeName = r.deviceId == null ? "global" : r.deviceName ?? `device ${r.deviceId}`;
         const hay =
-          `${meta.label} ${r.metricName} ${r.severity} ${scopeName} ${r.comparison}${r.thresholdValue}`.toLowerCase();
+          `${meta.label} ${r.metricName} ${r.severity} ${scopeName} ${r.interfaceName ?? ""} ${r.comparison}${r.thresholdValue}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -405,12 +496,17 @@ export default function AlertRules() {
     setScopeFilter("all");
   };
 
-  const selectCls = "text-[11px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer";
+  const selectCls = "text-[13px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer";
   const liveWarn = formOpen ? coverageLossMessage() : null;
-  // Per-server scope only exposes server metrics — temperature/gas/humidity are
-  // room-level (the ESP32 isn't a `devices` row) and can only be global.
-  const isServerScope = form.deviceId !== "";
-  const metricOptions = isServerScope ? METRICS.filter((m) => !m.env) : METRICS;
+  // A per-device scope only exposes metrics that apply to THAT kind of device — a router
+  // can't have a disk rule, a UPS can't have a link-utilization rule. Temperature / gas /
+  // humidity are room-level (the ESP32 isn't a `devices` row) so they stay global-only.
+  const selectedDevice = form.deviceId === ""
+    ? null
+    : servers.find((s) => String(s.id) === form.deviceId) ?? null;
+  const metricOptions = selectedDevice
+    ? METRICS.filter((m) => !m.env && m.scope === selectedDevice.kind)
+    : METRICS;
 
   return (
     <div className="p-4 lg:p-6" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
@@ -420,7 +516,7 @@ export default function AlertRules() {
           <h1 className="text-[16px] font-bold" style={{ color: gf.textPrimary }}>
             Alert Rules
           </h1>
-          <p className="text-[11px] mt-1 max-w-2xl" style={{ color: gf.textMuted }}>
+          <p className="text-[13px] mt-1 max-w-2xl" style={{ color: gf.textMuted }}>
             Configurable thresholds. A <b style={{ color: gf.accent }}>Global</b> rule applies to
             every server and the room; a <b style={{ color: PURPLE }}>per-server</b> rule overrides
             the global for that one server.
@@ -428,7 +524,7 @@ export default function AlertRules() {
         </div>
         <button
           onClick={() => openAdd()}
-          className="inline-flex items-center gap-2 text-[12px] font-medium whitespace-nowrap transition-colors active:translate-y-px"
+          className="inline-flex items-center gap-2 text-[14px] font-medium whitespace-nowrap transition-colors active:translate-y-px"
           style={{
             height: 32,
             padding: "0 12px",
@@ -463,7 +559,7 @@ export default function AlertRules() {
 
       {/* Rules-only reminder */}
       <div
-        className="flex items-start gap-2 text-[10.5px] px-3 py-2 mb-4 rounded-[2px]"
+        className="flex items-start gap-2 text-[12px] px-3 py-2 mb-4 rounded-[2px]"
         style={{ color: gf.textMuted, background: gf.accentDim, border: `1px solid ${gf.border}` }}
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={gf.accent} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-px">
@@ -490,7 +586,7 @@ export default function AlertRules() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search rules, metric or server…"
-            className="w-full text-[11px] pl-8 pr-2 py-1.5 rounded-[2px] outline-none"
+            className="w-full text-[13px] pl-8 pr-2 py-1.5 rounded-[2px] outline-none"
             style={inputStyle}
           />
         </div>
@@ -518,7 +614,7 @@ export default function AlertRules() {
         {filtersActive && (
           <button
             onClick={clearFilters}
-            className="text-[10.5px] px-2.5 py-1.5 rounded-[2px] transition-colors"
+            className="text-[12px] px-2.5 py-1.5 rounded-[2px] transition-colors"
             style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
           >
             Clear
@@ -528,7 +624,7 @@ export default function AlertRules() {
 
       {/* Grouped rules */}
       {loading ? (
-        <div className="rounded-lg px-3 py-10 text-center text-[12px]" style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textDim }}>
+        <div className="rounded-lg px-3 py-10 text-center text-[14px]" style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textDim }}>
           Loading…
         </div>
       ) : groups.length === 0 ? (
@@ -555,17 +651,17 @@ export default function AlertRules() {
                   <span style={{ color: isGlobal ? gf.accent : PURPLE }}>
                     {isGlobal ? <GlobeIcon /> : <ServerIcon />}
                   </span>
-                  <span className="text-[12px] font-semibold truncate" style={{ color: gf.textPrimary }}>
+                  <span className="text-[14px] font-semibold truncate" style={{ color: gf.textPrimary }}>
                     {g.name}
                   </span>
                   <span
-                    className="px-1.5 py-0.5 rounded-full text-[9px] font-medium"
+                    className="px-1.5 py-0.5 rounded-full text-[11px] font-medium"
                     style={{ color: gf.textMuted, background: gf.hoverStrong }}
                   >
                     {g.rules.length}
                   </span>
                   <span
-                    className="px-1.5 py-0.5 rounded-[2px] text-[8.5px] tracking-wider uppercase font-medium"
+                    className="px-1.5 py-0.5 rounded-[2px] text-[10px] tracking-wider uppercase font-medium"
                     style={
                       isGlobal
                         ? { color: gf.accent, background: gf.accentDim }
@@ -599,17 +695,29 @@ export default function AlertRules() {
                             <MetricIcon name={r.metricName} />
                           </span>
                           <div className="min-w-0">
-                            <div className="text-[12px] font-medium truncate" style={{ color: gf.textPrimary }}>
-                              {meta.label}
+                            <div className="flex items-baseline gap-1.5 min-w-0">
+                              <span className="text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>
+                                {meta.label}
+                              </span>
+                              {/* Port-scoped rules look identical to device-wide ones
+                                  without this — same metric, same device, different reach. */}
+                              {r.interfaceName && (
+                                <span
+                                  className="text-[11px] px-1.5 py-0.5 rounded-[2px] shrink-0"
+                                  style={{ color: gf.textMuted, background: gf.hover, border: `1px solid ${gf.divider}` }}
+                                >
+                                  {r.interfaceName}
+                                </span>
+                              )}
                             </div>
-                            <div className="text-[10.5px] truncate" style={{ color: gf.textMuted }}>
+                            <div className="text-[12px] truncate" style={{ color: gf.textMuted }}>
                               when value{" "}
                               <span className="font-semibold" style={{ color: gf.textPrimary }}>
                                 {r.comparison} {r.thresholdValue}
                                 {meta.unit}
                               </span>
                             </div>
-                            <div className="text-[9.5px] truncate mt-0.5" style={{ color: gf.textDim }}>
+                            <div className="text-[11px] truncate mt-0.5" style={{ color: gf.textDim }}>
                               {r.updatedByName ? (
                                 <>
                                   edited by{" "}
@@ -625,7 +733,7 @@ export default function AlertRules() {
 
                         {/* severity */}
                         <span
-                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[9px] tracking-wider uppercase font-semibold shrink-0"
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-semibold shrink-0"
                           style={{ color: sev, background: `${sev}1f` }}
                         >
                           <span className="w-1.5 h-1.5 rounded-full" style={{ background: sev }} />
@@ -635,7 +743,7 @@ export default function AlertRules() {
                         {/* active toggle */}
                         <button
                           onClick={() => toggleActive(r)}
-                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[9px] tracking-wider uppercase font-medium transition-colors shrink-0"
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-medium transition-colors shrink-0"
                           style={{
                             color: r.isActive ? GREEN : gf.textDim,
                             background: r.isActive ? `${GREEN}1f` : gf.hover,
@@ -651,7 +759,7 @@ export default function AlertRules() {
                           {confirmId === r.id ? (
                             <span className="inline-flex items-center gap-1.5 flex-wrap justify-end">
                               {deleteLossMessage(r) ? (
-                                <span className="inline-flex items-center gap-1 text-[10px] max-w-[260px]" style={{ color: ORANGE }}>
+                                <span className="inline-flex items-center gap-1 text-[12px] max-w-[260px]" style={{ color: ORANGE }}>
                                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={ORANGE} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
                                     <path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.42 0z" />
                                     <path d="M12 9v4M12 17h.01" />
@@ -659,14 +767,14 @@ export default function AlertRules() {
                                   {deleteLossMessage(r)}
                                 </span>
                               ) : (
-                                <span className="text-[10px]" style={{ color: gf.textMuted }}>
+                                <span className="text-[12px]" style={{ color: gf.textMuted }}>
                                   Delete?
                                 </span>
                               )}
-                              <button onClick={() => remove(r.id)} className="px-2 py-1 rounded-md text-[10px] font-medium" style={{ color: "#fff", background: RED }}>
+                              <button onClick={() => remove(r.id)} className="gf-raise px-2 py-1 rounded-md text-[12px] font-medium" style={{ color: "#fff", background: RED }}>
                                 {deleteLossMessage(r) ? "Delete anyway" : "Yes"}
                               </button>
-                              <button onClick={() => setConfirmId(null)} className="px-2 py-1 rounded-md text-[10px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
+                              <button onClick={() => setConfirmId(null)} className="px-2 py-1 rounded-md text-[12px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
                                 {deleteLossMessage(r) ? "Cancel" : "No"}
                               </button>
                             </span>
@@ -729,7 +837,7 @@ export default function AlertRules() {
           >
             {/* modal header */}
             <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.header }}>
-              <span className="text-[12px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>
+              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>
                 {editingId ? "Edit rule" : "New alert rule"}
               </span>
               <button onClick={() => setFormOpen(false)} className="grid place-items-center w-7 h-7 rounded-md transition-colors" style={{ color: gf.textMuted }} title="Close (Esc)">
@@ -747,26 +855,54 @@ export default function AlertRules() {
                     onChange={(e) => {
                       const deviceId = e.target.value;
                       setForm((f) => {
-                        // switching to a server scope: drop room-level env metrics
+                        // Switching scope: if the current metric doesn't apply to the newly
+                        // selected device's kind (or is room-level), fall back to that
+                        // kind's default metric.
+                        const dev = deviceId === "" ? null : servers.find((s) => String(s.id) === deviceId);
+                        // Global scope, or a different device: a port from the old
+                        // device is meaningless, so drop it.
+                        if (!dev) return { ...f, deviceId, interfaceName: "" };
+                        const m = metricMeta(f.metricName);
                         const metricName =
-                          deviceId !== "" && metricMeta(f.metricName).env ? "cpu" : f.metricName;
-                        return { ...f, deviceId, metricName };
+                          m.env || m.scope !== dev.kind ? KIND_DEFAULT_METRIC[dev.kind] : f.metricName;
+                        return { ...f, deviceId, metricName, interfaceName: "" };
                       });
                     }}
-                    className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none"
+                    className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none"
                     style={inputStyle}
                   >
-                    <option value="">Global (all servers / room)</option>
-                    {servers.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
+                    <option value="">Global (all devices / room)</option>
+                    {/* Grouped so it's obvious which class each device belongs to —
+                        the metric list below adapts to whichever you pick. */}
+                    {(["server", "network", "ups"] as DeviceKind[]).map((kind) => {
+                      const group = servers.filter((s) => s.kind === kind);
+                      if (!group.length) return null;
+                      return (
+                        <optgroup key={kind} label={KIND_LABEL[kind]}>
+                          {group.map((s) => (
+                            <option key={`${kind}:${s.id}`} value={s.id}>
+                              {s.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      );
+                    })}
                   </select>
                 </Field>
 
                 <Field label="Metric">
-                  <select value={form.metricName} onChange={(e) => setForm((f) => ({ ...f, metricName: e.target.value }))} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
+                  <select value={form.metricName} onChange={(e) => setForm((f) => {
+                    const metricName = e.target.value;
+                    // Point the condition the sensible way for the chosen metric: lower-is-worse
+                    // metrics (battery / runtime) want '<='; keep the user's operator if it
+                    // already matches the metric's direction.
+                    const isLt = f.comparison.startsWith("<");
+                    const lw = metricMeta(metricName).lowerIsWorse;
+                    const comparison = lw ? (isLt ? f.comparison : "<=") : (isLt ? ">=" : f.comparison);
+                    // Only per-port metrics can carry a port scope — drop it otherwise.
+                    const interfaceName = PER_PORT_METRICS.has(metricName) ? f.interfaceName : "";
+                    return { ...f, metricName, comparison, interfaceName };
+                  })} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
                     {metricOptions.map((m) => (
                       <option key={m.value} value={m.value}>
                         {m.label} ({m.unit})
@@ -775,8 +911,30 @@ export default function AlertRules() {
                   </select>
                 </Field>
 
+                {/* Per-port scope. link_util / link_errors are measured per interface, so
+                    an ISP uplink that normally sits at 70% and an access port that should
+                    never exceed 5% can each carry their own threshold. Only shown when a
+                    network device is scoped and it reported its ports. */}
+                {selectedDevice?.kind === "network"
+                  && PER_PORT_METRICS.has(form.metricName)
+                  && (selectedDevice.interfaces?.length ?? 0) > 0 && (
+                  <Field label="Port">
+                    <select
+                      value={form.interfaceName}
+                      onChange={(e) => setForm((f) => ({ ...f, interfaceName: e.target.value }))}
+                      className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none"
+                      style={inputStyle}
+                    >
+                      <option value="">All ports on this device</option>
+                      {selectedDevice.interfaces!.map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
+
                 <Field label="Condition">
-                  <select value={form.comparison} onChange={(e) => setForm((f) => ({ ...f, comparison: e.target.value }))} className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
+                  <select value={form.comparison} onChange={(e) => setForm((f) => ({ ...f, comparison: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
                     {COMPARISONS.map((c) => (
                       <option key={c} value={c}>
                         {c}
@@ -792,7 +950,7 @@ export default function AlertRules() {
                     onChange={(e) => setForm((f) => ({ ...f, thresholdValue: e.target.value }))}
                     placeholder="e.g. 90"
                     autoFocus
-                    className="w-full text-[11px] px-2 py-1.5 rounded-[2px] outline-none"
+                    className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none"
                     style={inputStyle}
                   />
                 </Field>
@@ -807,7 +965,7 @@ export default function AlertRules() {
                           key={s}
                           type="button"
                           onClick={() => setForm((f) => ({ ...f, severity: s }))}
-                          className="flex-1 text-[10px] tracking-wider uppercase font-semibold px-2 py-1.5 rounded-[2px] transition-colors"
+                          className="flex-1 text-[12px] tracking-wider uppercase font-semibold px-2 py-1.5 rounded-[2px] transition-colors"
                           style={{
                             color: on ? c : gf.textMuted,
                             background: on ? `${c}26` : gf.bg,
@@ -822,7 +980,7 @@ export default function AlertRules() {
                 </Field>
 
                 <Field label="Status">
-                  <label className="flex items-center gap-2 text-[11px] px-2 py-1.5 rounded-[2px] cursor-pointer" style={{ ...inputStyle, color: gf.textMuted }}>
+                  <label className="flex items-center gap-2 text-[13px] px-2 py-1.5 rounded-[2px] cursor-pointer" style={{ ...inputStyle, color: gf.textMuted }}>
                     <input type="checkbox" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
                     {form.isActive ? "Active (rule will fire)" : "Paused (rule disabled)"}
                   </label>
@@ -831,7 +989,7 @@ export default function AlertRules() {
 
               {/* live preview */}
               <div className="mt-4 p-3 rounded-[2px]" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
-                <div className="text-[8.5px] tracking-widest uppercase mb-1.5" style={{ color: gf.textDim }}>
+                <div className="text-[10px] tracking-widest uppercase mb-1.5" style={{ color: gf.textDim }}>
                   Preview
                 </div>
                 <RulePreview form={form} servers={servers} />
@@ -839,7 +997,7 @@ export default function AlertRules() {
 
               {/* coverage guard — last global rule for a metric */}
               {liveWarn && (
-                <div className="flex items-start gap-2 text-[10.5px] mt-3 px-3 py-2 rounded-[2px]" style={{ color: ORANGE, background: `${ORANGE}14`, border: `1px solid ${ORANGE}40` }}>
+                <div className="flex items-start gap-2 text-[12px] mt-3 px-3 py-2 rounded-[2px]" style={{ color: ORANGE, background: `${ORANGE}14`, border: `1px solid ${ORANGE}40` }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={ORANGE} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-px">
                     <path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.42 0z" />
                     <path d="M12 9v4M12 17h.01" />
@@ -852,16 +1010,16 @@ export default function AlertRules() {
               )}
 
               {error && (
-                <div className="text-[10.5px] mt-3" style={{ color: RED }}>
+                <div className="text-[12px] mt-3" style={{ color: RED }}>
                   {error}
                 </div>
               )}
 
               <div className="flex gap-2 mt-4">
-                <button onClick={save} disabled={saving} className="text-[11px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: liveWarn ? ORANGE : gf.accent }}>
+                <button onClick={save} disabled={saving} className="text-[13px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: liveWarn ? ORANGE : gf.accent }}>
                   {saving ? "Saving…" : liveWarn ? "Save anyway" : editingId ? "Save changes" : "Create rule"}
                 </button>
-                <button onClick={() => setFormOpen(false)} className="text-[11px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
+                <button onClick={() => setFormOpen(false)} className="text-[13px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
                   Cancel
                 </button>
               </div>
@@ -889,7 +1047,7 @@ function StatCard({ label, value, color, sub }: { label: string; value: number; 
   return (
     <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 84 }}>
       <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[10px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>
+        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>
           {label}
         </span>
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
@@ -899,7 +1057,7 @@ function StatCard({ label, value, color, sub }: { label: string; value: number; 
           {value}
         </span>
         {sub && (
-          <div className="text-[9px] mt-1.5 tracking-widest uppercase" style={{ color: gf.textDim }}>
+          <div className="text-[11px] mt-1.5 tracking-widest uppercase" style={{ color: gf.textDim }}>
             {sub}
           </div>
         )}
@@ -911,16 +1069,18 @@ function StatCard({ label, value, color, sub }: { label: string; value: number; 
 function RulePreview({ form, servers }: { form: FormState; servers: ServerOpt[] }) {
   const meta = metricMeta(form.metricName);
   const sev = SEV_COLOR[form.severity] ?? gf.textMuted;
-  const scope = form.deviceId === "" ? "all servers / the room" : servers.find((s) => String(s.id) === form.deviceId)?.name ?? "the selected server";
+  const deviceName = form.deviceId === "" ? "all devices / the room" : servers.find((s) => String(s.id) === form.deviceId)?.name ?? "the selected device";
+  // Name the port when one is chosen, so the sentence reads as the rule actually behaves.
+  const scope = form.interfaceName ? `${deviceName} · ${form.interfaceName}` : deviceName;
   const threshold = form.thresholdValue.trim() === "" ? "…" : form.thresholdValue;
   return (
-    <div className="flex items-center gap-2.5 flex-wrap text-[11px]" style={{ color: gf.textPrimary }}>
+    <div className="flex items-center gap-2.5 flex-wrap text-[13px]" style={{ color: gf.textPrimary }}>
       <span className="grid place-items-center rounded-md shrink-0" style={{ width: 28, height: 28, background: `${meta.color}1f`, color: meta.color }}>
         <MetricIcon name={form.metricName} size={14} />
       </span>
       <span>
         Raise a{" "}
-        <span className="font-semibold tracking-wider uppercase text-[10px] px-1.5 py-0.5 rounded-[2px]" style={{ color: sev, background: `${sev}1f` }}>
+        <span className="font-semibold tracking-wider uppercase text-[12px] px-1.5 py-0.5 rounded-[2px]" style={{ color: sev, background: `${sev}1f` }}>
           {form.severity}
         </span>{" "}
         alert when <b>{meta.label}</b>{" "}
@@ -945,26 +1105,26 @@ function EmptyState({ filtered, onAdd, onClear }: { filtered: boolean; onAdd: ()
       </span>
       {filtered ? (
         <>
-          <div className="text-[13px] font-semibold mb-1" style={{ color: gf.textPrimary }}>
+          <div className="text-[15px] font-semibold mb-1" style={{ color: gf.textPrimary }}>
             No rules match your filters
           </div>
-          <div className="text-[11px] mb-4" style={{ color: gf.textMuted }}>
+          <div className="text-[13px] mb-4" style={{ color: gf.textMuted }}>
             Try a different search or clear the filters.
           </div>
-          <button onClick={onClear} className="text-[11px] font-medium px-3 py-1.5 rounded-md" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
+          <button onClick={onClear} className="text-[13px] font-medium px-3 py-1.5 rounded-md" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
             Clear filters
           </button>
         </>
       ) : (
         <>
-          <div className="text-[13px] font-semibold mb-1" style={{ color: gf.textPrimary }}>
+          <div className="text-[15px] font-semibold mb-1" style={{ color: gf.textPrimary }}>
             No alert rules yet
           </div>
-          <div className="text-[11px] mb-4 max-w-sm" style={{ color: gf.textMuted }}>
+          <div className="text-[13px] mb-4 max-w-sm" style={{ color: gf.textMuted }}>
             With rules-only alerting, nothing will fire until you add a rule. Apply the seed migration
             or create one now.
           </div>
-          <button onClick={onAdd} className="text-[11px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: gf.accent }}>
+          <button onClick={onAdd} className="gf-raise text-[13px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: gf.accent }}>
             + Add your first rule
           </button>
         </>
@@ -976,7 +1136,7 @@ function EmptyState({ filtered, onAdd, onClear }: { filtered: boolean; onAdd: ()
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[9px] tracking-wider uppercase" style={{ color: gf.textDim }}>
+      <span className="text-[11px] tracking-wider uppercase" style={{ color: gf.textDim }}>
         {label}
       </span>
       {children}

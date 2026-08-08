@@ -5,6 +5,7 @@ import (
 	"math"
 	"net"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -46,6 +47,8 @@ func Collect() (ServerMetrics, error) {
 		m.DiskPercent = round1(du.UsedPercent)
 	}
 
+	m.Volumes = collectVolumes()
+
 	if io, err := psnet.IOCounters(false); err == nil && len(io) > 0 {
 		m.NetBytesSent = float64(io[0].BytesSent)
 		m.NetBytesRecv = float64(io[0].BytesRecv)
@@ -60,6 +63,66 @@ func Collect() (ServerMetrics, error) {
 	}
 
 	return m, nil
+}
+
+// maxVolumes bounds the payload — a host with a pathological number of mounts
+// (containers, network shares) must not turn a 10s metric post into a large body.
+const maxVolumes = 16
+
+// pseudoFS are Linux filesystem types that report usage but aren't real storage.
+// disk.Partitions(false) already filters most of them; this catches the rest so
+// "disk full" alerts can't fire on a tmpfs.
+var pseudoFS = map[string]bool{
+	"tmpfs": true, "devtmpfs": true, "devfs": true, "overlay": true,
+	"squashfs": true, "aufs": true, "ramfs": true, "proc": true, "sysfs": true,
+}
+
+// usageFunc matches disk.Usage. Injected so buildVolumes can be tested against a
+// synthetic mount table — the filtering rules below are the part that can be
+// wrong, and they must not require a real Linux box to verify.
+type usageFunc func(string) (*disk.UsageStat, error)
+
+// collectVolumes probes every fixed volume on this host.
+func collectVolumes() []Volume {
+	parts, err := disk.Partitions(false) // false = physical devices only
+	if err != nil {
+		return nil
+	}
+	return buildVolumes(parts, disk.Usage)
+}
+
+// buildVolumes filters a mount table down to real, reportable storage.
+// Best-effort throughout: a volume that errors on usage (a disconnected share, a
+// permission-denied mount) is skipped rather than failing the whole sample.
+// Returns nil if none could be read, which the backend treats as "not reported"
+// rather than "zero volumes".
+func buildVolumes(parts []disk.PartitionStat, usage usageFunc) []Volume {
+	seen := make(map[string]bool, len(parts))
+	vols := make([]Volume, 0, len(parts))
+	for _, p := range parts {
+		if len(vols) >= maxVolumes {
+			break
+		}
+		if p.Mountpoint == "" || seen[p.Mountpoint] || pseudoFS[strings.ToLower(p.Fstype)] {
+			continue
+		}
+		u, err := usage(p.Mountpoint)
+		if err != nil || u == nil || u.Total == 0 {
+			continue // unreadable or a zero-size pseudo mount
+		}
+		seen[p.Mountpoint] = true
+		vols = append(vols, Volume{
+			Mount:   p.Mountpoint,
+			Fstype:  p.Fstype,
+			TotalGB: round1(bytesToGB(u.Total)),
+			UsedGB:  round1(bytesToGB(u.Used)),
+			Percent: round1(u.UsedPercent),
+		})
+	}
+	if len(vols) == 0 {
+		return nil
+	}
+	return vols
 }
 
 // CollectHostInfo gathers the static identity + specs used at registration.

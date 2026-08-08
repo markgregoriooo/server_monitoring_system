@@ -140,3 +140,11 @@ vite.config.ts.timestamp-*
 
 # user-uploaded files
 backend/uploads/
+
+# generated report exports (CSV/PDF produced by the Reports page at runtime)
+backend/reports/
+
+# on-site backup writer output — rotating NDJSON + SHA-256 manifest (backupService).
+# Runtime data by definition: regenerated continuously, machine-specific, and the whole
+# point is that it lives outside git. See backup-storage.md.
+backend/backups/
