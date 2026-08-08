@@ -499,9 +499,17 @@ export const api = {
   },
 
   // `iface` omitted → device totals; supplied → that single port's throughput.
-  getMikrotikHistory: async (id: number, range: string, iface?: string): Promise<ApiResult> => {
+  // Either a preset range ("-1h" | "-6h" | "-24h" | "-7d" | "-30d") OR an absolute
+  // window via { start, stop } ISO strings — the same contract as getNetworkHistory,
+  // since both endpoints are served by networkHistoryHandler.
+  getMikrotikHistory: async (
+    id: number,
+    range: string,
+    iface?: string,
+    window?: { start: string; stop: string },
+  ): Promise<ApiResult> => {
     try {
-      const params: Record<string, string> = { range };
+      const params: Record<string, string> = window ? { ...window } : { range };
       if (iface) params.interface = iface;
       const res = await apiClient.get(`/mikrotik/${id}/history`, { params });
       return { success: true, data: res.data };

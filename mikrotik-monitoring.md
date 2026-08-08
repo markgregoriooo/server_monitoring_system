@@ -476,7 +476,8 @@ Browser: `MikrotikMonitoring.tsx` fetches `GET /api/mikrotik` once, then live-up
 | `POST /:id/test` | admin | probe the API; body may carry credentials to test instead of the stored ones (blank password = use stored) |
 | `GET /:id/interfaces` | any | port → label map (`network_interfaces`) |
 | `PUT /:id/interfaces` | admin | set port labels; a blank label deletes that port's row |
-| `GET /:id/history?range=-1h\|-6h\|-24h[&interface=ether3]` | any | throughput from InfluxDB (shared handler). Without `interface` = device totals; with it = that single port |
+| `GET /:id/history?range=-1h\|-6h\|-24h\|-7d\|-30d[&interface=ether3]` | any | throughput from InfluxDB (shared handler). Without `interface` = device totals; with it = that single port |
+| `GET /:id/history?start=<ISO>&stop=<ISO>[&interface=ether3]` | any | the same, over a **custom absolute window**. Presets and custom bounds are resolved by `services/historyRange.js`, which also owns the Flux-injection guarantee; a malformed custom window is a 400 |
 | `GET /:id/logs` | any | device event log (`device_logs`) |
 
 ### 13.4 Operational flow (how an admin uses it)

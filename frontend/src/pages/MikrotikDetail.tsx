@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import Chart from "../chart/ChartConfig";
+import RangePicker, { DEFAULT_RANGE, rangeSpanSec } from "../components/ui/RangePicker";
+import type { RangeValue } from "../components/ui/RangePicker";
 
 // ─── Per-MikroTik detail view (throughput + ports + log) ──────────────────────
 // Reached from MikrotikMonitoring via "View". In-page swap (Back button), mirroring
@@ -59,9 +61,23 @@ const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
 
-const RANGES = ["-1h", "-6h", "-24h"] as const;
-type Range = (typeof RANGES)[number];
-const rangeLabel: Record<Range, string> = { "-1h": "1h", "-6h": "6h", "-24h": "24h" };
+// Windows spanning more than a day need the DATE on the axis — bare "14:00" repeats
+// every day, which makes a 7d/30d chart unreadable. Driven by the window's actual
+// SPAN rather than a list of preset keys, so a custom 5-day window gets dates too.
+// Same rule as ServerDetail, so the two pages label an incident identically.
+const MULTI_DAY_SEC = 86400 * 2;
+
+function fmtAxisTime(iso: string, spanSec: number) {
+  const d = new Date(iso);
+  if (spanSec >= MULTI_DAY_SEC) {
+    return d.toLocaleString("en-PH", {
+      timeZone: "Asia/Manila", month: "short", day: "2-digit", hour: "2-digit", hour12: false,
+    });
+  }
+  return d.toLocaleTimeString("en-PH", {
+    timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
 
 function loadColor(v: number) { if (v >= 85) return RED; if (v >= 65) return ORANGE; return GREEN; }
 function statusColor(s: string) { if (s === "Online") return GREEN; if (s === "Warning") return ORANGE; return RED; }
@@ -88,7 +104,7 @@ function fmtDateTime(iso: string) {
 }
 
 // Chart.js line chart — same config as NetworkDetail so both network pages read alike.
-function ThroughputChart({ history }: { history: HistPoint[] }) {
+function ThroughputChart({ history, spanSec }: { history: HistPoint[]; spanSec: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart | null>(null);
   useEffect(() => {
@@ -98,9 +114,7 @@ function ThroughputChart({ history }: { history: HistPoint[] }) {
       return;
     }
     chartRef.current?.destroy();
-    const labels = history.map((p) =>
-      new Date(p.time).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false }),
-    );
+    const labels = history.map((p) => fmtAxisTime(p.time, spanSec));
     chartRef.current = new Chart(ref.current, {
       type: "line",
       data: {
@@ -126,7 +140,7 @@ function ThroughputChart({ history }: { history: HistPoint[] }) {
       },
     });
     return () => { chartRef.current?.destroy(); };
-  }, [history]);
+  }, [history, spanSec]);
   return (
     <div style={{ height: 200 }}>
       {history.length < 2 ? (
@@ -140,10 +154,21 @@ function ThroughputChart({ history }: { history: HistPoint[] }) {
 
 function Panel({ title, right, children, noPad }: { title: string; right?: React.ReactNode; children: React.ReactNode; noPad?: boolean }) {
   return (
-    <div className="flex flex-col rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
-      <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
+    // `overflow-visible` so an absolutely-positioned control in the header (the range
+    // picker's Custom dropdown) isn't clipped by the panel box. The rounded corners
+    // still read fine because every child that can reach an edge is itself rounded or
+    // padded.
+    <div className="flex flex-col rounded-lg overflow-visible" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+      {/* Header WRAPS instead of overflowing. As a fixed 32px row that could not wrap,
+          the port selector + In/Out readouts + five range buttons ran past the panel
+          edge on a phone and the right-most control (Custom) was unreachable.
+          min-height keeps the desktop look identical. */}
+      <div
+        className="flex items-center justify-between gap-x-3 gap-y-1.5 flex-wrap px-3 py-1.5 sm:py-0 shrink-0"
+        style={{ minHeight: 32, borderBottom: `1px solid ${gf.divider}` }}
+      >
         <span className="text-[13px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
-        {right && <div className="flex items-center gap-2">{right}</div>}
+        {right && <div className="flex items-center gap-2 flex-wrap">{right}</div>}
       </div>
       <div className="flex-1 min-h-0" style={{ padding: noPad ? 0 : 12 }}>{children}</div>
     </div>
@@ -241,7 +266,8 @@ export default function MikrotikDetail({
   isAdmin?: boolean;
 }) {
   const [d, setD] = useState<MkDevice>(device);
-  const [range, setRange] = useState<Range>("-1h");
+  const [range, setRange] = useState<RangeValue>(DEFAULT_RANGE);
+  const [rangeError, setRangeError] = useState("");
   const [history, setHistory] = useState<HistPoint[]>([]);
   const [logs, setLogs] = useState<DeviceLog[]>([]);
   // Bumped on every poll for this device. Used as a history-refetch trigger so the
@@ -339,11 +365,22 @@ export default function MikrotikDetail({
   // Re-fetch on each poll so the chart stays current. Naturally rate-limited by the
   // poll cadence (~30s), and it reuses the server's own derivative rather than
   // deriving throughput client-side from the cumulative counters.
+  // A CUSTOM window is a fixed slice of the past, so it must NOT refetch on every
+  // poll — the answer can't change, and re-querying a 30-day span every 30s is pure
+  // load. Only a relative preset tracks live.
   useEffect(() => {
-    api.getMikrotikHistory(Number(d.id), range, chartPort || undefined).then((r) => {
-      if (r.success && r.data) setHistory(r.data.history ?? []);
-    });
-  }, [d.id, range, poll, chartPort]);
+    const custom = range.kind === "custom" ? { start: range.start, stop: range.stop } : undefined;
+    api
+      .getMikrotikHistory(Number(d.id), range.kind === "preset" ? range.preset : "", chartPort || undefined, custom)
+      .then((r) => {
+        if (r.success && r.data) {
+          setHistory(r.data.history ?? []);
+          setRangeError("");
+        } else {
+          setRangeError(r.error || "Could not load history.");
+        }
+      });
+  }, [d.id, range, chartPort, range.kind === "custom" ? 0 : poll]);
 
   useEffect(() => {
     api.getMikrotikLogs(Number(d.id)).then((r) => {
@@ -447,13 +484,16 @@ export default function MikrotikDetail({
       <Panel
         title={chartPort ? `Throughput · ${chartPort}` : "Total Throughput"}
         right={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {/* Per-port history: the data was always tagged by interface_name in
-                InfluxDB, there was simply no way to ask for one port. */}
+                InfluxDB, there was simply no way to ask for one port.
+                `max-w` + `truncate`: a long "ether1 — Uplink to admin building" option
+                would otherwise stretch the select past a phone's width and push the
+                range buttons off the row. */}
             <select
               value={chartPort}
               onChange={(e) => setChartPort(e.target.value)}
-              className="text-[12px] px-1.5 py-0.5 rounded-[2px] outline-none"
+              className="text-[12px] px-1.5 py-0.5 rounded-[2px] outline-none max-w-[45vw] sm:max-w-none truncate"
               style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
             >
               <option value="">All ports</option>
@@ -465,18 +505,11 @@ export default function MikrotikDetail({
             </select>
             <span className="text-[12px]" style={{ color: BLUE }}>In {formatBps(latest?.rxBytesPerSec ?? null)}</span>
             <span className="text-[12px]" style={{ color: GREEN }}>Out {formatBps(latest?.txBytesPerSec ?? null)}</span>
-            <div className="flex rounded-md overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
-              {RANGES.map((rg) => (
-                <button key={rg} onClick={() => setRange(rg)} className="text-[12px] px-2 py-0.5 transition-colors"
-                  style={{ background: range === rg ? gf.hover : "transparent", color: range === rg ? gf.textPrimary : gf.textMuted }}>
-                  {rangeLabel[rg]}
-                </button>
-              ))}
-            </div>
+            <RangePicker value={range} onChange={setRange} error={rangeError || undefined} variant="gf" />
           </div>
         }
       >
-        <ThroughputChart history={history} />
+        <ThroughputChart history={history} spanSec={rangeSpanSec(range)} />
       </Panel>
 
       {/* Physical ports */}
@@ -568,17 +601,28 @@ export default function MikrotikDetail({
         </p>
       </Panel>
 
-      {/* Event log */}
-      <Panel title="Event Log">
+      {/* Recent events (device_logs) — same shape as ServerDetail's panel: the MESSAGE
+          leads and wraps, with the timestamp beneath it. The old single-line row put a
+          fixed-width timestamp first and `truncate`d the message, so the very thing you
+          open the log to read ("interface ether3 down", a threshold crossing) was the
+          part that got cut off on a narrow panel. */}
+      <Panel
+        title="Recent Events"
+        right={logs.length > 0 ? <span className="text-[12px]" style={{ color: gf.textDim }}>{logs.length}</span> : undefined}
+      >
         {logs.length === 0 ? (
-          <div className="text-[13px] py-3 text-center" style={{ color: gf.textDim }}>No events recorded.</div>
+          <div className="text-[13px] py-5 text-center" style={{ color: gf.textDim }}>No events logged yet.</div>
         ) : (
-          <div className="flex flex-col">
-            {logs.slice(0, 30).map((l, i) => (
-              <div key={i} className="flex items-center gap-2 py-1.5 text-[13px]" style={{ borderBottom: i < logs.length - 1 ? `1px solid ${gf.divider}` : "none" }}>
-                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: logColor(l.log_level) }} />
-                <span className="shrink-0 w-28" style={{ color: gf.textDim }}>{fmtDateTime(l.recorded_at)}</span>
-                <span className="truncate" style={{ color: gf.textPrimary }}>{l.message}</span>
+          // Scrolls rather than hard-capping the render at 30. The API returns up to 50
+          // and the live socket feed keeps 50, so the whole list stays reachable.
+          <div className="flex flex-col max-h-72 overflow-y-auto">
+            {logs.map((l, i) => (
+              <div key={i} className="flex items-start gap-2.5 py-2" style={{ borderTop: i > 0 ? `1px solid ${gf.divider}` : "none" }}>
+                <span className="mt-1.5 w-1.5 h-1.5 rounded-full shrink-0" style={{ background: logColor(l.log_level) }} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] break-words" style={{ color: gf.textPrimary }}>{l.message}</div>
+                  <div className="text-[12px] mt-0.5" style={{ color: gf.textDim }}>{fmtDateTime(l.recorded_at)}</div>
+                </div>
               </div>
             ))}
           </div>

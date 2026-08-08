@@ -406,17 +406,28 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
         </p>
       </Panel>
 
-      {/* Event log */}
-      <Panel title="Event Log">
+      {/* Recent events (device_logs) — same shape as ServerDetail's panel: the MESSAGE
+          leads and wraps, with the timestamp beneath it. The old single-line row put a
+          fixed-width timestamp first and `truncate`d the message, so the very thing you
+          open the log to read ("on battery", a runtime threshold crossing) was the part
+          that got cut off on a narrow panel. */}
+      <Panel
+        title="Recent Events"
+        right={logs.length > 0 ? <span className="text-[12px]" style={{ color: gf.textDim }}>{logs.length}</span> : undefined}
+      >
         {logs.length === 0 ? (
-          <div className="text-[13px] py-3 text-center" style={{ color: gf.textDim }}>No events recorded.</div>
+          <div className="text-[13px] py-5 text-center" style={{ color: gf.textDim }}>No events logged yet.</div>
         ) : (
-          <div className="flex flex-col">
-            {logs.slice(0, 30).map((l, i) => (
-              <div key={i} className="flex items-center gap-2 py-1.5 text-[13px]" style={{ borderBottom: i < logs.length - 1 ? `1px solid ${gf.divider}` : "none" }}>
-                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: logColor(l.log_level) }} />
-                <span className="shrink-0 w-28" style={{ color: gf.textDim }}>{fmtDateTime(l.recorded_at)}</span>
-                <span className="truncate" style={{ color: gf.textPrimary }}>{l.message}</span>
+          // Scrolls rather than hard-capping the render at 30. The API returns up to 50
+          // and the live socket feed keeps 50, so the whole list stays reachable.
+          <div className="flex flex-col max-h-72 overflow-y-auto">
+            {logs.map((l, i) => (
+              <div key={i} className="flex items-start gap-2.5 py-2" style={{ borderTop: i > 0 ? `1px solid ${gf.divider}` : "none" }}>
+                <span className="mt-1.5 w-1.5 h-1.5 rounded-full shrink-0" style={{ background: logColor(l.log_level) }} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] break-words" style={{ color: gf.textPrimary }}>{l.message}</div>
+                  <div className="text-[12px] mt-0.5" style={{ color: gf.textDim }}>{fmtDateTime(l.recorded_at)}</div>
+                </div>
               </div>
             ))}
           </div>
