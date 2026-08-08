@@ -499,7 +499,10 @@ export default function ServerDetail({ server: s, onBack }: Props) {
     <div className="p-3 sm:p-4 lg:p-6 flex flex-col gap-4 bg-slate-50 dark:bg-[#0b0e14] min-h-full">
 
       {/* Header */}
-      <div className="flex items-center gap-3 pb-3 border-b border-white/[0.07] dark:border-white/[0.07] border-slate-200">
+      {/* Had TWO unprefixed border colours (border-white/[0.07] and border-slate-200),
+          so in light mode which one won came down to CSS emission order rather than
+          intent. Light base + dark override, like everything else here. */}
+      <div className="flex items-center gap-3 pb-3 border-b border-slate-200 dark:border-white/[0.07]">
         <button
           onClick={onBack}
           className="flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
@@ -511,12 +514,16 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         </button>
         <div className="flex-1" />
         <span className="hidden sm:block truncate max-w-[45%] text-[12px] font-mono text-slate-500 dark:text-slate-400">{s.ip} · {s.region} · {s.role}</span>
-        <span className={`text-xs font-medium px-2.5 py-1 rounded-sm ${
+        {/* Light values are the BASE, dark ones are `dark:` overrides — the same shape
+            as the rest of this page (`text-slate-500 dark:text-slate-400`). These were
+            dark-only (bg-green-900/40 with no light variant), so in light mode the badge
+            kept its near-black chip and the pale text on it was barely legible. */}
+        <span className={`text-xs font-medium px-2.5 py-1 rounded-sm border ${
           s.status === "Online"
-            ? "bg-green-900/40 text-green-400 border border-green-700/40"
+            ? "bg-green-100 text-green-700 border-green-300 dark:bg-green-900/40 dark:text-green-400 dark:border-green-700/40"
             : s.status === "Maintenance"
-              ? "bg-blue-900/40 text-blue-400 border border-blue-700/40"
-              : "bg-red-900/40 text-red-400 border border-red-700/40"
+              ? "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-400 dark:border-blue-700/40"
+              : "bg-red-100 text-red-700 border-red-300 dark:bg-red-900/40 dark:text-red-400 dark:border-red-700/40"
         }`}>
           {s.status}
         </span>
