@@ -166,6 +166,18 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
   );
 }
 
+// One labelled fact in a drawer's summary strip. The strip used to be bare values —
+// "RB951G-2HnD", "monitor-ro", "8729 · TLS" — which only reads if you already know
+// which field is which. The key is what makes a value information.
+function Meta({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5 min-w-0">
+      <span className="text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textDim }}>{label}</span>
+      <span className={`text-[12px] truncate ${mono ? "font-mono" : ""}`} style={{ color: gf.textMuted }}>{value}</span>
+    </span>
+  );
+}
+
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
 // Same pattern as ServerMetrics' ServerDrawerRow: the row carries what you scan, the
 // drawer the ports and identity you'd otherwise open the detail page for.
@@ -179,13 +191,14 @@ function MkDrawerRow({ d, isOpen, colSpan }: { d: MkDevice; isOpen: boolean; col
           style={{ maxHeight: isOpen ? 260 : 0, borderBottom: isOpen ? `1px solid ${gf.divider}` : "none" }}
         >
           <div className="p-3" style={{ background: gf.bg }}>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] mb-2" style={{ color: gf.textDim }}>
-              <span className="font-mono">{d.ip}</span>
-              <span>{d.location}</span>
-              {d.routerosVersion && <span>RouterOS {d.routerosVersion}</span>}
-              {d.boardModel && <span>{d.boardModel}</span>}
-              <span>API port {d.apiPort ?? "—"}{d.useTls ? " · TLS" : ""}</span>
-              {d.apiUsername && <span>user {d.apiUsername}</span>}
+            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1.5 mb-2.5">
+              <Meta label="IP" value={d.ip} mono />
+              <Meta label="Location" value={d.location} />
+              {d.routerosVersion && <Meta label="RouterOS" value={d.routerosVersion} />}
+              {d.boardModel && <Meta label="Board" value={d.boardModel} />}
+              <Meta label="API port" value={`${d.apiPort ?? "—"}${d.useTls ? " · TLS" : ""}`} />
+              {d.apiUsername && <Meta label="API user" value={d.apiUsername} mono />}
+              <Meta label="Uptime" value={formatUptime(d.uptimeSeconds)} />
             </div>
             {!d.monitored ? (
               <div className="text-[13px]" style={{ color: ORANGE }}>

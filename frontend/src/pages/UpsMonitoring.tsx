@@ -269,6 +269,17 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
   );
 }
 
+// One labelled fact in the drawer's summary strip. Bare values like "APC Smart-UPS"
+// or a lone health word only read if you already know which field is which.
+function Meta({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5 min-w-0">
+      <span className="text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textDim }}>{label}</span>
+      <span className={`text-[12px] truncate ${mono ? "font-mono" : ""}`} style={{ color: gf.textMuted }}>{value}</span>
+    </span>
+  );
+}
+
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
 // The bars and voltages that used to fill every card, shown only for the unit you
 // actually clicked. Same max-height slide as ServerMetrics' drawer.
@@ -284,11 +295,16 @@ function UpsDrawerRow({ u, isOpen, colSpan }: { u: UpsDevice; isOpen: boolean; c
           style={{ maxHeight: isOpen ? 260 : 0, borderBottom: isOpen ? `1px solid ${gf.divider}` : "none" }}
         >
           <div className="p-3" style={{ background: gf.bg }}>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] mb-2.5" style={{ color: gf.textDim }}>
-              <span className="font-mono">{u.ip}</span>
-              <span>{u.location}</span>
-              {[u.brand, u.model].filter(Boolean).length > 0 && <span>{[u.brand, u.model].filter(Boolean).join(" ")}</span>}
-              {health.text !== "—" && <span>Batt <span style={{ color: health.color }}>{health.text}</span></span>}
+            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1.5 mb-2.5">
+              <Meta label="IP" value={u.ip} mono />
+              <Meta label="Location" value={u.location} />
+              {[u.brand, u.model].filter(Boolean).length > 0 && (
+                <Meta label="Model" value={[u.brand, u.model].filter(Boolean).join(" ")} />
+              )}
+              {u.commType && <Meta label="Comms" value={u.commType.toUpperCase()} />}
+              {health.text !== "—" && (
+                <Meta label="Battery health" value={<span style={{ color: health.color }}>{health.text}</span>} />
+              )}
             </div>
 
             {!u.monitored ? (
