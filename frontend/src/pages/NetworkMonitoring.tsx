@@ -30,7 +30,6 @@ const GREEN = "#73BF69";
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
-const BLUE_HOVER = "#4A82DD";
 
 const inputStyle: React.CSSProperties = {
   background: gf.bg,
@@ -371,10 +370,8 @@ export default function NetworkMonitoring() {
           {isAdmin && (
             <button
               onClick={openAdd}
-              className="inline-flex items-center gap-1.5 text-[13px] font-medium transition-colors active:translate-y-px"
-              style={{ height: 28, padding: "0 10px", color: "#fff", background: BLUE, border: `1px solid ${BLUE}`, borderRadius: 2 }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = BLUE_HOVER; e.currentTarget.style.borderColor = BLUE_HOVER; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = BLUE; e.currentTarget.style.borderColor = BLUE; }}
+              className="gf-btn-primary inline-flex items-center gap-1.5 text-[13px] font-medium"
+              style={{ height: 28, padding: "0 10px" }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
               Add router
@@ -411,7 +408,7 @@ export default function NetworkMonitoring() {
                 : "A managed router (with SNMP enabled) must be registered by an admin to see live interface metrics here."}
             </p>
             {isAdmin && (
-              <button onClick={openAdd} className="gf-raise mt-4 text-[13px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: BLUE }}>
+              <button onClick={openAdd} className="gf-btn-primary mt-4 text-[13px] font-semibold px-3 py-1.5">
                 + Add router
               </button>
             )}

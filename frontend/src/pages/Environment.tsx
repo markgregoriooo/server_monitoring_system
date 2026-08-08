@@ -69,16 +69,14 @@ function RecalibrateGas({ isDark }: { isDark: boolean }) {
           {result.msg}
         </span>
       )}
+      {/* .gf-btn supplies the raised face, border, hover and press-inset (and its own
+          :disabled), so the hand-rolled border/background go. */}
       <button
         onClick={run}
         disabled={busy}
         title="Re-measure the MQ-2 clean-air baseline (admin) — use after moving the sensor"
-        className="text-[13px] px-2.5 py-1 rounded-[2px] transition-colors disabled:opacity-60"
-        style={{
-          color: "var(--gf-text-muted)",
-          border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"}`,
-          background: "transparent",
-        }}
+        className="gf-btn text-[13px] px-2.5 py-1"
+        style={{ color: "var(--gf-text-muted)" }}
       >
         {busy ? "Calibrating…" : "Recalibrate gas"}
       </button>
@@ -701,8 +699,8 @@ function GraphPanel({
 function ResetZoomBtn({ onClick }: { onClick: () => void }) {
   return (
     <button onClick={onClick}
-      className="flex items-center gap-1 text-[12px] font-mono px-2.5 py-1 rounded transition-colors"
-      style={{ color: GF.textMuted, border: `1px solid ${GF.divider}`, background: "transparent" }}
+      className="gf-btn flex items-center gap-1 text-[12px] font-mono px-2.5 py-1"
+      style={{ color: GF.textMuted }}
       onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = GF.textPrimary; }}
       onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = GF.textMuted; }}>
       <svg width="10" height="10" viewBox="0 0 14 14" fill="none">

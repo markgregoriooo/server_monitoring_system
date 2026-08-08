@@ -350,11 +350,14 @@ function AirconCard({
 
   const actions = (
     <>
+      {/* .gf-raise, not .gf-btn: this button's red/green tint IS its meaning (on →
+          "Turn Off" in red), and .gf-btn would replace that face with a neutral one.
+          .gf-raise adds only the lift and the press. */}
       {canManage && (
         <button
           onClick={handleToggle}
           disabled={toggling}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] text-[12px] font-semibold transition-colors disabled:opacity-40"
+          className="gf-raise flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] text-[12px] font-semibold disabled:opacity-40"
           style={{
             color: ac.enabled ? RED : GREEN,
             background: ac.enabled ? "rgba(242,73,92,0.1)" : "rgba(115,191,105,0.1)",
@@ -1184,10 +1187,7 @@ export default function AirConditioner() {
 
           {canManage && (
             <button onClick={() => setShowModal(true)}
-              className="gf-raise flex items-center gap-1.5 h-7 px-3 rounded-[2px] text-[13px] font-semibold transition-colors"
-              style={{ background: GF.accent, color: "#fff" }}
-              onMouseEnter={e => (e.currentTarget.style.background = "#4a82d8")}
-              onMouseLeave={e => (e.currentTarget.style.background = GF.accent)}>
+              className="gf-btn-primary flex items-center gap-1.5 h-7 px-3 text-[13px] font-semibold">
               <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
                 <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
               </svg>

@@ -60,7 +60,6 @@ const GREEN = "#73BF69";
 const AMBER = "#FF780A";
 const RED = "#F2495C";
 const ACCENT = "#5794F2";
-const ACCENT_HOVER = "#4A82DD";
 
 const gf = {
   bg: "var(--gf-bg)",
@@ -375,16 +374,8 @@ export default function Reports() {
         {canGenerate && (
           <button
             onClick={openModal}
-            className="inline-flex items-center gap-2 text-[14px] font-medium whitespace-nowrap transition-colors active:translate-y-px"
-            style={{ height: 32, padding: "0 12px", color: "#fff", background: ACCENT, border: `1px solid ${ACCENT}`, borderRadius: 2 }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = ACCENT_HOVER;
-              e.currentTarget.style.borderColor = ACCENT_HOVER;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = ACCENT;
-              e.currentTarget.style.borderColor = ACCENT;
-            }}
+            className="gf-btn-primary inline-flex items-center gap-2 text-[14px] font-medium whitespace-nowrap"
+            style={{ height: 32, padding: "0 12px" }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
               <path d="M12 5v14M5 12h14" />

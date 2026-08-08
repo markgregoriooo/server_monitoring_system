@@ -29,7 +29,6 @@ const GREEN = "#73BF69";
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
-const BLUE_HOVER = "#4278c4";
 
 function loadColor(v: number) {
   if (v >= 85) return RED;
@@ -667,10 +666,8 @@ export default function MikrotikMonitoring() {
           {isAdmin && (
             <button
               onClick={() => setAdding(true)}
-              className="inline-flex items-center gap-1.5 text-[13px] font-medium"
-              style={{ height: 28, padding: "0 10px", color: "#fff", background: BLUE, border: `1px solid ${BLUE}`, borderRadius: 2 }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = BLUE_HOVER; e.currentTarget.style.borderColor = BLUE_HOVER; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = BLUE; e.currentTarget.style.borderColor = BLUE; }}
+              className="gf-btn-primary inline-flex items-center gap-1.5 text-[13px] font-medium"
+              style={{ height: 28, padding: "0 10px" }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
               Add MikroTik
@@ -703,7 +700,7 @@ export default function MikrotikMonitoring() {
               Add your router below and set its read-only RouterOS login.
             </p>
             {isAdmin && (
-              <button onClick={() => setAdding(true)} className="gf-raise mt-4 text-[14px] px-3 py-1.5 rounded-[2px] font-medium" style={{ background: BLUE, color: "#fff" }}>
+              <button onClick={() => setAdding(true)} className="gf-btn-primary mt-4 text-[14px] px-3 py-1.5 font-medium">
                 + Add MikroTik
               </button>
             )}
