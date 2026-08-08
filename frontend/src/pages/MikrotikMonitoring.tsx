@@ -163,7 +163,7 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
     <button
       onClick={onClick}
       className="gf-btn text-[13px] font-medium px-2.5 py-1"
-      style={danger ? { color: RED, borderColor: `${RED}55` } : { color: gf.textMuted }}
+      style={{ color: danger ? RED : gf.textMuted }}
     >
       {children}
     </button>
@@ -729,15 +729,15 @@ export default function MikrotikMonitoring() {
                         <button
                           onClick={(e) => { e.stopPropagation(); void remove(d.id); }}
                           disabled={removing === d.id}
-                          className="px-2 py-1 rounded-md text-[12px] font-medium"
-                          style={{ color: RED, border: `1px solid ${RED}55`, background: "transparent", opacity: removing === d.id ? 0.6 : 1 }}
+                          className="gf-btn px-2 py-1 text-[12px] font-medium"
+                          style={{ color: RED }}
                         >
                           {removing === d.id ? "Removing…" : "Yes"}
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); setConfirmId(null); }}
-                          className="px-2 py-1 rounded-md text-[12px]"
-                          style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
+                          className="gf-btn px-2 py-1 text-[12px]"
+                          style={{ color: gf.textMuted }}
                         >
                           No
                         </button>

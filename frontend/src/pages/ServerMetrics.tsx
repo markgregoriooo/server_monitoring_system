@@ -340,7 +340,7 @@ function GhostButton({ children, onClick, danger }: { children: React.ReactNode;
     <button
       onClick={onClick}
       className="gf-btn text-[13px] font-medium px-2.5 py-1"
-      style={danger ? { color: RED, borderColor: "rgba(242,73,92,0.3)" } : { color: gf.textMuted }}
+      style={{ color: danger ? RED : gf.textMuted }}
     >
       {children}
     </button>
@@ -917,24 +917,27 @@ export default function ServerMetrics() {
                         <td className="px-3 py-2.5"><TableBar value={s.memory} /></td>
                         <td className="px-3 py-2.5"><TableBar value={s.diskUsed} /></td>
                         <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{s.uptime}</td>
-                        <td className="px-3 py-2.5 whitespace-nowrap text-right">
-                          <GhostButton onClick={(e) => { e.stopPropagation(); setDetailServer(s); }}>View</GhostButton>
-                          {isAdmin && (
-                            <span className="ml-2 inline-block">
-                              <GhostButton onClick={(e) => { e.stopPropagation(); setRenameTarget(s); }}>Rename</GhostButton>
+                        {/* One flex row with a single gap, matching the mobile card's
+                            action group. The old `ml-2 inline-block` wrappers spaced the
+                            GROUPS but not the buttons inside them, so Rename and Maintain
+                            — which ended up sharing a wrapper — sat flush against each
+                            other with no gap at all. */}
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-2">
+                            <GhostButton onClick={(e) => { e.stopPropagation(); setDetailServer(s); }}>View</GhostButton>
+                            {isAdmin && <GhostButton onClick={(e) => { e.stopPropagation(); setRenameTarget(s); }}>Rename</GhostButton>}
+                            {isAdmin && (
                               <GhostButton onClick={(e) => {
                                 e.stopPropagation();
                                 handleMaintenance(s.id, s.name, s.status === "Maintenance");
                               }}>
                                 {s.status === "Maintenance" ? "Resume" : "Maintain"}
                               </GhostButton>
-                            </span>
-                          )}
-                          {isAdmin && (
-                            <span className="ml-2 inline-block">
+                            )}
+                            {isAdmin && (
                               <GhostButton onClick={(e) => { e.stopPropagation(); handleDelete(s.id, s.name); }} danger>Remove</GhostButton>
-                            </span>
-                          )}
+                            )}
+                          </div>
                         </td>
                       </tr>
                       <ServerDrawerRow server={s} isOpen={openId === s.id} newestAgent={newestAgent} />
