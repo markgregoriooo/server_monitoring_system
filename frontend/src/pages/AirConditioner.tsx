@@ -1246,12 +1246,13 @@ export default function AirConditioner() {
                 <path d="M8 10h8M8 14h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
               <span className="text-[13px]" style={{ color: GF.textMuted }}>No aircon units registered.</span>
+              {/* Was a bare accent-coloured text link, which read as a hyperlink rather
+                  than the empty state's primary action. Now a real raised button,
+                  matching the other pages' empty states. */}
               {canManage && (
                 <button onClick={() => setShowModal(true)}
-                  className="text-[13px] font-semibold transition-colors"
-                  style={{ color: GF.accent }}
-                  onMouseEnter={e => (e.currentTarget.style.opacity = "0.8")}
-                  onMouseLeave={e => (e.currentTarget.style.opacity = "1")}>
+                  className="gf-btn text-[13px] font-semibold px-3 py-1.5"
+                  style={{ color: GF.textPrimary }}>
                   Add the first unit →
                 </button>
               )}

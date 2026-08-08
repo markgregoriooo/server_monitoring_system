@@ -1109,7 +1109,7 @@ function EmptyState({ filtered, onAdd, onClear }: { filtered: boolean; onAdd: ()
             With rules-only alerting, nothing will fire until you add a rule. Apply the seed migration
             or create one now.
           </div>
-          <button onClick={onAdd} className="gf-raise text-[13px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: gf.accent }}>
+          <button onClick={onAdd} className="gf-btn text-[13px] font-semibold px-3 py-1.5" style={{ color: gf.textPrimary }}>
             + Add your first rule
           </button>
         </>

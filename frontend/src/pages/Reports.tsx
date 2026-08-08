@@ -770,7 +770,7 @@ function EmptyState({ filtered, canGenerate, onGenerate, onClear }: { filtered: 
             {canGenerate ? "Generate a summary of environment, server, network, UPS, alert or aircon activity for any time window." : "No reports have been generated yet."}
           </div>
           {canGenerate && (
-            <button onClick={onGenerate} className="gf-raise text-[13px] font-semibold px-3 py-1.5 rounded-md" style={{ color: "#fff", background: gf.accent }}>+ Generate your first report</button>
+            <button onClick={onGenerate} className="gf-btn text-[13px] font-semibold px-3 py-1.5" style={{ color: gf.textPrimary }}>+ Generate your first report</button>
           )}
         </>
       )}
