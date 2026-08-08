@@ -60,11 +60,18 @@ export default function RangePicker({
   onChange,
   error,
   variant = "slate",
+  size = "sm",
 }: {
   value: RangeValue;
   onChange: (v: RangeValue) => void;
   error?: string | undefined; // server-side rejection, surfaced next to the inputs
   variant?: "slate" | "gf";
+  // "sm" is the default because most consumers put this in a 32px PANEL HEADER
+  // alongside other controls, where a taller control would burst the row. "md"
+  // matches the standard .gf-btn body size (13px / px-2.5 / py-1) for pages that
+  // give the picker a toolbar of its own — Environment, where it sits next to
+  // Recalibrate gas and looked undersized beside it.
+  size?: "sm" | "md";
 }) {
   const [open, setOpen] = useState(false);
   const [startInput, setStartInput] = useState("");
@@ -82,9 +89,12 @@ export default function RangePicker({
   const groupCls = gf
     ? "flex rounded-md overflow-hidden shrink-0 border border-[var(--gf-panel-border)]"
     : "flex gap-1 shrink-0 bg-slate-100 dark:bg-white/[0.05] rounded-md p-0.5";
+  // Whole literal strings per size too — Tailwind's scanner can't see a class built
+  // by concatenation, so `text-[${n}px]` would simply never be emitted.
+  const gfSizeCls = size === "md" ? "text-[13px] px-2.5 py-1" : "text-[12px] px-2 py-0.5";
   const btnCls = (active: boolean) =>
     gf
-      ? `text-[12px] px-2 py-0.5 transition-colors ${active ? "bg-[var(--gf-hover)] text-[var(--gf-text-primary)]" : "text-[var(--gf-text-muted)]"}`
+      ? `${gfSizeCls} transition-colors ${active ? "bg-[var(--gf-hover)] text-[var(--gf-text-primary)]" : "text-[var(--gf-text-muted)]"}`
       : `px-2.5 py-1 rounded text-[13px] font-medium transition-colors ${
           active
             ? "bg-white dark:bg-white/[0.12] text-slate-900 dark:text-white shadow-sm"
@@ -182,7 +192,8 @@ export default function RangePicker({
           title="Custom time range"
           className={`${btnCls(isCustom)} inline-flex items-center gap-1`}
         >
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          {/* Icon tracks the button size, or it reads as a speck on the md variant. */}
+          <svg width={size === "md" ? 12 : 10} height={size === "md" ? 12 : 10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <rect x="3" y="5" width="18" height="16" rx="2" />
             <path d="M3 10h18M8 3v4M16 3v4" />
           </svg>

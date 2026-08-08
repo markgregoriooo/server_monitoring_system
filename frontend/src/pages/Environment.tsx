@@ -1092,7 +1092,9 @@ export default function Environment() {
         {/* Same shared picker the Server Metrics / detail pages use, so the range
             control is identical everywhere. No refresh button: `sensorData` streams in
             live every ~3s, so the view is never stale enough to need one. */}
-        <RangePicker value={range} onChange={setRange} variant="gf" />
+        {/* size="md" so the presets match the Recalibrate gas button beside them —
+            this page gives the picker a toolbar of its own rather than a panel header. */}
+        <RangePicker value={range} onChange={setRange} variant="gf" size="md" />
       </div>
 
       {/* ── Sensor-offline banner ──────────────────────────────────────────────
