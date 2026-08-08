@@ -1,6 +1,7 @@
 // ─── Shared in-memory "current severity band" per (device, metric) ──────────────
-// Used by the alert TRIGGER sites (agentService.checkThresholds + handlers/sensorHandler)
-// and re-armed by the alert LIFECYCLE (alertsService.resolve / autoResolveMetric).
+// Used by the alert TRIGGER sites (agentService.checkThresholds, handlers/sensorHandler
+// and services/deviceAlerts for routers / MikroTik / UPS) and re-armed by the alert
+// LIFECYCLE (alertsService.resolve / autoResolveMetric).
 //
 // Why it's centralized: alerts are only raised on the ONSET of a worse band (an
 // escalation) — a metric sitting at "critical" doesn't re-fire every poll. That band
@@ -11,7 +12,9 @@
 // PagerDuty/Opsgenie re-open an incident whose source is still firing).
 //
 // Key = `${deviceId ?? "room"}:${metric}`. deviceId is null for room-level environment
-// metrics (temperature/gas/humidity); a real id for server metrics (cpu/mem/disk).
+// metrics (temperature/gas/humidity); a real id for server metrics (cpu/mem/disk) and
+// for router/UPS metrics + events, whose keys carry a per-interface suffix where one
+// applies (`link_util:ether3`) so each port tracks its own band and streak.
 // A missing key means "normal" (the default), so this never needs seeding.
 
 const DEFAULT_BAND = "normal";

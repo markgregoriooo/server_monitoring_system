@@ -12,7 +12,9 @@ import agentService from "./agentService.js";
 // CONFIGURABLE alert_rules (alertRulesService), track the current severity band per
 // (device, metric) in the shared alertBandState, and on the ONSET of a worse band
 // raise a real alert (notificationService.raiseAlert → bell + toast + email + the
-// Alerts page) AND a device_log. Recovery to "normal" auto-resolves the open alert.
+// Alerts page) AND a device_log. Recovery to "normal" auto-resolves the open alert,
+// but only after ALERT_RECOVERY_SAMPLES consecutive normals (alertBandState.
+// confirmRecovery) — the same three-strike all-clear servers and the environment use.
 // Hysteresis + the restart-proof DB cooldown are inherited from
 // alertRulesService.nextBand / raiseAlert — no per-call tuning here.
 //
@@ -68,12 +70,33 @@ async function evalMetric({ deviceId, metricName, type, value, label, unit = "",
   const prevBand = alertBandState.getBand(deviceId, type);
   const rules = await alertRulesService.getEffectiveRules(deviceId, metricName, iface);
   const { band, rule } = alertRulesService.nextBand(rules, value, prevBand);
-  alertBandState.setBand(deviceId, type, band); // track always, so a later breach re-arms
 
+  // Recovery needs CONFIRMATION — one normal sample can be a dip in a metric
+  // oscillating around its threshold. Hold the previous band until N consecutive
+  // normals (ALERT_RECOVERY_SAMPLES), so a bursty uplink crossing its link_util
+  // threshold raises ONE alert instead of an alert/auto-resolve storm. Escalation is
+  // unaffected and still instant — only the all-clear waits.
+  //
+  // nextBand's 5% hysteresis margin already damps the tightest flapping; this covers
+  // the swings that clear the margin but still aren't a real recovery — exactly the
+  // shape of bursty traffic on link_util / link_errors.
+  //
+  // ⚠️ Counts SAMPLES, not seconds, so the wall-clock differs per source: ~3 min on the
+  // 60s SNMP poll and ~1.5 min on the 30s MikroTik poll, vs ~30s for a default Go
+  // agent. That is a delayed ALL-CLEAR only; nothing is detected later because of it.
+  let effectiveBand = band;
   if (band === "normal" && prevBand !== "normal") {
-    await alertsService.autoResolveMetric(deviceId, type); // recovered → close open alert
+    if (alertBandState.confirmRecovery(deviceId, type)) {
+      await alertsService.autoResolveMetric(deviceId, type); // recovered → close open alert
+    } else {
+      effectiveBand = prevBand; // not convinced yet — stay in the old band
+    }
+  } else if (band !== "normal") {
+    alertBandState.breakRecovery(deviceId, type); // breaching again → run of normals broken
   }
-  if (SEV_RANK[band] <= SEV_RANK[prevBand]) return null; // only the ONSET of a worse band
+  alertBandState.setBand(deviceId, type, effectiveBand); // track always, so a later breach re-arms
+
+  if (SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) return null; // only the ONSET of a worse band
 
   const shown = Number.isInteger(value) ? `${value}${unit}` : `${Math.round(value)}${unit}`;
   const word = low
@@ -95,14 +118,33 @@ async function evalMetric({ deviceId, metricName, type, value, label, unit = "",
 async function evalEvent({ deviceId, type, active, severity, title, message, baselineKey }) {
   const band = active ? severity : "normal";
   const prevBand = alertBandState.getBand(deviceId, type);
-  alertBandState.setBand(deviceId, type, band);
 
-  if (baselineKey && !seenLink.has(baselineKey)) { seenLink.add(baselineKey); return null; }
-  if (band === "normal" && prevBand !== "normal") {
-    await alertsService.autoResolveMetric(deviceId, type);
+  // First sighting establishes the baseline and never alerts (links only). Still
+  // records the band, so a link already down at startup alerts on its next real
+  // up→down, not immediately.
+  if (baselineKey && !seenLink.has(baselineKey)) {
+    seenLink.add(baselineKey);
+    alertBandState.setBand(deviceId, type, band);
     return null;
   }
-  if (SEV_RANK[band] <= SEV_RANK[prevBand]) return null;
+
+  // Same recovery confirmation as evalMetric — and it matters MORE here. A boolean has
+  // no threshold to put a hysteresis margin around, so this streak is the only damping
+  // a flapping link or a stuttering mains supply gets. A port bouncing up/down would
+  // otherwise raise + auto-resolve on every single poll.
+  let effectiveBand = band;
+  if (band === "normal" && prevBand !== "normal") {
+    if (alertBandState.confirmRecovery(deviceId, type)) {
+      await alertsService.autoResolveMetric(deviceId, type);
+    } else {
+      effectiveBand = prevBand; // not convinced the link/mains is really back yet
+    }
+  } else if (band !== "normal") {
+    alertBandState.breakRecovery(deviceId, type);
+  }
+  alertBandState.setBand(deviceId, type, effectiveBand);
+
+  if (SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) return null;
 
   const log = await agentService.logDevice(deviceId, severity, message);
   await notificationService.raiseAlert({ deviceId, type, severity, title, message });
