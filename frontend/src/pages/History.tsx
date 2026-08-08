@@ -117,13 +117,16 @@ const PAGE_SIZE = 50;
 // ── Small UI atoms ──
 function Seg({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
   return (
+    // Same toggle logic as Pill: the selected tab reads as pressed in, the other as
+    // raised and clickable.
     <button
       onClick={onClick}
-      className="text-[12px] px-2.5 py-1 rounded-[2px] transition-colors whitespace-nowrap"
+      className="gf-btn text-[12px] px-2.5 py-1 whitespace-nowrap"
       style={{
         color: active ? gf.textPrimary : gf.textMuted,
-        background: active ? gf.accentDim : "transparent",
-        border: `1px solid ${active ? gf.accent : gf.border}`,
+        ...(active
+          ? { background: gf.accentDim, borderColor: gf.accent, boxShadow: "var(--gf-btn-shadow-active)" }
+          : {}),
       }}
     >
       {children}
@@ -136,13 +139,18 @@ function Pill({ active, color, onClick, children }: {
 }) {
   const c = color ?? gf.accent;
   return (
+    // A filter is a TOGGLE, so the two states get opposite depth: unselected sits
+    // raised on .gf-btn's face and invites a click, selected is pushed INTO the page
+    // with the inset shadow. That reads as "this one is on" without relying on colour
+    // alone, which matters here because the fill colour is the category's, not a
+    // selection colour. Inline styles win over the class, so the active branch keeps
+    // its own face and swaps only the shadow.
     <button
       onClick={onClick}
-      className="text-[12px] px-2 py-1 rounded-[2px] capitalize transition-colors whitespace-nowrap"
+      className="gf-btn text-[12px] px-2 py-1 capitalize whitespace-nowrap"
       style={{
         color: active ? "#fff" : gf.textMuted,
-        background: active ? c : "transparent",
-        border: `1px solid ${active ? c : gf.border}`,
+        ...(active ? { background: c, borderColor: c, boxShadow: "var(--gf-btn-shadow-active)" } : {}),
       }}
     >
       {children}
