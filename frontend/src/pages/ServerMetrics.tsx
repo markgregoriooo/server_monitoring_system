@@ -269,29 +269,6 @@ function StatPanel({
   );
 }
 
-// ─── BarGauge (Grafana gradient horizontal bar — per host) ────────────────────
-
-function BarGauge({ label, value, status }: { label: string; value: number; status?: string }) {
-  const v = Math.min(Math.max(value, 0), 100);
-  return (
-    <div className="flex items-center gap-3 px-3 py-1.5">
-      <div className="flex items-center gap-2 w-28 shrink-0">
-        {status && (
-          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: statusColor(status), boxShadow: `0 0 5px ${statusColor(status)}` }} />
-        )}
-        <span className="text-[13px] truncate" style={{ color: gf.textPrimary }}>{label}</span>
-      </div>
-      <div className="flex-1 h-3.5 rounded-[2px] overflow-hidden" style={{ background: TRACK }}>
-        <div
-          className="h-full rounded-[2px] transition-all duration-500"
-          style={{ width: `${v}%`, background: BAR_GRADIENT, backgroundSize: `${v > 0 ? (100 / v) * 100 : 100}% 100%` }}
-        />
-      </div>
-      <span className="text-[13px] font-bold w-10 text-right shrink-0" style={{ color: loadColor(v) }}>{v}%</span>
-    </div>
-  );
-}
-
 // ─── Inline bar (table cell) ──────────────────────────────────────────────────
 
 function TableBar({ value }: { value: number }) {
@@ -830,20 +807,6 @@ export default function ServerMetrics() {
         <StatPanel label="Online" value={`${online}/${total}`} color={onlineColor} sub={`${total - online} offline`} />
         <StatPanel label="Avg CPU" value={String(cpuAvg)} unit="%" color={loadColor(cpuAvg)} spark={aggCpu} />
         <StatPanel label="Avg Memory" value={String(memAvg)} unit="%" color={loadColor(memAvg)} spark={aggMem} />
-      </div>
-
-      {/* Per-host bar gauges */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
-        <Panel title="Host CPU" noPad bodyStyle={{ padding: "6px 0" }}>
-          {servers.length === 0
-            ? <div className="text-[12px] text-center py-5" style={{ color: gf.textDim }}>No hosts</div>
-            : servers.map((s) => <BarGauge key={s.id} label={s.name} value={s.cpu} status={s.status} />)}
-        </Panel>
-        <Panel title="Host Memory" noPad bodyStyle={{ padding: "6px 0" }}>
-          {servers.length === 0
-            ? <div className="text-[12px] text-center py-5" style={{ color: gf.textDim }}>No hosts</div>
-            : servers.map((s) => <BarGauge key={s.id} label={s.name} value={s.memory} status={s.status} />)}
-        </Panel>
       </div>
 
       {/* Server list */}
