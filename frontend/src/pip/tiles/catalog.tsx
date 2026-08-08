@@ -25,10 +25,19 @@ const gasColor = (smoke: string) => (smoke === "DANGER" ? RED : smoke === "WARNI
 export interface TileDef {
   id: string;
   label: string;
+  // One line on what the tile actually shows. Surfaced in the builder — a label alone
+  // doesn't distinguish "Network ports" from "Router list", and picking blind means
+  // adding a tile, popping out, and coming back to change it.
+  description?: string;
   group: "Environment" | "Servers" | "Network" | "UPS" | "Alerts" | "Aircon" | "General";
   span?: 1 | 2;
   Render: FC;
 }
+
+// Widget capacity. MUST match MAX_TILES in backend/services/widgetPrefsService.js — the
+// server truncates a longer layout on save, so without this the builder would let you
+// add a 17th tile and silently lose it.
+export const MAX_TILES = 16;
 
 // ── shared tile chrome ──
 function Shell({ label, children }: { label: string; children: ReactNode }) {
@@ -499,19 +508,19 @@ const ClockTile: FC = () => {
 };
 
 export const TILE_CATALOG: TileDef[] = [
-  { id: "env.temp", label: "Temperature", group: "Environment", span: 1, Render: TempTile },
-  { id: "env.humidity", label: "Humidity", group: "Environment", span: 1, Render: HumidityTile },
-  { id: "env.gas", label: "Gas", group: "Environment", span: 1, Render: GasTile },
-  { id: "servers.summary", label: "Servers summary", group: "Servers", span: 2, Render: ServersTile },
-  { id: "servers.list", label: "Server list (names)", group: "Servers", span: 2, Render: ServerListTile },
-  { id: "ups.summary", label: "UPS battery (worst)", group: "UPS", span: 1, Render: UpsTile },
-  { id: "ups.list", label: "UPS list (names)", group: "UPS", span: 2, Render: UpsListTile },
-  { id: "network.summary", label: "Network ports", group: "Network", span: 1, Render: NetworkTile },
-  { id: "network.list", label: "Router list (names)", group: "Network", span: 2, Render: NetworkListTile },
-  { id: "alerts.count", label: "Open alerts", group: "Alerts", span: 1, Render: AlertCountTile },
-  { id: "alerts.latest", label: "Latest alert", group: "Alerts", span: 2, Render: LatestAlertTile },
-  { id: "aircon.summary", label: "Aircon", group: "Aircon", span: 1, Render: AirconTile },
-  { id: "meta.clock", label: "Clock", group: "General", span: 1, Render: ClockTile },
+  { id: "env.temp", label: "Temperature", description: "Server-room temp, zone-coloured", group: "Environment", span: 1, Render: TempTile },
+  { id: "env.humidity", label: "Humidity", description: "Relative humidity %", group: "Environment", span: 1, Render: HumidityTile },
+  { id: "env.gas", label: "Gas", description: "MQ-2 ppm + smoke band", group: "Environment", span: 1, Render: GasTile },
+  { id: "servers.summary", label: "Servers summary", description: "Online count + worst CPU/mem", group: "Servers", span: 2, Render: ServersTile },
+  { id: "servers.list", label: "Server list", description: "Each server by name, busiest first", group: "Servers", span: 2, Render: ServerListTile },
+  { id: "ups.summary", label: "UPS battery", description: "Worst charge/runtime of all UPS", group: "UPS", span: 1, Render: UpsTile },
+  { id: "ups.list", label: "UPS list", description: "Each UPS by name, on-battery first", group: "UPS", span: 2, Render: UpsListTile },
+  { id: "network.summary", label: "Network ports", description: "Ports up across all routers", group: "Network", span: 1, Render: NetworkTile },
+  { id: "network.list", label: "Router list", description: "Each router by name, offline first", group: "Network", span: 2, Render: NetworkListTile },
+  { id: "alerts.count", label: "Open alerts", description: "Count of unresolved incidents", group: "Alerts", span: 1, Render: AlertCountTile },
+  { id: "alerts.latest", label: "Latest alert", description: "Newest alert + which device", group: "Alerts", span: 2, Render: LatestAlertTile },
+  { id: "aircon.summary", label: "Aircon", description: "How many AC units are on", group: "Aircon", span: 1, Render: AirconTile },
+  { id: "meta.clock", label: "Clock", description: "Local time + connection state", group: "General", span: 1, Render: ClockTile },
 ];
 
 export const TILE_BY_ID = new Map(TILE_CATALOG.map((t) => [t.id, t]));
@@ -556,6 +565,7 @@ export function resolveTile(id: string): TileDef | undefined {
   return {
     id,
     label: kind === "ups" ? `UPS #${deviceId}` : `Router #${deviceId}`,
+    description: kind === "ups" ? "One pinned UPS" : "One pinned router",
     group: kind === "ups" ? "UPS" : "Network",
     span: 1,
     Render: () => (kind === "ups" ? <UpsDeviceTile deviceId={deviceId} /> : <NetDeviceTile deviceId={deviceId} />),

@@ -20,7 +20,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useWidgetLayout } from "./useWidgetLayout";
 import { usePip } from "./PipContext";
 import PipWidget from "./PipWidget";
-import { TILE_CATALOG, DEFAULT_LAYOUT, resolveTile, deviceTileId } from "./tiles/catalog";
+import { TILE_CATALOG, DEFAULT_LAYOUT, MAX_TILES, resolveTile, deviceTileId } from "./tiles/catalog";
 import type { TileDef } from "./tiles/catalog";
 import { useLiveSummary } from "./LiveSummaryContext";
 
@@ -70,10 +70,8 @@ function DevicePicker({
         if (e.target.value) onPick(e.target.value);
         e.target.value = "";
       }}
-      className="text-[12px] px-2 py-1.5 rounded-[2px] outline-none w-full"
+      className="gf-btn text-[12px] px-2 py-1.5 outline-none w-full"
       style={{
-        background: "var(--gf-panel)",
-        border: "1px solid var(--gf-panel-border)",
         color: none ? "var(--gf-text-dim)" : "var(--gf-text-primary)",
         cursor: none ? "default" : "pointer",
         fontFamily: "'JetBrains Mono', monospace",
@@ -100,8 +98,13 @@ function SortableRow({ id, label, onRemove }: { id: string; label: string; onRem
         transition,
         opacity: isDragging ? 0.6 : 1,
         background: isDragging ? "var(--gf-hover)" : "var(--gf-panel)",
+        // While dragging, dnd-kit owns `transform`, so the class's :active nudge would
+        // fight it. Lifting the shadow instead reads as the row being picked UP.
+        boxShadow: isDragging ? "var(--gf-shadow)" : undefined,
       }}
-      className="flex items-center gap-2 px-2 py-1.5"
+      // Depth only — the row already has its own panel face, so .gf-raise (not .gf-btn)
+      // gives it the same lift/press language as the buttons without recolouring it.
+      className="gf-raise flex items-center gap-2 px-2.5 py-2"
     >
       <button
         type="button"
@@ -190,8 +193,31 @@ export default function WidgetBuilder() {
     return def.label;
   };
 
-  const add = (id: string) => setDraft((d) => (d.includes(id) ? d : [...d, id]));
+  const add = (id: string) => setDraft((d) => (d.includes(id) || d.length >= MAX_TILES ? d : [...d, id]));
   const removeTile = (id: string) => setDraft((d) => d.filter((x) => x !== id));
+  // The available list toggles: clicking an added tile takes it back off. Previously an
+  // added row was simply disabled, which left dead weight in the column and made the
+  // "Your widget" list the only way to undo a misclick.
+  const toggle = (id: string) => (inDraft.has(id) ? removeTile(id) : add(id));
+
+  const full = draft.length >= MAX_TILES;
+
+  // Search across label, description and group. At 13 static tiles plus a device per
+  // router/UPS, scanning seven groups by eye is the slow part of building a layout.
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const matches = (t: TileDef) =>
+    !q ||
+    t.label.toLowerCase().includes(q) ||
+    (t.description ?? "").toLowerCase().includes(q) ||
+    t.group.toLowerCase().includes(q);
+
+  const visibleGroups = groups
+    .map(([group, tiles]) => [group, tiles.filter(matches)] as [string, TileDef[]])
+    // A group whose tiles are all filtered out still shows if its device picker is
+    // relevant to the query, so searching "ups" never hides the UPS picker.
+    .filter(([group, tiles]) => tiles.length > 0 || (!!q && group.toLowerCase().includes(q)));
+  const nothingMatches = visibleGroups.length === 0;
 
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
@@ -228,25 +254,91 @@ export default function WidgetBuilder() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* ── Available tiles ── */}
           <div className="flex flex-col gap-3">
-            <div className="text-[10px] tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>Available tiles</div>
-            {groups.map(([group, tiles]) => (
-              <div key={group} className="flex flex-col gap-1">
-                <div className="text-[9px] tracking-widest uppercase" style={{ color: "var(--gf-text-dim)" }}>{group}</div>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-[10px] tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>Available tiles</span>
+              {/* Capacity is surfaced because the SERVER truncates at MAX_TILES; without
+                  it a 17th tile would be added, saved, and silently dropped. */}
+              <span
+                className="text-[10px] tabular-nums px-1.5 py-0.5 rounded-[2px]"
+                style={{
+                  color: full ? "#FF780A" : "var(--gf-text-dim)",
+                  background: full ? "rgba(255,120,10,0.12)" : "transparent",
+                }}
+              >
+                {draft.length}/{MAX_TILES} added
+              </span>
+            </div>
+
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search tiles…"
+              aria-label="Search available tiles"
+              className="text-[12px] px-2 py-1.5 rounded-[2px] outline-none w-full"
+              style={{
+                background: "var(--gf-bg)",
+                border: "1px solid var(--gf-panel-border)",
+                color: "var(--gf-text-primary)",
+                fontFamily: "'JetBrains Mono', monospace",
+              }}
+            />
+
+            {nothingMatches && (
+              <div className="text-[11px] px-2 py-3 text-center rounded-[2px]"
+                style={{ color: "var(--gf-text-dim)", border: "1px dashed var(--gf-panel-border)" }}>
+                Nothing matches “{query}”.
+              </div>
+            )}
+
+            {visibleGroups.map(([group, tiles]) => {
+              const addedInGroup = tiles.filter((t) => inDraft.has(t.id)).length;
+              return (
+              <div key={group} className="flex flex-col gap-1.5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-[10px] tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>{group}</span>
+                  {tiles.length > 0 && (
+                    <span className="text-[9px] tabular-nums" style={{ color: "var(--gf-text-dim)" }}>
+                      {addedInGroup}/{tiles.length}
+                    </span>
+                  )}
+                </div>
                 {tiles.map((t) => {
                   const added = inDraft.has(t.id);
+                  // At capacity, only REMOVING stays possible — an add that the server
+                  // would silently drop must not look available.
+                  const blocked = !added && full;
                   return (
                     <button
                       key={t.id}
                       type="button"
-                      disabled={added}
-                      onClick={() => add(t.id)}
-                      className="flex items-center justify-between gap-2 px-2 py-1.5 text-left transition-colors"
-                      style={{ ...panel, opacity: added ? 0.5 : 1, cursor: added ? "default" : "pointer" }}
-                      onMouseEnter={(e) => { if (!added) e.currentTarget.style.background = "var(--gf-hover)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "var(--gf-panel)"; }}
+                      disabled={blocked}
+                      aria-pressed={added}
+                      title={blocked ? `Widget is full (${MAX_TILES} tiles) — remove one first` : added ? "Click to remove" : "Click to add"}
+                      onClick={() => toggle(t.id)}
+                      className="gf-btn flex items-start justify-between gap-2 px-2.5 py-2 text-left w-full"
+                      style={{ cursor: blocked ? "default" : "pointer" }}
                     >
-                      <span className="text-[12px] truncate" style={{ color: "var(--gf-text-primary)" }}>{t.label}</span>
-                      <span className="text-[14px] leading-none flex-shrink-0" style={{ color: added ? "#73BF69" : "var(--gf-accent)" }}>
+                      <span className="flex flex-col min-w-0 gap-0.5">
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-[12px] truncate" style={{ color: "var(--gf-text-primary)" }}>{t.label}</span>
+                          {/* Span-2 tiles take a whole row; knowing that before you add
+                              one is the difference between a tidy grid and a surprise. */}
+                          {t.span === 2 && (
+                            <span className="text-[8px] tracking-widest uppercase px-1 py-px rounded-[2px] flex-shrink-0"
+                              style={{ color: "var(--gf-text-dim)", border: "1px solid var(--gf-panel-border)" }}>
+                              wide
+                            </span>
+                          )}
+                        </span>
+                        {t.description && (
+                          <span className="text-[10px] leading-snug truncate" style={{ color: "var(--gf-text-dim)" }}>
+                            {t.description}
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-[14px] leading-none flex-shrink-0 mt-0.5"
+                        style={{ color: added ? "#73BF69" : blocked ? "var(--gf-text-dim)" : "var(--gf-accent)" }}>
                         {added ? "✓" : "+"}
                       </span>
                     </button>
@@ -270,12 +362,20 @@ export default function WidgetBuilder() {
                   />
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* ── Your widget (sortable) ── */}
           <div className="flex flex-col gap-2">
-            <div className="text-[10px] tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>Your widget</div>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-[10px] tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>Your widget</span>
+              {draft.length > 0 && (
+                <span className="text-[9px] tabular-nums" style={{ color: "var(--gf-text-dim)" }}>
+                  drag ⠿ to reorder
+                </span>
+              )}
+            </div>
             {draft.length === 0 ? (
               <div className="text-[11px] px-2 py-4 text-center rounded-[2px]"
                 style={{ color: "var(--gf-text-dim)", border: "1px dashed var(--gf-panel-border)" }}>
