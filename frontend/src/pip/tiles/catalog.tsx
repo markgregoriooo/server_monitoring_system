@@ -614,3 +614,72 @@ export function resolveTile(id: string): TileDef | undefined {
 
 // Sensible default until the user customizes (Phase 4).
 export const DEFAULT_LAYOUT = ["env.temp", "env.humidity", "env.gas", "alerts.count", "servers.list", "alerts.latest"];
+
+// ─── Window sizing ────────────────────────────────────────────────────────────
+// The pop-out used to open at a fixed 340x300 whatever the layout was, so a widget
+// with ten tiles had to be scrolled — which defeats a glance surface, and contradicts
+// the whole reason servers.list is one line per server.
+//
+// requestWindow only takes an INITIAL size, so this is computed at open time rather
+// than reactively. It is deliberately an ESTIMATE: list tiles grow with how many
+// devices exist, and the true height depends on text wrapping we can't measure before
+// paint. Being wrong is safe in both directions — the tile grid is overflow-y-auto, so
+// an under-estimate scrolls (the old behaviour) and an over-estimate leaves a little
+// empty space. Numbers below are derived from the actual Tailwind classes on Shell and
+// PipWidget; if those paddings change, these drift.
+export const WIDGET_WIDTH = 340; // fixed: the grid is always 2 columns
+
+const HEADER_H = 28; // PipWidget header strip (h-7)
+const PAD_V = 12; // tile container p-1.5, top + bottom
+const GAP = 6; // grid gap-1.5 between rows
+const STAT_H = 56; // Shell py-2 + 8px label + 15px Big + a 9px sub-line
+const LIST_HEAD = 29; // Shell padding-top + label row
+const LIST_COLHEAD = 12; // servers.list only — its once-off CPU·MEM/LOAD header
+const LIST_ROW = 22; // one device row (py-1 + ~14px content)
+const SHELL_PAD_B = 8; // Shell padding-bottom
+const MIN_H = 200;
+const MAX_H = 640; // past this, scrolling is the better answer than a tall window
+
+export interface DeviceCounts {
+  servers: number;
+  ups: number;
+  routers: number;
+}
+
+// Rows are clamped to >= 1 because an empty list still renders its "No servers" line.
+function tileHeight(id: string, c: DeviceCounts): number {
+  if (id === "servers.list") return LIST_HEAD + LIST_COLHEAD + Math.max(1, c.servers) * LIST_ROW + SHELL_PAD_B;
+  if (id === "ups.list") return LIST_HEAD + Math.max(1, c.ups) * LIST_ROW + SHELL_PAD_B;
+  if (id === "network.list") return LIST_HEAD + Math.max(1, c.routers) * LIST_ROW + SHELL_PAD_B;
+  return STAT_H;
+}
+
+// Packs the layout the way the CSS grid does — span-1 tiles pair up, span-2 take a
+// whole row — then sums the row heights. A row of two tiles is as tall as the taller.
+export function estimateWidgetSize(layout: string[], counts: DeviceCounts): { width: number; height: number } {
+  const rows: number[] = [];
+  let pending: number | null = null; // a span-1 tile waiting for its partner
+
+  for (const id of layout) {
+    const def = resolveTile(id);
+    if (!def) continue; // unknown id — skipped at render too
+    const h = tileHeight(def.id, counts);
+    if (def.span === 2) {
+      if (pending != null) {
+        rows.push(pending);
+        pending = null;
+      }
+      rows.push(h);
+    } else if (pending == null) {
+      pending = h;
+    } else {
+      rows.push(Math.max(pending, h));
+      pending = null;
+    }
+  }
+  if (pending != null) rows.push(pending);
+
+  const content = rows.reduce((a, b) => a + b, 0) + Math.max(0, rows.length - 1) * GAP;
+  const height = Math.min(MAX_H, Math.max(MIN_H, Math.round(HEADER_H + PAD_V + content)));
+  return { width: WIDGET_WIDTH, height };
+}

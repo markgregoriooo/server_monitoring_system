@@ -370,6 +370,24 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
         carries no information there. Device-level failure is still covered by the offline
         sweep and poller reachability — this catches the layer above them. ✅
 
+- [x] **Post-1.0 — window sized to the layout.** The pop-out always opened at 340×300 no matter
+      what was on it, so a ten-tile widget had to be SCROLLED — which defeats a glance surface
+      and contradicts the reason `servers.list` is one line per server. `estimateWidgetSize()`
+      (in `tiles/catalog.tsx`) packs the layout the way the CSS grid does — span-1 tiles pair
+      up, span-2 take a whole row — and sums the row heights; `PipProvider` calls it on every
+      `open()`. Notes:
+      - `requestWindow` accepts only an INITIAL size, so this is computed per open rather than
+        tracked reactively. Width stays fixed at 340 (the grid is always 2 columns).
+      - It is an **estimate** — list tiles grow with device count, and true height depends on
+        wrapping that can't be measured before paint. Safe in both directions: the tile grid
+        is `overflow-y-auto`, so under-estimating scrolls (the old behaviour) and
+        over-estimating leaves a little space. Clamped to 200–640px.
+      - The constants are derived from the actual Tailwind classes on `Shell`/`PipWidget`. If
+        those paddings change, the estimate drifts — it's a heuristic, not a binding contract.
+      - `PipProvider` had to move to computing this because it is mounted inside
+        `LiveSummaryProvider` + `WidgetLayoutProvider`; it stays synchronous up to `pip.open`,
+        since `requestWindow` must be the first await or the user gesture is spent. ✅
+
 > **Feature complete.** Remaining manual step: run `migrations/2026-06-17_widget_prefs.sql`
 > in phpMyAdmin so layouts persist server-side (cross-device). Until then it works off the
 > localStorage cache. Verify the pop-out in Chrome/Edge (see below).
