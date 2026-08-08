@@ -1187,7 +1187,7 @@ export default function AirConditioner() {
 
           {canManage && (
             <button onClick={() => setShowModal(true)}
-              className="gf-btn-primary flex items-center gap-1.5 h-7 px-3 text-[13px] font-semibold">
+              className="gf-btn flex items-center gap-1.5 h-7 px-3 text-[13px] font-semibold" style={{ color: "var(--gf-text-primary)" }}>
               <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
                 <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
               </svg>

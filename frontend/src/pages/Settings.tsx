@@ -73,8 +73,8 @@ export default function Settings() {
           <button
             type="button"
             onClick={() => setProfileOpen(true)}
-            className="gf-raise text-[14px] px-3 py-1.5 transition-colors flex-shrink-0 hover:opacity-90"
-            style={{ background: "var(--gf-accent)", color: "#fff", borderRadius: 2 }}
+            className="gf-btn text-[14px] px-3 py-1.5 flex-shrink-0"
+            style={{ color: "var(--gf-text-primary)" }}
           >
             Edit profile
           </button>

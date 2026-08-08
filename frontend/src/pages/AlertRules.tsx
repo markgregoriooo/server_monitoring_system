@@ -99,7 +99,6 @@ const GREEN = "#73BF69";
 const PURPLE = "#B877D9";
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
-const ACCENT = "#5794F2"; // = --gf-accent (constant across themes)
 
 const gf = {
   bg: "var(--gf-bg)",
@@ -521,12 +520,12 @@ export default function AlertRules() {
             the global for that one server.
           </p>
         </div>
-        {/* .gf-btn-primary owns the accent face, hover and press-inset, so the manual
+        {/* .gf-btn owns the raised face, hover and press-inset, so the manual
             mouse handlers and the hand-rolled active:translate-y-px are gone. */}
         <button
           onClick={() => openAdd()}
-          className="gf-btn-primary inline-flex items-center gap-2 text-[14px] font-medium whitespace-nowrap"
-          style={{ height: 32, padding: "0 12px" }}
+          className="gf-btn inline-flex items-center gap-2 text-[14px] font-medium whitespace-nowrap"
+          style={{ height: 32, padding: "0 12px", color: "var(--gf-text-primary)" }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
             <path d="M12 5v14M5 12h14" />

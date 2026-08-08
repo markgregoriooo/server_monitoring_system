@@ -666,8 +666,8 @@ export default function MikrotikMonitoring() {
           {isAdmin && (
             <button
               onClick={() => setAdding(true)}
-              className="gf-btn-primary inline-flex items-center gap-1.5 text-[13px] font-medium"
-              style={{ height: 28, padding: "0 10px" }}
+              className="gf-btn inline-flex items-center gap-1.5 text-[13px] font-medium"
+              style={{ height: 28, padding: "0 10px", color: "var(--gf-text-primary)" }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
               Add MikroTik
@@ -700,7 +700,7 @@ export default function MikrotikMonitoring() {
               Add your router below and set its read-only RouterOS login.
             </p>
             {isAdmin && (
-              <button onClick={() => setAdding(true)} className="gf-btn-primary mt-4 text-[14px] px-3 py-1.5 font-medium">
+              <button onClick={() => setAdding(true)} className="gf-btn mt-4 text-[14px] px-3 py-1.5 font-medium" style={{ color: "var(--gf-text-primary)" }}>
                 + Add MikroTik
               </button>
             )}

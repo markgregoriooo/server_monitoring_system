@@ -370,8 +370,8 @@ export default function NetworkMonitoring() {
           {isAdmin && (
             <button
               onClick={openAdd}
-              className="gf-btn-primary inline-flex items-center gap-1.5 text-[13px] font-medium"
-              style={{ height: 28, padding: "0 10px" }}
+              className="gf-btn inline-flex items-center gap-1.5 text-[13px] font-medium"
+              style={{ height: 28, padding: "0 10px", color: "var(--gf-text-primary)" }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
               Add router
@@ -408,7 +408,7 @@ export default function NetworkMonitoring() {
                 : "A managed router (with SNMP enabled) must be registered by an admin to see live interface metrics here."}
             </p>
             {isAdmin && (
-              <button onClick={openAdd} className="gf-btn-primary mt-4 text-[13px] font-semibold px-3 py-1.5">
+              <button onClick={openAdd} className="gf-btn mt-4 text-[13px] font-semibold px-3 py-1.5" style={{ color: "var(--gf-text-primary)" }}>
                 + Add router
               </button>
             )}
