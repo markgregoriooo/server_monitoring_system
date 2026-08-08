@@ -405,10 +405,23 @@ export default function WidgetBuilder() {
 
           {/* ── Live preview ── */}
           <div className="flex flex-col gap-2">
-            <div className="text-[10px] tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>Preview</div>
-            <div className="self-start overflow-hidden" style={{ width: 320, height: 300, ...panel }}>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-[10px] tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>Preview</span>
+              <span className="text-[9px] tabular-nums" style={{ color: "var(--gf-text-dim)" }}>actual size · 320×300</span>
+            </div>
+            {/* --gf-shadow is the FLOATING-panel shadow (the one modals use), not the
+                button one: this box stands for a window that hovers over the desktop,
+                so lifting it off the page is literal rather than decorative.
+                max-w-full stops the fixed 320px from overflowing a narrow phone. */}
+            <div
+              className="self-start overflow-hidden max-w-full"
+              style={{ width: 320, height: 300, ...panel, boxShadow: "var(--gf-shadow)" }}
+            >
               <PipWidget layout={draft} />
             </div>
+            <span className="text-[10px] leading-snug" style={{ color: "var(--gf-text-dim)" }}>
+              Live data — this is exactly what pops out.
+            </span>
           </div>
         </div>
       )}
@@ -419,16 +432,15 @@ export default function WidgetBuilder() {
           type="button"
           onClick={onSave}
           disabled={!dirty || saving}
-          className="text-[12px] px-3 py-1.5 transition-opacity"
-          style={{ background: "var(--gf-accent)", color: "#fff", borderRadius: 2, opacity: !dirty || saving ? 0.5 : 1 }}
+          className="gf-btn-primary text-[12px] px-3 py-1.5"
         >
           {saving ? "Saving…" : "Save layout"}
         </button>
         <button
           type="button"
           onClick={() => setDraft([...DEFAULT_LAYOUT])}
-          className="text-[12px] px-3 py-1.5 transition-colors"
-          style={{ border: "1px solid var(--gf-panel-border)", color: "var(--gf-text-muted)", borderRadius: 2 }}
+          className="gf-btn text-[12px] px-3 py-1.5"
+          style={{ color: "var(--gf-text-muted)" }}
         >
           Reset to default
         </button>
@@ -446,8 +458,8 @@ export default function WidgetBuilder() {
           <button
             type="button"
             onClick={() => open()}
-            className="text-[12px] px-3 py-1.5 ml-auto transition-colors"
-            style={{ border: "1px solid var(--gf-panel-border)", color: "var(--gf-text-primary)", borderRadius: 2 }}
+            className="gf-btn text-[12px] px-3 py-1.5 ml-auto"
+            style={{ color: "var(--gf-text-primary)" }}
           >
             Pop out ▣
           </button>

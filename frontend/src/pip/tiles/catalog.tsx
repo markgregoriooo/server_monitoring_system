@@ -44,7 +44,23 @@ function Shell({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div
       className="flex flex-col gap-0.5 px-2.5 py-2 h-full"
-      style={{ background: "var(--gf-panel)", border: "1px solid var(--gf-panel-border)", borderRadius: 2 }}
+      style={{
+        background: "var(--gf-panel)",
+        border: "1px solid var(--gf-panel-border)",
+        borderRadius: 2,
+        // Each reading reads as a raised chip rather than a flat rectangle. The drop
+        // shadow separates neighbours in a dense two-column grid, and the inset top
+        // highlight (both come from --gf-btn-shadow) gives the surface a lit edge.
+        //
+        // Static, NOT .gf-raise: tiles aren't pressable, and eight of them each
+        // brightening on hover would be noise in a 320px window. The token is only 2px
+        // of blur, which is what keeps a grid of small chips from turning muddy.
+        //
+        // Resolves inside the pop-out too — the PiP document gets our stylesheets
+        // cloned into it (pip-widget.md §6.1), so the --gf-* custom properties exist
+        // there and follow the theme.
+        boxShadow: "var(--gf-btn-shadow)",
+      }}
     >
       <span className="text-[8px] tracking-widest uppercase" style={{ color: T_MUTED }}>
         {label}
