@@ -289,6 +289,180 @@ const NetworkTile: FC = () => {
   );
 };
 
+// ── UPS / Network: every unit, named ──
+// Same one-line-per-row shape as ServerListTile, and the same reason: bounded and
+// glanceable at realistic counts without scrolling. Problem-first sort so trouble is
+// always the top row — for UPS that ordering is on-battery, then lowest runtime, since
+// a discharging unit outranks a merely low one that is still on mains.
+function Row({ color, name, right }: { color: string; name: string; right: ReactNode }) {
+  return (
+    <div className="flex items-center gap-1.5 py-0.5" style={{ borderTop: "1px solid var(--gf-divider)" }}>
+      <span className="w-1 h-1 rounded-full flex-shrink-0" style={{ background: color }} />
+      <span className="text-[9px] truncate flex-1" style={{ color: "var(--gf-text-primary)" }}>{name}</span>
+      {right}
+    </div>
+  );
+}
+
+const UpsListTile: FC = () => {
+  const { upsList } = useLiveSummary();
+  const rows = [...upsList].sort((a, b) => {
+    const ab = a.onBattery === true, bb = b.onBattery === true;
+    if (ab !== bb) return ab ? -1 : 1;                       // discharging first
+    const ar = a.runtimeMin ?? Infinity, br = b.runtimeMin ?? Infinity;
+    if (ar !== br) return ar - br;                           // least runtime next
+    return a.name.localeCompare(b.name);
+  });
+  return (
+    <Shell label="UPS">
+      {rows.length === 0 ? (
+        <span className="text-[10px]" style={{ color: T_MUTED }}>No UPS</span>
+      ) : (
+        <div className="flex flex-col">
+          {rows.map((u) => {
+            const off = u.status === "Offline";
+            const batt = u.onBattery === true;
+            const color = off ? T_DIM : batt ? RED : u.chargePct != null ? chargeColor(u.chargePct) : T_MUTED;
+            return (
+              <Row
+                key={u.id}
+                color={color}
+                name={u.name}
+                right={
+                  <span className="text-[9px] tabular-nums flex-shrink-0" style={{ color }}>
+                    {off ? "offline" : batt ? `⚡ ${u.runtimeMin != null ? `${Math.round(u.runtimeMin)}m` : "—"}` : u.chargePct != null ? `${Math.round(u.chargePct)}%` : "—"}
+                  </span>
+                }
+              />
+            );
+          })}
+        </div>
+      )}
+    </Shell>
+  );
+};
+
+const NetworkListTile: FC = () => {
+  const { routers } = useLiveSummary();
+  const rows = [...routers].sort((a, b) => {
+    const ao = a.status === "Offline", bo = b.status === "Offline";
+    if (ao !== bo) return ao ? -1 : 1;                                   // offline first
+    const ad = a.portsTotal - a.portsUp, bd = b.portsTotal - b.portsUp;
+    if (ad !== bd) return bd - ad;                                       // most ports down next
+    return a.name.localeCompare(b.name);
+  });
+  return (
+    <Shell label="Routers">
+      {rows.length === 0 ? (
+        <span className="text-[10px]" style={{ color: T_MUTED }}>No routers</span>
+      ) : (
+        <div className="flex flex-col">
+          {rows.map((r) => {
+            const off = r.status === "Offline";
+            const down = r.portsTotal - r.portsUp;
+            const color = off ? RED : down > 0 ? ORANGE : GREEN;
+            return (
+              <Row
+                key={r.id}
+                color={color}
+                name={r.name}
+                right={
+                  <span className="text-[9px] tabular-nums flex-shrink-0" style={{ color }}>
+                    {off ? "offline" : `${r.portsUp}/${r.portsTotal}`}
+                  </span>
+                }
+              />
+            );
+          })}
+        </div>
+      )}
+    </Shell>
+  );
+};
+
+// ── Per-device tiles (parameterised ids: "ups.device:7" / "network.device:3") ──
+// The one place tile ids stop being a fixed vocabulary. A saved layout may name a
+// device that has since been decommissioned, so both renderers must handle "not in
+// the live list" — they show a dim Unavailable rather than vanishing, because a tile
+// silently disappearing looks like a bug, while this points at the fix (remove it in
+// the builder).
+function Unavailable({ label }: { label: string }) {
+  return (
+    <Shell label={label}>
+      <span className="text-[10px]" style={{ color: T_DIM }}>Unavailable</span>
+      <span className="text-[8px]" style={{ color: T_DIM }}>removed?</span>
+    </Shell>
+  );
+}
+
+const UpsDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
+  const { upsList } = useLiveSummary();
+  const u = upsList.find((x) => x.id === deviceId);
+  if (!u) return <Unavailable label={`UPS #${deviceId}`} />;
+  if (u.status === "Offline") {
+    return (
+      <Shell label={u.name}>
+        <Big color={RED}>offline</Big>
+        <span className="text-[9px]" style={{ color: T_MUTED }}>not responding</span>
+      </Shell>
+    );
+  }
+  if (u.onBattery === true) {
+    return (
+      <Shell label={u.name}>
+        <div className="flex items-baseline gap-1">
+          <Big color={RED}>{u.runtimeMin != null ? Math.round(u.runtimeMin) : "—"}</Big>
+          <span className="text-[9px]" style={{ color: RED }}>min left</span>
+        </div>
+        <span className="text-[9px] font-semibold" style={{ color: RED }}>
+          ⚡ ON BATTERY{u.chargePct != null ? ` · ${Math.round(u.chargePct)}%` : ""}
+        </span>
+      </Shell>
+    );
+  }
+  return (
+    <Shell label={u.name}>
+      <div className="flex items-baseline gap-1">
+        <Big color={u.chargePct != null ? chargeColor(u.chargePct) : T_DIM}>
+          {u.chargePct != null ? `${Math.round(u.chargePct)}%` : "—"}
+        </Big>
+        <span className="text-[9px]" style={{ color: T_MUTED }}>battery</span>
+      </div>
+      <span className="text-[9px]" style={{ color: T_MUTED }}>
+        {u.loadPct != null ? `load ${Math.round(u.loadPct)}%` : "on mains"}
+        {u.runtimeMin != null ? ` · ${Math.round(u.runtimeMin)} min` : ""}
+      </span>
+    </Shell>
+  );
+};
+
+const NetDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
+  const { routers } = useLiveSummary();
+  const r = routers.find((x) => x.id === deviceId);
+  if (!r) return <Unavailable label={`Router #${deviceId}`} />;
+  if (r.status === "Offline") {
+    return (
+      <Shell label={r.name}>
+        <Big color={RED}>offline</Big>
+        <span className="text-[9px]" style={{ color: T_MUTED }}>unreachable</span>
+      </Shell>
+    );
+  }
+  const down = r.portsTotal - r.portsUp;
+  return (
+    <Shell label={r.name}>
+      <div className="flex items-baseline gap-1">
+        <Big color={down > 0 ? ORANGE : GREEN}>{r.portsUp}/{r.portsTotal}</Big>
+        <span className="text-[9px]" style={{ color: T_MUTED }}>ports up</span>
+      </div>
+      <span className="text-[9px]" style={{ color: T_MUTED }}>
+        {r.type === "mikrotik" ? "MikroTik" : "SNMP"}
+        {r.worstUtil != null ? ` · peak ${Math.round(r.worstUtil)}%` : ""}
+      </span>
+    </Shell>
+  );
+};
+
 // ── Aircon ──
 const AirconTile: FC = () => {
   const { airconsOn, airconsTotal } = useLiveSummary();
@@ -330,8 +504,10 @@ export const TILE_CATALOG: TileDef[] = [
   { id: "env.gas", label: "Gas", group: "Environment", span: 1, Render: GasTile },
   { id: "servers.summary", label: "Servers summary", group: "Servers", span: 2, Render: ServersTile },
   { id: "servers.list", label: "Server list (names)", group: "Servers", span: 2, Render: ServerListTile },
-  { id: "ups.summary", label: "UPS battery", group: "UPS", span: 1, Render: UpsTile },
+  { id: "ups.summary", label: "UPS battery (worst)", group: "UPS", span: 1, Render: UpsTile },
+  { id: "ups.list", label: "UPS list (names)", group: "UPS", span: 2, Render: UpsListTile },
   { id: "network.summary", label: "Network ports", group: "Network", span: 1, Render: NetworkTile },
+  { id: "network.list", label: "Router list (names)", group: "Network", span: 2, Render: NetworkListTile },
   { id: "alerts.count", label: "Open alerts", group: "Alerts", span: 1, Render: AlertCountTile },
   { id: "alerts.latest", label: "Latest alert", group: "Alerts", span: 2, Render: LatestAlertTile },
   { id: "aircon.summary", label: "Aircon", group: "Aircon", span: 1, Render: AirconTile },
@@ -339,6 +515,52 @@ export const TILE_CATALOG: TileDef[] = [
 ];
 
 export const TILE_BY_ID = new Map(TILE_CATALOG.map((t) => [t.id, t]));
+
+// ── Parameterised tile ids ────────────────────────────────────────────────────
+// Everything above is a fixed vocabulary. These two are not: they pin ONE device,
+// so the id carries which — "ups.device:7", "network.device:3".
+//
+// Why an id suffix rather than, say, a per-tile settings object: the saved layout is
+// deliberately just an ordered array of strings (§3.2), and keeping it that way means
+// persistence, validation, dedupe and the MAX_TILES cap all keep working untouched.
+// The backend validates these by PATTERN and never needs to know which device ids
+// exist — a decommissioned device's tile simply renders "Unavailable", which is the
+// same forward-compatible behaviour unknown ids already had.
+export const DEVICE_TILE_PREFIXES = ["ups.device", "network.device"] as const;
+export type DeviceTilePrefix = (typeof DEVICE_TILE_PREFIXES)[number];
+
+// `[1-9]\d*` — no leading zeros, so "ups.device:07" is rejected rather than accepted as
+// a SECOND distinct string for device 7, which would slip past the layout's dedupe and
+// render the same unit twice.
+const DEVICE_TILE_RE = /^(ups|network)\.device:([1-9]\d{0,9})$/;
+
+export function parseDeviceTileId(id: string): { kind: "ups" | "network"; deviceId: number } | null {
+  const m = DEVICE_TILE_RE.exec(id);
+  if (!m) return null;
+  const deviceId = Number(m[2]);
+  if (!Number.isSafeInteger(deviceId) || deviceId <= 0) return null;
+  return { kind: m[1] as "ups" | "network", deviceId };
+}
+
+export const deviceTileId = (kind: "ups" | "network", deviceId: number | string) =>
+  `${kind}.device:${deviceId}`;
+
+// The single lookup every renderer should use. Resolves a static catalog id OR a
+// parameterised device id into something renderable; undefined = skip it.
+export function resolveTile(id: string): TileDef | undefined {
+  const stat = TILE_BY_ID.get(id);
+  if (stat) return stat;
+  const parsed = parseDeviceTileId(id);
+  if (!parsed) return undefined;
+  const { kind, deviceId } = parsed;
+  return {
+    id,
+    label: kind === "ups" ? `UPS #${deviceId}` : `Router #${deviceId}`,
+    group: kind === "ups" ? "UPS" : "Network",
+    span: 1,
+    Render: () => (kind === "ups" ? <UpsDeviceTile deviceId={deviceId} /> : <NetDeviceTile deviceId={deviceId} />),
+  };
+}
 
 // Sensible default until the user customizes (Phase 4).
 export const DEFAULT_LAYOUT = ["env.temp", "env.humidity", "env.gas", "alerts.count", "servers.list", "alerts.latest"];

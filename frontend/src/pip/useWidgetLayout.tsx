@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ReactNode } from "react";
 import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
-import { DEFAULT_LAYOUT, TILE_BY_ID } from "./tiles/catalog";
+import { DEFAULT_LAYOUT, resolveTile } from "./tiles/catalog";
 
 // The user's widget layout, shared so the PiP window AND the Settings builder read the
 // same state — a save reflects in the open window live. Backend is the source of truth
@@ -29,7 +29,10 @@ function writeCache(layout: string[]) {
   }
 }
 // Drop ids this build no longer ships (forward/backward compatible).
-const known = (layout: string[]) => layout.filter((id) => TILE_BY_ID.has(id));
+// MUST use resolveTile, not the static TILE_BY_ID map: parameterised per-device ids
+// ("ups.device:7") are absent from that map by design, so matching on it would silently
+// delete every pinned-device tile from the user's own saved layout.
+const known = (layout: string[]) => layout.filter((id) => !!resolveTile(id));
 
 interface WidgetLayoutCtx {
   layout: string[];

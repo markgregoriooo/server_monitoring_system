@@ -20,8 +20,9 @@ import { CSS } from "@dnd-kit/utilities";
 import { useWidgetLayout } from "./useWidgetLayout";
 import { usePip } from "./PipContext";
 import PipWidget from "./PipWidget";
-import { TILE_CATALOG, TILE_BY_ID, DEFAULT_LAYOUT } from "./tiles/catalog";
+import { TILE_CATALOG, DEFAULT_LAYOUT, resolveTile, deviceTileId } from "./tiles/catalog";
 import type { TileDef } from "./tiles/catalog";
+import { useLiveSummary } from "./LiveSummaryContext";
 
 // Settings → Customize Widget: drag-and-drop builder for the PiP widget layout. Edits a
 // local `draft`; the live preview + (once supported) the open pop-out render it; Save
@@ -41,6 +42,50 @@ function GripIcon() {
       <circle cx="2" cy="7" r="1.2" /><circle cx="8" cy="7" r="1.2" />
       <circle cx="2" cy="12" r="1.2" /><circle cx="8" cy="12" r="1.2" />
     </svg>
+  );
+}
+
+// Pins ONE device as its own tile. A dropdown rather than a "+" per unit: the campus
+// can have a dozen routers, and that many rows would bury the handful of static tiles
+// above them. Resets to the placeholder after each pick so it reads as an action
+// ("add this one") rather than a setting ("the selected one").
+function DevicePicker({
+  placeholder,
+  emptyLabel,
+  options,
+  onPick,
+}: {
+  placeholder: string;
+  emptyLabel: string;
+  options: { id: string; name: string }[];
+  onPick: (id: string) => void;
+}) {
+  const none = options.length === 0;
+  return (
+    <select
+      value=""
+      disabled={none}
+      aria-label={placeholder}
+      onChange={(e) => {
+        if (e.target.value) onPick(e.target.value);
+        e.target.value = "";
+      }}
+      className="text-[12px] px-2 py-1.5 rounded-[2px] outline-none w-full"
+      style={{
+        background: "var(--gf-panel)",
+        border: "1px solid var(--gf-panel-border)",
+        color: none ? "var(--gf-text-dim)" : "var(--gf-text-primary)",
+        cursor: none ? "default" : "pointer",
+        fontFamily: "'JetBrains Mono', monospace",
+      }}
+    >
+      <option value="">{none ? emptyLabel : placeholder}</option>
+      {options.map((o) => (
+        <option key={o.id} value={o.id}>
+          {o.name}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -103,7 +148,15 @@ export default function WidgetBuilder() {
   const dirty = JSON.stringify(draft) !== JSON.stringify(layout);
   const inDraft = useMemo(() => new Set(draft), [draft]);
 
-  // Catalog grouped for the "Available tiles" column.
+  // Live device lists, so a specific unit can be pinned as its own tile. This is why
+  // device picking lives HERE and not in the pop-out: React events don't fire on nodes
+  // portaled into the PiP document (pip-widget.md §9), so a selector inside the widget
+  // could never be clicked. Build big, render small.
+  const { upsList, routers } = useLiveSummary();
+
+  // Catalog grouped for the "Available tiles" column. Per-device tiles are NOT listed
+  // here — they go in a dropdown under their group (see DevicePicker), because one "+"
+  // row per unit would swamp the column on a campus with a dozen routers.
   const groups = useMemo(() => {
     const g = new Map<string, TileDef[]>();
     for (const t of TILE_CATALOG) {
@@ -113,6 +166,29 @@ export default function WidgetBuilder() {
     }
     return [...g.entries()];
   }, []);
+
+  // Pickable devices per group, minus whatever is already on the widget.
+  const upsOptions = useMemo(
+    () => upsList.map((u) => ({ id: deviceTileId("ups", u.id), name: u.name })).filter((o) => !inDraft.has(o.id)),
+    [upsList, inDraft],
+  );
+  const routerOptions = useMemo(
+    () => routers.map((r) => ({ id: deviceTileId("network", r.id), name: r.name })).filter((o) => !inDraft.has(o.id)),
+    [routers, inDraft],
+  );
+
+  // Label for a saved id: static catalog first, then a live device's current name,
+  // falling back to the raw id so a decommissioned device is still identifiable enough
+  // to remove.
+  const labelFor = (id: string): string => {
+    const def = resolveTile(id);
+    if (!def) return id;
+    const ups = upsList.find((u) => deviceTileId("ups", u.id) === id);
+    if (ups) return ups.name;
+    const net = routers.find((r) => deviceTileId("network", r.id) === id);
+    if (net) return net.name;
+    return def.label;
+  };
 
   const add = (id: string) => setDraft((d) => (d.includes(id) ? d : [...d, id]));
   const removeTile = (id: string) => setDraft((d) => d.filter((x) => x !== id));
@@ -176,6 +252,23 @@ export default function WidgetBuilder() {
                     </button>
                   );
                 })}
+                {/* Pin a single unit. Only under the two groups that have devices. */}
+                {group === "UPS" && (
+                  <DevicePicker
+                    placeholder="+ Specific UPS…"
+                    emptyLabel={upsList.length === 0 ? "No UPS registered" : "All UPS added"}
+                    options={upsOptions}
+                    onPick={add}
+                  />
+                )}
+                {group === "Network" && (
+                  <DevicePicker
+                    placeholder="+ Specific router…"
+                    emptyLabel={routers.length === 0 ? "No routers registered" : "All routers added"}
+                    options={routerOptions}
+                    onPick={add}
+                  />
+                )}
               </div>
             ))}
           </div>
@@ -193,7 +286,7 @@ export default function WidgetBuilder() {
                 <SortableContext items={draft} strategy={verticalListSortingStrategy}>
                   <div className="flex flex-col gap-1.5">
                     {draft.map((id) => (
-                      <SortableRow key={id} id={id} label={TILE_BY_ID.get(id)?.label ?? id} onRemove={() => removeTile(id)} />
+                      <SortableRow key={id} id={id} label={labelFor(id)} onRemove={() => removeTile(id)} />
                     ))}
                   </div>
                 </SortableContext>

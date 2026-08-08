@@ -1,6 +1,6 @@
 import { useLiveSummary } from "./LiveSummaryContext";
 import { useWidgetLayout } from "./useWidgetLayout";
-import { TILE_BY_ID } from "./tiles/catalog";
+import { resolveTile } from "./tiles/catalog";
 import type { TileDef } from "./tiles/catalog";
 
 // Renders a layout (an ordered list of tile ids) into an auto-flow 2-col grid. Unknown
@@ -9,8 +9,10 @@ import type { TileDef } from "./tiles/catalog";
 export default function PipWidget({ layout }: { layout?: string[] }) {
   const { connected } = useLiveSummary();
   const { layout: saved } = useWidgetLayout();
+  // resolveTile (not a plain map lookup) so parameterised per-device ids like
+  // "ups.device:7" resolve too; anything unrecognised is still skipped.
   const tiles = (layout ?? saved)
-    .map((id) => TILE_BY_ID.get(id))
+    .map((id) => resolveTile(id))
     .filter((t): t is TileDef => !!t);
 
   return (

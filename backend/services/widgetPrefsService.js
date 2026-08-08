@@ -15,9 +15,28 @@ const ALLOWED_TILES = new Set([
   "network.summary",
   "alerts.count",
   "alerts.latest",
+  "ups.list",
+  "network.list",
   "aircon.summary",
   "meta.clock",
 ]);
+
+// PARAMETERISED tile ids pin one device — "ups.device:7", "network.device:3" — so they
+// can't live in the literal set above. They are validated by SHAPE instead.
+//
+// Deliberately no existence check against `devices`: the frontend already renders an
+// unknown id as "Unavailable" (the same forward-compatible behaviour every unknown id
+// has had), so a decommissioned device degrades on its own. Validating here would mean
+// a DB round-trip on every layout read AND a rule that silently deletes a user's tile
+// the moment a device is briefly absent. Shape-checking is enough to keep junk out.
+// `[1-9]\d*` — no leading zeros, so "ups.device:07" can't sneak in as a SECOND distinct
+// string for device 7 and defeat the dedupe below. Bounded length keeps it away from
+// unsafe-integer territory. Must stay in step with catalog.tsx's DEVICE_TILE_RE.
+const DEVICE_TILE_RE = /^(ups|network)\.device:[1-9]\d{0,9}$/;
+
+function isAllowedTile(id) {
+  return ALLOWED_TILES.has(id) || DEVICE_TILE_RE.test(id);
+}
 
 // Must match frontend catalog DEFAULT_LAYOUT.
 const DEFAULT_LAYOUT = ["env.temp", "env.humidity", "env.gas", "alerts.count", "servers.list", "alerts.latest"];
@@ -29,7 +48,7 @@ function sanitize(layout) {
   const seen = new Set();
   const out = [];
   for (const id of layout) {
-    if (typeof id !== "string" || !ALLOWED_TILES.has(id) || seen.has(id)) continue;
+    if (typeof id !== "string" || !isAllowedTile(id) || seen.has(id)) continue;
     seen.add(id);
     out.push(id);
     if (out.length >= MAX_TILES) break;
