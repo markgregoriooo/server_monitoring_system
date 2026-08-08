@@ -31,6 +31,12 @@ function toClient(r) {
     alertId: r.alert_id,
     deviceId: r.device_id,
     deviceName: r.device_name ?? null,
+    // The devices row's kind (server|router|mikrotik|ups|esp32|aircon). The client
+    // needs it to know WHICH page a notification belongs to: deviceAlerts.checkRouter
+    // is shared by the SNMP and MikroTik pollers, so both stamp `router_*`/`link_*`,
+    // and routers, UPS and MikroTiks all raise the same `device_offline`. The alert
+    // type alone therefore can't tell those pages apart — this is what does.
+    deviceType: r.device_type ?? null,
     type: r.type,
     title: r.title,
     message: r.message,
@@ -112,7 +118,8 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
       `SELECT n.id, n.user_id, n.is_read, n.sent_at,
               a.alert_id, a.device_id, a.type, a.title, a.message, a.severity, a.created_at,
               a.status, a.acknowledged_at, a.resolved_at,
-              d.device_name, u.name AS acknowledged_by_name, u.role AS acknowledged_by_role
+              d.device_name, d.device_type,
+              u.name AS acknowledged_by_name, u.role AS acknowledged_by_role
          FROM alert_notifications n
          JOIN alerts a   ON a.alert_id = n.alert_id
          LEFT JOIN devices d ON d.device_id = a.device_id
@@ -158,7 +165,8 @@ async function listForUser(userId, { limit = 30 } = {}) {
     `SELECT n.id, n.is_read, n.sent_at,
             a.alert_id, a.device_id, a.type, a.title, a.message, a.severity, a.created_at,
             a.status, a.acknowledged_at, a.resolved_at,
-            d.device_name, u.name AS acknowledged_by_name, u.role AS acknowledged_by_role
+            d.device_name, d.device_type,
+            u.name AS acknowledged_by_name, u.role AS acknowledged_by_role
        FROM alert_notifications n
        JOIN alerts a   ON a.alert_id = n.alert_id
        LEFT JOIN devices d ON d.device_id = a.device_id

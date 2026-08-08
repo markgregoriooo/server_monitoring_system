@@ -8,7 +8,9 @@ import {
   useRef,
 } from "react";
 import type { ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.js";
+import { routeFor } from "../components/notifications/notificationUtils.js";
 import { socket } from "../socket/socket.js";
 import { useAuth } from "./AuthContext.js";
 import { fireDesktopNotification } from "../utils/browserNotify.js";
@@ -23,6 +25,9 @@ export interface AppNotification {
   alertId: number;
   deviceId: number;
   deviceName: string | null;
+  // devices.device_type (server|router|mikrotik|ups|esp32|aircon), or null for alerts
+  // with no device row. Drives which page a notification click opens — see routeFor.
+  deviceType: string | null;
   type: string;
   title: string;
   message: string;
@@ -65,6 +70,9 @@ const MAX_ITEMS = 100; // cap the in-memory feed; older history is still in the 
 
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
+  // Safe: the provider is mounted inside <BrowserRouter> (main.tsx → App). Used only
+  // to make the OS popup's click land on the right page, the way the toast/bell do.
+  const navigate = useNavigate();
   const [items, setItems] = useState<AppNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [openAlertCount, setOpenAlertCount] = useState(0);
@@ -117,6 +125,18 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     refreshPending();
   }, [user, refresh, refreshAlertCount, refreshPending]);
 
+  // Declared ABOVE the live-feed effect on purpose: that effect's dependency array
+  // names it, and a dep array is built during render — a `const` declared further down
+  // would still be in its temporal dead zone and throw on the very first render.
+  const markRead = useCallback(async (ids: number[]) => {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    setItems((prev) => prev.map((n) => (idSet.has(n.id) ? { ...n, isRead: true } : n))); // optimistic
+    const res = await api.markNotificationsRead(ids);
+    if (res.success && res.data) setUnreadCount(res.data.unreadCount ?? 0);
+    else refresh(); // reconcile on failure
+  }, [refresh]);
+
   // Live feed: prepend on push, and re-sync on (re)connect so a tab that was
   // asleep/offline doesn't miss events fired while its socket was down.
   useEffect(() => {
@@ -126,7 +146,17 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       setUnreadCount((c) => c + 1);
       refreshAlertCount(); // a new alert is unresolved → bump the sidebar badge
       playNotificationSound(); // chime (if not muted)
-      fireDesktopNotification({ title: n.title, message: n.message, alertId: n.alertId }); // OS popup (if granted + tab hidden)
+      // OS popup (if granted + tab hidden). Clicking it focuses the dashboard, marks
+      // the item read and opens the device's page — the same gesture as the toast.
+      fireDesktopNotification({
+        title: n.title,
+        message: n.message,
+        alertId: n.alertId,
+        onActivate: () => {
+          if (!n.isRead) markRead([n.id]);
+          navigate(routeFor(n));
+        },
+      });
       listenersRef.current.forEach((fn) => fn(n)); // in-app toasts, etc.
     };
     // Any lifecycle change (acknowledge/resolve/auto-resolve) can change the open count
@@ -178,16 +208,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       socket.off("userPending", onPendingChanged);
       socket.off("userApproved", onPendingChanged);
     };
-  }, [user, refresh, refreshAlertCount, refreshPending]);
-
-  const markRead = useCallback(async (ids: number[]) => {
-    if (!ids.length) return;
-    const idSet = new Set(ids);
-    setItems((prev) => prev.map((n) => (idSet.has(n.id) ? { ...n, isRead: true } : n))); // optimistic
-    const res = await api.markNotificationsRead(ids);
-    if (res.success && res.data) setUnreadCount(res.data.unreadCount ?? 0);
-    else refresh(); // reconcile on failure
-  }, [refresh]);
+  }, [user, refresh, refreshAlertCount, refreshPending, markRead, navigate]);
 
   const markAllRead = useCallback(async () => {
     setItems((prev) => prev.map((n) => ({ ...n, isRead: true }))); // optimistic

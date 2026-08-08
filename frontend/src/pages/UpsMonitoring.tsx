@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
@@ -296,6 +297,19 @@ export default function UpsMonitoring() {
   const [formError, setFormError] = useState("");
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Deep-link from a notification: /ups?device=<id> opens that UPS's detail once the
+  // list has loaded, then drops the param (so Back returns to the list and a refresh
+  // doesn't re-trigger). Same contract as ServerMetrics — see routeFor.
+  useEffect(() => {
+    const deviceParam = searchParams.get("device");
+    if (!deviceParam) return;
+    if (!devices.some((d) => d.id === String(deviceParam))) return;
+    setDetailId(String(deviceParam));
+    searchParams.delete("device");
+    setSearchParams(searchParams, { replace: true });
+  }, [devices, searchParams, setSearchParams]);
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(""), 3000);
