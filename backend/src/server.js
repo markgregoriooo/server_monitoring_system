@@ -33,6 +33,7 @@ import notificationRoutes from "../routes/notifications.js";
 import alertRuleRoutes from "../routes/alertRules.js";
 import widgetLayoutRoutes from "../routes/widgetLayout.js";
 import historyRoutes from "../routes/history.js";
+import analyticsRoutes from "../routes/analytics.js";
 
 // Surface missing auth config at BOOT rather than at the first sign-in attempt.
 // Login is Google-only, so an unset client id/secret means nobody can get into
@@ -188,6 +189,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/alert-rules", alertRuleRoutes);
 app.use("/api/widget-layout", widgetLayoutRoutes);
 app.use("/api/history", historyRoutes);
+app.use("/api/analytics", analyticsRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" })

@@ -991,6 +991,9 @@ Full walkthrough — bucket, keys, rclone config, connection test, restore, and 
       **Online** and its ports appear. Expect CPU/Mem to stay blank on SNMP routers.
 - [ ] **UPS**: add a UPS → battery %, runtime and load populate within ~60 s.
 - [ ] Per-device **View → Event Log** shows the "reachable" entry for each new device.
+- [ ] **Analytics** page renders (disk-full ETA / alert summary). Forecasts read
+      "need more data" until ~1–2 weeks of history accrues — expected, not a fault
+      ([§13](#13-troubleshooting)); the alert-analytics half is useful on day one.
 - [ ] If a device stays Offline: check the backend console — the poller logs *why* the
       poll failed (timeout vs wrong community vs unreachable).
 
@@ -1055,8 +1058,6 @@ so a new device starts being polled within ~60s with no restart.
 
 ### Still roadmap
 
-- **Analytics on router/UPS/network** — lives on the unmerged `predictive-analytics`
-  branch (`predictive-analytics.md` §8, rows "2b/3b").
 - **ICMP-ping fallback** for unmanaged / no-community routers — not built.
 - **SNMP v3** — needs credential columns on `device_network` plus a v3 branch in
   `snmpClient`.

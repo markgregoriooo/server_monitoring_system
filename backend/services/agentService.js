@@ -82,15 +82,13 @@ function withLive(r) {
 
 // ─── Registration ─────────────────────────────────────────────────────────────
 
-// First-run enrollment. Creates devices + server_specs + device_network +
-// agent_tokens rows in one transaction. Idempotent per NIC: a host that
-// re-registers with the same MAC reuses its existing enrollment (so an agent
-// restart before approval does not spawn duplicate pending devices).
-async function register(host) {
-  const mac = host.mac_address || null;
-
+// Find a prior pending/approved enrollment for a RETURNING machine. MAC first (most
+// specific, when the NIC is stable), else hostname. The hostname match is scoped to
+// server devices with a live token so it can't collide with manually-added devices.
+// Returns { pendingToken, deviceId } or null.
+async function findExistingEnrollment(mac, hostname) {
   if (mac) {
-    const [[existing]] = await db.query(
+    const [[byMac]] = await db.query(
       `SELECT t.token AS pendingToken, t.device_id AS deviceId
          FROM device_network n
          JOIN agent_tokens t ON t.device_id = n.device_id
@@ -99,12 +97,41 @@ async function register(host) {
         LIMIT 1`,
       [mac],
     );
-    if (existing) {
-      // Same NIC re-registering: refresh specs + network info (IP/gateway/DNS may
-      // have changed) without disturbing the token or approval state.
-      await refreshHostInfo(existing.deviceId, host);
-      return { pendingToken: existing.pendingToken, deviceId: existing.deviceId, reused: true };
-    }
+    if (byMac) return byMac;
+  }
+  if (hostname) {
+    const [[byHost]] = await db.query(
+      `SELECT t.token AS pendingToken, t.device_id AS deviceId
+         FROM devices d
+         JOIN agent_tokens t ON t.device_id = d.device_id
+        WHERE d.device_name = ? AND d.device_type = 'server'
+          AND t.status IN ('pending', 'approved')
+        ORDER BY t.id DESC
+        LIMIT 1`,
+      [hostname],
+    );
+    if (byHost) return byHost;
+  }
+  return null;
+}
+
+// First-run enrollment. Creates devices + server_specs + device_network +
+// agent_tokens rows in one transaction. Idempotent per MACHINE: a host that
+// re-registers reuses its existing enrollment (so an agent restart — or a NIC/MAC
+// change — before approval does not spawn duplicate pending devices).
+async function register(host) {
+  // Recognize a returning machine so it REUSES its enrollment instead of spawning a
+  // duplicate device. Match by MAC first, then fall back to hostname: the agent's
+  // "primary NIC" — and thus its MAC — can change between runs (Wi-Fi randomized MAC, a
+  // different up interface, VPN/WSL/Hyper-V adapters), which would otherwise fragment one
+  // server into many ghost device rows. Hostname is the stable identity the agent always
+  // reports. refreshHostInfo() re-stamps the current MAC, so the next run matches on MAC.
+  const existing = await findExistingEnrollment(host.mac_address || null, host.hostname || null);
+  if (existing) {
+    // Re-registering machine: refresh specs + network info (IP/gateway/DNS/MAC may have
+    // changed) without disturbing the token or approval state.
+    await refreshHostInfo(existing.deviceId, host);
+    return { pendingToken: existing.pendingToken, deviceId: existing.deviceId, reused: true };
   }
 
   const pendingToken = crypto.randomBytes(24).toString("hex");
@@ -139,7 +166,7 @@ async function register(host) {
     await conn.query(
       `INSERT INTO device_network (device_id, gateway, dns, network_segment, mac_address)
        VALUES (?, ?, ?, ?, ?)`,
-      [deviceId, host.gateway || "", host.dns || "", networkSegment(host.ip_address), mac],
+      [deviceId, host.gateway || "", host.dns || "", networkSegment(host.ip_address), host.mac_address || null],
     );
 
     await conn.query(

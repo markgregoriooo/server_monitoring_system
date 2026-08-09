@@ -241,10 +241,13 @@ Key properties:
 - **The install key is a shared secret**, not per-machine. Every agent presents the
   same `AGENT_INSTALL_KEY`. It only gets a machine to the "pending" stage; an admin
   must still approve it.
-- **Idempotent per network card (MAC).** If the same machine re-registers (e.g. you
-  restart the agent before approving it), the backend recognizes the MAC and reuses
-  the existing pending enrollment instead of creating a duplicate. It also refreshes
-  that machine's IP/gateway/DNS/specs in case they changed.
+- **Idempotent per machine (MAC, then hostname).** If the same machine re-registers
+  (e.g. you restart the agent before approving it), the backend recognizes it and reuses
+  the existing pending enrollment instead of creating a duplicate. It matches on **MAC**
+  first; if the MAC is absent or has changed (Wi-Fi randomized MAC, a different up
+  interface, VPN/WSL/Hyper-V adapters), it falls back to the **hostname** so an unstable
+  NIC can't fragment one server into many "ghost" device rows. It also refreshes that
+  machine's IP/gateway/DNS/specs (and re-stamps the current MAC) in case they changed.
 - The agent **blocks** in this phase — `registration.Run` doesn't return until the
   device is approved (or rejected/removed). With `--register` it then flows straight
   into Phase B; with `--register-only` it returns so the installer can create the

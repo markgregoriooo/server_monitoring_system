@@ -896,6 +896,92 @@ export const api = {
 
   // Alert rules — configurable thresholds (admin only). deviceId null = global default
   // that applies to every server / the room; a deviceId is a per-server override.
+  // ── Predictive analytics (Phase 1) ──────────────────────────────────────────
+  // Disk-full ETA per server (linear regression). days = lookback window.
+  getDiskForecast: async (days?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/analytics/forecast/disk", days ? { params: { days } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // UPS battery-degradation ETA (linear regression on runtime). days = lookback.
+  getUpsBatteryForecast: async (days?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/analytics/forecast/ups-battery", days ? { params: { days } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Link-saturation ETA per router interface (linear regression on utilization).
+  getLinkSaturationForecast: async (days?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/analytics/forecast/link-saturation", days ? { params: { days } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Alert analytics summary (MTTR, severity mix, noisiest devices/types).
+  getAlertSummary: async (days?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/analytics/alerts/summary", days ? { params: { days } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // ── Predictive analytics (Phases 2–4) ───────────────────────────────────────
+  // Trend + short-horizon projection (EWMA + Holt's linear) for one metric.
+  getMetricTrend: async (
+    metric: string,
+    opts: { deviceId?: number | null; hours?: number; horizon?: number } = {},
+  ): Promise<ApiResult> => {
+    try {
+      const params: Record<string, unknown> = {};
+      if (opts.deviceId != null) params.deviceId = opts.deviceId;
+      if (opts.hours) params.hours = opts.hours;
+      if (opts.horizon) params.horizon = opts.horizon;
+      const res = await apiClient.get(`/analytics/trends/${metric}`, { params });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Per-hour-of-day z-score anomalies (+ IQR fences) for one metric.
+  getAnomalies: async (
+    metric: string,
+    opts: { deviceId?: number | null; days?: number; z?: number } = {},
+  ): Promise<ApiResult> => {
+    try {
+      const params: Record<string, unknown> = { metric };
+      if (opts.deviceId != null) params.deviceId = opts.deviceId;
+      if (opts.days) params.days = opts.days;
+      if (opts.z) params.z = opts.z;
+      const res = await apiClient.get("/analytics/anomalies", { params });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Suggested alert-rule thresholds (percentiles) vs current global rules.
+  getRecommendations: async (days?: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/analytics/recommendations", days ? { params: { days } } : undefined);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getAlertRules: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/alert-rules");
