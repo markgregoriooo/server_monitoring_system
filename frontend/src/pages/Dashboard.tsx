@@ -508,8 +508,24 @@ export default function Dashboard() {
   // Routers + UPS: initial load, then keep the counts live off the poller's
   // broadcasts (same events the Network/UPS pages use, ~60s cadence).
   useEffect(() => {
-    api.getNetworkDevices().then((r) => {
-      if (r.success && r.data) setNetDevices(r.data.devices ?? []);
+    // BOTH sources, because GET /network filters `device_type = 'router'` — the MikroTik
+    // lives behind GET /mikrotik. Fetching only the first meant the MikroTik was missing
+    // from the panel until its poller happened to push a `networkMetrics` frame, up to a
+    // full poll interval (~30s) after the page loaded. It looked like the device was slow
+    // to come up; it was simply never asked for.
+    //
+    // The two payloads share their field names (the MikroTik poller reuses
+    // writeNetworkSample), so they merge without translation.
+    Promise.all([api.getNetworkDevices(), api.getMikrotikDevices()]).then(([net, mt]) => {
+      const rows: NetDevice[] = [
+        ...(net.success ? net.data?.devices ?? [] : []),
+        ...(mt.success ? mt.data?.devices ?? [] : []),
+      ];
+      // De-dup by id: the same device must never appear twice if the two endpoints ever
+      // start overlapping.
+      const byId = new Map<string, NetDevice>();
+      for (const d of rows) byId.set(String(d.id), d);
+      setNetDevices([...byId.values()]);
     });
     api.getUpsDevices().then((r) => {
       if (r.success && r.data) setUpsDevices(r.data.devices ?? []);
@@ -867,7 +883,10 @@ export default function Dashboard() {
           sub={`${servers.length - online} offline`}
         />
         <StatPanel
-          label="Routers Online"
+          // "Network", not "Routers": this now counts the MikroTik alongside the SNMP
+          // routers, and calling that number "routers" would quietly misreport what it
+          // covers.
+          label="Network Online"
           value={netDevices.length ? `${netOnline}/${netDevices.length}` : "--"}
           color={
             !netDevices.length ? gf.textMuted : netOnline === netDevices.length ? GREEN : RED
