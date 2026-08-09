@@ -665,7 +665,7 @@ whether the window is long enough to contain the signal.
 | Disk-full | 14 / 30 / **90**d | 30d | Disks fill over weeks. 14d is easily skewed by one large copy or a log rotation |
 | Link saturation | 30 / **90** / 180d | 90d | Campus traffic grows over a semester |
 | UPS battery | 90 / **180** / 365d | 180d | A UPS battery ages over **years** |
-| Trend projection | 24h / **48h** / 7d | 48h | Short-horizon EWMA + Holt's; horizon ≈ ¼ of the lookback |
+| Trend projection | 24h / **48h** / 7d | 48h | Short-horizon EWMA + Holt's. Horizon is a FIXED 12h — see §16.6 |
 | Anomaly baseline | 7 / **14** / 30d | 14d | Needs several samples per hour-of-day bucket |
 | Alert analytics | 7 / **30** / 90d | 30d | Descriptive; 30d is the usual incident-review period |
 | Recommendations | *(fixed)* | 30d | Deliberately not tunable — see §16.5 |
@@ -727,3 +727,18 @@ to a quiet week, short enough not to bake in load the hardware has since outgrow
 
 The endpoint still accepts `?days=` (clamped 1–90) for deliberate analysis; the UI simply
 does not offer it as a control.
+
+### 16.6 Lookback and horizon are separate questions
+
+The trend panel's horizon was briefly derived from its lookback (≈¼ of it). That coupled
+two unrelated things: choosing a 24h window to steady the trend line also silently cut the
+forecast to 6h, which is not what "look back further" means to anyone reading the control.
+
+The horizon is now a fixed **12h** (`TREND_HORIZON_HOURS`), independent of the lookback —
+far enough ahead to act on before the next shift, short enough that a straight-line
+projection is still defensible. The lookback controls only how much history the EWMA and
+Holt's fit see.
+
+The panel subtitle is rendered from the values the **backend returned**
+(`trend.lookbackHours` / `trend.horizonHours`), not from the pending selector state, so it
+can never describe a window other than the one actually plotted.

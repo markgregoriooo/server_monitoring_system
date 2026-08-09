@@ -215,9 +215,12 @@ const TREND_LOOKBACKS: LookbackOption[] = [
   { value: 48, label: "48h" },
   { value: 168, label: "7d" },
 ];
-// Project forward about a quarter of what was looked back on — far enough to be useful,
-// short enough that a straight-line projection is still defensible.
-const horizonFor = (hours: number): number => (hours <= 24 ? 6 : hours <= 48 ? 12 : 24);
+// How far AHEAD the projection runs, deliberately independent of the lookback. Deriving
+// it from the lookback coupled two unrelated questions — picking a 24h window to steady
+// the trend line also silently shortened the forecast to 6h, which is not what "look back
+// further" means to anyone. 12h is the operational horizon: far enough to act on before
+// the next shift, short enough that a straight-line projection is still defensible.
+const TREND_HORIZON_HOURS = 12;
 // Live updates: server metrics (~10s/host), SNMP/MikroTik polls (~30-60s) and environment
 // readings (~3s) all stream in over the socket. We coalesce that firehose to at most one
 // analytics refresh per this window — a multi-day regression barely moves between ticks and
@@ -426,7 +429,7 @@ export default function Analytics() {
     if (!silent) setFocusLoading(true);
     const dev = needsDevice ? selDevice : null;
     const [t, a] = await Promise.all([
-      api.getMetricTrend(selMetric, { deviceId: dev, hours: trendHours, horizon: horizonFor(trendHours) }),
+      api.getMetricTrend(selMetric, { deviceId: dev, hours: trendHours, horizon: TREND_HORIZON_HOURS }),
       api.getAnomalies(selMetric, { deviceId: dev, days: anomDays }),
     ]);
     setTrend(t.success ? (t.data?.trend ?? null) : null);
@@ -822,7 +825,7 @@ export default function Analytics() {
           {/* ── Trend & short-term projection ── */}
           <Panel
             title="Trend & Short-Term Projection"
-            subtitle={`EWMA-smoothed history + Holt's linear (double-exponential) projection — next ~${horizonFor(trendHours)}h`}
+            subtitle={`EWMA-smoothed history + Holt's linear (double-exponential) projection — last ${trend?.lookbackHours ?? trendHours}h of history, next ~${trend?.horizonHours ?? TREND_HORIZON_HOURS}h`}
             action={<LookbackPicker value={trendHours} options={TREND_LOOKBACKS} onChange={setTrendHours} />}
           >
             {focusLoading ? (
