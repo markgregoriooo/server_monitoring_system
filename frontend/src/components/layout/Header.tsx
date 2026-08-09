@@ -146,17 +146,18 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
           {now}
         </span>
 
-        {/* Pop-out live widget (Picture-in-Picture) — Chromium-only, hidden elsewhere */}
+        {/* Pop-out live widget (Picture-in-Picture) — Chromium-only, hidden elsewhere.
+            Uses the same .gf-icon-btn box as the bell beside it: it was previously a bare
+            glyph with JS hover, so two neighbouring controls in one toolbar read as
+            different kinds of thing. `is-open` marks the widget as active exactly the way
+            the bell marks its panel as open. */}
         {pipSupported && (
           <button
             onClick={() => (pipOpen ? closePip() : openPip())}
             aria-label={pipOpen ? "Close live widget" : "Pop out live widget"}
             aria-pressed={pipOpen}
             title={pipOpen ? "Close live widget" : "Pop out live widget"}
-            className="relative transition-colors flex items-center"
-            style={{ color: pipOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)" }}
-            onMouseEnter={e => (e.currentTarget.style.color = "var(--gf-text-primary)")}
-            onMouseLeave={e => (e.currentTarget.style.color = pipOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)")}>
+            className={`gf-icon-btn inline-flex relative${pipOpen ? " is-open" : ""}`}>
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
               <rect x="8" y="8" width="5.5" height="4" rx="1" fill="currentColor" />
