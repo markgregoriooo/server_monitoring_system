@@ -1070,6 +1070,7 @@ export default function AirConditioner() {
   const [aircons,    setAircons]    = useState<Aircon[]>([]);
   const [logs,       setLogs]       = useState<Record<number, LogEntry[]>>({});
   const [channelMap, setChannelMap] = useState<ChannelEntry[]>([]);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const [loading,    setLoading]    = useState(true);
   const [roomTemp,   setRoomTemp]   = useState<number | string>("--");
   const [humidity,   setHumidity]   = useState<number | string>("--");
@@ -1152,13 +1153,28 @@ export default function AirConditioner() {
     };
   }, []);
 
+  // Adding, removing and renaming a unit all changed the page silently — the modal shut
+  // and you were left guessing whether it had worked. Registering an AC unit is also the
+  // moment a channel goes live on the ESP32, so it deserves an explicit confirmation.
+  const showToast = (msg: string, ok = true) => {
+    setToast({ msg, ok });
+    window.setTimeout(() => setToast(null), 3500);
+  };
+
   const handleUnitAdded   = (ac: Aircon, newLogs: LogEntry[]) => {
     setAircons(prev => [...prev, ac]);
     setLogs(prev => ({ ...prev, [ac.id]: newLogs }));
+    // Names the channel and GPIO: right after wiring, that is the fact worth confirming.
+    const gpio = channelMap.find(c => c.channel === ac.ir_channel)?.gpio;
+    showToast(
+      `"${ac.name}" added on channel ${ac.ir_channel}${gpio ? ` (GPIO ${gpio})` : ""}`,
+    );
   };
   const handleUnitDeleted = (id: number) => {
+    const name = aircons.find(a => a.id === id)?.name;
     setAircons(prev => prev.filter(a => a.id !== id));
     setLogs(prev => { const n = { ...prev }; delete n[id]; return n; });
+    showToast(name ? `"${name}" removed` : "Unit removed");
   };
   const handleUnitToggled = (id: number, enabled: boolean) => {
     setAircons(prev => prev.map(a =>
@@ -1301,6 +1317,22 @@ export default function AirConditioner() {
           onAdd={handleUnitAdded}
           onClose={() => setShowModal(false)}
         />
+      )}
+
+      {/* Same toast chrome as the Reports page, so a confirmation looks the same
+          wherever it appears. */}
+      {toast && (
+        <div
+          className="fixed top-5 right-5 z-[100] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl"
+          style={{
+            color: toast.ok ? GREEN : RED,
+            background: toast.ok ? `${GREEN}14` : `${RED}14`,
+            borderColor: toast.ok ? `${GREEN}40` : `${RED}40`,
+            fontFamily: "'JetBrains Mono', monospace",
+          }}
+        >
+          <span>{toast.ok ? "✓" : "✕"}</span> {toast.msg}
+        </div>
       )}
     </div>
   );
