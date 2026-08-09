@@ -1007,7 +1007,14 @@ export default function Dashboard() {
             No AC units registered
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          // auto-FIT, not auto-fill, and not a fixed xl:grid-cols-4. The fixed grid always
+          // reserved four tracks, so two registered units sat beside two empty columns of
+          // dead space. auto-fit COLLAPSES the tracks it doesn't need, so two cards share
+          // the row; register two more and it becomes four columns on its own, with no
+          // breakpoint to keep in sync with the unit count.
+          //
+          // (auto-fill would keep the empty tracks — the exact behaviour being fixed.)
+          <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
             {aircons.map((ac) => (
               <div
                 key={ac.id}
