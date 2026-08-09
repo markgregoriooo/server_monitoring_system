@@ -42,10 +42,12 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
         border: "1px solid var(--gf-panel-border)",
         borderRadius: 8,
         boxShadow: "var(--gf-shadow)",
-        // Constant gap under the last row. Previously this was pb-2 on the scrolling
-        // list, so it travelled with the content and the final notification finished
-        // hard against the panel's rounded corner.
-        paddingBottom: 10,
+        // Constant gap on all four inner edges. The bottom one used to be pb-2 on the
+        // SCROLLING list, so it travelled with the content and the last notification
+        // finished hard against the rounded corner. The sides matter for the same
+        // reason: a row's unread tint and hover band are full-width, so without this
+        // they ran into the panel border and the corners looked clipped.
+        padding: "0 8px 10px",
         fontFamily: "'JetBrains Mono', monospace",
       }}
       role="dialog"
@@ -53,7 +55,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between px-3.5 py-2.5 flex-shrink-0"
+        className="flex items-center justify-between px-2 py-2.5 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--gf-divider)" }}
       >
         <span className="text-[14px] font-semibold tracking-wide" style={{ color: "var(--gf-text-primary)" }}>
@@ -108,7 +110,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
 
       {/* All / Unread filter */}
       <div
-        className="flex items-center gap-1 px-3 py-2 flex-shrink-0"
+        className="flex items-center gap-1 px-1.5 py-2 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--gf-divider)" }}
       >
         {([
@@ -139,7 +141,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
       {perm === "default" && (
         <button
           onClick={async () => setPerm(await requestDesktopPermission())}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] w-full transition-colors flex-shrink-0"
+          className="flex items-center gap-1.5 px-2 py-1.5 text-[12px] w-full transition-colors flex-shrink-0"
           style={{ color: "var(--gf-accent)", borderBottom: "1px solid var(--gf-divider)" }}
           onMouseEnter={(e) => (e.currentTarget.style.background = "var(--gf-hover)")}
           onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -154,7 +156,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
       {/* List */}
       <div className="overflow-y-auto flex-1 min-h-0">
         {visibleItems.length === 0 ? (
-          <div className="px-3 py-10 text-center text-[14px]" style={{ color: "var(--gf-text-muted)" }}>
+          <div className="px-2 py-10 text-center text-[14px]" style={{ color: "var(--gf-text-muted)" }}>
             {filter === "unread" ? "No unread notifications" : "No notifications"}
           </div>
         ) : (
@@ -168,7 +170,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
             >
               <button
                 onClick={() => onItemClick(n)}
-                className="w-full text-left pl-3.5 pr-8 py-3 flex gap-2.5 transition-colors"
+                className="w-full text-left pl-2.5 pr-7 py-3 flex gap-2.5 transition-colors"
                 style={{ background: n.isRead ? "transparent" : "var(--gf-accent-dim)" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = "var(--gf-hover)")}
                 onMouseLeave={(e) => (e.currentTarget.style.background = n.isRead ? "transparent" : "var(--gf-accent-dim)")}
