@@ -982,6 +982,24 @@ export const api = {
     }
   },
 
+  // Rolling-origin backtest — how far off past forecasts actually were, measured against
+  // what the metric really did next. See predictive-analytics.md §17.
+  getForecastAccuracy: async (
+    metric: string,
+    opts?: { deviceId?: number | null; days?: number; horizon?: number },
+  ): Promise<ApiResult> => {
+    try {
+      const params: Record<string, string | number> = { metric };
+      if (opts?.deviceId != null) params.deviceId = opts.deviceId;
+      if (opts?.days) params.days = opts.days;
+      if (opts?.horizon) params.horizon = opts.horizon;
+      const res = await apiClient.get("/analytics/accuracy", { params });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getAlertRules: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/alert-rules");

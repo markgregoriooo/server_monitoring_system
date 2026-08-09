@@ -769,3 +769,61 @@ should not imply that it can — so the window is fixed at **48h**
 > and therefore how stable the mean/deviation baseline is and which points get flagged.
 > Same tab, opposite conclusion, for a concrete reason — the anomaly detector uses every
 > point in the window equally, the trend projector does not.
+
+---
+
+## 17. Forecast accuracy — proving the predictions were right
+
+R² and MAE (§3) describe how well a line **fits history**. Neither says whether a forecast
+came *true*. That distinction is the first thing a panel will press on, so it gets its own
+measurement.
+
+### 17.1 Why backtesting, not a prediction log
+
+The obvious approach is to record every prediction and grade it later. It measures the
+right thing but yields **nothing until predictions mature** — weeks for disk, months for a
+UPS battery. Demoed before then, it reads "0 evaluated".
+
+`backtestSeries()` instead uses **rolling-origin validation** on the history already on
+disk:
+
+```
+for several points in the past ("origins"):
+    fit using ONLY the data that existed at that origin
+    predict the value `horizon` ahead
+    compare against what the metric actually did
+```
+
+Same question, answered today, with many samples instead of a handful. It is also standard
+practice for time-series models, not an improvisation.
+
+### 17.2 Why it scores VALUE error, not ETA error
+
+"We said 9 days, it took 11" is only computable once the disk has actually filled — which
+is almost never, and the cases that *do* resolve are the fastest-filling ones. Scoring only
+those would quietly flatter the model.
+
+Value error at the horizon ("we said 71%, it was 73%") is always computable and censors
+nothing, so it's what `GET /api/analytics/accuracy` reports:
+
+| Field | Meaning |
+|---|---|
+| `mae` | Typical miss, ignoring direction |
+| `bias` | **Signed** mean. Positive = predicted more usage than happened |
+| `worst` | Largest single miss |
+| `folds` | How many past predictions could actually be checked |
+
+**`bias` is the one to read.** A model that's noisy but centred is far safer than one that
+consistently under-predicts, since under-predicting a disk means running out of space
+earlier than promised. The two look identical in `mae`.
+
+`folds` is reported per device and never hidden: an accuracy figure from two checks is not
+the same claim as one from eight, and presenting them alike would be the dishonest version
+of this feature.
+
+### 17.3 What it can't tell you
+
+It measures the model against **the past it was trained near**. A metric that behaves
+differently in future (semester start, a new workload) will beat the backtest — which is
+§16.2's seasonality caveat, restated. A good backtest score means the method is sound on
+observed behaviour, not that the future is guaranteed to comply.

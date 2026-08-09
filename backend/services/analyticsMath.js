@@ -375,6 +375,85 @@ export function worstVolumeForecast(forecasts) {
   );
 }
 
+// ─── Backtesting: how wrong were we, really? ──────────────────────────────────
+//
+// R² and MAE describe how well a line FITS history. Neither says whether a forecast came
+// true, which is the question anyone actually cares about — and the one a defence panel
+// asks. This measures it by rolling-origin validation:
+//
+//   for several points in the past ("origins"):
+//     fit using ONLY the data that existed at that origin
+//     predict the value `horizon` ahead
+//     compare against what the metric actually did
+//
+// The alternative — recording live predictions and grading them later — measures the same
+// thing but yields nothing until predictions mature (weeks or months). This produces a
+// real number from the history already on disk, and gives many samples rather than a few.
+//
+// It measures VALUE error at the horizon ("we said 71%, it was 73%") rather than ETA
+// error in days. ETA error is undefined whenever a disk hasn't actually filled yet, which
+// is almost always — value error is always computable and never quietly censors the
+// inconvenient cases.
+export function backtestSeries(raw, { horizonMs, folds = 5, minTrain = MIN_POINTS * 2 } = {}) {
+  const out = { folds: 0, mae: null, bias: null, worst: null, samples: [] };
+  const s = [...raw].sort((a, b) => a.t - b.t);
+  if (s.length < minTrain + 2 || !horizonMs) return out;
+
+  // A prediction is only checkable if real data exists `horizon` beyond its origin, so
+  // origins run from "just enough training data" to "one horizon before the end".
+  const earliest = s[minTrain - 1].t;
+  const latest = s[s.length - 1].t - horizonMs;
+  if (latest <= earliest) return out; // window too short to verify even one prediction
+
+  // Match an actual reading to the target time within half a sampling interval, so a
+  // gap in the data is skipped rather than silently compared against the wrong moment.
+  const gaps = [];
+  for (let i = 1; i < s.length; i++) gaps.push(s[i].t - s[i - 1].t);
+  gaps.sort((a, b) => a - b);
+  const typicalGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 3_600_000;
+  const tolerance = Math.max(typicalGap, horizonMs * 0.02);
+
+  const n = Math.max(1, Math.floor(folds));
+  const errors = [];
+  for (let k = 0; k < n; k++) {
+    const originT = n === 1 ? latest : earliest + ((latest - earliest) * k) / (n - 1);
+    const train = s.filter((p) => p.t <= originT);
+    if (train.length < minTrain) continue;
+
+    const t0 = train[0].t;
+    const model = linearRegression(train.map((p) => ({ x: (p.t - t0) / 3_600_000, y: p.y })));
+    if (!model) continue;
+
+    const targetT = originT + horizonMs;
+    let actual = null;
+    for (const p of s) {
+      if (Math.abs(p.t - targetT) <= tolerance && (!actual || Math.abs(p.t - targetT) < Math.abs(actual.t - targetT))) {
+        actual = p;
+      }
+    }
+    if (!actual) continue;
+
+    const predicted = model.slope * ((targetT - t0) / 3_600_000) + model.intercept;
+    const error = predicted - actual.y; // signed: positive = we over-predicted
+    errors.push(error);
+    out.samples.push({
+      originT, targetT,
+      predicted: round2(predicted),
+      actual: round2(actual.y),
+      error: round2(error),
+    });
+  }
+
+  if (!errors.length) return out;
+  out.folds = errors.length;
+  out.mae = round2(errors.reduce((a, e) => a + Math.abs(e), 0) / errors.length);
+  // Signed mean: separates "noisy but centred" from "systematically optimistic", which is
+  // the more dangerous failure for a capacity forecast.
+  out.bias = round2(errors.reduce((a, e) => a + e, 0) / errors.length);
+  out.worst = round2(Math.max(...errors.map(Math.abs)));
+  return out;
+}
+
 // Sort comparator: soonest ETA first, "no ETA" (stable/falling/insufficient) last.
 export const byEtaAsc = (a, b) => {
   if (a.etaDays == null && b.etaDays == null) return 0;

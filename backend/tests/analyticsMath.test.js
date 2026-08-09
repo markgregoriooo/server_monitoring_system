@@ -24,6 +24,7 @@ import {
   baselineBucket,
   bucketLabel,
   BASELINE_BUCKETS,
+  backtestSeries,
   clampInt,
   clampNum,
   MIN_POINTS,
@@ -459,6 +460,54 @@ test("spanDays is order-independent", () => {
   const pts = [{ t: 5 * 86_400_000, y: 1 }, { t: 0, y: 1 }, { t: 2 * 86_400_000, y: 1 }];
   assert.equal(spanDays(pts), 5);
 });
+
+// ─── backtesting (rolling-origin forecast error) ──────────────────────────────
+
+test("backtestSeries: a perfectly linear metric is predicted with ~zero error", () => {
+  // 30 days of hourly points climbing exactly 0.05/hour. A line extrapolated from any
+  // origin should land on the actual value.
+  const pts = Array.from({ length: 24 * 30 }, (_, i) => ({ t: i * HOUR, y: 20 + i * 0.05 }));
+  const r = backtestSeries(pts, { horizonMs: 7 * 24 * HOUR, folds: 5 });
+  assert.ok(r.folds >= 3, `expected several folds, got ${r.folds}`);
+  assert.ok(r.mae != null && r.mae < 0.01, `mae ${r.mae}`);
+  assert.ok(Math.abs(r.bias) < 0.01, `bias ${r.bias}`);
+});
+
+test("backtestSeries: a curve that flattens shows OPTIMISTIC bias", () => {
+  // Rises fast, then plateaus — exactly the semester-start pattern the docs warn about.
+  // A straight line fitted on the rising part must over-predict the flat future.
+  const pts = Array.from({ length: 24 * 30 }, (_, i) => ({
+    t: i * HOUR,
+    y: 20 + Math.min(i, 24 * 15) * 0.08,
+  }));
+  const r = backtestSeries(pts, { horizonMs: 7 * 24 * HOUR, folds: 5 });
+  assert.ok(r.folds > 0);
+  assert.ok(r.bias > 0, `expected over-prediction, got bias ${r.bias}`);
+  assert.ok(r.mae > 0);
+});
+
+test("backtestSeries: reports the worst single miss, not just the average", () => {
+  const pts = Array.from({ length: 24 * 30 }, (_, i) => ({ t: i * HOUR, y: 50 + Math.sin(i / 20) * 10 }));
+  const r = backtestSeries(pts, { horizonMs: 3 * 24 * HOUR, folds: 5 });
+  assert.ok(r.folds > 0);
+  assert.ok(r.worst >= r.mae, "worst error cannot be smaller than the mean error");
+});
+
+test("backtestSeries: refuses to score what it cannot verify", () => {
+  // Only 3 days of history but a 7-day horizon — no origin has real data a week later,
+  // so there is nothing honest to report.
+  const short = Array.from({ length: 24 * 3 }, (_, i) => ({ t: i * HOUR, y: 40 + i * 0.01 }));
+  const r = backtestSeries(short, { horizonMs: 7 * 24 * HOUR, folds: 5 });
+  assert.equal(r.folds, 0);
+  assert.equal(r.mae, null);
+
+  assert.equal(backtestSeries([], { horizonMs: HOUR }).folds, 0);
+  assert.equal(backtestSeries(pts10(), {}).folds, 0, "no horizon = nothing to check");
+});
+
+function pts10() {
+  return Array.from({ length: 10 }, (_, i) => ({ t: i * HOUR, y: i }));
+}
 
 // ─── anomaly baseline buckets (weekday vs weekend) ────────────────────────────
 

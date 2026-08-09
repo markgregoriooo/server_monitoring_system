@@ -8,7 +8,7 @@ import {
   forecastSeries, projectToBound, worstVolumeForecast, byEtaAsc,
   round1, round2, clampInt, clampNum, confidenceLabel, mean, stddev,
   everyForHours, parseEveryMs, bucketForDays, spanDays,
-  BASELINE_BUCKETS, baselineBucket, bucketLabel,
+  BASELINE_BUCKETS, baselineBucket, bucketLabel, backtestSeries,
   actionFor,
 } from "./analyticsMath.js";
 
@@ -579,6 +579,64 @@ async function recommendThresholds({ lookbackDays = 14 } = {}) {
   return out;
 }
 
+// ─── Forecast accuracy (rolling-origin backtest) ──────────────────────────────
+// Answers "were our forecasts right?" from the history already on disk, instead of
+// recording live predictions and waiting weeks to grade them. See analyticsMath
+// .backtestSeries for the method and why it scores VALUE error rather than ETA error.
+//
+// Reported per device so one badly-behaved server can't hide behind an average, and with
+// the fold count visible — an accuracy figure from two folds is not the same claim as one
+// from eight, and pretending otherwise would be the dishonest version of this feature.
+async function forecastAccuracy({ metric = "disk", deviceId = null, lookbackDays = 30, horizonDays = 7, folds = 5 } = {}) {
+  const meta = METRICS[metric];
+  if (!meta) return null;
+  const days = clampInt(lookbackDays, 2, 365, 30);
+  const horizon = clampNum(horizonDays, 0.25, 90, 7);
+  const foldCount = clampInt(folds, 1, 20, 5);
+  const horizonMs = horizon * 86_400_000;
+
+  const results = [];
+  if (meta.source === "env") {
+    // Room-level: one series, no device.
+    const series = await fetchMetricSeries(metric, { rangeExpr: `-${days}d`, every: bucketForDays(days) });
+    const bt = backtestSeries(series, { horizonMs, folds: foldCount });
+    results.push({ deviceId: null, name: "Server room", typeLabel: null, ...bt });
+  } else {
+    const measurement = meta.source === "router" ? "router_metrics" : "server_metrics";
+    const grouped = await fetchSeriesGrouped(measurement, meta.field, { deviceId, days });
+    const identities = await fetchDeviceIdentities([...grouped.values()].map((e) => e.deviceId));
+    const cutoff = Date.now() - ACTIVE_WITHIN_MS;
+    for (const entry of grouped.values()) {
+      if (deviceId == null && !isCurrentDevice(entry, identities, cutoff)) continue;
+      const ident = identify(entry, identities);
+      const bt = backtestSeries(entry.raw, { horizonMs, folds: foldCount });
+      results.push({ deviceId: entry.deviceId, name: ident.name, typeLabel: ident.typeLabel, ...bt });
+    }
+  }
+
+  // Devices with no verifiable folds sink to the bottom — they have nothing to say yet.
+  results.sort((a, b) => {
+    if (!a.folds && !b.folds) return 0;
+    if (!a.folds) return 1;
+    if (!b.folds) return -1;
+    return (b.mae ?? 0) - (a.mae ?? 0); // least accurate first: that's what needs looking at
+  });
+
+  const scored = results.filter((r) => r.folds > 0);
+  return {
+    metric, label: meta.label, unit: meta.unit,
+    lookbackDays: days, horizonDays: horizon,
+    devices: results,
+    // Overall figure across devices, weighted by fold count so a device with one
+    // verifiable prediction doesn't swing the headline.
+    overallMae: scored.length
+      ? round2(scored.reduce((a, r) => a + r.mae * r.folds, 0) / scored.reduce((a, r) => a + r.folds, 0))
+      : null,
+    totalFolds: scored.reduce((a, r) => a + r.folds, 0),
+    status: scored.length ? "ok" : "insufficient_data",
+  };
+}
+
 // ─── Phase 2b/3b: UPS battery degradation + link saturation ───────────────────
 // The router/UPS data this engine forecasts on (ups_metrics / network_traffic). Same
 // regression core as disk-full ETA, but projected DOWN to a runtime floor (battery
@@ -731,4 +789,5 @@ export default {
   recommendThresholds,
   forecastUpsBattery,
   forecastLinkSaturation,
+  forecastAccuracy,
 };

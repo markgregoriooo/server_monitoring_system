@@ -140,6 +140,26 @@ interface AnomalyResult {
   status: "ok" | "insufficient_data";
 }
 
+interface AccuracyResult {
+  metric: string;
+  label: string;
+  unit: string;
+  lookbackDays: number;
+  horizonDays: number;
+  overallMae: number | null;
+  totalFolds: number;
+  devices: {
+    deviceId: number | null;
+    name: string;
+    typeLabel: string | null;
+    folds: number;
+    mae: number | null;
+    bias: number | null;
+    worst: number | null;
+  }[];
+  status: "ok" | "insufficient_data";
+}
+
 interface Recommendation {
   metric: string;
   label: string;
@@ -419,6 +439,7 @@ export default function Analytics() {
   // Phase 4 — threshold recommendations.
   const [recs, setRecs] = useState<Recommendation[]>([]);
   const [recsLoading, setRecsLoading] = useState(true);
+  const [accuracy, setAccuracy] = useState<AccuracyResult | null>(null);
   const [applying, setApplying] = useState<string | null>(null);
 
   // Refresh just the alert summary (no full-panel spinner) so the live socket-driven
@@ -457,7 +478,15 @@ export default function Analytics() {
   // Forecasts load on mount + their own lookback change (they are also the source of the
   // device lists the Trends tab's selector needs, so they load regardless of active tab).
   // The other tabs load lazily when first activated.
+  // Accuracy is backtested from history already on disk, so it needs no schedule and no
+  // waiting — it loads once with the forecasts it describes.
+  const loadAccuracy = useCallback(async () => {
+    const a = await api.getForecastAccuracy("disk", { days: diskDays, horizon: 7 });
+    if (a.success) setAccuracy(a.data?.accuracy ?? null);
+  }, [diskDays]);
+
   useEffect(() => { loadDisk(); }, [loadDisk]);
+  useEffect(() => { loadAccuracy(); }, [loadAccuracy]);
   useEffect(() => { loadUps(); }, [loadUps]);
   useEffect(() => { loadLink(); }, [loadLink]);
   useEffect(() => { if (tab === "alerts") loadSummary(); }, [tab, loadSummary]);
@@ -772,6 +801,55 @@ export default function Analytics() {
             empty="No server disk history yet. Forecasts appear once agents have reported for a while."
             note="An ETA appears only for a rising trend. Disks fill over weeks, so a short window is easily skewed by one large copy or a log rotation."
           />
+
+          {/* Accuracy sits directly under the disk forecast it grades, so the claim and
+              its evidence are read together rather than on separate screens. */}
+          {accuracy && accuracy.status === "ok" && (
+            <Panel
+              title="Forecast Accuracy"
+              subtitle={`Backtested on real history · ${accuracy.horizonDays}-day-ahead predictions · ${accuracy.totalFolds} checked`}
+            >
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+                <Stat
+                  label={`Typical miss (${accuracy.unit})`}
+                  value={accuracy.overallMae == null ? "—" : `±${accuracy.overallMae}${accuracy.unit}`}
+                  color={GREEN}
+                />
+                <Stat label="Predictions checked" value={String(accuracy.totalFolds)} />
+                <Stat label="Horizon" value={`${accuracy.horizonDays}d ahead`} />
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ color: gf.textDim, textAlign: "left" }}>
+                      <Th>Server</Th>
+                      <Th title="Average size of the miss, ignoring direction">Typical miss</Th>
+                      <Th title="Signed average: positive means we predicted MORE usage than actually happened">Bias</Th>
+                      <Th>Worst miss</Th>
+                      <Th title="How many past predictions could be checked against real data">Checked</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {accuracy.devices.filter((d) => d.folds > 0).map((d) => (
+                      <tr key={`${d.deviceId}-${d.name}`} style={{ borderTop: `1px solid ${gf.divider}` }}>
+                        <Td><DeviceLabel name={d.name} typeLabel={d.typeLabel} sub={null} /></Td>
+                        <Td><span style={{ color: gf.textPrimary }}>±{d.mae}{accuracy.unit}</span></Td>
+                        <Td>
+                          {/* Direction matters more than size here: consistently
+                              over-predicting is the safe failure, under-predicting is not. */}
+                          <span style={{ color: (d.bias ?? 0) > 0 ? ORANGE : (d.bias ?? 0) < 0 ? gf.accent : gf.textMuted }}>
+                            {(d.bias ?? 0) > 0 ? "over" : (d.bias ?? 0) < 0 ? "under" : "even"} {Math.abs(d.bias ?? 0)}{accuracy.unit}
+                          </span>
+                        </Td>
+                        <Td><span style={{ color: gf.textMuted }}>±{d.worst}{accuracy.unit}</span></Td>
+                        <Td><span style={{ color: gf.textDim }}>{d.folds}</span></Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          )}
 
           <ForecastPanel
             title="UPS Battery Forecast"

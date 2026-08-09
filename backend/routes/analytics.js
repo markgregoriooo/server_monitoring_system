@@ -103,6 +103,25 @@ router.get(
   }),
 );
 
+// GET /api/analytics/accuracy?metric=&deviceId=&days=30&horizon=7&folds=5
+// Rolling-origin backtest: how far off the forecasts actually were, measured on real
+// history rather than on how well the line fits it. See predictive-analytics.md §17.
+router.get(
+  "/accuracy",
+  asyncHandler(async (req, res) => {
+    const metric = req.query.metric ?? "disk";
+    if (!validMetric(metric)) return res.status(400).json({ error: "Unknown metric." });
+    const accuracy = await analyticsService.forecastAccuracy({
+      metric,
+      deviceId: parseDeviceId(req.query.deviceId),
+      lookbackDays: req.query.days,
+      horizonDays: req.query.horizon,
+      folds: req.query.folds,
+    });
+    res.json({ accuracy });
+  }),
+);
+
 // GET /api/analytics/forecast/ups-battery?deviceId=&days=30&floor=5  (Phase 2b)
 // Battery-degradation ETA (linear regression on runtime) for every UPS, or one.
 router.get(
