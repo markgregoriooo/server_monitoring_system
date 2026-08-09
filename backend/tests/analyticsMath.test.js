@@ -17,6 +17,8 @@ import {
   localHour,
   everyForHours,
   parseEveryMs,
+  bucketForDays,
+  spanDays,
   clampInt,
   clampNum,
   MIN_POINTS,
@@ -419,6 +421,38 @@ test("parseEveryMs understands the bucket strings it is paired with", () => {
   assert.equal(parseEveryMs("1h"), HOUR);
   assert.equal(parseEveryMs("1d"), 86_400_000);
   assert.equal(parseEveryMs("garbage"), HOUR, "falls back to an hour");
+});
+
+test("bucketForDays widens the aggregate so long windows stay a few hundred points", () => {
+  assert.equal(bucketForDays(7), "1h");
+  assert.equal(bucketForDays(30), "1h");
+  assert.equal(bucketForDays(90), "6h");
+  assert.equal(bucketForDays(120), "6h");
+  assert.equal(bucketForDays(180), "1d");
+  assert.equal(bucketForDays(365), "1d");
+
+  // The point of the widening: no window explodes the row count. A 180-day battery
+  // window at 1h would be ~4300 points per device; at 1d it is ~180.
+  const pointsFor = (d) => (d * 24) / (parseEveryMs(bucketForDays(d)) / HOUR);
+  for (const d of [7, 30, 90, 180, 365]) {
+    assert.ok(pointsFor(d) <= 800, `${d}d → ${pointsFor(d)} points`);
+    assert.ok(pointsFor(d) >= MIN_POINTS, `${d}d → ${pointsFor(d)} points`);
+  }
+});
+
+test("spanDays reports the ACTUAL history covered, not the window requested", () => {
+  // Asking for 180 days but only holding 10 (short retention, or a new device) must
+  // report 10 — that gap is the difference between a real forecast and a guess.
+  assert.equal(spanDays(series(11, () => 1)), 0.4, "11 hourly points ≈ 0.4 days");
+  const tenDays = Array.from({ length: 11 }, (_, i) => ({ t: i * 24 * HOUR, y: 1 }));
+  assert.equal(spanDays(tenDays), 10);
+  assert.equal(spanDays([]), 0);
+  assert.equal(spanDays([{ t: 0, y: 1 }]), 0, "one point spans nothing");
+});
+
+test("spanDays is order-independent", () => {
+  const pts = [{ t: 5 * 86_400_000, y: 1 }, { t: 0, y: 1 }, { t: 2 * 86_400_000, y: 1 }];
+  assert.equal(spanDays(pts), 5);
 });
 
 // ─── input clamping (the Flux-injection guarantee) ────────────────────────────

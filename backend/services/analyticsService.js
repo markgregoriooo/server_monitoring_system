@@ -7,7 +7,7 @@ import {
   ewma, holtLinear,
   forecastSeries, projectToBound, worstVolumeForecast, byEtaAsc,
   round1, round2, clampInt, clampNum, confidenceLabel, mean, stddev,
-  localHour, everyForHours, parseEveryMs,
+  localHour, everyForHours, parseEveryMs, bucketForDays, spanDays,
   actionFor,
 } from "./analyticsMath.js";
 
@@ -114,7 +114,8 @@ function isCurrentDevice(entry, identities, cutoff) {
 // (clamped int / Number) before they touch Flux — no injection surface, mirroring
 // serverHistoryHandler.js.
 async function fetchDiskSeries(lookbackDays, deviceId) {
-  const days = clampInt(lookbackDays, 1, 90, 14);
+  const days = clampInt(lookbackDays, 1, 365, 30);
+  const every = bucketForDays(days);
   const idFilter =
     deviceId != null
       ? `|> filter(fn: (r) => r.device_id == "${Number(deviceId)}")`
@@ -125,7 +126,7 @@ async function fetchDiskSeries(lookbackDays, deviceId) {
       |> filter(fn: (r) => r._measurement == "server_metrics")
       |> filter(fn: (r) => r._field == "disk_percent")
       ${idFilter}
-      |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+      |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)
       |> keep(columns: ["_time", "_value", "device_id", "device_name"])
   `;
   const rows = await queryClient.collectRows(flux);
@@ -154,13 +155,13 @@ async function fetchDiskSeries(lookbackDays, deviceId) {
 // the worst volume, so regressing root-only `disk_percent` meant a server filling its data
 // volume raised a Disk alert while the forecast beside it read "Stable". Servers with no
 // per-volume history — pre-`server_volumes` data — still fall back to the root series.
-async function forecastDiskFull({ deviceId = null, lookbackDays = 14, full = 100 } = {}) {
+async function forecastDiskFull({ deviceId = null, lookbackDays = 30, full = 100 } = {}) {
   const fullPct = clampNum(full, 50, 100, 100);
   const [byDevice, volGrouped] = await Promise.all([
     fetchDiskSeries(lookbackDays, deviceId),
     fetchSeriesGrouped("server_volumes", "percent", {
       deviceId,
-      days: clampInt(lookbackDays, 1, 90, 14),
+      days: clampInt(lookbackDays, 1, 365, 30),
       keys: ["mount"],
     }),
   ]);
@@ -189,6 +190,7 @@ async function forecastDiskFull({ deviceId = null, lookbackDays = 14, full = 100
         ...ident,
         mount: null,
         volumes: [],
+        historyDays: spanDays(entry.raw),
       });
       continue;
     }
@@ -208,6 +210,7 @@ async function forecastDiskFull({ deviceId = null, lookbackDays = 14, full = 100
       ...headline,
       ...ident,
       mount: headline.mount,
+      historyDays: spanDays(entry.raw),
       volumes: perVolume
         .map((v) => ({
           mount: v.mount,
@@ -456,10 +459,10 @@ async function trendAdvice(metric, deviceId, values, projection, lastT) {
 // anomaly. Global IQR fences are returned alongside for context. Statistics, not ML.
 const ANOM_MIN_BUCKET = 5; // need ≥5 samples in an hour before its baseline is trusted
 
-async function detectAnomalies({ metric, deviceId = null, lookbackDays = 7, z = 3 } = {}) {
+async function detectAnomalies({ metric, deviceId = null, lookbackDays = 14, z = 3 } = {}) {
   const meta = METRICS[metric];
   if (!meta) return null;
-  const days = clampInt(lookbackDays, 1, 90, 7);
+  const days = clampInt(lookbackDays, 1, 90, 14);
   const zThresh = clampNum(z, 2, 5, 3);
   const series = await fetchMetricSeries(metric, { deviceId, rangeExpr: `-${days}d`, every: "15m" });
 
@@ -571,7 +574,8 @@ async function recommendThresholds({ lookbackDays = 14 } = {}) {
 
 // Hourly-averaged field grouped by device (+ optional extra tag, e.g. interface_name).
 async function fetchSeriesGrouped(measurement, field, { deviceId = null, days = 30, keys = [] } = {}) {
-  const d = clampInt(days, 1, 90, 30);
+  const d = clampInt(days, 1, 365, 30);
+  const every = bucketForDays(d);
   const idFilter = deviceId != null ? `|> filter(fn: (r) => r.device_id == "${Number(deviceId)}")` : "";
   const cols = ["_time", "_value", "device_id", "device_name", ...keys];
   const flux = `
@@ -580,7 +584,7 @@ async function fetchSeriesGrouped(measurement, field, { deviceId = null, days = 
       |> filter(fn: (r) => r._measurement == "${measurement}")
       |> filter(fn: (r) => r._field == "${field}")
       ${idFilter}
-      |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+      |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)
       |> keep(columns: [${cols.map((c) => `"${c}"`).join(", ")}])
   `;
   const rows = await queryClient.collectRows(flux);
@@ -600,7 +604,7 @@ async function fetchSeriesGrouped(measurement, field, { deviceId = null, days = 
 // UPS battery degradation: regress runtime_remaining_min down to a critical floor →
 // "replace battery in ~N days" (the UPS analogue of disk-full ETA). Runtime depends on
 // load, so this is most reliable when load is steady; the R² gate guards the rest.
-async function forecastUpsBattery({ deviceId = null, lookbackDays = 30, floorMinutes = 5 } = {}) {
+async function forecastUpsBattery({ deviceId = null, lookbackDays = 180, floorMinutes = 5 } = {}) {
   const floor = clampNum(floorMinutes, 1, 60, 5);
   const grouped = await fetchSeriesGrouped("ups_metrics", "runtime_remaining_min", { deviceId, days: lookbackDays });
   const identities = await fetchDeviceIdentities([...grouped.values()].map((e) => e.deviceId));
@@ -621,7 +625,7 @@ async function forecastUpsBattery({ deviceId = null, lookbackDays = 30, floorMin
             ? { level: "warning", message: `${name}: battery runtime declining — projected critical in ~${eta} days. Plan a replacement.` }
             : null;
     results.push({
-      deviceId: e.deviceId, ...ident, floorMinutes: floor,
+      deviceId: e.deviceId, ...ident, floorMinutes: floor, historyDays: spanDays(e.raw),
       currentRuntimeMin: p.current, slopePerDay: p.slopePerDay, etaDays: eta,
       fitR2: p.fitR2, mae: p.mae, confidence: p.confidence,
       sampleCount: p.sampleCount, status: p.status, advice,
@@ -658,7 +662,7 @@ async function fetchInterfaceLabels(deviceIds) {
 // On the campus MikroTik an interface IS a building, so the location label is the name
 // an operator actually recognises — "ether1" alone is unidentifiable when every router
 // has one. We return both and let the UI lead with the label.
-async function forecastLinkSaturation({ deviceId = null, lookbackDays = 30, ceiling = 90 } = {}) {
+async function forecastLinkSaturation({ deviceId = null, lookbackDays = 90, ceiling = 90 } = {}) {
   const cap = clampNum(ceiling, 50, 100, 90);
   const grouped = await fetchSeriesGrouped("network_traffic", "utilization_pct", { deviceId, days: lookbackDays, keys: ["interface_name"] });
   const deviceIds = [...grouped.values()].map((e) => e.deviceId);
@@ -688,7 +692,7 @@ async function forecastLinkSaturation({ deviceId = null, lookbackDays = 30, ceil
             ? { level: "warning", message: `${where}: utilization trending up — projected to hit ${cap}% in ~${eta} days.` }
             : null;
     results.push({
-      deviceId: e.deviceId, ...ident,
+      deviceId: e.deviceId, ...ident, historyDays: spanDays(e.raw),
       interface: ifName, interfaceLabel: label, ceiling: cap,
       currentUtil: p.current, slopePerDay: p.slopePerDay, etaDays: eta,
       fitR2: p.fitR2, mae: p.mae, confidence: p.confidence,

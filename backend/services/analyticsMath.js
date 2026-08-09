@@ -62,6 +62,27 @@ export const localHour = (ms, offsetH = TZ_OFFSET_H) =>
 // Window helper: pick an aggregate bucket appropriate to the lookback length.
 export const everyForHours = (h) => (h <= 24 ? "15m" : h <= 72 ? "30m" : "1h");
 
+// Same idea for the multi-DAY capacity forecasts. A battery-degradation window is
+// measured in months, and pulling it at 1h buckets would drag ~4300 points per device
+// into Node to fit a straight line through — hourly resolution tells you nothing about a
+// trend that unfolds over a year. Widening the bucket keeps every window in the same
+// few-hundred-points band, which is all a regression needs.
+export const bucketForDays = (d) => (d <= 30 ? "1h" : d <= 120 ? "6h" : "1d");
+
+// Actual span of a series in days (first → last sample), NOT the requested lookback.
+// The two differ whenever InfluxDB retention is shorter than the window asked for, or
+// the device simply hasn't been reporting that long — so this is what tells an operator
+// whether a "180-day" forecast really saw 180 days.
+export function spanDays(raw) {
+  if (!raw || raw.length < 2) return 0;
+  let min = Infinity, max = -Infinity;
+  for (const p of raw) {
+    if (p.t < min) min = p.t;
+    if (p.t > max) max = p.t;
+  }
+  return Math.round(((max - min) / 86_400_000) * 10) / 10;
+}
+
 export const parseEveryMs = (e) => {
   const m = /^(\d+)([smhd])$/.exec(e);
   if (!m) return 3_600_000;

@@ -42,6 +42,7 @@ interface VolumeForecast {
 }
 
 interface DiskForecast extends DeviceIdentity {
+  historyDays: number;
   currentPercent: number | null;
   slopePerDay: number | null;
   etaDays: number | null;
@@ -57,6 +58,7 @@ interface DiskForecast extends DeviceIdentity {
 }
 
 interface UpsBatteryForecast extends DeviceIdentity {
+  historyDays: number;
   floorMinutes: number;
   currentRuntimeMin: number | null;
   slopePerDay: number | null;
@@ -70,6 +72,7 @@ interface UpsBatteryForecast extends DeviceIdentity {
 }
 
 interface LinkForecast extends DeviceIdentity {
+  historyDays: number;
   interface: string;
   interfaceLabel: string | null;
   ceiling: number;
@@ -182,7 +185,39 @@ const TYPE_COLOR: Record<string, string> = {
   Sensor: "#6B7280",
 };
 
-const LOOKBACKS = [7, 14, 30];
+// Lookback windows sized to what each thing PHYSICALLY does, not one shared number.
+// Disk fills over weeks; a campus uplink grows over a semester; a UPS battery ages over
+// YEARS, so a 30-day window cannot separate real degradation from the load swings that
+// move runtime minute to minute — hence the much longer options and default. See
+// predictive-analytics.md §16.
+interface LookbackOption { value: number; label: string }
+const D = (d: number): LookbackOption => ({ value: d, label: `${d}d` });
+
+const DISK_LOOKBACKS = [D(14), D(30), D(90)];
+const LINK_LOOKBACKS = [D(30), D(90), D(180)];
+const UPS_LOOKBACKS = [D(90), D(180), D(365)];
+// Anomalies: the per-hour-of-day baseline needs several samples per hour bucket, and a
+// 7-day window holds exactly ONE Saturday per bucket — so weekend readings both inflate
+// the deviation and risk flagging as anomalies on a campus. 14 days is the sane floor.
+const ANOMALY_LOOKBACKS = [D(7), D(14), D(30)];
+// Alert analytics is descriptive, so any window is "valid"; 30 days is the usual
+// incident-review period, 90 shows a term.
+const ALERT_LOOKBACKS = [D(7), D(30), D(90)];
+// Threshold suggestions are deliberately NOT tunable from the page. The window is the
+// one input that changes the suggested number, so exposing it invites sliding it until
+// the recommendation agrees with the threshold you already wanted — which defeats the
+// point of a data-driven suggestion. 30 days is a representative period: long enough not
+// to tune to a quiet week, short enough not to bake in load the hardware has outgrown.
+const REC_WINDOW_DAYS = 30;
+// Trend is a SHORT-horizon projector (EWMA + Holt's linear), so its window is hours.
+const TREND_LOOKBACKS: LookbackOption[] = [
+  { value: 24, label: "24h" },
+  { value: 48, label: "48h" },
+  { value: 168, label: "7d" },
+];
+// Project forward about a quarter of what was looked back on — far enough to be useful,
+// short enough that a straight-line projection is still defensible.
+const horizonFor = (hours: number): number => (hours <= 24 ? 6 : hours <= 48 ? 12 : 24);
 // Live updates: server metrics (~10s/host), SNMP/MikroTik polls (~30-60s) and environment
 // readings (~3s) all stream in over the socket. We coalesce that firehose to at most one
 // analytics refresh per this window — a multi-day regression barely moves between ticks and
@@ -284,13 +319,20 @@ interface ForecastRow {
   maeSuffix: string;
   advice: Advice | null;
   volumes: VolumeForecast[];
+  historyDays: number;      // actual span of data behind this row
 }
 
 export default function Analytics() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
-  const [days, setDays] = useState(14);
+  // One window per forecast, defaulted to that phenomenon's own timescale.
+  const [diskDays, setDiskDays] = useState<number>(30);
+  const [linkDays, setLinkDays] = useState<number>(90);
+  const [upsDays, setUpsDays] = useState<number>(180);
+  const [trendHours, setTrendHours] = useState<number>(48);
+  const [anomDays, setAnomDays] = useState<number>(14);
+  const [alertDays, setAlertDays] = useState<number>(30);
   const [tab, setTab] = useState<TabKey>("forecasts");
   const [forecasts, setForecasts] = useState<DiskForecast[]>([]);
   const [upsForecasts, setUpsForecasts] = useState<UpsBatteryForecast[]>([]);
@@ -314,24 +356,24 @@ export default function Analytics() {
   // Refresh just the alert summary (no full-panel spinner) so the live socket-driven
   // updates change the numbers in place rather than flashing "Loading…".
   const loadSummary = useCallback(async () => {
-    const s = await api.getAlertSummary(30);
+    const s = await api.getAlertSummary(alertDays);
     if (s.success) setSummary(s.data?.summary ?? null);
-  }, []);
+  }, [alertDays]);
 
   const loadForecasts = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError("");
     const [f, ups, link] = await Promise.all([
-      api.getDiskForecast(days),
-      api.getUpsBatteryForecast(days),
-      api.getLinkSaturationForecast(days),
+      api.getDiskForecast(diskDays),
+      api.getUpsBatteryForecast(upsDays),
+      api.getLinkSaturationForecast(linkDays),
     ]);
     if (f.success) setForecasts(f.data?.forecasts ?? []);
     else if (!silent) setError(f.error || "Failed to load forecasts.");
     if (ups.success) setUpsForecasts(ups.data?.forecasts ?? []);
     if (link.success) setLinkForecasts(link.data?.forecasts ?? []);
     if (!silent) setLoading(false);
-  }, [days]);
+  }, [diskDays, upsDays, linkDays]);
 
   // Forecasts load on mount + lookback change (also the source of the device lists the
   // Trends tab's selector needs). The other tabs load lazily when first activated.
@@ -384,19 +426,19 @@ export default function Analytics() {
     if (!silent) setFocusLoading(true);
     const dev = needsDevice ? selDevice : null;
     const [t, a] = await Promise.all([
-      api.getMetricTrend(selMetric, { deviceId: dev, hours: 48, horizon: 12 }),
-      api.getAnomalies(selMetric, { deviceId: dev, days: 7 }),
+      api.getMetricTrend(selMetric, { deviceId: dev, hours: trendHours, horizon: horizonFor(trendHours) }),
+      api.getAnomalies(selMetric, { deviceId: dev, days: anomDays }),
     ]);
     setTrend(t.success ? (t.data?.trend ?? null) : null);
     setAnom(a.success ? (a.data?.result ?? null) : null);
     if (!silent) setFocusLoading(false);
-  }, [selMetric, selDevice, needsDevice]);
+  }, [selMetric, selDevice, needsDevice, trendHours, anomDays]);
 
   useEffect(() => { if (tab === "trends") loadFocus(); }, [tab, loadFocus]);
 
   const loadRecs = useCallback(async (silent = false) => {
     if (!silent) setRecsLoading(true);
-    const r = await api.getRecommendations(14);
+    const r = await api.getRecommendations(REC_WINDOW_DAYS);
     if (r.success) setRecs(r.data?.recommendations ?? []);
     if (!silent) setRecsLoading(false);
   }, []);
@@ -471,6 +513,7 @@ export default function Analytics() {
       maeSuffix: "%",
       advice: f.advice,
       volumes: f.volumes,
+      historyDays: f.historyDays,
     })),
     [forecasts],
   );
@@ -495,6 +538,7 @@ export default function Analytics() {
       maeSuffix: "",
       advice: u.advice,
       volumes: [],
+      historyDays: u.historyDays,
     })),
     [upsForecasts],
   );
@@ -521,6 +565,7 @@ export default function Analytics() {
       maeSuffix: "%",
       advice: l.advice,
       volumes: [],
+      historyDays: l.historyDays,
     })),
     [linkForecasts],
   );
@@ -546,26 +591,7 @@ export default function Analytics() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Lookback only drives the regression forecast tables, so show it only there. */}
-          {tab === "forecasts" && (
-            <>
-              <span className="text-[0.9em] uppercase tracking-widest" style={{ color: gf.textDim }}>Lookback</span>
-              {LOOKBACKS.map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setDays(d)}
-                  className="px-2.5 py-1 text-[1em] rounded-[2px] transition-colors"
-                  style={{
-                    background: days === d ? gf.accent : gf.panel,
-                    color: days === d ? "#fff" : gf.textMuted,
-                    border: `1px solid ${days === d ? gf.accent : gf.border}`,
-                  }}
-                >
-                  {d}d
-                </button>
-              ))}
-            </>
-          )}
+          {/* Lookback now lives per panel — each forecast has its own natural timescale. */}
           <span
             className="flex items-center gap-1.5 px-2 py-1 text-[0.9em] uppercase tracking-widest rounded-[2px]"
             style={{ color: GREEN, background: gf.panel, border: `1px solid ${gf.border}` }}
@@ -617,45 +643,52 @@ export default function Analytics() {
 
           <ForecastPanel
             title="Disk-Full Forecast"
-            subtitle={`Linear regression on ${days}-day usage trend → time to ${forecasts[0]?.full ?? 100}% capacity, per server's fastest-filling volume`}
+            subtitle={`Regression on ${diskDays}-day usage trend → time to ${forecasts[0]?.full ?? 100}% capacity, per server's fastest-filling volume`}
             entityHeader="Server"
             etaHeader="ETA to full"
             byHeader="Full by"
             rows={diskRows}
             loading={loading}
+            lookback={{ value: diskDays, options: DISK_LOOKBACKS, onChange: setDiskDays }}
             empty="No server disk history yet. Forecasts appear once agents have reported for a while."
-            note={`ETA is shown only for an upward trend. Low confidence (R² < 0.4) means the trend is noisy — treat the date as indicative, not exact.`}
+            note="Disks fill over weeks, so 30 days is the useful default — a 14-day window is easily skewed by one large copy or a log rotation. ETA is shown only for an upward trend."
           />
 
           <ForecastPanel
             title="UPS Battery Forecast"
-            subtitle={`Linear regression on ${days}-day runtime trend → time until runtime hits the critical floor (battery replacement)`}
+            subtitle={`Regression on ${upsDays}-day runtime trend → time until runtime hits the critical floor (battery replacement)`}
             entityHeader="UPS"
             etaHeader="ETA to critical"
             byHeader="Replace by"
             rows={upsRows}
             loading={loading}
+            lookback={{ value: upsDays, options: UPS_LOOKBACKS, onChange: setUpsDays }}
             empty="No UPS history yet. Runtime history builds up once the SNMP poller has been running against a UPS."
-            note="Runtime depends on load, so this is most reliable when load is steady. Low confidence (R² < 0.4) shows Stable instead of a date."
+            note="A UPS battery ages over YEARS, and runtime also moves with load — so months of history are needed before a decline is separable from normal load swings. Below ~90 days expect Stable, which is the honest answer, not a fault."
           />
 
           <ForecastPanel
             title="Link Saturation Forecast"
-            subtitle={`Linear regression on ${days}-day utilization trend → time to ${linkForecasts[0]?.ceiling ?? 90}% utilization, per interface`}
+            subtitle={`Regression on ${linkDays}-day utilization trend → time to ${linkForecasts[0]?.ceiling ?? 90}% utilization, per interface`}
             entityHeader="Interface"
             etaHeader={`ETA to ${linkForecasts[0]?.ceiling ?? 90}%`}
             byHeader="Saturates by"
             rows={linkRows}
             loading={loading}
+            lookback={{ value: linkDays, options: LINK_LOOKBACKS, onChange: setLinkDays }}
             empty="No interface history yet. Each router/MikroTik port appears once the poller has collected traffic counters."
-            note="On the campus MikroTik each interface is a building. ETA is shown only for a rising trend; bursty traffic reads as Stable."
+            note="On the campus MikroTik each interface is a building. Campus traffic follows the academic calendar, so a window sitting on semester start will project a ramp that later plateaus — read these as capacity planning, not promises."
           />
         </>
       )}
 
       {/* ── Alert analytics ── */}
       {tab === "alerts" && (
-        <Panel title="Alert Analytics" subtitle={summary ? `Last ${summary.days} days` : "Last 30 days"}>
+        <Panel
+          title="Alert Analytics"
+          subtitle={summary ? `Last ${summary.days} days` : `Last ${alertDays} days`}
+          action={<LookbackPicker value={alertDays} options={ALERT_LOOKBACKS} onChange={setAlertDays} />}
+        >
           {!summary ? (
             <Empty>Loading…</Empty>
           ) : summary.total === 0 ? (
@@ -789,7 +822,8 @@ export default function Analytics() {
           {/* ── Trend & short-term projection ── */}
           <Panel
             title="Trend & Short-Term Projection"
-            subtitle="EWMA-smoothed history + Holt's linear (double-exponential) projection — next ~12h"
+            subtitle={`EWMA-smoothed history + Holt's linear (double-exponential) projection — next ~${horizonFor(trendHours)}h`}
+            action={<LookbackPicker value={trendHours} options={TREND_LOOKBACKS} onChange={setTrendHours} />}
           >
             {focusLoading ? (
               <Empty>Loading trend…</Empty>
@@ -829,6 +863,7 @@ export default function Analytics() {
           <Panel
             title="Anomaly Detection"
             subtitle={anom ? `Per-hour-of-day baseline · |z| > ${anom.z} over ${anom.days} days` : "Per-hour-of-day z-score + IQR"}
+            action={<LookbackPicker value={anomDays} options={ANOMALY_LOOKBACKS} onChange={setAnomDays} />}
           >
             {focusLoading ? (
               <Empty>Scanning…</Empty>
@@ -885,7 +920,7 @@ export default function Analytics() {
       {tab === "recs" && (
         <Panel
           title="Threshold Recommendations"
-          subtitle="Suggested alert-rule values from the last 14 days — warn = p95, critical = p99"
+          subtitle={`Suggested alert-rule values from the last ${REC_WINDOW_DAYS} days — warn = p95, critical = p99`}
         >
           {recsLoading ? (
             <Empty>Computing…</Empty>
@@ -972,7 +1007,7 @@ export default function Analytics() {
 // table means the three panels cannot drift apart in how they colour an ETA, phrase a
 // status or report a fit — which they previously could, being three copies.
 function ForecastPanel({
-  title, subtitle, entityHeader, etaHeader, byHeader, rows, loading, empty, note,
+  title, subtitle, entityHeader, etaHeader, byHeader, rows, loading, empty, note, lookback,
 }: {
   title: string;
   subtitle: string;
@@ -983,9 +1018,14 @@ function ForecastPanel({
   loading: boolean;
   empty: string;
   note: string;
+  lookback: { value: number; options: readonly LookbackOption[]; onChange: (d: number) => void };
 }) {
   return (
-    <Panel title={title} subtitle={subtitle}>
+    <Panel
+      title={title}
+      subtitle={subtitle}
+      action={<LookbackPicker {...lookback} />}
+    >
       {loading ? (
         <Empty>Loading forecasts…</Empty>
       ) : rows.length === 0 ? (
@@ -1000,6 +1040,7 @@ function ForecastPanel({
                 <Th>Trend / day</Th>
                 <Th>{etaHeader}</Th>
                 <Th>{byHeader}</Th>
+                <Th title="How much history this row's forecast actually saw — shorter than the window means the device is newer than it, or InfluxDB retention is">History</Th>
                 <Th>Confidence</Th>
                 <Th title="Out-of-sample R² (fit quality) · mean absolute error">Fit (R² · MAE)</Th>
               </tr>
@@ -1034,6 +1075,7 @@ function ForecastPanel({
                       {r.forecasting && r.etaDays != null ? fmtFullBy(r.etaDays) : "—"}
                     </span>
                   </Td>
+                  <Td><HistoryCell days={r.historyDays} requested={lookback.value} /></Td>
                   <Td><Badge color={CONF_COLOR[r.confidence]} label={r.confidence} /></Td>
                   <Td><FitCell r2={r.fitR2} mae={r.mae} maeSuffix={r.maeSuffix} /></Td>
                 </tr>
@@ -1058,6 +1100,48 @@ function DeviceLabel({ name, typeLabel, sub }: { name: string; typeLabel: string
       </span>
       {sub && <span className="text-[0.9em]" style={{ color: gf.textDim }}>{sub}</span>}
     </div>
+  );
+}
+
+function LookbackPicker({ value, options, onChange }: {
+  value: number; options: readonly LookbackOption[]; onChange: (d: number) => void;
+}) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className="text-[0.82em] uppercase tracking-widest mr-1" style={{ color: gf.textDim }}>Lookback</span>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          onClick={() => onChange(o.value)}
+          className="px-2 py-0.5 text-[0.9em] rounded-[2px] transition-colors"
+          style={{
+            background: value === o.value ? gf.accent : gf.panel,
+            color: value === o.value ? "#fff" : gf.textMuted,
+            border: `1px solid ${value === o.value ? gf.accent : gf.border}`,
+          }}
+        >
+          {o.label}
+        </button>
+      ))}
+    </span>
+  );
+}
+
+// How much history this row's forecast actually saw. It falls short of the requested
+// window whenever the device is newer than the window or InfluxDB retention is shorter
+// than it — both of which silently weaken a forecast, so they are shown rather than
+// assumed. Amber once the real span is under half of what was asked for.
+function HistoryCell({ days, requested }: { days: number; requested: number }) {
+  if (!days) return <span style={{ color: gf.textDim }}>—</span>;
+  const short = days < requested * 0.5;
+  const text = days >= 1 ? `${Math.round(days)}d` : "< 1d";
+  return (
+    <span
+      style={{ color: short ? ORANGE : gf.textMuted }}
+      title={short ? `Only ${text} of the ${requested}-day window has data — the device is newer than the window, or InfluxDB retention is shorter than it` : `${text} of history`}
+    >
+      {text}
+    </span>
   );
 }
 
@@ -1120,12 +1204,17 @@ function TrendCell({ value, suffix, risingIsBad }: { value: number | null; suffi
 }
 
 // ─── tiny presentational helpers ──────────────────────────────────────────────
-function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+function Panel({ title, subtitle, children, action }: {
+  title: string; subtitle?: string; children: React.ReactNode; action?: React.ReactNode;
+}) {
   return (
     <section className="rounded-[2px]" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
-      <div className="px-4 py-3" style={{ borderBottom: `1px solid ${gf.divider}` }}>
-        <h2 className="text-[1.18em] font-semibold">{title}</h2>
-        {subtitle && <p className="text-[0.9em] mt-0.5" style={{ color: gf.textDim }}>{subtitle}</p>}
+      <div className="px-4 py-3 flex flex-wrap items-start justify-between gap-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
+        <div className="min-w-0">
+          <h2 className="text-[1.18em] font-semibold">{title}</h2>
+          {subtitle && <p className="text-[0.9em] mt-0.5" style={{ color: gf.textDim }}>{subtitle}</p>}
+        </div>
+        {action}
       </div>
       <div className="p-4">{children}</div>
     </section>

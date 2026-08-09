@@ -650,3 +650,80 @@ held-out window" is a claim a panel can ask you to prove. The test that asserts 
 *negative* when the model is worse than the mean, and the one that asserts a noisy series
 produces **no ETA at all**, are the evidence that the confidence gate in §3 is real and
 not decoration.
+
+---
+
+## 16. Lookback windows — matching the window to the physics
+
+A single shared 7/14/30-day control was wrong, because the four things this page
+forecasts move on completely different timescales. Sample count was never the issue
+(30 days at 1h buckets is 720 points against a `MIN_POINTS` of 6) — the question is
+whether the window is long enough to contain the signal.
+
+| Panel | Options | Default | Why |
+|---|---|---|---|
+| Disk-full | 14 / 30 / **90**d | 30d | Disks fill over weeks. 14d is easily skewed by one large copy or a log rotation |
+| Link saturation | 30 / **90** / 180d | 90d | Campus traffic grows over a semester |
+| UPS battery | 90 / **180** / 365d | 180d | A UPS battery ages over **years** |
+| Trend projection | 24h / **48h** / 7d | 48h | Short-horizon EWMA + Holt's; horizon ≈ ¼ of the lookback |
+| Anomaly baseline | 7 / **14** / 30d | 14d | Needs several samples per hour-of-day bucket |
+| Alert analytics | 7 / **30** / 90d | 30d | Descriptive; 30d is the usual incident-review period |
+| Recommendations | *(fixed)* | 30d | Deliberately not tunable — see §16.5 |
+
+### 16.1 Why UPS battery is the one that really needed changing
+
+A VRLA/SLA UPS battery has a 3–5 year service life, so genuine runtime decline over
+30 days is a fraction of a minute. Meanwhile **runtime depends on load**, which swings
+by many minutes hour to hour as the servers work. At a 30-day window the degradation
+signal sits far below the load noise, so the R² gate correctly refuses to produce an
+ETA — honest, but it means the panel reads "Stable" forever and never earns its place.
+Months of history are what make the trend separable. The default is now 180 days.
+
+**Say this plainly in a defense:** below ~90 days the UPS panel showing "Stable" is the
+system declining to guess, not a bug.
+
+### 16.2 The seasonality caveat on link saturation
+
+Campus traffic follows the academic calendar, not a straight line. A 90-day window
+landing on semester start extrapolates a ramp that will plateau; one spanning the
+semester break projects a decline. The number is real, its validity depends on where in
+the term the window sits. Treat link ETAs as capacity planning input, not a promise —
+this is the honest caveat to volunteer before a panel asks for it.
+
+### 16.3 Bucket width scales with the window
+
+`bucketForDays()` widens the Flux `aggregateWindow` as the window grows — 1h up to 30d,
+6h to 120d, 1d beyond. A 180-day window at 1h buckets would drag ~4,300 points per
+device into Node to fit a straight line through, and hourly resolution tells you nothing
+about a trend that unfolds over a year. Every window now lands in the same few-hundred-
+point band, which is all a regression needs. Tested in `analyticsMath.test.js`.
+
+### 16.4 `historyDays` — the window asked for vs the history that exists
+
+Every forecast row reports `historyDays`, the actual span between its first and last
+sample, rendered as the **History** column (amber when under half the requested window).
+Two things make it fall short:
+
+1. **The device is newer than the window** — a UPS registered last week has no 180-day trend.
+2. **InfluxDB retention is shorter than the window.** Retention is not enforced in code
+   (`deployment-guide.md` §3), so a bucket set to 30 days silently returns 30 days for a
+   180-day request.
+
+Surfacing the real span means neither case can quietly masquerade as a confident
+forecast, and it removes the need to know the retention setting in advance — the page
+reports what it actually got.
+
+> **Retention prerequisite:** for the long windows to mean anything, the InfluxDB bucket
+> retention must exceed the longest lookback in use (365 days if the UPS panel is set to
+> its maximum). Check the bucket's retention policy before relying on a multi-month ETA.
+
+### 16.5 Why threshold recommendations have NO window control
+
+The lookback is the one input that changes the suggested number. Exposing it on the page
+would let an admin slide the window until the recommendation happens to agree with the
+threshold they already had in mind — which is exactly the bias a data-driven suggestion
+exists to remove. It is fixed at **30 days** (`REC_WINDOW_DAYS`): long enough not to tune
+to a quiet week, short enough not to bake in load the hardware has since outgrown.
+
+The endpoint still accepts `?days=` (clamped 1–90) for deliberate analysis; the UI simply
+does not offer it as a control.
