@@ -10,7 +10,7 @@ export const BRAND = {
   /** Full institution name (spelled-out CSPC-ICTU) — shown on the login screen + sidebar tooltip. */
   fullName: env.VITE_APP_FULL_NAME?.trim() || "Camarines Sur Polytechnic Colleges Information and Communications Technology Unit",
   /** Small line under the name in the sidebar brand block. */
-  subtitle: env.VITE_APP_SUBTITLE?.trim() || "SERVER MONITOR",
+  subtitle: env.VITE_APP_SUBTITLE?.trim() || "MONITORING",
   /** Long descriptive line on the login screen. */
   tagline:  env.VITE_APP_TAGLINE?.trim()  || "SERVER ENVIRONMENT MONITORING & CONTROL SYSTEM",
   /** Initials shown in the small square logo mark when no image is used. */
