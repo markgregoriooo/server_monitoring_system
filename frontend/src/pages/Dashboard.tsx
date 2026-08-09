@@ -6,8 +6,6 @@ import { Line } from "react-chartjs-2";
 import StatusBadge from "../components/ui/StatusBadge";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
-import { useNotifications } from "../context/NotificationContext";
-import { relativeTime } from "../components/notifications/notificationUtils";
 
 Chart.register(...registerables);
 
@@ -25,8 +23,32 @@ interface Server {
 interface SensorData {
   temperature: number;
   humidity: number;
+  // The tile shows the HIGHER of the two MQ-2 readings, not their average. Averaging a
+  // sensor beside a smoking PSU (400ppm) against one across the room (20ppm) reports 210
+  // and makes a real fire look borderline — a dangerous reading anywhere in the room is
+  // dangerous. Same rule sensorHandler and the analytics engine use.
+  mq2_1_ppm?: number;
+  mq2_2_ppm?: number;
   timestamp: string;
 }
+
+// One stored reading, as the `sensorHistory` socket reply sends it.
+interface SensorHistoryRow {
+  time: string;
+  temperature: number | null;
+  humidity: number | null;
+  mq2_1_ppm: number | null;
+  mq2_2_ppm: number | null;
+}
+
+// Shared by the seeded history and the live tail, so a point does not change format
+// halfway along the x-axis.
+const fmtClock = (t: string | Date) =>
+  new Date(t).toLocaleTimeString("en-PH", {
+    timeZone: "Asia/Manila",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
 // Router / MikroTik, as returned by GET /network and pushed on `networkMetrics`.
 interface NetIface {
@@ -92,6 +114,17 @@ const BLUE = "#5794F2";
 // require re-learning the colours on the other.
 const ENV_TEMP = "#F59E0B";
 const ENV_HUM  = "#38BDF8";
+
+// Matches the global gas rules in `alert_rules` (warning >= 150, critical >= 300), so
+// the tile changes colour at the same point the system raises an alert. If those rules
+// are retuned, retune these with them.
+const GAS_WARN = 150;
+const GAS_CRIT = 300;
+function gasColor(ppm: number) {
+  if (ppm >= GAS_CRIT) return RED;
+  if (ppm >= GAS_WARN) return ORANGE;
+  return GREEN;
+}
 
 // A server parked for planned maintenance is not a fault — showing it red reads
 // as "down" and hides real outages in a sea of red.
@@ -426,7 +459,6 @@ function GaugeCanvas({
 export default function Dashboard() {
   const [servers, setServers] = useState<Server[]>([]);
   // Real notification feed (replaces the old mock /api/alerts panel).
-  const { items: notifications, unreadCount } = useNotifications();
   const [aircons, setAircons] = useState<Aircon[]>([]);
   // Routers + UPS (SNMP poller). The Dashboard summarised servers, environment and
   // aircon but not these two, so a router or UPS incident was invisible on the page
@@ -442,6 +474,8 @@ export default function Dashboard() {
   const [liveHum, setLiveHum] = useState<number | string>("--");
   const [chartTemps, setChartTemps] = useState<number[]>([]);
   const [chartHums, setChartHums] = useState<number[]>([]);
+  const [chartGas, setChartGas] = useState<number[]>([]);
+  const [liveGas, setLiveGas] = useState<number | string>("--");
   const [chartLabels, setChartLabels] = useState<string[]>([]);
   const [isDark, setIsDark] = useState(() =>
     document.documentElement.classList.contains("dark"),
@@ -533,14 +567,12 @@ export default function Dashboard() {
       setLiveTemp(data.temperature);
       setLiveHum(data.humidity);
       setLastUpdate(new Date());
-      const time = new Date(data.timestamp).toLocaleTimeString("en-PH", {
-        timeZone: "Asia/Manila",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      setChartLabels((p) => [...p.slice(-300), time]);
+      setChartLabels((p) => [...p.slice(-300), fmtClock(data.timestamp)]);
       setChartTemps((p) => [...p.slice(-300), data.temperature]);
       setChartHums((p) => [...p.slice(-300), data.humidity]);
+      const gas = Math.max(Number(data.mq2_1_ppm ?? 0), Number(data.mq2_2_ppm ?? 0));
+      setLiveGas(gas);
+      setChartGas((p) => [...p.slice(-300), gas]);
     };
 
     // serverMetrics now arrives as a single-server update: { server: {...} }.
@@ -600,6 +632,28 @@ export default function Dashboard() {
       );
     };
 
+    // The chart used to start EMPTY on every mount and refill from live pushes at ~3s
+    // intervals, so leaving the dashboard and coming back looked like the system had
+    // just booted. Seed it from stored history instead: the same changeRange →
+    // sensorHistory round-trip the Environment page uses, asking for the last hour.
+    // Live readings then append to that tail rather than starting from nothing.
+    const handleHistory = (history: SensorHistoryRow[]) => {
+      if (!history?.length) return;
+      const rows = history.slice(-300);
+      setChartLabels(rows.map((r) => fmtClock(r.time)));
+      setChartTemps(rows.map((r) => r.temperature ?? 0));
+      setChartHums(rows.map((r) => r.humidity ?? 0));
+      setChartGas(rows.map((r) => Math.max(r.mq2_1_ppm ?? 0, r.mq2_2_ppm ?? 0)));
+      const last = rows[rows.length - 1];
+      if (last) {
+        if (typeof last.temperature === "number") setLiveTemp(last.temperature);
+        if (typeof last.humidity === "number") setLiveHum(last.humidity);
+        setLiveGas(Math.max(last.mq2_1_ppm ?? 0, last.mq2_2_ppm ?? 0));
+      }
+    };
+
+    socket.on("sensorHistory", handleHistory);
+    socket.emit("changeRange", "-1h");
     socket.on("sensorData", handleSensor);
     socket.on("serverMetrics", handleMetrics);
     socket.on("airconStatus", handleAircon);
@@ -608,6 +662,7 @@ export default function Dashboard() {
     socket.on("serverRenamed", handleRenamed);
 
     return () => {
+      socket.off("sensorHistory", handleHistory);
       socket.off("sensorData", handleSensor);
       socket.off("serverMetrics", handleMetrics);
       socket.off("airconStatus", handleAircon);
@@ -624,7 +679,6 @@ export default function Dashboard() {
     ? Math.round(servers.reduce((a, s) => a + s.memory, 0) / servers.length)
     : 0;
   const online = servers.filter((s) => s.status === "Online").length;
-  const acOnline = aircons.filter((a) => a.enabled).length;
   const netOnline = netDevices.filter((d) => d.status === "Online").length;
   const upsOnline = upsDevices.filter((d) => d.status === "Online").length;
   // The UPS tile leads with the WORST unit, not an average — one UPS on battery or
@@ -820,6 +874,22 @@ export default function Dashboard() {
           }
           sub={netDevices.length ? `${netDevices.length - netOnline} unreachable` : "none registered"}
         />
+        {/* Replaces the old "Active Alerts" count, which only repeated the sidebar badge
+            and the bell. Air quality is the one safety-critical reading with nowhere else
+            on this page to appear once gas came off the chart. */}
+        <StatPanel
+          label="Air Quality"
+          value={typeof liveGas === "number" ? String(Math.round(liveGas)) : "--"}
+          unit="ppm"
+          color={typeof liveGas === "number" ? gasColor(liveGas) : gf.textMuted}
+          sub={
+            typeof liveGas !== "number" ? "MQ-2 · LIVE"
+              : liveGas >= GAS_CRIT ? "SMOKE / GAS — critical"
+                : liveGas >= GAS_WARN ? "elevated — ventilate"
+                  : "clean · higher of 2 sensors"
+          }
+          spark={chartGas}
+        />
         <StatPanel
           label="UPS Battery"
           value={worstCharge == null ? "--" : String(Math.round(worstCharge))}
@@ -836,12 +906,6 @@ export default function Dashboard() {
               : upsOnBattery > 0 ? `${upsOnBattery} ON BATTERY`
                 : `${upsOnline}/${upsDevices.length} online${upsCharges.length > 1 ? " · lowest" : ""}`
           }
-        />
-        <StatPanel
-          label="Active Alerts"
-          value={String(unreadCount)}
-          color={unreadCount === 0 ? GREEN : unreadCount > 2 ? RED : ORANGE}
-          sub={`${acOnline}/${aircons.length} AC running`}
         />
       </div>
 

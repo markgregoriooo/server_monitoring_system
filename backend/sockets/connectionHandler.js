@@ -100,7 +100,11 @@ const registerEvents = (io, socket) => {
 };
 
 const handleChangeRange = (socket, range) => {
-  if (socket.lastRange === range) return;
+  // Deliberately NOT de-duplicated against the last requested range. The socket outlives
+  // page navigation, so a "same range as last time" check silently dropped the request a
+  // freshly-mounted page makes to fill its chart — leave Environment and come back, or
+  // open the Dashboard after Environment, and the history never arrived. The pages emit
+  // this once on mount and once per range change, so answering every time is cheap.
   socket.lastRange = range;
   console.log("Range changed:", range);
   sendSensorHistory(socket, range);
