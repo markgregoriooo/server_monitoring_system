@@ -148,6 +148,10 @@ async function pollDevice(io, d) {
       name: i.name,
       locationLabel: i.locationLabel ?? "",
       linkUp: Boolean(i.linkUp),
+      // Carried separately from linkUp so the port editor can say "disabled in
+      // RouterOS" rather than "down" — the two look identical on the wire but only
+      // one of them is a fault. See services/linkAlertPolicy.js.
+      adminUp: i.adminUp !== false,
       utilizationPct: i.utilizationPct ?? null,
       rxBytes: i.rxBytes != null ? String(i.rxBytes) : null,
       txBytes: i.txBytes != null ? String(i.txBytes) : null,
@@ -365,53 +369,83 @@ async function createDevice({ name, ip, location, apiPort, useTls, apiUsername, 
 
 async function getInterfaces(deviceId) {
   const [rows] = await db.query(
-    `SELECT interface_name AS name, location_label AS label
+    `SELECT interface_name AS name, location_label AS label, ever_up, monitor_link
        FROM network_interfaces
       WHERE device_id = ?
       ORDER BY interface_name`,
     [Number(deviceId)],
   );
-  return rows.map((r) => ({ name: r.name, label: r.label ?? "" }));
+  return rows.map((r) => ({
+    name: r.name,
+    label: r.label ?? "",
+    // Both drive the port editor's "why is this port quiet?" line. everUp is
+    // observed, never set by hand; monitored is the admin's own switch.
+    everUp: Boolean(r.ever_up),
+    monitored: r.monitor_link !== 0,
+  }));
 }
 
-// Upsert one label per port. There is no UNIQUE index on (device_id, interface_name),
-// so this checks before writing rather than relying on ON DUPLICATE KEY. A blank label
-// DELETES the row — "no label" is the absence of a row, so the table never accumulates
-// empty strings.
+// Upsert one row per port. There is no UNIQUE index on (device_id, interface_name),
+// so this checks before writing rather than relying on ON DUPLICATE KEY.
+//
+// A blank label used to DELETE the row, on the principle that "no label" is the absence
+// of a row. That stopped being safe once the row also carries alerting state: clearing
+// a label would have thrown away `ever_up` (making a live port look never-connected and
+// silencing it) and `monitor_link` (un-silencing a port an admin had muted). So a row is
+// only deleted when it holds nothing else worth keeping — otherwise the label is blanked
+// in place and the table still doesn't accumulate rows that say nothing.
 async function saveInterfaces(deviceId, labels) {
   const id = Number(deviceId);
   if (!Number.isInteger(id)) return { ok: false, error: "Invalid device id." };
   if (!Array.isArray(labels)) return { ok: false, error: "labels must be an array." };
 
+  let gateChanged = false;
+
   for (const entry of labels) {
     const name = String(entry?.name ?? "").trim();
     if (!name || name.length > 50) continue;
     const label = String(entry?.label ?? "").trim().slice(0, 100);
+    // Omitted (older client, or a caller that only sends labels) = leave as-is.
+    const monitored = entry?.monitored == null ? null : entry.monitored !== false;
 
-    if (!label) {
+    const [existing] = await db.query(
+      `SELECT id, ever_up, monitor_link FROM network_interfaces
+        WHERE device_id = ? AND interface_name = ? LIMIT 1`,
+      [id, name],
+    );
+
+    if (existing.length) {
+      const row = existing[0];
+      const nextMonitored = monitored == null ? row.monitor_link !== 0 : monitored;
+      if (nextMonitored !== (row.monitor_link !== 0)) gateChanged = true;
+
+      // Nothing left to remember → drop the row, as before.
+      if (!label && !row.ever_up && nextMonitored) {
+        await db.query(`DELETE FROM network_interfaces WHERE id = ?`, [row.id]);
+        continue;
+      }
       await db.query(
-        `DELETE FROM network_interfaces WHERE device_id = ? AND interface_name = ?`,
-        [id, name],
+        `UPDATE network_interfaces
+            SET location_label = ?, monitor_link = ?, updated_at = NOW()
+          WHERE id = ?`,
+        [label, nextMonitored ? 1 : 0, row.id],
       );
       continue;
     }
-    const [existing] = await db.query(
-      `SELECT id FROM network_interfaces WHERE device_id = ? AND interface_name = ? LIMIT 1`,
-      [id, name],
+
+    // No row yet: only create one if it would actually say something.
+    if (!label && monitored !== false) continue;
+    if (monitored === false) gateChanged = true;
+    await db.query(
+      `INSERT INTO network_interfaces (device_id, interface_name, location_label, is_active, ever_up, monitor_link)
+       VALUES (?, ?, ?, 1, 0, ?)`,
+      [id, name, label, monitored === false ? 0 : 1],
     );
-    if (existing.length) {
-      await db.query(
-        `UPDATE network_interfaces SET location_label = ?, updated_at = NOW() WHERE id = ?`,
-        [label, existing[0].id],
-      );
-    } else {
-      await db.query(
-        `INSERT INTO network_interfaces (device_id, interface_name, location_label, is_active)
-         VALUES (?, ?, ?, 1)`,
-        [id, name, label],
-      );
-    }
   }
+
+  // deviceAlerts caches monitor_link per device for the poll hot path, so a mute made
+  // here would otherwise not take effect until the next backend restart.
+  if (gateChanged) deviceAlerts.invalidateLinkGate(id);
 
   // Reflect the new labels in the cached view immediately — otherwise they wouldn't
   // appear until the next poll, up to MIKROTIK_POLL_INTERVAL_MS later.
@@ -443,7 +477,8 @@ async function removeDevice(id) {
   for (const key of prevIface.keys()) {
     if (key.startsWith(`${deviceId}:`)) prevIface.delete(key);
   }
-  alertBandState.resetDevice(deviceId);
+  alertBandState.resetDevice(deviceId); // severity bands
+  deviceAlerts.resetDevice(deviceId); // link gate / uptime / error counters
   return true;
 }
 

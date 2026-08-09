@@ -488,9 +488,11 @@ export const api = {
     }
   },
 
+  // `monitored: false` silences interface-down alerts for that port. Omit the field
+  // to leave the current setting untouched.
   saveMikrotikInterfaces: async (
     id: number,
-    labels: { name: string; label: string }[],
+    labels: { name: string; label: string; monitored?: boolean }[],
   ): Promise<ApiResult> => {
     try {
       const res = await apiClient.put(`/mikrotik/${id}/interfaces`, { labels });

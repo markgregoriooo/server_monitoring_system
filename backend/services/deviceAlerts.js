@@ -3,6 +3,8 @@ import alertBandState from "./alertBandState.js";
 import alertsService from "./alertsService.js";
 import notificationService from "./notificationService.js";
 import agentService from "./agentService.js";
+import { isLinkFault } from "./linkAlertPolicy.js";
+import db from "../config/mysql.js";
 
 // ─── Router / UPS threshold alerting (REAL alerts, not just device_logs) ─────────
 //
@@ -32,10 +34,99 @@ import agentService from "./agentService.js";
 const SEV_RANK = alertRulesService.SEV_RANK;
 const num = (v) => (v == null || !Number.isFinite(Number(v)) ? NaN : Number(v));
 
-// Interfaces seen at least once. A link already DOWN when the poller first starts
-// establishes a baseline instead of alerting out of the blue (matches the old
-// behavior); a genuine up→down transition still alerts.
-const seenLink = new Set();
+// ─── Which ports are allowed to alert (network_interfaces) ──────────────────────
+// Replaces an in-memory `seenLink` Set that skipped the first sighting of every port.
+// That baseline hid empty-socket noise, but it re-rolled on every restart: whichever
+// ports happened to be down at boot went permanently silent, and — worse — a real
+// uplink unplugged during a restart was baselined as "known down" and could never
+// alert again. Which ports were live was a property of process start time.
+//
+// Both facts now live in MySQL (migration 2026-08-09_link_alert_gate.sql):
+//   ever_up      set once, the first time a poller sees the port carrying a link
+//   monitor_link ICTU's per-port opt-out, default on
+//
+// Cached per device so the hot path costs nothing: the pollers call checkRouter every
+// 30-60s, and this data changes at most once in a port's lifetime. key `${id}:${name}`.
+const linkGate = new Map(); // `${deviceId}:${ifName}` -> { everUp, monitored }
+const gateLoaded = new Set(); // deviceIds whose rows have been read at least once
+
+// Alerts are persisted in MySQL, but the severity bands that auto-resolve them are
+// in-memory. A restart therefore strands an open link_down alert: the band comes back
+// as "normal", the recovery path only fires on a normal-after-abnormal transition that
+// can no longer happen, and the incident sits open forever with nothing left to close
+// it. This bites hardest right after the gate change, where a port that just became
+// ineligible (empty socket, newly disabled, silenced) will never report a fault again.
+// So: once per device per process, close any open link_down alert whose port is not
+// currently a fault. One pass, not one per poll.
+const reconciled = new Set();
+
+const gateKey = (deviceId, name) => `${Number(deviceId)}:${name}`;
+
+// A port with no row is the common case (rows are optional — only labelled ports have
+// one), so the absence of a row must read as a real answer, not a lookup failure:
+// never connected, monitoring on.
+const DEFAULT_GATE = { everUp: false, monitored: true };
+
+async function loadLinkGate(deviceId) {
+  const id = Number(deviceId);
+  if (gateLoaded.has(id)) return;
+  try {
+    const [rows] = await db.query(
+      `SELECT interface_name, ever_up, monitor_link
+         FROM network_interfaces WHERE device_id = ?`,
+      [id],
+    );
+    for (const r of rows) {
+      linkGate.set(gateKey(id, r.interface_name), {
+        everUp: Boolean(r.ever_up),
+        monitored: r.monitor_link !== 0,
+      });
+    }
+    gateLoaded.add(id);
+  } catch (err) {
+    // Alerting must not depend on this read succeeding. Leaving the device unloaded
+    // means every port falls back to DEFAULT_GATE — silent — and the next poll retries.
+    // Failing quiet is the right direction: a DB hiccup should not invent an outage.
+    console.error("[deviceAlerts] link gate load failed:", err.message);
+  }
+}
+
+function gateFor(deviceId, name) {
+  return linkGate.get(gateKey(deviceId, name)) ?? DEFAULT_GATE;
+}
+
+// First time a port is seen carrying a link, remember it — this is what makes a port
+// alert-eligible from then on. Writes once per port per lifetime, not once per poll.
+// Upserts because most ports have no row until now (labelling was the only thing that
+// created one), and there is no UNIQUE index on (device_id, interface_name) to lean on.
+async function noteLinkUp(deviceId, name) {
+  const id = Number(deviceId);
+  const gate = gateFor(id, name);
+  if (gate.everUp) return;
+  linkGate.set(gateKey(id, name), { ...gate, everUp: true }); // before the await: the
+  // next poll is 30s away but concurrent devices share this map, and a double INSERT
+  // would leave two rows for one port.
+  try {
+    const [existing] = await db.query(
+      `SELECT id FROM network_interfaces WHERE device_id = ? AND interface_name = ? LIMIT 1`,
+      [id, name],
+    );
+    if (existing.length) {
+      await db.query(`UPDATE network_interfaces SET ever_up = 1, updated_at = NOW() WHERE id = ?`, [
+        existing[0].id,
+      ]);
+    } else {
+      await db.query(
+        `INSERT INTO network_interfaces (device_id, interface_name, location_label, is_active, ever_up, monitor_link)
+         VALUES (?, ?, '', 1, 1, 1)`,
+        [id, name],
+      );
+    }
+  } catch (err) {
+    console.error("[deviceAlerts] ever_up write failed:", err.message);
+    linkGate.set(gateKey(id, name), gate); // roll back so the next poll retries
+  }
+}
 
 // Previous cumulative error counters per interface, so `link_errors` can alert on the
 // RATE of new errors rather than the lifetime total. A router up for a year will have a
@@ -113,20 +204,13 @@ async function evalMetric({ deviceId, metricName, type, value, label, unit = "",
 }
 
 // Boolean-state event (interface up/down, UPS on/off battery): a real alert on the
-// onset, auto-resolve on recovery. `baselineKey` skips the very first observation so
-// a condition already true at startup doesn't alert out of the blue (links only).
-async function evalEvent({ deviceId, type, active, severity, title, message, baselineKey }) {
+// onset, auto-resolve on recovery. Callers decide what counts as `active` — for links
+// that decision is linkAlertPolicy.isLinkFault, so a port that stops being alert-
+// eligible (disabled in RouterOS, silenced by an admin) simply reports active:false
+// and any open alert auto-resolves through the normal recovery path.
+async function evalEvent({ deviceId, type, active, severity, title, message }) {
   const band = active ? severity : "normal";
   const prevBand = alertBandState.getBand(deviceId, type);
-
-  // First sighting establishes the baseline and never alerts (links only). Still
-  // records the band, so a link already down at startup alerts on its next real
-  // up→down, not immediately.
-  if (baselineKey && !seenLink.has(baselineKey)) {
-    seenLink.add(baselineKey);
-    alertBandState.setBand(deviceId, type, band);
-    return null;
-  }
 
   // Same recovery confirmation as evalMetric — and it matters MORE here. A boolean has
   // no threshold to put a hysteresis margin around, so this streak is the only damping
@@ -164,6 +248,8 @@ async function raiseTransient(deviceId, { type, severity, title, message, metric
 async function checkRouter(io, device, sample) {
   const id = Number(device.id);
   const events = [];
+  await loadLinkGate(id); // cached after the first poll
+  const cleared = []; // link_down types to reconcile on this process's first pass
 
   events.push(await evalMetric({ deviceId: id, metricName: "router_cpu", type: "router_cpu", value: num(sample.cpuPercent), label: "Router CPU", unit: "%" }));
   events.push(await evalMetric({ deviceId: id, metricName: "router_mem", type: "router_mem", value: num(sample.memPercent), label: "Router memory", unit: "%" }));
@@ -195,10 +281,23 @@ async function checkRouter(io, device, sample) {
       deviceId: id, metricName: "link_util", type: `link_util:${i.name}`, iface: i.name,
       value: num(i.utilizationPct), label: `Link ${ifaceLabel}`, unit: "%",
     }));
+    // A port carrying a link right now becomes alert-eligible from here on — this is
+    // the fact that separates "a building went dark" from "that socket is empty".
+    if (i.linkUp === true) await noteLinkUp(id, i.name);
+
+    // Only a port that is enabled, monitored and has carried a link before can be
+    // "down" in the sense worth waking someone for. See linkAlertPolicy for the four
+    // questions and why each one is there.
+    const gate = gateFor(id, i.name);
+    const faulted = isLinkFault({
+      adminUp: i.adminUp, linkUp: i.linkUp,
+      everUp: gate.everUp, monitored: gate.monitored,
+    });
+    if (!faulted && !reconciled.has(id)) cleared.push(`link_down:${i.name}`);
     events.push(await evalEvent({
-      deviceId: id, type: `link_down:${i.name}`, active: i.linkUp === false,
+      deviceId: id, type: `link_down:${i.name}`, active: faulted,
       severity: "warning", title: "Interface down",
-      message: `Interface ${ifaceLabel} is down`, baselineKey: `${id}:${i.name}`,
+      message: `Interface ${ifaceLabel} is down`,
     }));
 
     // Rising rx/tx errors — the classic failing-cable / duplex-mismatch signal. Uses
@@ -209,6 +308,20 @@ async function checkRouter(io, device, sample) {
       deviceId: id, metricName: "link_errors", type: `link_errors:${i.name}`, iface: i.name,
       value: errDelta, label: `Link ${ifaceLabel} errors`,
     }));
+  }
+
+  // See `reconciled` — close link_down incidents that the in-memory band can no longer
+  // resolve on its own. autoResolveMetric no-ops when nothing is open, so the usual
+  // case costs one indexed SELECT per port, once per process.
+  if (!reconciled.has(id)) {
+    reconciled.add(id);
+    for (const type of cleared) {
+      try {
+        await alertsService.autoResolveMetric(id, type);
+      } catch (err) {
+        console.error("[deviceAlerts] link reconcile failed:", err.message);
+      }
+    }
   }
 
   for (const e of events) if (e) io?.emit("deviceLog", e);
@@ -300,16 +413,29 @@ async function checkReachability(device, online, opts = {}) {
 
 // Drop every in-memory trace of one device. Called from a poller's removeDevice
 // alongside alertBandState.resetDevice — that call only clears the SEVERITY bands,
-// while the three maps in this module (link baselines, error counters, last uptime)
-// would otherwise outlive the device. MySQL reuses an AUTO_INCREMENT id after a
-// restart, so a future device inheriting a dead one's state would silently skip the
-// first interface-down alert and fire a phantom "Router rebooted" on its first poll.
+// while the maps in this module (link gate cache, error counters, last uptime) would
+// otherwise outlive the device. MySQL reuses an AUTO_INCREMENT id after a restart, so
+// a future device inheriting a dead one's state would fire a phantom "Router rebooted"
+// on its first poll and treat a fresh port as already alert-eligible.
+//
+// The persisted ever_up / monitor_link rows need no cleanup here: network_interfaces
+// is FK ON DELETE CASCADE, so deleting the device takes them with it.
 function resetDevice(deviceId) {
   const id = Number(deviceId);
   const prefix = `${id}:`;
   prevUptime.delete(id);
-  for (const k of [...seenLink]) if (k.startsWith(prefix)) seenLink.delete(k);
+  gateLoaded.delete(id);
+  reconciled.delete(id);
+  for (const k of [...linkGate.keys()]) if (k.startsWith(prefix)) linkGate.delete(k);
   for (const k of [...prevErrors.keys()]) if (k.startsWith(prefix)) prevErrors.delete(k);
 }
 
-export default { checkRouter, checkUps, checkReachability, resetDevice };
+// Called after an admin edits a port's monitor_link so the change takes effect on the
+// next poll rather than at the next backend restart.
+function invalidateLinkGate(deviceId) {
+  const id = Number(deviceId);
+  gateLoaded.delete(id);
+  for (const k of [...linkGate.keys()]) if (k.startsWith(`${id}:`)) linkGate.delete(k);
+}
+
+export default { checkRouter, checkUps, checkReachability, resetDevice, invalidateLinkGate };

@@ -56,8 +56,10 @@ router.get("/:id/interfaces", authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── PUT /api/mikrotik/:id/interfaces ─ set port labels (admin) ────────────────
-// Body: { labels: [{ name, label }] }. A blank label removes that port's row.
+// ── PUT /api/mikrotik/:id/interfaces ─ set port labels + alerting (admin) ─────
+// Body: { labels: [{ name, label, monitored? }] }. `monitored: false` silences
+// interface-down alerts for that port; omitting it leaves the current setting alone.
+// A blank label clears the label, and drops the row only when it holds nothing else.
 router.put("/:id/interfaces", authMiddleware, requireRole("admin"), async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid device id." });

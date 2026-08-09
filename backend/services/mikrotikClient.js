@@ -152,7 +152,13 @@ function shape(res, ifaces, speeds, connectedClients, ethNames, clientsByIface =
     txBytes: toBig(i["tx-byte"]),
     rxErrors: num(i["rx-error"]) ?? 0,
     txErrors: num(i["tx-error"]) ?? 0,
-    linkUp: i.running === "true" && i.disabled !== "true",
+    // Carrier and admin state are SEPARATE facts and must not be folded together.
+    // Folding them made `disabled=yes` — an operator deliberately switching a port off
+    // — indistinguishable from a cable falling out, so the ports ICTU had shut down on
+    // purpose were the loudest alerts on the dashboard. linkAlertPolicy needs both to
+    // tell "that socket is off" from "that building went dark".
+    linkUp: i.running === "true",
+    adminUp: i.disabled !== "true",
     speedMbps: speeds[i.name] ?? 0,
     // null (not 0) when the topology can't attribute clients to this port, so the UI
     // can show "—" rather than claiming zero devices are connected.

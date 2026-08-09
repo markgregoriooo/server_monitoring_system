@@ -74,6 +74,9 @@ function mapMk(r: any): MkDevice {
       name: i.name ?? "—",
       locationLabel: i.locationLabel ?? "",
       linkUp: Boolean(i.linkUp),
+      // Absent on an older backend — default to enabled so a port is never drawn as
+      // "disabled" just because the field is missing.
+      adminUp: i.adminUp !== false,
       utilizationPct: i.utilizationPct ?? null,
       rxBytes: i.rxBytes ?? null,
       txBytes: i.txBytes ?? null,

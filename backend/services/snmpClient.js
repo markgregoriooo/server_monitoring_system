@@ -29,7 +29,8 @@ export const SYS_OID = {
 export const IF_OID = {
   ifNumber: "1.3.6.1.2.1.2.1.0", // scalar — interface count
   ifDescr: "1.3.6.1.2.1.2.2.1.2", // OctetString col — interface description
-  ifOperStatus: "1.3.6.1.2.1.2.2.1.8", // Integer col — 1=up 2=down 3=testing …
+  ifAdminStatus: "1.3.6.1.2.1.2.2.1.7", // Integer col — 1=up 2=down 3=testing (DESIRED state)
+  ifOperStatus: "1.3.6.1.2.1.2.2.1.8", // Integer col — 1=up 2=down 3=testing … (ACTUAL state)
   ifInErrors: "1.3.6.1.2.1.2.2.1.14", // Counter32 col
   ifOutErrors: "1.3.6.1.2.1.2.2.1.20", // Counter32 col
   ifName: "1.3.6.1.2.1.31.1.1.1.1", // OctetString col (ifXTable) — short name
@@ -40,6 +41,12 @@ export const IF_OID = {
 
 // IF-MIB ifOperStatus enum (RFC 2863). Only `up` is treated as link-up.
 export const IF_OPER_STATUS = { up: 1, down: 2, testing: 3, unknown: 4, dormant: 5, notPresent: 6, lowerLayerDown: 7 };
+
+// IF-MIB ifAdminStatus enum (RFC 2863) — what the operator CONFIGURED, as opposed to
+// what the port is doing. The classic NMS rule is "alert when adminStatus=up and
+// operStatus=down": a port the operator shut down is not an incident. Absent on some
+// agents, so a missing value is treated as enabled rather than as "disabled".
+export const IF_ADMIN_STATUS = { up: 1, down: 2, testing: 3 };
 
 // UPS-MIB (RFC 1628), base 1.3.6.1.2.1.33. Battery + output-source are scalars
 // (append ".0"); the voltage/load values are per-line table columns (append ".1"
@@ -159,6 +166,7 @@ export default {
   SYS_OID,
   IF_OID,
   IF_OPER_STATUS,
+  IF_ADMIN_STATUS,
   UPS_OID,
   UPS_OUTPUT_SOURCE,
   isOnBattery,

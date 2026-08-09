@@ -1,5 +1,5 @@
 import db from "../config/mysql.js";
-import client, { SYS_OID, IF_OID, IF_OPER_STATUS, UPS_OID, isOnBattery } from "./snmpClient.js";
+import client, { SYS_OID, IF_OID, IF_OPER_STATUS, IF_ADMIN_STATUS, UPS_OID, isOnBattery } from "./snmpClient.js";
 import agentService from "./agentService.js";
 import deviceAlerts from "./deviceAlerts.js";
 import alertBandState from "./alertBandState.js";
@@ -74,6 +74,12 @@ export async function collectRouter(deviceId, conn, labels = {}) {
     // Walk the IF-MIB columns we need (sequential — one UDP session).
     const names = await client.walkColumn(session, IF_OID.ifName);
     const oper = await client.walkColumn(session, IF_OID.ifOperStatus);
+    // ifAdminStatus is what the operator CONFIGURED. A port shut down on purpose
+    // reports operStatus=down like an unplugged one, and alerting on that is how a
+    // deliberately-disabled port became the noisiest thing on the dashboard.
+    // Optional: some agents omit the column, and a missing value must read as
+    // "enabled" so a sparse agent can't silence a genuine link failure.
+    const admin = await client.walkColumn(session, IF_OID.ifAdminStatus).catch(() => ({}));
     const hcIn = await client.walkColumn(session, IF_OID.ifHCInOctets);
     const hcOut = await client.walkColumn(session, IF_OID.ifHCOutOctets);
     const speed = await client.walkColumn(session, IF_OID.ifHighSpeed);
@@ -88,6 +94,7 @@ export async function collectRouter(deviceId, conn, labels = {}) {
       const txBytes = typeof hcOut[idx] === "bigint" ? hcOut[idx] : BigInt(hcOut[idx] ?? 0);
       const name = (names[idx] && String(names[idx])) || `if${idx}`;
       const linkUp = Number(oper[idx]) === IF_OPER_STATUS.up;
+      const adminUp = admin[idx] == null || Number(admin[idx]) !== IF_ADMIN_STATUS.down;
       const speedMbps = Number(speed[idx] ?? 0);
 
       // utilization_pct from the per-interface delta vs the previous cycle.
@@ -124,6 +131,7 @@ export async function collectRouter(deviceId, conn, labels = {}) {
         // that a utilization % alone hides completely. 0 = unknown, sent as null.
         speedMbps: speedMbps > 0 ? speedMbps : null,
         linkUp,
+        adminUp,
         utilizationPct,
       });
     }
@@ -367,6 +375,7 @@ async function pollRouter(io, d) {
       name: i.name,
       locationLabel: i.locationLabel ?? "",
       linkUp: Boolean(i.linkUp),
+      adminUp: i.adminUp !== false,
       utilizationPct: i.utilizationPct ?? null,
       speedMbps: i.speedMbps ?? null,
       // Cumulative error counters — the UI shows the delta between polls, which is

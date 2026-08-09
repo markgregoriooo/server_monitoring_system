@@ -16,7 +16,8 @@ import type { RangeValue } from "../components/ui/RangePicker";
 export interface MkIface {
   name: string;
   locationLabel: string; // optional friendly label from network_interfaces
-  linkUp: boolean;
+  linkUp: boolean; // carrier present right now
+  adminUp?: boolean; // false = switched off in RouterOS (`disabled=yes`), not a fault
   utilizationPct: number | null;
   rxBytes: string | null;
   txBytes: string | null;
@@ -25,6 +26,25 @@ export interface MkIface {
   speedMbps?: number | null;
   clients?: number | null; // DHCP clients on this port; null = not attributable
 }
+// Per-port alerting state from network_interfaces — fetched only when the port editor
+// opens, since it isn't part of the live poll payload.
+export interface PortGate {
+  monitored: boolean; // admin's own switch: false = never raise interface-down here
+  everUp: boolean; // observed by the poller; a port that never came up isn't a fault
+}
+
+// Mirrors backend/services/linkAlertPolicy.js. Duplicated rather than shared because
+// the backend is ESM Node and this is the Vite bundle, but the ORDER matters and must
+// match: the most actionable explanation wins, so "you silenced it" outranks "RouterOS
+// has it disabled" outranks "it never had a cable in it".
+function portAlertState(i: MkIface, gate?: PortGate): { text: string; alerting: boolean } {
+  if (gate && !gate.monitored) return { text: "Alerts off", alerting: false };
+  if (i.adminUp === false) return { text: "Disabled in RouterOS", alerting: false };
+  if (i.linkUp) return { text: "Link up", alerting: false };
+  if (!gate?.everUp) return { text: "Never connected", alerting: false };
+  return { text: "Down — alerting", alerting: true };
+}
+
 // Per-port throughput derived on the client from the cumulative byte counters between
 // two polls. The API only ever reports totals, so without this a port shows a bare
 // utilization % — which reads as "0%" whenever link speed is unknown, even under load.
@@ -224,14 +244,19 @@ function PortRow({ i, rate }: { i: MkIface; rate?: PortRate | undefined }) {
   const speed = formatSpeed(i.speedMbps);
   const errors = (i.rxErrors ?? 0) + (i.txErrors ?? 0);
   const down = !i.linkUp;
+  const disabled = i.adminUp === false;
   const td = "px-2 py-1.5 text-[13px] tabular-nums whitespace-nowrap";
   const dim = { color: gf.textDim } as const;
 
   return (
     <tr style={{ borderTop: `1px solid ${gf.divider}` }}>
-      {/* WinBox's flags column: R = running */}
-      <td className={`${td} text-center font-bold`} style={{ color: down ? gf.textDim : GREEN }}>
-        {down ? "" : "R"}
+      {/* WinBox's flags column: R = running, X = disabled. Worth distinguishing here
+          because the two look identical on the wire but only one is a fault — a
+          disabled port is switched off on purpose and never alerts. */}
+      <td className={`${td} text-center font-bold`}
+        style={{ color: disabled ? gf.textDim : down ? gf.textDim : GREEN }}
+        title={disabled ? "Disabled in RouterOS" : down ? "No link" : "Running"}>
+        {disabled ? "X" : down ? "" : "R"}
       </td>
       <td className={td} style={{ color: down ? gf.textMuted : gf.textPrimary }}>{i.name}</td>
       <td className={`${td} truncate`} style={{ ...dim, maxWidth: 160 }}>{i.locationLabel || "—"}</td>
@@ -281,6 +306,7 @@ export default function MikrotikDetail({
   // edits keyed by port name; it is only populated while the editor is open.
   const [editLabels, setEditLabels] = useState(false);
   const [labelDraft, setLabelDraft] = useState<Record<string, string>>({});
+  const [gateDraft, setGateDraft] = useState<Record<string, PortGate>>({});
   const [savingLabels, setSavingLabels] = useState(false);
   // Previous cumulative counters per port, to derive per-port bytes/sec on the next
   // poll. BigInt because these are Counter64 values that can exceed Number's safe range.
@@ -391,16 +417,33 @@ export default function MikrotikDetail({
   const ifaces = d.interfaces ?? [];
   const portsUp = ifaces.filter((i) => i.linkUp).length;
 
-  const startLabelEdit = () => {
+  // `monitored` and `everUp` live in network_interfaces, not in the live poll payload,
+  // so opening the editor fetches them. A port with no row yet answers with the same
+  // defaults the backend uses: never connected, monitoring on.
+  const startLabelEdit = async () => {
     const draft: Record<string, string> = {};
     for (const i of ifaces) draft[i.name] = i.locationLabel ?? "";
     setLabelDraft(draft);
     setEditLabels(true);
+
+    const r = await api.getMikrotikInterfaces(Number(d.id));
+    const rows: any[] = (r.success && r.data?.interfaces) || [];
+    const gate: Record<string, PortGate> = {};
+    for (const i of ifaces) gate[i.name] = { monitored: true, everUp: false };
+    for (const row of rows) {
+      if (!gate[row.name]) continue;
+      gate[row.name] = { monitored: row.monitored !== false, everUp: Boolean(row.everUp) };
+    }
+    setGateDraft(gate);
   };
 
   const saveLabels = async () => {
     setSavingLabels(true);
-    const labels = Object.entries(labelDraft).map(([name, label]) => ({ name, label }));
+    const labels = Object.entries(labelDraft).map(([name, label]) => ({
+      name,
+      label,
+      monitored: gateDraft[name]?.monitored !== false,
+    }));
     const r = await api.saveMikrotikInterfaces(Number(d.id), labels);
     setSavingLabels(false);
     if (!r.success) {
@@ -547,21 +590,52 @@ export default function MikrotikDetail({
           <div className="flex flex-col">
             <div className="px-3 py-2 text-[12px]" style={{ color: gf.textDim, borderBottom: `1px solid ${gf.divider}` }}>
               Name each port by what it connects to. Leave blank to show the raw RouterOS name.
+              Only a port that is enabled and has carried a link before can raise an
+              interface-down alert — empty sockets stay quiet on their own.
             </div>
-            {ifaces.map((i) => (
-              <div key={i.name} className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
-                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: i.linkUp ? GREEN : RED }} />
-                <span className="w-28 shrink-0 text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>{i.name}</span>
-                <input
-                  value={labelDraft[i.name] ?? ""}
-                  maxLength={100}
-                  onChange={(e) => setLabelDraft((p) => ({ ...p, [i.name]: e.target.value }))}
-                  placeholder="e.g. ISP uplink, Rack A switch"
-                  className="flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
-                  style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
-                />
-              </div>
-            ))}
+            {ifaces.map((i) => {
+              const gate = gateDraft[i.name];
+              const state = portAlertState(i, gate);
+              const muted = gate ? !gate.monitored : false;
+              return (
+                <div key={i.name} className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: i.linkUp ? GREEN : RED }} />
+                  <span className="w-28 shrink-0 text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>{i.name}</span>
+                  <input
+                    value={labelDraft[i.name] ?? ""}
+                    maxLength={100}
+                    onChange={(e) => setLabelDraft((p) => ({ ...p, [i.name]: e.target.value }))}
+                    placeholder="e.g. ISP uplink, Rack A switch"
+                    className="flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
+                    style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
+                  />
+                  {/* Why this port is (or isn't) alerting. Explaining the silence is the
+                      point: "down and quiet" is alarming until you can see it is quiet
+                      because nothing has ever been plugged into it. */}
+                  <span className="w-40 shrink-0 text-[11px] text-right truncate"
+                    title={state.text}
+                    style={{ color: state.alerting ? RED : gf.textDim }}>
+                    {state.text}
+                  </span>
+                  <label className="flex items-center gap-1.5 shrink-0 text-[11px] cursor-pointer select-none"
+                    title="Uncheck to never raise interface-down alerts for this port">
+                    <input
+                      type="checkbox"
+                      checked={!muted}
+                      disabled={!gate}
+                      onChange={(e) =>
+                        setGateDraft((p) => ({
+                          ...p,
+                          [i.name]: { ...(p[i.name] ?? { everUp: false }), monitored: e.target.checked },
+                        }))
+                      }
+                      style={{ accentColor: BLUE }}
+                    />
+                    <span style={{ color: gf.textMuted }}>Alerts</span>
+                  </label>
+                </div>
+              );
+            })}
           </div>
         ) : (
           <div className="overflow-x-auto">

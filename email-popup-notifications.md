@@ -70,7 +70,7 @@ Two invariants worth remembering:
 | Environment temp / gas / humidity | `handlers/sensorHandler.js` | ✅ `alert_rules` (room-level, `device_id` NULL) |
 | Router / UPS / MikroTik metrics | `services/deviceAlerts.js` — `checkRouter` / `checkUps`, called by the SNMP **and** MikroTik pollers | ✅ `alert_rules` |
 | Server offline | offline sweep in `src/server.js` | ❌ hardcoded |
-| Interface down · UPS on battery · device unreachable | `deviceAlerts.js` (boolean events, `checkReachability`) | ❌ hardcoded |
+| Interface down · UPS on battery · device unreachable | `deviceAlerts.js` (boolean events, `checkReachability`) | ❌ hardcoded — but interface-down is **gated** by `linkAlertPolicy.js`: only a port that is enabled in RouterOS, not muted by an admin, and has carried a link at least once can raise one. Empty sockets and deliberately-disabled ports stay silent. |
 
 **Alerting is rules-only: no matching rule = no alert.** The schema seeds global defaults; an
 empty `alert_rules` table means total silence. Scope is a global default (`device_id = NULL`) with

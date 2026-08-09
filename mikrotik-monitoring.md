@@ -381,6 +381,21 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
       Interface **error rate** (`link_errors`) was added on 2026-07-31 — seeded by
       `migrations/2026-07-31_link_errors_alert_rule.sql`, measured as the per-poll DELTA so a
       long-running router isn't permanently in alarm over old errors.
+      **Interface-down was re-gated on 2026-08-09** (`services/linkAlertPolicy.js`, migration
+      `2026-08-09_link_alert_gate.sql`). Previously ANY port reporting no carrier alerted, and the
+      noise was hidden by an in-memory "skip the first sighting" baseline — so which ports could
+      alert was decided by what the cables happened to be doing the second the backend last
+      booted, and was silently re-rolled on every restart. On the campus router that read as one
+      empty port alerting while three identical empty ports stayed quiet. Two failure directions,
+      both bad: a deliberately `disabled=yes` port was the LOUDEST alert on the dashboard (admin
+      state was folded into `linkUp`), and a real uplink that happened to be unplugged during a
+      restart was baselined "known down" and could never alert again.
+      Four gates now decide it, all persistent: `monitor_link` (admin's per-port mute, editable in
+      the Ports panel) + `adminUp` (RouterOS `disabled`, or IF-MIB `ifAdminStatus` for SNMP routers)
+      + a carrier that is definitely absent (unknown ≠ outage) + `ever_up` (the port has carried a
+      link at least once — an empty socket is not a fault). `npm run link:check` prints the verdict
+      and the reason for every port; the Ports panel shows the same reason per row, and the flags
+      column now distinguishes WinBox's `X` (disabled) from a blank (no link).
 - [ ] **Phase 6 — Polish.** ~~PiP `network.summary` tile~~ ✅ (see §13.6); live test on the dev
       MikroTik then campus still outstanding.
 
