@@ -159,6 +159,15 @@
     box-shadow: none;
   }
 
+  /* Destructive icon action. The chrome stays the same neutral raised face as any
+     other button — a solid red control invites the misclick as much as it warns
+     against it — and only the GLYPH turns danger-coloured on hover. Matches the
+     --gf-danger token's own note: destructive LABEL only. */
+  .gf-btn-danger:hover:not(:disabled) {
+    color: var(--gf-danger);
+    border-color: var(--gf-danger);
+  }
+
   /* ── Sidebar ──────────────────────────────────────────────────────────────
      The rail was a flat panel of flat rows: the only cue for "you are here" was
      a 2px accent bar and a faint tint, which disappears on a bright screen and

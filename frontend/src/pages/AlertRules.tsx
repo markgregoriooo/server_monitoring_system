@@ -756,10 +756,28 @@ export default function AlertRules() {
                                   Delete?
                                 </span>
                               )}
-                              <button onClick={() => remove(r.id)} className="gf-raise px-2 py-1 rounded-md text-[12px] font-medium" style={{ color: "#fff", background: RED }}>
+                              <button
+                                onClick={() => remove(r.id)}
+                                className="gf-raise px-3 py-1.5 rounded-[3px] text-[12px] font-bold transition-all active:scale-95"
+                                style={{
+                                  color: "#fff",
+                                  background: RED,
+                                  border: `1px solid ${RED}`,
+                                  boxShadow: "0 2px 6px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.25)",
+                                }}
+                              >
                                 {deleteLossMessage(r) ? "Delete anyway" : "Yes"}
                               </button>
-                              <button onClick={() => setConfirmId(null)} className="px-2 py-1 rounded-md text-[12px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>
+                              <button
+                                onClick={() => setConfirmId(null)}
+                                className="px-3 py-1.5 rounded-[3px] text-[12px] transition-all active:scale-95"
+                                style={{
+                                  color: gf.textMuted,
+                                  background: gf.bg,
+                                  border: `1px solid ${gf.border}`,
+                                  boxShadow: "var(--gf-btn-shadow-active)",
+                                }}
+                              >
                                 {deleteLossMessage(r) ? "Cancel" : "No"}
                               </button>
                             </span>
@@ -767,11 +785,9 @@ export default function AlertRules() {
                             <span className="inline-flex items-center gap-1">
                               <button
                                 onClick={() => openEdit(r)}
-                                className="grid place-items-center w-7 h-7 rounded-md transition-colors"
-                                style={{ color: gf.textMuted }}
+                                className="gf-btn grid place-items-center w-8 h-8"
+                                style={{ color: gf.textPrimary, borderRadius: 3 }}
                                 title="Edit rule"
-                                onMouseEnter={(e) => (e.currentTarget.style.background = gf.hover)}
-                                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                               >
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                                   <path d="M12 20h9" />
@@ -780,17 +796,9 @@ export default function AlertRules() {
                               </button>
                               <button
                                 onClick={() => setConfirmId(r.id)}
-                                className="grid place-items-center w-7 h-7 rounded-md transition-colors"
-                                style={{ color: gf.textMuted }}
+                                className="gf-btn gf-btn-danger grid place-items-center w-8 h-8"
+                                style={{ color: gf.textMuted, borderRadius: 3 }}
                                 title="Delete rule"
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.background = `${RED}1f`;
-                                  e.currentTarget.style.color = RED;
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.background = "transparent";
-                                  e.currentTarget.style.color = gf.textMuted;
-                                }}
                               >
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                                   <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" />
