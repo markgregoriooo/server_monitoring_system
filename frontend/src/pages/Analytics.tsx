@@ -311,6 +311,24 @@ const fmtFullBy = (etaDays: number): string => {
   return d.toLocaleDateString("en-PH", { month: "short", day: "2-digit", year: "numeric" });
 };
 
+// Round axis tick values — 1/2/5 x a power of ten, so the axis reads 28 / 30 / 32 rather
+// than 27.83 / 30.14 / 32.45. Mirrors backend/services/analyticsMath.js `niceTicks`; it
+// cannot be imported because that module is Node-only and this is the one place the chart
+// needs it. Kept deliberately identical so the two never disagree about an axis.
+function niceTicks(min: number, max: number, count = 4): number[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [];
+  const raw = (max - min) / Math.max(1, count - 1);
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const step = (norm <= 1.5 ? 1 : norm <= 3 ? 2 : norm <= 7 ? 5 : 10) * mag;
+  const decimals = Math.max(0, -Math.floor(Math.log10(step)));
+  const out: number[] = [];
+  for (let v = Math.ceil(min / step) * step; v <= max + step * 1e-9; v += step) {
+    out.push(Number(v.toFixed(decimals)));
+  }
+  return out;
+}
+
 const fmtEta = (etaDays: number): string =>
   etaDays < 1 ? "< 1 day" : `${etaDays} day${etaDays >= 2 ? "s" : ""}`;
 
@@ -1902,23 +1920,70 @@ function TrendChart({
   const projLine = [{ t: lastE.t, v: lastE.e }, ...proj]; // connect EWMA tail → projection
   const boundary = x(lastE.t);
 
+  // Value scale on the LEFT EDGE, where a vertical axis belongs. It used to be printed as
+  // a "27.8°C – 34.5°C" caption under the chart, which read as a pair with the timestamp
+  // beside it — so the axis bounds looked like "the readings at Sat 12:00 PM". Ticks are
+  // round numbers (niceTicks) and each one is positioned with the same y() the paths use,
+  // so label and gridline cannot drift apart.
+  const ticks = niceTicks(vMin, vMax, 4);
+  const AXIS_W = 46;   // px reserved for the value labels
+  const nowLeftPct = (boundary / W) * 100;
+
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: 220, display: "block" }}>
-        <rect x={boundary} y={0} width={W - boundary} height={H} fill="var(--gf-hover)" opacity={0.5} />
-        <line x1={boundary} y1={0} x2={boundary} y2={H} stroke="var(--gf-divider)" strokeWidth={1} vectorEffect="non-scaling-stroke" strokeDasharray="2 3" />
-        <path d={path(hist.map((h) => ({ t: h.t, v: h.v })))} fill="none" stroke={GRAY} strokeWidth={1} opacity={0.55} vectorEffect="non-scaling-stroke" />
-        <path d={path(hist.map((h) => ({ t: h.t, v: h.e })))} fill="none" stroke="var(--gf-accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-        <path d={path(projLine)} fill="none" stroke={ORANGE} strokeWidth={2} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
-      </svg>
-      <div className="flex justify-between text-[0.9em] mt-1" style={{ color: gf.textDim }}>
-        <span>{vMin.toFixed(1)}{unit} – {vMax.toFixed(1)}{unit}</span>
-        <span>now → +{proj.at(-1) ? Math.round((proj.at(-1)!.t - lastE.t) / 3_600_000) : 0}h</span>
+      <div className="flex">
+        {/* Y axis */}
+        <div className="relative shrink-0" style={{ width: AXIS_W, height: H }}>
+          {ticks.map((tv) => (
+            <span
+              key={tv}
+              className="absolute right-1.5 text-[0.82em] tabular-nums"
+              style={{ top: y(tv) - 7, color: gf.textDim }}
+            >
+              {tv}
+            </span>
+          ))}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: H, display: "block" }}>
+            {/* Forecast region, shaded so past and projected are never confused. */}
+            <rect x={boundary} y={0} width={W - boundary} height={H} fill="var(--gf-hover)" opacity={0.5} />
+            {/* Gridlines share the tick positions, giving the labels something to sit on. */}
+            {ticks.map((tv) => (
+              <line
+                key={tv} x1={0} y1={y(tv)} x2={W} y2={y(tv)}
+                stroke="var(--gf-divider)" strokeWidth={1} vectorEffect="non-scaling-stroke"
+              />
+            ))}
+            <line x1={boundary} y1={0} x2={boundary} y2={H} stroke="var(--gf-text-dim)" strokeWidth={1} vectorEffect="non-scaling-stroke" strokeDasharray="2 3" />
+            <path d={path(hist.map((h) => ({ t: h.t, v: h.v })))} fill="none" stroke={GRAY} strokeWidth={1} opacity={0.55} vectorEffect="non-scaling-stroke" />
+            <path d={path(hist.map((h) => ({ t: h.t, v: h.e })))} fill="none" stroke="var(--gf-accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+            <path d={path(projLine)} fill="none" stroke={ORANGE} strokeWidth={2} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
+          </svg>
+
+          {/* X axis, aligned to the plot only. "now" sits at the history/forecast boundary
+              rather than at the midpoint, so the split is readable off the axis itself. */}
+          <div className="relative mt-1 text-[0.82em]" style={{ height: 16, color: gf.textDim }}>
+            <span className="absolute left-0">{fmtClock(tMin)}</span>
+            <span
+              className="absolute -translate-x-1/2 whitespace-nowrap"
+              style={{ left: `${nowLeftPct}%`, color: gf.textMuted }}
+            >
+              now
+            </span>
+            <span className="absolute right-0">{fmtClock(proj.at(-1)?.t ?? lastE.t)}</span>
+          </div>
+        </div>
       </div>
-      {/* time axis: left edge = oldest sample, right edge = forecast end (chart x spans tMin..tMax) */}
-      <div className="flex justify-between text-[0.9em] mt-0.5" style={{ color: gf.textDim }}>
-        <span>{fmtClock(tMin)}</span>
-        <span>{fmtClock(proj.at(-1)?.t ?? lastE.t)}</span>
+
+      {/* Unit stated once, where the axis it belongs to can be seen. */}
+      <div className="flex justify-between text-[0.82em] mt-1" style={{ color: gf.textDim }}>
+        <span style={{ paddingLeft: AXIS_W }}>{unit ? `values in ${unit}` : ""}</span>
+        <span>
+          {Math.round((lastE.t - tMin) / 3_600_000)}h history · +
+          {proj.at(-1) ? Math.round((proj.at(-1)!.t - lastE.t) / 3_600_000) : 0}h projected
+        </span>
       </div>
     </div>
   );

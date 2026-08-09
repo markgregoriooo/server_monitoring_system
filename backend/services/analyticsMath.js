@@ -454,6 +454,28 @@ export function backtestSeries(raw, { horizonMs, folds = 5, minTrain = MIN_POINT
   return out;
 }
 
+// Round, human-readable tick values inside [min, max] — 1/2/5 x a power of ten, the
+// convention every charting library uses because 28 / 30 / 32 is readable at a glance and
+// 27.83 / 30.14 / 32.45 is not. Returns [] when the span is degenerate.
+export function niceTicks(min, max, count = 4) {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [];
+  const raw = (max - min) / Math.max(1, count - 1);
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  // Thresholds are the midpoints between 1/2/5/10, not the values themselves. Snapping
+  // "up" at each boundary (norm 2.2 → 5) overshoots badly and leaves one tick on the axis.
+  const step = (norm <= 1.5 ? 1 : norm <= 3 ? 2 : norm <= 7 ? 5 : 10) * mag;
+  // Repeated addition of a float step drifts (0.4 + 0.2 = 0.6000000000000001), and that
+  // lands verbatim on the axis. Steps are always 1/2/5 x a power of ten, so the step's own
+  // magnitude gives exactly how many decimals a tick can legitimately have.
+  const decimals = Math.max(0, -Math.floor(Math.log10(step)));
+  const out = [];
+  for (let v = Math.ceil(min / step) * step; v <= max + step * 1e-9; v += step) {
+    out.push(Number(v.toFixed(decimals)));
+  }
+  return out;
+}
+
 // Sort comparator: soonest ETA first, "no ETA" (stable/falling/insufficient) last.
 export const byEtaAsc = (a, b) => {
   if (a.etaDays == null && b.etaDays == null) return 0;

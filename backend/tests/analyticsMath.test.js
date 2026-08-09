@@ -25,6 +25,7 @@ import {
   bucketLabel,
   BASELINE_BUCKETS,
   backtestSeries,
+  niceTicks,
   clampInt,
   clampNum,
   MIN_POINTS,
@@ -551,6 +552,26 @@ test("every bucket index is in range and round-trips through its label", () => {
     assert.equal(hour, localHour(ms));
     assert.equal(dayType, isWeekend(ms) ? "weekend" : "weekday");
   }
+});
+
+test("niceTicks produces round values inside the range", () => {
+  const t = niceTicks(27.8, 34.5, 4);
+  assert.ok(t.length >= 3, `expected several ticks, got ${t.join(", ")}`);
+  assert.ok(t.every((v) => v >= 27.8 && v <= 34.5), `outside range: ${t.join(", ")}`);
+  // Every tick should be a value a human would write down, not 27.83.
+  assert.ok(t.every((v) => Math.abs(v * 2 - Math.round(v * 2)) < 1e-9), `not round: ${t.join(", ")}`);
+});
+
+test("niceTicks keeps an even spacing and never drifts on floats", () => {
+  const t = niceTicks(0, 1, 5);
+  const gaps = t.slice(1).map((v, i) => +(v - t[i]).toFixed(10));
+  assert.equal(new Set(gaps).size, 1, `uneven steps: ${gaps.join(", ")}`);
+});
+
+test("niceTicks refuses a degenerate range", () => {
+  assert.deepEqual(niceTicks(5, 5), []);
+  assert.deepEqual(niceTicks(9, 3), []);
+  assert.deepEqual(niceTicks(NaN, 3), []);
 });
 
 // ─── input clamping (the Flux-injection guarantee) ────────────────────────────
