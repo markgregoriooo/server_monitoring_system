@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { ChartOptions, ChartData, ScriptableContext } from "chart.js";
 import { Chart, registerables } from "chart.js";
 import "../chart/ChartConfig";
@@ -25,10 +25,6 @@ interface Server {
 interface SensorData {
   temperature: number;
   humidity: number;
-  // Both MQ-2 sensors, as the ESP32 reports them. The dashboard charts the worse of the
-  // two as a single "Gas" line (see handleSensor).
-  mq2_1_ppm?: number;
-  mq2_2_ppm?: number;
   timestamp: string;
 }
 
@@ -96,7 +92,6 @@ const BLUE = "#5794F2";
 // require re-learning the colours on the other.
 const ENV_TEMP = "#F59E0B";
 const ENV_HUM  = "#38BDF8";
-const ENV_GAS  = "#A78BFA";
 
 // A server parked for planned maintenance is not a fault — showing it red reads
 // as "down" and hides real outages in a sea of red.
@@ -114,18 +109,7 @@ function loadColor(v: number) {
   return GREEN;
 }
 
-// Maps room temperature to the CLAUDE.md IR comfort zones.
-function tempColor(t: number) {
-  if (t < 22) return BLUE; // TOO_COLD
-  if (t <= 27) return GREEN; // NORMAL / ACCEPTABLE
-  if (t <= 29) return ORANGE; // NEAR_CRIT
-  return RED; // CRITICAL
-}
 
-function humColor(h: number) {
-  if (h < 30 || h > 70) return ORANGE;
-  return GREEN;
-}
 
 function gradientFill(
   ctx: ScriptableContext<"line">,
@@ -437,62 +421,6 @@ function GaugeCanvas({
   );
 }
 
-// ─── BarGauge (Grafana gradient horizontal bar) ─────────────────────────────────
-
-function BarGauge({
-  label,
-  value,
-  status,
-}: {
-  label: string;
-  value: number;
-  status?: string;
-}) {
-  const v = Math.min(Math.max(value, 0), 100);
-  return (
-    <div className="flex items-center gap-3 px-3 py-1.5">
-      <div className="flex items-center gap-2 w-28 shrink-0">
-        {status && (
-          <span
-            className="w-1.5 h-1.5 rounded-full shrink-0"
-            style={{
-              background: hostDotColor(status),
-              boxShadow: `0 0 5px ${hostDotColor(status)}`,
-            }}
-          />
-        )}
-        <span
-          className="text-[13px] truncate"
-          style={{ color: gf.textPrimary }}
-        >
-          {label}
-        </span>
-      </div>
-      <div
-        className="flex-1 h-3.5 rounded-[2px] overflow-hidden"
-        style={{ background: "var(--gf-seg-empty)" }}
-      >
-        <div
-          className="h-full rounded-[2px] transition-all duration-500"
-          style={{
-            width: `${v}%`,
-            // Absolute 0–100 gradient revealed up to the value (Grafana "gradient" mode).
-            background:
-              "linear-gradient(90deg, #73BF69 0%, #73BF69 55%, #FF780A 78%, #F2495C 95%)",
-            backgroundSize: `${v > 0 ? (100 / v) * 100 : 100}% 100%`,
-          }}
-        />
-      </div>
-      <span
-        className="text-[13px] font-bold w-10 text-right shrink-0"
-        style={{ color: loadColor(v) }}
-      >
-        {v}%
-      </span>
-    </div>
-  );
-}
-
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -514,27 +442,16 @@ export default function Dashboard() {
   const [liveHum, setLiveHum] = useState<number | string>("--");
   const [chartTemps, setChartTemps] = useState<number[]>([]);
   const [chartHums, setChartHums] = useState<number[]>([]);
-  // Gas = the WORSE of the two MQ-2 sensors, matching sensorHandler and the analytics
-  // engine. One line rather than two: on a dashboard the question is "is the air bad",
-  // not "which sensor saw it".
-  const [chartGas, setChartGas] = useState<number[]>([]);
-  const [liveGas, setLiveGas] = useState<number | string>("--");
   const [chartLabels, setChartLabels] = useState<string[]>([]);
   const [isDark, setIsDark] = useState(() =>
     document.documentElement.classList.contains("dark"),
   );
-  const [paused, setPaused] = useState(false);
+
   const [clock, setClock] = useState(() => new Date());
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  const pausedRef = useRef(paused);
-  pausedRef.current = paused;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const chartRef = useRef<any>(null);
-  const resetZoom = useCallback(() => {
-    chartRef.current?.resetZoom?.();
-  }, []);
 
   // Live toolbar clock
   useEffect(() => {
@@ -613,7 +530,6 @@ export default function Dashboard() {
     });
 
     const handleSensor = (data: SensorData) => {
-      if (pausedRef.current) return;
       setLiveTemp(data.temperature);
       setLiveHum(data.humidity);
       setLastUpdate(new Date());
@@ -625,15 +541,11 @@ export default function Dashboard() {
       setChartLabels((p) => [...p.slice(-300), time]);
       setChartTemps((p) => [...p.slice(-300), data.temperature]);
       setChartHums((p) => [...p.slice(-300), data.humidity]);
-      const gas = Math.max(Number(data.mq2_1_ppm ?? 0), Number(data.mq2_2_ppm ?? 0));
-      setLiveGas(gas);
-      setChartGas((p) => [...p.slice(-300), gas]);
     };
 
     // serverMetrics now arrives as a single-server update: { server: {...} }.
     // Merge it into the list by id (don't overwrite the whole array).
     const handleMetrics = (data: { server?: any }) => {
-      if (pausedRef.current) return;
       const sv = data?.server;
       if (!sv) return;
       const incoming: Server = {
@@ -766,21 +678,6 @@ export default function Dashboard() {
         tension: 0.4,
         yAxisID: "yHum",
       },
-      {
-        label: "Gas",
-        data: smooth(chartGas),
-        borderColor: ENV_GAS,
-        // Unfilled: three stacked translucent fills turn the plot to mud, and gas is the
-        // line you most need to read against the other two.
-        backgroundColor: "transparent",
-        borderWidth: 1.5,
-        pointRadius: 0,
-        pointHoverRadius: 4,
-        pointHoverBackgroundColor: ENV_GAS,
-        fill: false,
-        tension: 0.4,
-        yAxisID: "yGas",
-      },
     ],
   };
 
@@ -812,16 +709,6 @@ export default function Dashboard() {
           },
         },
       },
-      ...({
-        zoom: {
-          pan: { enabled: true, mode: "x" },
-          zoom: {
-            wheel: { enabled: true },
-            pinch: { enabled: true },
-            mode: "x",
-          },
-        },
-      } as unknown as ChartOptions<"line">["plugins"]),
     },
     scales: {
       x: {
@@ -862,25 +749,6 @@ export default function Dashboard() {
         min: minHumY,
         max: maxHumY,
       },
-      // Third axis for ppm. Its grid is hidden and it sits outside the humidity axis,
-      // so adding a unit doesn't add another set of lines across the plot. Floor of 0
-      // keeps clean air pinned to the bottom instead of letting the scale zoom into
-      // sensor jitter and imply a problem.
-      yGas: {
-        type: "linear",
-        position: "right",
-        grid: { display: false },
-        border: { display: false },
-        ticks: {
-          color: ENV_GAS,
-          font: { size: 9, family: "monospace" },
-          padding: 6,
-          maxTicksLimit: 4,
-          callback: (v) => `${v}`,
-        },
-        min: 0,
-        max: chartGas.length ? Math.max(40, Math.ceil(Math.max(...chartGas) * 1.3)) : 40,
-      },
     },
   };
 
@@ -918,43 +786,6 @@ export default function Dashboard() {
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* live / pause */}
-          <button
-            onClick={() => setPaused((p) => !p)}
-            className={pill}
-            style={{
-              ...pillStyle,
-              color: paused ? ORANGE : GREEN,
-              borderColor: paused ? "rgba(255,120,10,0.3)" : "rgba(115,191,105,0.3)",
-            }}
-            title={paused ? "Resume live updates" : "Pause live updates"}
-          >
-            {paused ? (
-              <>
-                <svg width="9" height="9" viewBox="0 0 12 12" fill="currentColor">
-                  <path d="M3 2l7 4-7 4z" />
-                </svg>
-                PAUSED
-              </>
-            ) : (
-              <>
-                <span className="relative flex h-2 w-2">
-                  <span
-                    className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
-                    style={{ background: GREEN }}
-                  />
-                  <span
-                    className="relative inline-flex rounded-full h-2 w-2"
-                    style={{ background: GREEN }}
-                  />
-                </span>
-                LIVE
-              </>
-            )}
-          </button>
-
-        </div>
       </div>
 
       {/* ── Row 1: Stat panels ── */}
@@ -963,7 +794,7 @@ export default function Dashboard() {
           label="Room Temp"
           value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : "--"}
           unit="°C"
-          color={typeof liveTemp === "number" ? tempColor(liveTemp) : gf.textMuted}
+          color={typeof liveTemp === "number" ? ENV_TEMP : gf.textMuted}
           sub="DHT11 · LIVE"
           spark={chartTemps}
         />
@@ -971,7 +802,7 @@ export default function Dashboard() {
           label="Humidity"
           value={typeof liveHum === "number" ? liveHum.toFixed(1) : "--"}
           unit="%"
-          color={typeof liveHum === "number" ? humColor(liveHum) : gf.textMuted}
+          color={typeof liveHum === "number" ? ENV_HUM : gf.textMuted}
           sub="DHT11 · LIVE"
           spark={chartHums}
         />
@@ -1024,7 +855,6 @@ export default function Dashboard() {
               {([
                 [ENV_TEMP, typeof liveTemp === "number" ? `${liveTemp.toFixed(1)}°C` : "--", "Temp"],
                 [ENV_HUM, typeof liveHum === "number" ? `${liveHum.toFixed(1)}%` : "--", "Hum"],
-                [ENV_GAS, typeof liveGas === "number" ? `${Math.round(liveGas)} ppm` : "--", "Gas"],
               ] as [string, string, string][]).map(([color, val, label]) => (
                 <span key={label} className="flex items-center gap-1.5 text-[13px]">
                   <span
@@ -1037,26 +867,21 @@ export default function Dashboard() {
                   </span>
                 </span>
               ))}
-              <button
-                onClick={resetZoom}
-                className="flex items-center gap-1 text-[12px] px-2 h-6 rounded-[2px]"
-                style={{ color: gf.textMuted, border: `1px solid ${gf.divider}` }}
-              >
-                <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
-                  <path d="M12 7A5 5 0 1 1 7 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  <path d="M12 2v5h-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                Reset
-              </button>
             </>
           }
           bodyStyle={{ height: 248, padding: "10px 12px 14px" }}
         >
-          <Line ref={chartRef} data={combinedData} options={combinedOpts} />
+          <Line data={combinedData} options={combinedOpts} />
         </Panel>
 
         <div className="grid grid-cols-2 gap-3">
-          <Panel title="Avg CPU">
+          {/* "Avg" alone never said averaged over what — it is the mean across every
+              online server, which is not obvious next to room temperature and a UPS. */}
+          <Panel title="Avg CPU" right={
+            <span className="text-[11px]" style={{ color: gf.textDim }}>
+              {servers.length} server{servers.length === 1 ? "" : "s"}
+            </span>
+          }>
             <div className="flex items-center justify-center h-full">
               <GaugeCanvas
                 value={`${cpuAvg}%`}
@@ -1068,7 +893,11 @@ export default function Dashboard() {
               />
             </div>
           </Panel>
-          <Panel title="Avg Memory">
+          <Panel title="Avg Memory" right={
+            <span className="text-[11px]" style={{ color: gf.textDim }}>
+              {servers.length} server{servers.length === 1 ? "" : "s"}
+            </span>
+          }>
             <div className="flex items-center justify-center h-full">
               <GaugeCanvas
                 value={`${memAvg}%`}
@@ -1083,36 +912,82 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Row 3: Bar gauges per host ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <Panel title="Host CPU" noPad bodyStyle={{ padding: "8px 0" }}>
-          {servers.length === 0 ? (
-            <div className="text-[12px] text-center py-6" style={{ color: gf.textDim }}>
-              No hosts
-            </div>
-          ) : (
-            servers.map((s) => (
-              <BarGauge key={s.id} label={s.name} value={s.cpu} status={s.status} />
-            ))
-          )}
-        </Panel>
-        <Panel title="Host Memory" noPad bodyStyle={{ padding: "8px 0" }}>
-          {servers.length === 0 ? (
-            <div className="text-[12px] text-center py-6" style={{ color: gf.textDim }}>
-              No hosts
-            </div>
-          ) : (
-            servers.map((s) => (
-              <BarGauge key={s.id} label={s.name} value={s.memory} status={s.status} />
-            ))
-          )}
-        </Panel>
-      </div>
-
-      {/* ── Row 4: Server table + alerts ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      {/* ── Row 3: Air conditioner units ──
+          Sits with the environment chart above: these are what ACT on the room
+          temperature being plotted, so the reading and the response are read together
+          rather than a page apart. */}
+      <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
+        {aircons.length === 0 ? (
+          <div className="text-[12px] text-center py-4" style={{ color: gf.textDim }}>
+            No AC units registered
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {aircons.map((ac) => (
+              <div
+                key={ac.id}
+                className="flex flex-col rounded-[2px]"
+                style={{ background: gf.bg, border: `1px solid ${gf.border}` }}
+              >
+                <div
+                  className="flex items-center justify-between px-3 py-2"
+                  style={{ borderBottom: `1px solid ${gf.divider}` }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="relative flex h-1.5 w-1.5">
+                      {ac.enabled && (
+                        <span
+                          className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
+                          style={{ background: GREEN }}
+                        />
+                      )}
+                      <span
+                        className="relative inline-flex rounded-full h-1.5 w-1.5"
+                        style={{ background: ac.enabled ? GREEN : gf.textMuted }}
+                      />
+                    </span>
+                    <span className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
+                      {ac.name}
+                    </span>
+                  </div>
+                  <span
+                    className="text-[11px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
+                    style={{
+                      color: ac.enabled ? GREEN : gf.textMuted,
+                      background: ac.enabled ? "rgba(115,191,105,0.12)" : gf.hover,
+                    }}
+                  >
+                    {ac.enabled ? "ONLINE" : "OFFLINE"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-px" style={{ background: gf.divider }}>
+                  {[
+                    ["Mode", ac.mode],
+                    ["Set", `${ac.setTemp}°`],
+                    ["Room", ac.roomTemp != null ? `${ac.roomTemp}°` : "--"],
+                  ].map(([lbl, val]) => (
+                    <div
+                      key={lbl}
+                      className="flex flex-col px-2 py-2 gap-0.5"
+                      style={{ background: gf.panel }}
+                    >
+                      <span className="text-[10px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                        {lbl}
+                      </span>
+                      <span className="text-[13px] font-bold" style={{ color: gf.textPrimary }}>
+                        {val}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+      {/* ── Row 4: Server table ── */}
+      <div className="grid grid-cols-1 gap-3">
         <Panel
-          className="lg:col-span-2"
           title="Server Metrics"
           noPad
           right={
@@ -1191,57 +1066,6 @@ export default function Dashboard() {
           </div>
         </Panel>
 
-        <Panel
-          title="Alerts"
-          noPad
-          right={
-            lastUpdate && (
-              <span className="text-[11px]" style={{ color: gf.textDim }}>
-                upd {lastUpdate.toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour12: false })}
-              </span>
-            )
-          }
-        >
-          <div className="flex flex-col gap-1.5 p-3 overflow-y-auto" style={{ maxHeight: 300 }}>
-            {notifications.map((a) => {
-              const c = a.severity === "critical" ? RED : a.severity === "warning" ? ORANGE : BLUE;
-              return (
-                <div
-                  key={a.id}
-                  className="flex items-start gap-2.5 px-2.5 py-2 rounded-[2px]"
-                  style={{
-                    background: `${c}12`,
-                    borderLeft: `2px solid ${c}`,
-                  }}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
-                      {a.title}
-                    </div>
-                    <div className="text-[11px] mt-0.5" style={{ color: gf.textMuted }}>
-                      {a.message}
-                    </div>
-                  </div>
-                  <span className="text-[11px] shrink-0" style={{ color: gf.textDim }}>
-                    {relativeTime(a.sentAt || a.createdAt)}
-                  </span>
-                </div>
-              );
-            })}
-            {notifications.length === 0 && (
-              <div className="flex flex-col items-center gap-1 py-8">
-                <span style={{ color: GREEN }}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                    <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </span>
-                <div className="text-[12px]" style={{ color: gf.textDim }}>
-                  No active alerts
-                </div>
-              </div>
-            )}
-          </div>
-        </Panel>
       </div>
 
       {/* ── Row 5: Network + UPS ──
@@ -1343,76 +1167,6 @@ export default function Dashboard() {
         </Panel>
       </div>
 
-      {/* ── Row 6: Air conditioner units ── */}
-      <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
-        {aircons.length === 0 ? (
-          <div className="text-[12px] text-center py-4" style={{ color: gf.textDim }}>
-            No AC units registered
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {aircons.map((ac) => (
-              <div
-                key={ac.id}
-                className="flex flex-col rounded-[2px]"
-                style={{ background: gf.bg, border: `1px solid ${gf.border}` }}
-              >
-                <div
-                  className="flex items-center justify-between px-3 py-2"
-                  style={{ borderBottom: `1px solid ${gf.divider}` }}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="relative flex h-1.5 w-1.5">
-                      {ac.enabled && (
-                        <span
-                          className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
-                          style={{ background: GREEN }}
-                        />
-                      )}
-                      <span
-                        className="relative inline-flex rounded-full h-1.5 w-1.5"
-                        style={{ background: ac.enabled ? GREEN : gf.textMuted }}
-                      />
-                    </span>
-                    <span className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
-                      {ac.name}
-                    </span>
-                  </div>
-                  <span
-                    className="text-[11px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
-                    style={{
-                      color: ac.enabled ? GREEN : gf.textMuted,
-                      background: ac.enabled ? "rgba(115,191,105,0.12)" : gf.hover,
-                    }}
-                  >
-                    {ac.enabled ? "ONLINE" : "OFFLINE"}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-px" style={{ background: gf.divider }}>
-                  {[
-                    ["Mode", ac.mode],
-                    ["Set", `${ac.setTemp}°`],
-                    ["Room", ac.roomTemp != null ? `${ac.roomTemp}°` : "--"],
-                  ].map(([lbl, val]) => (
-                    <div
-                      key={lbl}
-                      className="flex flex-col px-2 py-2 gap-0.5"
-                      style={{ background: gf.panel }}
-                    >
-                      <span className="text-[10px] tracking-widest uppercase" style={{ color: gf.textDim }}>
-                        {lbl}
-                      </span>
-                      <span className="text-[13px] font-bold" style={{ color: gf.textPrimary }}>
-                        {val}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Panel>
     </div>
   );
 }
