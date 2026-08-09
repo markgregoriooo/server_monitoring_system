@@ -29,10 +29,12 @@ honest framing for a defense, and it tells you which video to watch for what.
 
 The core of the disk-full ETA. **Spend the most time here.**
 
-**In our code:** `backend/services/analyticsService.js`
-- `linearRegression()` (line ~12) — slope/intercept via least squares
-- `score()` (line ~29) — R² and MAE
-- `forecastSeries()` (line ~111) — solves `100 = m·x + b` for the ETA
+**In our code:** `backend/services/analyticsMath.js` (the pure math lives here so it
+can be unit-tested — `analyticsService.js` is the InfluxDB/MySQL half)
+- `linearRegression()` — slope/intercept via least squares
+- `score()` — R² and MAE
+- `forecastSeries()` — solves `100 = m·x + b` for the ETA
+- **Tests:** `backend/tests/analyticsMath.test.js` — see §7
 
 **Understand:**
 - **Least squares** — fitting a line = minimizing the sum of *squared* vertical
@@ -57,8 +59,9 @@ The core of the disk-full ETA. **Spend the most time here.**
 A trend line alone isn't convincing; held-out validation is what makes it a
 *trained, validated supervised model*.
 
-**In our code:** `splitTrainTest()` (line ~46) + `score()` on the test slice
-inside `forecastSeries()` (line ~138).
+**In our code:** `analyticsMath.js` → `splitTrainTest()` + `validate()`, which fits on
+the first 80% and scores on the held-out tail; `forecastSeries()` / `projectToBound()`
+both call it.
 
 **Key non-obvious point:** for time series you split **chronologically, never
 randomly** — train on the past, test on the recent tail. A random shuffle leaks
@@ -82,7 +85,8 @@ daily peaks.
 
 These are **statistics**, used for short-horizon projection — not for ETA.
 
-**In our code:** `analyticsService.js` → `ewma()` and `holtLinear()`, combined in
+**In our code:** `analyticsMath.js` → `ewma()` and `holtLinear()`, combined by
+`analyticsService.js` in
 `forecastTrend()`; surfaced by `GET /api/analytics/trends/:metric` and the
 "Trend & Short-Term Projection" chart on the Analytics page. Note: we implement
 **Holt's linear method** (level + trend = the *non-seasonal* Holt-Winters); the
@@ -108,7 +112,8 @@ first.
 - **Per-hour-of-day baseline:** compute μ, σ in 24 hourly buckets so "normal at
   2 PM" ≠ "normal at 2 AM."
 
-**In our code:** `analyticsService.js` → `detectAnomalies()` (builds the 24-hour
+**In our code:** `analyticsService.js` → `detectAnomalies()` (uses `percentile`/`mean`/
+`stddev`/`localHour` from `analyticsMath.js`; builds the 24-hour
 μ/σ baseline, flags `|z| > 3`, and adds global IQR fences for context); surfaced
 by `GET /api/analytics/anomalies` and the "Anomaly Detection" panel.
 
@@ -132,7 +137,7 @@ Look at the historical distribution and suggest rule values: `warn = p95`,
   `tail latency percentiles` — shows why ops people use p95/p99 instead of
   averages. This *is* our use case.
 
-**In our code:** `analyticsService.js` → `percentile()` and `recommendThresholds()`
+**In our code:** `percentile()` in `analyticsMath.js`, `recommendThresholds()` in `analyticsService.js`
 (p50/p95/p99 vs current `alert_rules`); surfaced by
 `GET /api/analytics/recommendations` and the "Threshold Recommendations" panel,
 where an admin can apply the suggestion straight into the Alert Rules.
@@ -143,8 +148,8 @@ where an admin can apply the suggestion straight into the Alert Rules.
 
 The newest additions (`predictive-analytics.md` §8 row "2b/3b"): **UPS battery
 degradation**, **link saturation**, and **MikroTik/router** trend + anomaly
-metrics. Data now comes from the router/UPS branches (`ups_metrics`,
-`network_traffic`, `router_metrics`).
+metrics. Since 2026-08-09 these run on **live** data — the SNMP and MikroTik
+pollers write `ups_metrics`, `network_traffic` and `router_metrics` directly.
 
 > **Key point for a defense: there is NO new statistics or ML to learn here.**
 > These features reuse the *exact same* linear-regression engine from §1–§2 and
@@ -160,13 +165,14 @@ metrics. Data now comes from the router/UPS branches (`ups_metrics`,
 | **Link saturation** | regress per-interface `utilization_pct` **up** to a 90% ceiling → "uplink hits 90% in ~N days" | Same as disk-full ETA (project to a bound) |
 | **MikroTik CPU / Mem / Clients** | trend projection + anomaly flagging on router metrics | EWMA/Holt (§3) + z-score/IQR (§4) |
 
-**In our code:** `backend/services/analyticsService.js`
-- `projectToBound()` (line ~679) — the shared projector. `direction: "down"`
+**In our code:** `backend/services/analyticsMath.js` (projector) + `analyticsService.js`
+(the queries that feed it)
+- `projectToBound()` — the shared projector. `direction: "down"`
   falls to a floor (UPS runtime), `direction: "up"` rises to a ceiling (link %).
   It mirrors `forecastSeries()`'s gating exactly (R² ≥ `MIN_ETA_R2`, horizon cap),
   so a noisy/flat series reports "stable" instead of a bogus date.
-- `forecastUpsBattery()` (line ~737) — UPS analogue of disk-full ETA.
-- `forecastLinkSaturation()` (line ~765) — per-interface capacity forecast.
+- `forecastUpsBattery()` — UPS analogue of disk-full ETA.
+- `forecastLinkSaturation()` — per-interface capacity forecast, labelled by building.
 - `METRICS` registry `router_cpu` / `router_mem` / `router_clients` entries —
   route MikroTik data through the existing `forecastTrend()` / `detectAnomalies()`.
 - Endpoints: `GET /api/analytics/forecast/ups-battery`,
@@ -217,3 +223,32 @@ a forecast can be wrong** (the honest caveats a panel will ask about):
 
 > Cross-references: `predictive-analytics.md` (blueprint + the math in §2–§4),
 > `server-metrics.md` (the `server_metrics` data we forecast on).
+
+---
+
+## 7. Read the tests — they are the fastest way back into this feature
+
+`backend/tests/analyticsMath.test.js` (run: `cd backend && npm test`) is a
+executable summary of everything above. Each test names the behaviour it pins
+down, so reading the test titles top-to-bottom is a 2-minute refresher on the
+whole feature — and unlike the prose here, it cannot drift out of date.
+
+Three tests are worth understanding before a defense, because they are the
+evidence behind the claims you will make:
+
+1. **`score: R² goes NEGATIVE when the model is worse than the mean`** — proves
+   you understand R² is not "percent correct". A negative R² means the fitted
+   line predicts worse than just guessing the average.
+2. **`forecastSeries: noise with a technically positive slope reports Stable, not
+   a bogus date`** — this is the confidence gate (§3 of the blueprint) doing its
+   job. Least squares will happily fit a line to pure noise; the R² gate is what
+   stops that line from becoming a date on screen.
+3. **`splitTrainTest splits CHRONOLOGICALLY, never shuffling`** — the one thing
+   people get wrong with time series. Training on shuffled data leaks the future
+   into the model and inflates the score.
+
+> **If a panel asks "is this really machine learning?"** — the honest answer is in
+> §0: linear regression is supervised ML, trained on a past window and validated
+> on a held-out future window with R²/MAE reported. The rest (EWMA, Holt's linear,
+> z-score, percentiles) is statistics. Claiming the whole feature is ML is the one
+> thing that would actually cost you marks.

@@ -1619,3 +1619,94 @@ Built the remaining server/environment analytics phases on top of Session 14's e
 
 ---
 
+
+## SESSION 20 — 2026-08-09
+**Branch:** `analytics-integration` (new — `main` + `predictive-analytics` merged)
+**Developer:** Mark Gregorio
+
+> Merged the long-stale `predictive-analytics` branch with `main`, then **finished** the
+> feature on the merged tree: the forecasts now run on live SNMP/MikroTik/agent data,
+> disk forecasting matches how disk alerting actually works, every device is identifiable
+> by name + class, and the math is unit-tested.
+
+### The merge
+- `predictive-analytics` was 15 commits ahead of a branch point that `main` had since
+  moved **125 commits** past. Created `analytics-integration` off `main` and merged the
+  analytics branch into it (that direction means `main` can later fast-forward).
+- Only **4 conflicts**: `backend/src/server.js` (kept both route sets),
+  `Sidebar.tsx` (main's collapsible nav groups won; Analytics placed in *Operations*),
+  `deployment-guide.md` (add/add — took main's 1068-line superset, dropped its
+  "analytics is unmerged" roadmap entry, added an Analytics checklist item),
+  `SESSION_NOTES.md` (both sides had a Session 14 **and** 15 — kept main's, appended the
+  analytics ones as 18/19 noting their original numbers).
+- Fixed a `ReferenceError` the analytics branch had introduced: its own refactor moved
+  `mac` into `findExistingEnrollment()` but left `register()` still referencing it, so a
+  **first-time** agent enrollment threw and rolled back. `main` was never affected —
+  it declares `const mac` inside `register()`.
+
+### Live data (closes `predictive-analytics.md` §12 item 8)
+Verified field-by-field that the pollers on `main` write exactly what the forecasts read:
+`ups_metrics.runtime_remaining_min`, `network_traffic.utilization_pct` + `interface_name`
+tag, `router_metrics.cpu_percent`/`mem_percent`/`connected_clients`. **No forecast code
+needed changing** — the seeded schema had matched the real handlers all along.
+`seed-analytics-history.js` is now a dev convenience only.
+
+### Device identity (`predictive-analytics.md` §14)
+- **Names now resolve from MySQL at query time**, not the InfluxDB `device_name` tag.
+  The tag is frozen at write time, and since forecasts group by `device_id` and read the
+  name off the first row, a renamed device was showing its **oldest** label.
+  `fetchDeviceIdentities()` uses `COALESCE(NULLIF(display_name,''), device_name)` — the
+  same rule as `agentService` — plus `device_type` and `location`. Devices with no MySQL
+  row (dev-seed ids, decommissioned) fall back to the tag.
+- **Interfaces** resolve `network_interfaces.location_label` via `fetchInterfaceLabels()`,
+  for the same reason. Grouping stays on `interface_name` alone — grouping on the label
+  would split a port's history the moment someone relabels it.
+- Every forecast row now carries `name` / `hostname` / `deviceType` / `typeLabel` /
+  `location`.
+
+### Disk forecast now matches disk alerting
+`forecastDiskFull()` regresses **every volume** (`server_volumes`, per `mount`) and
+headlines the fastest-filling one. Previously it regressed root-only `disk_percent` while
+`main`'s `checkThresholds` alerts on the worst volume — so a server filling `D:` raised a
+Disk alert while the forecast beside it read "Stable". Servers with no per-volume history
+still fall back to the root series. Note the headline picks **soonest ETA**, not fullest —
+a 40% volume climbing fast beats a static 88% one — falling back to fullest when nothing
+has a trustworthy ETA.
+
+### Math extracted + unit-tested (`predictive-analytics.md` §15)
+- New **`services/analyticsMath.js`** — import-free, like `serverMetricUtils.js` and
+  `historyRange.js`. Holds `linearRegression`, `score`, `splitTrainTest`, `validate`,
+  `percentile`, `ewma`, `holtLinear`, `forecastSeries`, `projectToBound`,
+  `worstVolumeForecast`, the ETA gates and the advisory copy. `analyticsService.js` now
+  imports and re-exports them, so its public surface is unchanged.
+- New **`backend/tests/analyticsMath.test.js`** — 48 tests. `npm test` went 66 → **114
+  passing**. Covers the confidence gate explicitly: a noisy series must produce **no ETA**,
+  and R² must go **negative** when the model is worse than the mean.
+
+### Analytics page rework
+- Three near-identical forecast tables collapsed into one **`<ForecastPanel>`** fed by a
+  shared `ForecastRow` shape, so disk/UPS/link can no longer drift apart in how they
+  colour an ETA or phrase a status. `TrendCell` knows which direction is *bad* per metric
+  (disk/link rising, UPS runtime falling).
+- New **`<DeviceLabel>`** = name + colour-coded class badge (Server / MikroTik / Router /
+  UPS) + a sub-line (hostname when renamed, building for interfaces, location for UPS).
+  Device dropdowns are class-prefixed.
+- Link rows lead with the **building label**, port as sub-line.
+- Multi-volume servers show per-volume chips under the name.
+- New **Action Needed** panel gathers every advisory across all three forecasts, most
+  urgent first, so the page opens with what's wrong instead of three tables to scan.
+- Live refresh now also listens to `networkMetrics` / `upsMetrics`.
+
+### Verified
+- `npm test` **114/114**; `node --check` on every backend `.js`; frontend
+  `tsc --noEmit` clean and `vite build` clean.
+
+### Still pending / not done
+- **Maturity, not code:** ETAs stay "Stable"/"need more data" until ~1–2 weeks of history
+  accrues per source. By design (R² gate).
+- **Not pushed.** `analytics-integration` is local-only; `main` has not been
+  fast-forwarded and `predictive-analytics` has not been deleted.
+- Deliberately **not** built (additions, not finishing): `ups_metrics.battery_status`
+  (RFC 1628 enum) as a second degradation signal, recommendations surfaced on the Alert
+  Rules page, an `analytics` report type for PDF export.
+- No live end-to-end against real hardware in this session — build/typecheck/tests only.

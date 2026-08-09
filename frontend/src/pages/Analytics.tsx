@@ -5,54 +5,83 @@ import { socket } from "../socket/socket";
 
 // Predictive Analytics: disk-full ETA (linear regression) + alert analytics
 // (Phase 1), trend/projection (EWMA + Holt's linear, Phase 2), anomaly detection
-// (per-hour z-score + IQR, Phase 3) and threshold recommendations (percentiles,
-// Phase 4). Backend: services/analyticsService.js → /api/analytics. See
-// predictive-analytics.md for the math/roadmap.
+// (per-hour z-score + IQR, Phase 3), threshold recommendations (percentiles,
+// Phase 4) and the UPS-battery / link-saturation ETAs (Phase 2b). Backend:
+// services/analyticsService.js → /api/analytics. See predictive-analytics.md.
+//
+// Every device is rendered through <DeviceLabel>, which pairs the operator-facing
+// name with a class badge. With servers, MikroTik, routers and UPS all forecasting
+// side by side, a bare name like "core-01" is ambiguous — the badge is what makes a
+// row identifiable at a glance. Names come from MySQL (display_name → device_name),
+// NOT the InfluxDB tag, so a renamed device reads the same here as everywhere else.
 
-interface DiskForecast {
+type Confidence = "high" | "medium" | "low";
+
+interface Advice {
+  level: "critical" | "warning";
+  message: string;
+}
+
+// Identity block returned by every forecast endpoint (analyticsService.identify()).
+interface DeviceIdentity {
   deviceId: number;
   name: string;
+  hostname: string | null;
+  deviceType: string | null;
+  typeLabel: string | null;
+  location: string | null;
+}
+
+interface VolumeForecast {
+  mount: string;
+  currentPercent: number | null;
+  slopePerDay: number | null;
+  etaDays: number | null;
+  status: string;
+  confidence: Confidence;
+}
+
+interface DiskForecast extends DeviceIdentity {
   currentPercent: number | null;
   slopePerDay: number | null;
   etaDays: number | null;
   full: number;
   fitR2: number | null;
   mae: number | null;
-  confidence: "high" | "medium" | "low";
+  confidence: Confidence;
   sampleCount: number;
   status: "filling" | "stable" | "falling" | "full" | "insufficient_data";
-  advice: { level: "critical" | "warning"; message: string } | null;
+  advice: Advice | null;
+  mount: string | null;
+  volumes: VolumeForecast[];
 }
 
-interface UpsBatteryForecast {
-  deviceId: number;
-  name: string;
+interface UpsBatteryForecast extends DeviceIdentity {
   floorMinutes: number;
   currentRuntimeMin: number | null;
   slopePerDay: number | null;
   etaDays: number | null;
   fitR2: number | null;
   mae: number | null;
-  confidence: "high" | "medium" | "low";
+  confidence: Confidence;
   sampleCount: number;
   status: "declining" | "stable" | "reached" | "insufficient_data";
-  advice: { level: "critical" | "warning"; message: string } | null;
+  advice: Advice | null;
 }
 
-interface LinkForecast {
-  deviceId: number;
-  name: string;
+interface LinkForecast extends DeviceIdentity {
   interface: string;
+  interfaceLabel: string | null;
   ceiling: number;
   currentUtil: number | null;
   slopePerDay: number | null;
   etaDays: number | null;
   fitR2: number | null;
   mae: number | null;
-  confidence: "high" | "medium" | "low";
+  confidence: Confidence;
   sampleCount: number;
   status: "rising" | "stable" | "reached" | "insufficient_data";
-  advice: { level: "critical" | "warning"; message: string } | null;
+  advice: Advice | null;
 }
 
 interface AlertSummary {
@@ -142,13 +171,22 @@ const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const GRAY = "#6B7280";
 const SEV_COLOR: Record<string, string> = { critical: "#E02F44", warning: "#FF780A", info: "#5794F2" };
-const CONF_COLOR: Record<DiskForecast["confidence"], string> = { high: GREEN, medium: ORANGE, low: GRAY };
+const CONF_COLOR: Record<Confidence, string> = { high: GREEN, medium: ORANGE, low: GRAY };
+
+// One colour per device class, so a row's class is readable without reading the word.
+const TYPE_COLOR: Record<string, string> = {
+  Server: "#5794F2",
+  MikroTik: "#B877D9",
+  Router: "#FF9830",
+  UPS: "#73BF69",
+  Sensor: "#6B7280",
+};
 
 const LOOKBACKS = [7, 14, 30];
-// Live updates: server metrics (~10s/host) and environment readings (~3s) stream in over
-// the socket. We coalesce that firehose to at most one analytics refresh per this window —
-// a multi-day regression/percentile barely moves between ticks and each refresh runs
-// several Flux queries.
+// Live updates: server metrics (~10s/host), SNMP/MikroTik polls (~30-60s) and environment
+// readings (~3s) all stream in over the socket. We coalesce that firehose to at most one
+// analytics refresh per this window — a multi-day regression barely moves between ticks and
+// each refresh runs several Flux queries.
 const LIVE_REFRESH_MS = 15_000;
 const mono = "'JetBrains Mono', monospace";
 
@@ -159,12 +197,12 @@ const METRIC_OPTIONS = [
   { key: "cpu", label: "CPU", scope: "server" },
   { key: "mem", label: "Memory", scope: "server" },
   { key: "disk", label: "Disk", scope: "server" },
-  { key: "router_cpu", label: "MikroTik CPU", scope: "router" },
-  { key: "router_mem", label: "MikroTik Memory", scope: "router" },
-  { key: "router_clients", label: "MikroTik Clients", scope: "router" },
+  { key: "router_cpu", label: "Router CPU", scope: "router" },
+  { key: "router_mem", label: "Router Memory", scope: "router" },
+  { key: "router_clients", label: "Connected Devices", scope: "router" },
 ] as const;
-const SERVER_METRICS = new Set(["cpu", "mem", "disk"]);
-const ROUTER_METRICS = new Set(["router_cpu", "router_mem", "router_clients"]);
+const SERVER_METRICS = new Set<string>(["cpu", "mem", "disk"]);
+const ROUTER_METRICS = new Set<string>(["router_cpu", "router_mem", "router_clients"]);
 
 const TABS = [
   { key: "forecasts", label: "Forecasts" },
@@ -191,6 +229,9 @@ const fmtFullBy = (etaDays: number): string => {
   return d.toLocaleDateString("en-PH", { month: "short", day: "2-digit", year: "numeric" });
 };
 
+const fmtEta = (etaDays: number): string =>
+  etaDays < 1 ? "< 1 day" : `${etaDays} day${etaDays >= 2 ? "s" : ""}`;
+
 // ETA color: < 7 days = red (act now), < 30 = orange, else green.
 const etaColor = (etaDays: number | null): string => {
   if (etaDays == null) return gf.textDim as string;
@@ -199,7 +240,7 @@ const etaColor = (etaDays: number | null): string => {
   return GREEN;
 };
 
-const STATUS_LABEL: Record<DiskForecast["status"], string> = {
+const DISK_STATUS_LABEL: Record<DiskForecast["status"], string> = {
   filling: "Filling",
   stable: "Stable",
   falling: "Falling",
@@ -212,6 +253,31 @@ const UPS_STATUS_LABEL: Record<UpsBatteryForecast["status"], string> = {
 const LINK_STATUS_LABEL: Record<LinkForecast["status"], string> = {
   rising: "Rising", stable: "Stable", reached: "Saturated", insufficient_data: "Need more data",
 };
+
+// ─── One row of any capacity forecast ─────────────────────────────────────────
+// Disk, UPS battery and link saturation are the same question asked three ways —
+// "how long until this crosses a line?" — so they render through one table instead of
+// three near-identical ones. Only the units, the bound and which direction is bad differ.
+interface ForecastRow {
+  key: string;
+  name: string;
+  typeLabel: string | null;
+  sub: string | null;          // secondary identity (hostname / interface / mount)
+  currentText: string;
+  barPct: number | null;       // 0-100 for the inline bar; null = no bar
+  slopePerDay: number | null;
+  slopeSuffix: string;
+  risingIsBad: boolean;        // disk/link rise into trouble; UPS runtime falls into it
+  etaDays: number | null;
+  forecasting: boolean;        // true = heading for the bound, so show the ETA
+  statusText: string;
+  confidence: Confidence;
+  fitR2: number | null;
+  mae: number | null;
+  maeSuffix: string;
+  advice: Advice | null;
+  volumes: VolumeForecast[];
+}
 
 export default function Analytics() {
   const { user } = useAuth();
@@ -227,7 +293,7 @@ export default function Analytics() {
   const [error, setError] = useState("");
 
   // Phase 2/3 — metric focus (one selector drives both Trend and Anomaly panels).
-  const [selMetric, setSelMetric] = useState("temperature");
+  const [selMetric, setSelMetric] = useState<string>("temperature");
   const [selDevice, setSelDevice] = useState<number | null>(null);
   const [trend, setTrend] = useState<MetricTrend | null>(null);
   const [anom, setAnom] = useState<AnomalyResult | null>(null);
@@ -267,8 +333,7 @@ export default function Analytics() {
 
   // Live alert analytics: re-pull the summary whenever an alert is raised
   // (`notification`) or its lifecycle changes (`alertUpdated` — acknowledge / resolve /
-  // auto-resolve), so "Open now" and the rest track without a manual refresh. Same
-  // events NotificationContext uses for the sidebar badge.
+  // auto-resolve), so "Open now" and the rest track without a manual refresh.
   useEffect(() => {
     const onAlertChange = () => { loadSummary(); };
     socket.on("notification", onAlertChange);
@@ -279,26 +344,32 @@ export default function Analytics() {
     };
   }, [loadSummary]);
 
+  // Device pickers for the Trends tab. Servers come from the disk forecast, routers from
+  // the link forecast (every device that reports interface traffic). Both already carry
+  // the resolved name + class label, so the dropdown reads the same as the tables.
   const servers = useMemo(
-    () => forecasts.map((f) => ({ id: f.deviceId, name: f.name })),
+    () => forecasts.map((f) => ({ id: f.deviceId, name: f.name, typeLabel: f.typeLabel })),
     [forecasts],
   );
-  // Router/MikroTik devices come from the link-saturation forecast (unique device_ids).
   const routers = useMemo(() => {
-    const seen = new Map<number, string>();
-    for (const l of linkForecasts) if (!seen.has(l.deviceId)) seen.set(l.deviceId, l.name);
-    return [...seen.entries()].map(([id, name]) => ({ id, name }));
+    const seen = new Map<number, { id: number; name: string; typeLabel: string | null }>();
+    for (const l of linkForecasts) {
+      if (!seen.has(l.deviceId)) seen.set(l.deviceId, { id: l.deviceId, name: l.name, typeLabel: l.typeLabel });
+    }
+    return [...seen.values()];
   }, [linkForecasts]);
+
   const needsDevice = SERVER_METRICS.has(selMetric) || ROUTER_METRICS.has(selMetric);
   const deviceOptions = ROUTER_METRICS.has(selMetric) ? routers : servers;
-  const selServerName = useMemo(
+  const selDeviceName = useMemo(
     () => deviceOptions.find((s) => s.id === selDevice)?.name ?? null,
     [deviceOptions, selDevice],
   );
 
-  // A server metric needs a server picked — default to the first one once forecasts load.
+  // A device-scoped metric needs a device picked — default to the first once data loads.
   useEffect(() => {
-    if (needsDevice && selDevice == null && deviceOptions[0]) setSelDevice(deviceOptions[0].id);
+    const first = deviceOptions[0];
+    if (needsDevice && selDevice == null && first) setSelDevice(first.id);
   }, [needsDevice, selDevice, deviceOptions]);
 
   const loadFocus = useCallback(async (silent = false) => {
@@ -325,30 +396,26 @@ export default function Analytics() {
 
   useEffect(() => { if (tab === "recs") loadRecs(); }, [tab, loadRecs]);
 
-  // ── Live data: keep the WHOLE page current with no manual refresh ──
-  // `serverMetrics` (server agents) and `sensorData` (ESP32 environment) stream in over the
-  // socket. Re-pull every derived panel — disk forecast, trend/projection, anomalies and
-  // threshold recs (incl. their Fit R²·MAE, ETA, etc.) — whenever fresh data lands, but
-  // COALESCE the stream to ≤1 refresh per LIVE_REFRESH_MS. Silent (no spinners) so values
-  // update in place rather than flashing "Loading…". (Alert Analytics already lives off the
-  // `notification`/`alertUpdated` effect below.)
+  // ── Live data: keep the active tab current with no manual refresh ──
+  // serverMetrics (agents), networkMetrics/upsMetrics (SNMP + MikroTik pollers) and
+  // sensorData (ESP32) all stream in. Re-pull the active tab's panels when fresh data
+  // lands, coalesced to ≤1 refresh per LIVE_REFRESH_MS and silent (no spinners) so
+  // values update in place. Alert Analytics lives off the alert-socket effect above.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const trigger = () => {
       if (timer) return;                         // a refresh is already queued in this window
       timer = setTimeout(() => {
         timer = null;
-        // Refresh only the active tab (Alerts is refreshed by the alert-socket effect).
         if (tab === "forecasts") loadForecasts(true);
         else if (tab === "trends") loadFocus(true);
         else if (tab === "recs") loadRecs(true);
       }, LIVE_REFRESH_MS);
     };
-    socket.on("serverMetrics", trigger);
-    socket.on("sensorData", trigger);
+    const events = ["serverMetrics", "sensorData", "networkMetrics", "upsMetrics"];
+    for (const e of events) socket.on(e, trigger);
     return () => {
-      socket.off("serverMetrics", trigger);
-      socket.off("sensorData", trigger);
+      for (const e of events) socket.off(e, trigger);
       if (timer) clearTimeout(timer);
     };
   }, [tab, loadForecasts, loadFocus, loadRecs]);
@@ -371,6 +438,95 @@ export default function Analytics() {
     await loadRecs();
     setApplying(null);
   };
+
+  // ── Adapt each forecast type into the shared row shape ──
+  const diskRows: ForecastRow[] = useMemo(
+    () => forecasts.map((f) => ({
+      key: `disk-${f.deviceId}`,
+      name: f.name,
+      typeLabel: f.typeLabel,
+      // A renamed server shows its real hostname underneath, so the machine stays
+      // identifiable; the mount matters only when there's more than one volume.
+      sub: f.volumes.length > 1 && f.mount
+        ? f.mount
+        : (f.hostname && f.hostname !== f.name ? f.hostname : null),
+      currentText: f.currentPercent == null ? "—" : `${f.currentPercent}%`,
+      barPct: f.currentPercent,
+      slopePerDay: f.slopePerDay,
+      slopeSuffix: "%",
+      risingIsBad: true,
+      etaDays: f.etaDays,
+      forecasting: f.status === "filling",
+      statusText: DISK_STATUS_LABEL[f.status],
+      confidence: f.confidence,
+      fitR2: f.fitR2,
+      mae: f.mae,
+      maeSuffix: "%",
+      advice: f.advice,
+      volumes: f.volumes,
+    })),
+    [forecasts],
+  );
+
+  const upsRows: ForecastRow[] = useMemo(
+    () => upsForecasts.map((u) => ({
+      key: `ups-${u.deviceId}`,
+      name: u.name,
+      typeLabel: u.typeLabel,
+      sub: u.location,
+      currentText: u.currentRuntimeMin == null ? "—" : `${u.currentRuntimeMin} min`,
+      barPct: null, // runtime has no natural 0-100 scale
+      slopePerDay: u.slopePerDay,
+      slopeSuffix: " min",
+      risingIsBad: false, // a UPS in trouble is one whose runtime is FALLING
+      etaDays: u.etaDays,
+      forecasting: u.status === "declining",
+      statusText: UPS_STATUS_LABEL[u.status],
+      confidence: u.confidence,
+      fitR2: u.fitR2,
+      mae: u.mae,
+      maeSuffix: "",
+      advice: u.advice,
+      volumes: [],
+    })),
+    [upsForecasts],
+  );
+
+  const linkRows: ForecastRow[] = useMemo(
+    () => linkForecasts.map((l) => ({
+      key: `link-${l.deviceId}-${l.interface}`,
+      // On the campus MikroTik an interface IS a building, so lead with the label an
+      // operator recognises and keep the port as the technical sub-line.
+      name: l.interfaceLabel ?? l.interface,
+      typeLabel: l.typeLabel,
+      sub: l.interfaceLabel ? `${l.name} · ${l.interface}` : l.name,
+      currentText: l.currentUtil == null ? "—" : `${l.currentUtil}%`,
+      barPct: l.currentUtil,
+      slopePerDay: l.slopePerDay,
+      slopeSuffix: "%",
+      risingIsBad: true,
+      etaDays: l.etaDays,
+      forecasting: l.status === "rising",
+      statusText: LINK_STATUS_LABEL[l.status],
+      confidence: l.confidence,
+      fitR2: l.fitR2,
+      mae: l.mae,
+      maeSuffix: "%",
+      advice: l.advice,
+      volumes: [],
+    })),
+    [linkForecasts],
+  );
+
+  // Everything the operator should act on, gathered above the tables so the page leads
+  // with "what's wrong" instead of making them scan three tables for coloured rows.
+  const allAdvice = useMemo(
+    () => [...diskRows, ...upsRows, ...linkRows]
+      .filter((r) => r.advice)
+      .map((r) => ({ key: r.key, advice: r.advice as Advice }))
+      .sort((a, b) => (a.advice.level === b.advice.level ? 0 : a.advice.level === "critical" ? -1 : 1)),
+    [diskRows, upsRows, linkRows],
+  );
 
   return (
     <div className="p-4 sm:p-6 space-y-6" style={{ fontFamily: mono, color: gf.textPrimary }}>
@@ -441,533 +597,507 @@ export default function Analytics() {
 
       {tab === "forecasts" && (
         <>
-      {/* ── Disk-full forecast ── */}
-      <Panel
-        title="Disk-Full Forecast"
-        subtitle={`Linear regression on ${days}-day disk-usage trend → estimated time to ${forecasts[0]?.full ?? 100}% capacity`}
-      >
-        {loading ? (
-          <Empty>Loading forecasts…</Empty>
-        ) : forecasts.length === 0 ? (
-          <Empty>No server disk history yet. Forecasts appear once agents have reported for a while.</Empty>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ color: gf.textDim, textAlign: "left" }}>
-                  <Th>Server</Th>
-                  <Th>Current</Th>
-                  <Th>Trend / day</Th>
-                  <Th>ETA to full</Th>
-                  <Th>Full by</Th>
-                  <Th>Confidence</Th>
-                  <Th title="Out-of-sample R² (fit quality) · mean abs. error">Fit (R² · MAE)</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {forecasts.map((f) => (
-                  <tr key={f.deviceId} style={{ borderTop: `1px solid ${gf.divider}` }}>
-                    <Td><span style={{ color: gf.textPrimary }}>{f.name}</span></Td>
-                    <Td>
-                      <div className="flex items-center gap-2">
-                        <span>{f.currentPercent == null ? "—" : `${f.currentPercent}%`}</span>
-                        {f.currentPercent != null && (
-                          <div className="h-1.5 w-16 rounded-full overflow-hidden" style={{ background: gf.hover }}>
-                            <div style={{ width: `${Math.min(100, f.currentPercent)}%`, height: "100%", background: etaColor(f.etaDays) }} />
-                          </div>
-                        )}
-                      </div>
-                    </Td>
-                    <Td>
-                      {f.slopePerDay == null ? "—" : (
-                        <span style={{ color: f.slopePerDay > 0 ? ORANGE : f.slopePerDay < 0 ? GREEN : gf.textMuted }}>
-                          {f.slopePerDay > 0 ? "▲" : f.slopePerDay < 0 ? "▼" : "■"} {Math.abs(f.slopePerDay)}%
-                        </span>
-                      )}
-                    </Td>
-                    <Td>
-                      {f.status === "filling" && f.etaDays != null ? (
-                        <span style={{ color: etaColor(f.etaDays), fontWeight: 600 }}>
-                          {f.etaDays < 1 ? "< 1 day" : `${f.etaDays} day${f.etaDays >= 2 ? "s" : ""}`}
-                        </span>
-                      ) : (
-                        <span style={{ color: gf.textMuted }}>{STATUS_LABEL[f.status]}</span>
-                      )}
-                    </Td>
-                    <Td>
-                      <span style={{ color: gf.textMuted }}>
-                        {f.status === "filling" && f.etaDays != null ? fmtFullBy(f.etaDays) : "—"}
-                      </span>
-                    </Td>
-                    <Td><Badge color={CONF_COLOR[f.confidence]} label={f.confidence} /></Td>
-                    <Td>
-                      <span style={{ color: gf.textDim }}>
-                        {f.fitR2 == null ? "—" : `R²=${f.fitR2}`}{f.mae == null ? "" : ` · ±${f.mae}%`}
-                      </span>
-                    </Td>
-                  </tr>
+          {/* Action summary — the whole point of the page, so it goes first. */}
+          {!loading && allAdvice.length > 0 && (
+            <Panel title="Action Needed" subtitle="Every forecast currently projecting a problem, most urgent first">
+              <div className="space-y-1.5">
+                {allAdvice.map((a) => (
+                  <AdviceCallout key={a.key} level={a.advice.level}>{a.advice.message}</AdviceCallout>
                 ))}
-              </tbody>
-            </table>
-            {forecasts.some((f) => f.advice) && (
-              <div className="mt-4 space-y-1.5">
-                <SectionLabel>Action needed</SectionLabel>
-                {forecasts
-                  .filter((f) => f.advice)
-                  .map((f) => (
-                    <AdviceCallout key={f.deviceId} level={f.advice!.level}>{f.advice!.message}</AdviceCallout>
-                  ))}
               </div>
-            )}
-            <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>
-              ETA is shown only for an upward trend. Low confidence (R² &lt; 0.4) means the trend is noisy — treat the date as indicative, not exact.
-            </p>
-          </div>
-        )}
-      </Panel>
+            </Panel>
+          )}
 
-      {/* ── UPS battery degradation forecast ── */}
-      <Panel
-        title="UPS Battery Forecast"
-        subtitle={`Linear regression on ${days}-day runtime trend → estimated time until runtime drops to the critical floor (battery replacement)`}
-      >
-        {loading ? (
-          <Empty>Loading forecasts…</Empty>
-        ) : upsForecasts.length === 0 ? (
-          <Empty>No UPS history yet. Seed dev data with backend/scripts/seed-analytics-history.js, or wait for real ups_metrics to accrue.</Empty>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ color: gf.textDim, textAlign: "left" }}>
-                  <Th>UPS</Th>
-                  <Th>Current runtime</Th>
-                  <Th>Trend / day</Th>
-                  <Th>ETA to critical</Th>
-                  <Th>Replace by</Th>
-                  <Th>Confidence</Th>
-                  <Th title="Out-of-sample R² · mean abs. error">Fit (R² · MAE)</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {upsForecasts.map((u) => (
-                  <tr key={u.deviceId} style={{ borderTop: `1px solid ${gf.divider}` }}>
-                    <Td><span style={{ color: gf.textPrimary }}>{u.name}</span></Td>
-                    <Td>{u.currentRuntimeMin == null ? "—" : `${u.currentRuntimeMin} min`}</Td>
-                    <Td>
-                      {u.slopePerDay == null ? "—" : (
-                        <span style={{ color: u.slopePerDay < 0 ? ORANGE : u.slopePerDay > 0 ? GREEN : gf.textMuted }}>
-                          {u.slopePerDay < 0 ? "▼" : u.slopePerDay > 0 ? "▲" : "■"} {Math.abs(u.slopePerDay)} min
-                        </span>
-                      )}
-                    </Td>
-                    <Td>
-                      {u.status === "declining" && u.etaDays != null ? (
-                        <span style={{ color: etaColor(u.etaDays), fontWeight: 600 }}>
-                          {u.etaDays < 1 ? "< 1 day" : `${u.etaDays} day${u.etaDays >= 2 ? "s" : ""}`}
-                        </span>
-                      ) : (
-                        <span style={{ color: gf.textMuted }}>{UPS_STATUS_LABEL[u.status]}</span>
-                      )}
-                    </Td>
-                    <Td><span style={{ color: gf.textMuted }}>{u.status === "declining" && u.etaDays != null ? fmtFullBy(u.etaDays) : "—"}</span></Td>
-                    <Td><Badge color={CONF_COLOR[u.confidence]} label={u.confidence} /></Td>
-                    <Td><span style={{ color: gf.textDim }}>{u.fitR2 == null ? "—" : `R²=${u.fitR2}`}{u.mae == null ? "" : ` · ±${u.mae}`}</span></Td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {upsForecasts.some((u) => u.advice) && (
-              <div className="mt-4 space-y-1.5">
-                <SectionLabel>Action needed</SectionLabel>
-                {upsForecasts.filter((u) => u.advice).map((u) => (
-                  <AdviceCallout key={u.deviceId} level={u.advice!.level}>{u.advice!.message}</AdviceCallout>
-                ))}
-              </div>
-            )}
-            <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>
-              Runtime depends on load, so this is most reliable when load is steady. Low confidence (R² &lt; 0.4) shows "Stable" instead of a date.
-            </p>
-          </div>
-        )}
-      </Panel>
+          <ForecastPanel
+            title="Disk-Full Forecast"
+            subtitle={`Linear regression on ${days}-day usage trend → time to ${forecasts[0]?.full ?? 100}% capacity, per server's fastest-filling volume`}
+            entityHeader="Server"
+            etaHeader="ETA to full"
+            byHeader="Full by"
+            rows={diskRows}
+            loading={loading}
+            empty="No server disk history yet. Forecasts appear once agents have reported for a while."
+            note={`ETA is shown only for an upward trend. Low confidence (R² < 0.4) means the trend is noisy — treat the date as indicative, not exact.`}
+          />
 
-      {/* ── Link saturation forecast ── */}
-      <Panel
-        title="Link Saturation Forecast"
-        subtitle={`Linear regression on ${days}-day utilization trend → estimated time to ${linkForecasts[0]?.ceiling ?? 90}% utilization`}
-      >
-        {loading ? (
-          <Empty>Loading forecasts…</Empty>
-        ) : linkForecasts.length === 0 ? (
-          <Empty>No interface history yet. Seed dev data, or wait for real network_traffic to accrue.</Empty>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ color: gf.textDim, textAlign: "left" }}>
-                  <Th>Interface</Th>
-                  <Th>Current</Th>
-                  <Th>Trend / day</Th>
-                  <Th>ETA to {linkForecasts[0]?.ceiling ?? 90}%</Th>
-                  <Th>Saturates by</Th>
-                  <Th>Confidence</Th>
-                  <Th title="Out-of-sample R² · mean abs. error">Fit (R² · MAE)</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {linkForecasts.map((l) => (
-                  <tr key={`${l.deviceId}-${l.interface}`} style={{ borderTop: `1px solid ${gf.divider}` }}>
-                    <Td><span style={{ color: gf.textPrimary }}>{l.name}</span> <span style={{ color: gf.textDim }}>{l.interface}</span></Td>
-                    <Td>{l.currentUtil == null ? "—" : `${l.currentUtil}%`}</Td>
-                    <Td>
-                      {l.slopePerDay == null ? "—" : (
-                        <span style={{ color: l.slopePerDay > 0 ? ORANGE : l.slopePerDay < 0 ? GREEN : gf.textMuted }}>
-                          {l.slopePerDay > 0 ? "▲" : l.slopePerDay < 0 ? "▼" : "■"} {Math.abs(l.slopePerDay)}%
-                        </span>
-                      )}
-                    </Td>
-                    <Td>
-                      {l.status === "rising" && l.etaDays != null ? (
-                        <span style={{ color: etaColor(l.etaDays), fontWeight: 600 }}>
-                          {l.etaDays < 1 ? "< 1 day" : `${l.etaDays} day${l.etaDays >= 2 ? "s" : ""}`}
-                        </span>
-                      ) : (
-                        <span style={{ color: gf.textMuted }}>{LINK_STATUS_LABEL[l.status]}</span>
-                      )}
-                    </Td>
-                    <Td><span style={{ color: gf.textMuted }}>{l.status === "rising" && l.etaDays != null ? fmtFullBy(l.etaDays) : "—"}</span></Td>
-                    <Td><Badge color={CONF_COLOR[l.confidence]} label={l.confidence} /></Td>
-                    <Td><span style={{ color: gf.textDim }}>{l.fitR2 == null ? "—" : `R²=${l.fitR2}`}{l.mae == null ? "" : ` · ±${l.mae}%`}</span></Td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {linkForecasts.some((l) => l.advice) && (
-              <div className="mt-4 space-y-1.5">
-                <SectionLabel>Action needed</SectionLabel>
-                {linkForecasts.filter((l) => l.advice).map((l) => (
-                  <AdviceCallout key={`${l.deviceId}-${l.interface}`} level={l.advice!.level}>{l.advice!.message}</AdviceCallout>
-                ))}
-              </div>
-            )}
-            <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>
-              ETA is shown only for a rising trend. Low confidence (R² &lt; 0.4) means the trend is noisy — treat the date as indicative.
-            </p>
-          </div>
-        )}
-      </Panel>
+          <ForecastPanel
+            title="UPS Battery Forecast"
+            subtitle={`Linear regression on ${days}-day runtime trend → time until runtime hits the critical floor (battery replacement)`}
+            entityHeader="UPS"
+            etaHeader="ETA to critical"
+            byHeader="Replace by"
+            rows={upsRows}
+            loading={loading}
+            empty="No UPS history yet. Runtime history builds up once the SNMP poller has been running against a UPS."
+            note="Runtime depends on load, so this is most reliable when load is steady. Low confidence (R² < 0.4) shows Stable instead of a date."
+          />
+
+          <ForecastPanel
+            title="Link Saturation Forecast"
+            subtitle={`Linear regression on ${days}-day utilization trend → time to ${linkForecasts[0]?.ceiling ?? 90}% utilization, per interface`}
+            entityHeader="Interface"
+            etaHeader={`ETA to ${linkForecasts[0]?.ceiling ?? 90}%`}
+            byHeader="Saturates by"
+            rows={linkRows}
+            loading={loading}
+            empty="No interface history yet. Each router/MikroTik port appears once the poller has collected traffic counters."
+            note="On the campus MikroTik each interface is a building. ETA is shown only for a rising trend; bursty traffic reads as Stable."
+          />
         </>
       )}
 
       {/* ── Alert analytics ── */}
       {tab === "alerts" && (
-      <Panel title="Alert Analytics" subtitle={summary ? `Last ${summary.days} days` : "Last 30 days"}>
-        {loading ? (
-          <Empty>Loading…</Empty>
-        ) : !summary || summary.total === 0 ? (
-          <Empty>No alerts recorded in this window.</Empty>
-        ) : (
-          <div className="space-y-5">
-            {/* stat tiles */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <Stat label="Total alerts" value={String(summary.total)} />
-              <Stat label="Open now" value={String(summary.open)} color={summary.open > 0 ? ORANGE : GREEN} />
-              <Stat
-                label="Avg resolve time"
-                value={summary.mttrMinutes == null ? "—" : fmtDuration(summary.mttrMinutes)}
-              />
-            </div>
+        <Panel title="Alert Analytics" subtitle={summary ? `Last ${summary.days} days` : "Last 30 days"}>
+          {!summary ? (
+            <Empty>Loading…</Empty>
+          ) : summary.total === 0 ? (
+            <Empty>No alerts recorded in this window.</Empty>
+          ) : (
+            <div className="space-y-5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <Stat label="Total alerts" value={String(summary.total)} />
+                <Stat label="Open now" value={String(summary.open)} color={summary.open > 0 ? ORANGE : GREEN} />
+                <Stat
+                  label="Avg resolve time"
+                  value={summary.mttrMinutes == null ? "—" : fmtDuration(summary.mttrMinutes)}
+                />
+              </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              {/* severity mix */}
-              <div>
-                <SectionLabel>Severity mix</SectionLabel>
-                <div className="space-y-1.5">
-                  {summary.bySeverity.length === 0 ? <Dim>—</Dim> :
-                    summary.bySeverity
-                      .slice()
-                      .sort((a, b) => b.count - a.count)
-                      .map((s) => (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div>
+                  <SectionLabel>Severity mix</SectionLabel>
+                  <div className="space-y-1.5">
+                    {summary.bySeverity.length === 0 ? <Dim>—</Dim> :
+                      summary.bySeverity
+                        .slice()
+                        .sort((a, b) => b.count - a.count)
+                        .map((s) => (
+                          <BarRow
+                            key={s.severity}
+                            label={s.severity}
+                            count={s.count}
+                            max={Math.max(...summary.bySeverity.map((x) => x.count))}
+                            color={SEV_COLOR[s.severity] ?? gf.accent}
+                          />
+                        ))}
+                  </div>
+                </div>
+
+                <div>
+                  <SectionLabel>Noisiest sources</SectionLabel>
+                  <div className="space-y-1.5">
+                    {summary.topDevices.length === 0 ? <Dim>—</Dim> :
+                      summary.topDevices.map((d) => (
                         <BarRow
-                          key={s.severity}
-                          label={s.severity}
-                          count={s.count}
-                          max={Math.max(...summary.bySeverity.map((x) => x.count))}
-                          color={SEV_COLOR[s.severity] ?? gf.accent}
+                          key={`${d.deviceId}-${d.name}`}
+                          label={d.name}
+                          count={d.count}
+                          max={Math.max(...summary.topDevices.map((x) => x.count))}
+                          color={gf.accent}
                         />
                       ))}
+                  </div>
                 </div>
               </div>
 
-              {/* noisiest devices */}
-              <div>
-                <SectionLabel>Noisiest sources</SectionLabel>
-                <div className="space-y-1.5">
-                  {summary.topDevices.length === 0 ? <Dim>—</Dim> :
-                    summary.topDevices.map((d) => (
-                      <BarRow
-                        key={`${d.deviceId}-${d.name}`}
-                        label={d.name}
-                        count={d.count}
-                        max={Math.max(...summary.topDevices.map((x) => x.count))}
-                        color={gf.accent}
-                      />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div>
+                  <SectionLabel>By type</SectionLabel>
+                  <div className="flex flex-wrap gap-1.5">
+                    {summary.topTypes.map((t) => (
+                      <span
+                        key={t.type}
+                        className="px-2 py-0.5 text-[10px] rounded-[2px]"
+                        style={{ background: gf.hover, color: gf.textMuted, border: `1px solid ${gf.border}` }}
+                      >
+                        {t.type} · {t.count}
+                      </span>
                     ))}
+                  </div>
+                </div>
+
+                <div>
+                  <SectionLabel>Daily volume</SectionLabel>
+                  <DailyBars data={summary.byDay} />
                 </div>
               </div>
             </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              {/* by type */}
-              <div>
-                <SectionLabel>By type</SectionLabel>
-                <div className="flex flex-wrap gap-1.5">
-                  {summary.topTypes.map((t) => (
-                    <span
-                      key={t.type}
-                      className="px-2 py-0.5 text-[10px] rounded-[2px]"
-                      style={{ background: gf.hover, color: gf.textMuted, border: `1px solid ${gf.border}` }}
-                    >
-                      {t.type} · {t.count}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {/* daily volume */}
-              <div>
-                <SectionLabel>Daily volume</SectionLabel>
-                <DailyBars data={summary.byDay} />
-              </div>
-            </div>
-          </div>
-        )}
-      </Panel>
+          )}
+        </Panel>
       )}
 
       {tab === "trends" && (
         <>
-      {/* ── Metric focus: selector drives Trend + Anomaly panels ── */}
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-[10px] uppercase tracking-widest" style={{ color: gf.textDim }}>Metric</span>
-        <select
-          value={selMetric}
-          onChange={(e) => { setSelMetric(e.target.value); setSelDevice(null); }}
-          className="px-2 py-1 text-[11px] rounded-[2px] outline-none"
-          style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
-        >
-          <optgroup label="Environment">
-            {METRIC_OPTIONS.filter((m) => m.scope === "env").map((m) => (
-              <option key={m.key} value={m.key}>{m.label}</option>
-            ))}
-          </optgroup>
-          <optgroup label="Servers">
-            {METRIC_OPTIONS.filter((m) => m.scope === "server").map((m) => (
-              <option key={m.key} value={m.key}>{m.label}</option>
-            ))}
-          </optgroup>
-          <optgroup label="MikroTik / Network">
-            {METRIC_OPTIONS.filter((m) => m.scope === "router").map((m) => (
-              <option key={m.key} value={m.key}>{m.label}</option>
-            ))}
-          </optgroup>
-        </select>
-        {needsDevice && (
-          deviceOptions.length === 0 ? (
-            <span className="text-[10px]" style={{ color: gf.textDim }}>no devices with data</span>
-          ) : (
+          {/* ── Metric focus: selector drives Trend + Anomaly panels ── */}
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-[10px] uppercase tracking-widest" style={{ color: gf.textDim }}>Metric</span>
             <select
-              value={selDevice ?? ""}
-              onChange={(e) => setSelDevice(e.target.value ? Number(e.target.value) : null)}
+              value={selMetric}
+              onChange={(e) => { setSelMetric(e.target.value); setSelDevice(null); }}
               className="px-2 py-1 text-[11px] rounded-[2px] outline-none"
               style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
             >
-              {deviceOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              <optgroup label="Server Room">
+                {METRIC_OPTIONS.filter((m) => m.scope === "env").map((m) => (
+                  <option key={m.key} value={m.key}>{m.label}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Servers">
+                {METRIC_OPTIONS.filter((m) => m.scope === "server").map((m) => (
+                  <option key={m.key} value={m.key}>{m.label}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Network / MikroTik">
+                {METRIC_OPTIONS.filter((m) => m.scope === "router").map((m) => (
+                  <option key={m.key} value={m.key}>{m.label}</option>
+                ))}
+              </optgroup>
             </select>
-          )
-        )}
-      </div>
-
-      {/* ── Trend & short-term projection ── */}
-      <Panel
-        title="Trend & Short-Term Projection"
-        subtitle="EWMA-smoothed history + Holt's linear (double-exponential) projection — next ~12h"
-      >
-        {focusLoading ? (
-          <Empty>Loading trend…</Empty>
-        ) : !trend || trend.status !== "ok" ? (
-          <Empty>Not enough history for this metric yet.</Empty>
-        ) : (
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-4 text-[11px]">
-              <LegendDot color={GRAY} label="actual" />
-              <LegendDot color={gf.accent as string} label="EWMA (smoothed)" />
-              <LegendDot color={ORANGE} label="projection" dashed />
-              <span className="ml-auto" style={{ color: gf.textMuted }}>
-                trend{" "}
-                <span style={{ color: (trend.trendPerHour ?? 0) > 0 ? ORANGE : (trend.trendPerHour ?? 0) < 0 ? GREEN : gf.textMuted }}>
-                  {trend.trendPerHour == null ? "—" : `${trend.trendPerHour > 0 ? "+" : ""}${trend.trendPerHour}${trend.unit}/h`}
-                </span>{" "}
-                · {trend.sampleCount} pts
-              </span>
-            </div>
-            <TrendChart series={trend.series} projection={trend.projection} unit={trend.unit} />
-            <HourlyForecast
-              projection={trend.projection}
-              current={trend.series.at(-1)?.value ?? null}
-              unit={trend.unit}
-              advice={trend.advice}
-            />
-            {trend.advice && (
-              <AdviceCallout level={trend.advice.level}>
-                {adviceSentence(trend, needsDevice ? selServerName : null)}
-              </AdviceCallout>
+            {needsDevice && (
+              deviceOptions.length === 0 ? (
+                <span className="text-[10px]" style={{ color: gf.textDim }}>no devices with data yet</span>
+              ) : (
+                <select
+                  value={selDevice ?? ""}
+                  onChange={(e) => setSelDevice(e.target.value ? Number(e.target.value) : null)}
+                  className="px-2 py-1 text-[11px] rounded-[2px] outline-none"
+                  style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
+                >
+                  {/* Class prefix keeps two devices with similar names apart in the list. */}
+                  {deviceOptions.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.typeLabel ? `${s.typeLabel} · ${s.name}` : s.name}
+                    </option>
+                  ))}
+                </select>
+              )
+            )}
+            {!needsDevice && (
+              <span className="text-[10px]" style={{ color: gf.textDim }}>room-wide — no device to pick</span>
             )}
           </div>
-        )}
-      </Panel>
 
-      {/* ── Anomaly detection ── */}
-      <Panel
-        title="Anomaly Detection"
-        subtitle={anom ? `Per-hour-of-day baseline · |z| > ${anom.z} over ${anom.days} days` : "Per-hour-of-day z-score + IQR"}
-      >
-        {focusLoading ? (
-          <Empty>Scanning…</Empty>
-        ) : !anom || anom.status !== "ok" ? (
-          <Empty>Not enough history to baseline this metric yet.</Empty>
-        ) : (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <Stat label="Anomalies" value={String(anom.anomalyCount)} color={anom.anomalyCount > 0 ? ORANGE : GREEN} />
-              <Stat label="Points scanned" value={String(anom.totalPoints)} />
-              <Stat
-                label="Normal range (IQR)"
-                value={anom.iqr ? `${anom.iqr.lowerFence}–${anom.iqr.upperFence}${anom.unit}` : "—"}
-              />
-            </div>
-            {anom.anomalies.length === 0 ? (
-              <Empty>No anomalies — every reading is normal for its hour of day.</Empty>
+          {/* ── Trend & short-term projection ── */}
+          <Panel
+            title="Trend & Short-Term Projection"
+            subtitle="EWMA-smoothed history + Holt's linear (double-exponential) projection — next ~12h"
+          >
+            {focusLoading ? (
+              <Empty>Loading trend…</Empty>
+            ) : !trend || trend.status !== "ok" ? (
+              <Empty>Not enough history for this metric yet.</Empty>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ color: gf.textDim, textAlign: "left" }}>
-                      <Th>When</Th><Th>Reading</Th><Th>Expected (that hour)</Th><Th>z-score</Th><Th>Flags</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {anom.anomalies.slice(0, 12).map((a, i) => (
-                      <tr key={i} style={{ borderTop: `1px solid ${gf.divider}` }}>
-                        <Td><span style={{ color: gf.textMuted }}>{fmtTime(a.t)}</span></Td>
-                        <Td>
-                          <span style={{ color: a.direction === "high" ? RED : gf.accent, fontWeight: 600 }}>
-                            {a.direction === "high" ? "▲" : "▼"} {a.value}{anom.unit}
-                          </span>
-                        </Td>
-                        <Td><span style={{ color: gf.textMuted }}>{a.expected}{anom.unit} <span style={{ color: gf.textDim }}>@ {fmtHour(a.hour)}</span></span></Td>
-                        <Td><span style={{ color: gf.textPrimary }}>{a.z > 0 ? "+" : ""}{a.z}σ</span></Td>
-                        <Td>{a.iqrOutlier && <Badge color={ORANGE} label="IQR" />}</Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {anom.anomalyCount > 12 && (
-                  <p className="mt-2 text-[10px]" style={{ color: gf.textDim }}>+ {anom.anomalyCount - 12} more</p>
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-4 text-[11px]">
+                  <LegendDot color={GRAY} label="actual" />
+                  <LegendDot color={gf.accent as string} label="EWMA (smoothed)" />
+                  <LegendDot color={ORANGE} label="projection" dashed />
+                  <span className="ml-auto" style={{ color: gf.textMuted }}>
+                    trend{" "}
+                    <span style={{ color: (trend.trendPerHour ?? 0) > 0 ? ORANGE : (trend.trendPerHour ?? 0) < 0 ? GREEN : gf.textMuted }}>
+                      {trend.trendPerHour == null ? "—" : `${trend.trendPerHour > 0 ? "+" : ""}${trend.trendPerHour}${trend.unit}/h`}
+                    </span>{" "}
+                    · {trend.sampleCount} pts
+                  </span>
+                </div>
+                <TrendChart series={trend.series} projection={trend.projection} unit={trend.unit} />
+                <HourlyForecast
+                  projection={trend.projection}
+                  current={trend.series.at(-1)?.value ?? null}
+                  unit={trend.unit}
+                  advice={trend.advice}
+                />
+                {trend.advice && (
+                  <AdviceCallout level={trend.advice.level}>
+                    {adviceSentence(trend, needsDevice ? selDeviceName : null)}
+                  </AdviceCallout>
                 )}
               </div>
             )}
-          </div>
-        )}
-      </Panel>
+          </Panel>
+
+          {/* ── Anomaly detection ── */}
+          <Panel
+            title="Anomaly Detection"
+            subtitle={anom ? `Per-hour-of-day baseline · |z| > ${anom.z} over ${anom.days} days` : "Per-hour-of-day z-score + IQR"}
+          >
+            {focusLoading ? (
+              <Empty>Scanning…</Empty>
+            ) : !anom || anom.status !== "ok" ? (
+              <Empty>Not enough history to baseline this metric yet.</Empty>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  <Stat label="Anomalies" value={String(anom.anomalyCount)} color={anom.anomalyCount > 0 ? ORANGE : GREEN} />
+                  <Stat label="Points scanned" value={String(anom.totalPoints)} />
+                  <Stat
+                    label="Normal range (IQR)"
+                    value={anom.iqr ? `${anom.iqr.lowerFence}–${anom.iqr.upperFence}${anom.unit}` : "—"}
+                  />
+                </div>
+                {anom.anomalies.length === 0 ? (
+                  <Empty>No anomalies — every reading is normal for its hour of day.</Empty>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ color: gf.textDim, textAlign: "left" }}>
+                          <Th>When</Th><Th>Reading</Th><Th>Expected (that hour)</Th><Th>z-score</Th><Th>Flags</Th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {anom.anomalies.slice(0, 12).map((a, i) => (
+                          <tr key={i} style={{ borderTop: `1px solid ${gf.divider}` }}>
+                            <Td><span style={{ color: gf.textMuted }}>{fmtTime(a.t)}</span></Td>
+                            <Td>
+                              <span style={{ color: a.direction === "high" ? RED : gf.accent, fontWeight: 600 }}>
+                                {a.direction === "high" ? "▲" : "▼"} {a.value}{anom.unit}
+                              </span>
+                            </Td>
+                            <Td><span style={{ color: gf.textMuted }}>{a.expected}{anom.unit} <span style={{ color: gf.textDim }}>@ {fmtHour(a.hour)}</span></span></Td>
+                            <Td><span style={{ color: gf.textPrimary }}>{a.z > 0 ? "+" : ""}{a.z}σ</span></Td>
+                            <Td>{a.iqrOutlier && <Badge color={ORANGE} label="IQR" />}</Td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {anom.anomalyCount > 12 && (
+                      <p className="mt-2 text-[10px]" style={{ color: gf.textDim }}>+ {anom.anomalyCount - 12} more</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </Panel>
         </>
       )}
 
       {/* ── Threshold recommendations ── */}
       {tab === "recs" && (
-      <Panel
-        title="Threshold Recommendations"
-        subtitle="Suggested alert-rule values from the last 14 days — warn = p95, critical = p99"
-      >
-        {recsLoading ? (
-          <Empty>Computing…</Empty>
-        ) : recs.length === 0 ? (
-          <Empty>No data to base recommendations on yet.</Empty>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ color: gf.textDim, textAlign: "left" }}>
-                  <Th>Metric</Th><Th>p50</Th><Th>p95</Th><Th>p99</Th><Th>Max</Th>
-                  <Th>Current warn / crit</Th><Th>Suggested warn / crit</Th>
-                  {isAdmin && <Th>Apply</Th>}
-                </tr>
-              </thead>
-              <tbody>
-                {recs.map((r) => {
-                  const changed =
-                    r.status === "ok" &&
-                    (r.suggestedWarn !== r.currentWarn || r.suggestedCrit !== r.currentCrit);
-                  return (
-                    <tr key={r.metric} style={{ borderTop: `1px solid ${gf.divider}` }}>
-                      <Td><span style={{ color: gf.textPrimary }}>{r.label}</span></Td>
-                      {r.status !== "ok" ? (
-                        <Td><span style={{ color: gf.textDim }} >need more data</span></Td>
-                      ) : (
-                        <>
-                          <Td><Dim>{r.p50}{r.unit}</Dim></Td>
-                          <Td><Dim>{r.p95}{r.unit}</Dim></Td>
-                          <Td><Dim>{r.p99}{r.unit}</Dim></Td>
-                          <Td><Dim>{r.max}{r.unit}</Dim></Td>
-                        </>
-                      )}
-                      {r.status === "ok" && (
-                        <>
-                          <Td>
-                            <span style={{ color: gf.textMuted }}>
-                              {r.currentWarn ?? "—"} / {r.currentCrit ?? "—"}
-                            </span>
-                          </Td>
-                          <Td>
-                            <span style={{ color: changed ? ORANGE : gf.textMuted, fontWeight: changed ? 600 : 400 }}>
-                              {r.suggestedWarn ?? "—"} / {r.suggestedCrit ?? "—"}
-                            </span>
-                          </Td>
-                          {isAdmin && (
+        <Panel
+          title="Threshold Recommendations"
+          subtitle="Suggested alert-rule values from the last 14 days — warn = p95, critical = p99"
+        >
+          {recsLoading ? (
+            <Empty>Computing…</Empty>
+          ) : recs.length === 0 ? (
+            <Empty>No data to base recommendations on yet.</Empty>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ color: gf.textDim, textAlign: "left" }}>
+                    <Th>Metric</Th><Th>p50</Th><Th>p95</Th><Th>p99</Th><Th>Max</Th>
+                    <Th>Current warn / crit</Th><Th>Suggested warn / crit</Th>
+                    {isAdmin && <Th>Apply</Th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {recs.map((r) => {
+                    const changed =
+                      r.status === "ok" &&
+                      (r.suggestedWarn !== r.currentWarn || r.suggestedCrit !== r.currentCrit);
+                    return (
+                      <tr key={r.metric} style={{ borderTop: `1px solid ${gf.divider}` }}>
+                        <Td><span style={{ color: gf.textPrimary }}>{r.label}</span></Td>
+                        {r.status !== "ok" ? (
+                          <Td><span style={{ color: gf.textDim }}>need more data</span></Td>
+                        ) : (
+                          <>
+                            <Td><Dim>{r.p50}{r.unit}</Dim></Td>
+                            <Td><Dim>{r.p95}{r.unit}</Dim></Td>
+                            <Td><Dim>{r.p99}{r.unit}</Dim></Td>
+                            <Td><Dim>{r.max}{r.unit}</Dim></Td>
+                          </>
+                        )}
+                        {r.status === "ok" && (
+                          <>
                             <Td>
-                              <button
-                                disabled={!changed || applying === r.metric}
-                                onClick={() => applyRecommendation(r)}
-                                className="px-2 py-0.5 text-[10px] rounded-[2px] transition-colors disabled:opacity-40"
-                                style={{
-                                  background: changed ? gf.accent : gf.panel,
-                                  color: changed ? "#fff" : gf.textDim,
-                                  border: `1px solid ${changed ? gf.accent : gf.border}`,
-                                }}
-                              >
-                                {applying === r.metric ? "…" : changed ? "Apply" : "✓ in sync"}
-                              </button>
+                              <span style={{ color: gf.textMuted }}>
+                                {r.currentWarn ?? "—"} / {r.currentCrit ?? "—"}
+                              </span>
                             </Td>
-                          )}
-                        </>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>
-              {isAdmin
-                ? "Apply writes the value into the global Alert Rules (comparison “>”). Per-server overrides stay untouched."
-                : "Recommendations are advisory — an admin can apply them to the Alert Rules."}
-            </p>
-          </div>
-        )}
-      </Panel>
+                            <Td>
+                              <span style={{ color: changed ? ORANGE : gf.textMuted, fontWeight: changed ? 600 : 400 }}>
+                                {r.suggestedWarn ?? "—"} / {r.suggestedCrit ?? "—"}
+                              </span>
+                            </Td>
+                            {isAdmin && (
+                              <Td>
+                                <button
+                                  disabled={!changed || applying === r.metric}
+                                  onClick={() => applyRecommendation(r)}
+                                  className="px-2 py-0.5 text-[10px] rounded-[2px] transition-colors disabled:opacity-40"
+                                  style={{
+                                    background: changed ? gf.accent : gf.panel,
+                                    color: changed ? "#fff" : gf.textDim,
+                                    border: `1px solid ${changed ? gf.accent : gf.border}`,
+                                  }}
+                                >
+                                  {applying === r.metric ? "…" : changed ? "Apply" : "✓ in sync"}
+                                </button>
+                              </Td>
+                            )}
+                          </>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>
+                {isAdmin
+                  ? "Apply writes the value into the global Alert Rules (comparison “>”). Per-server overrides stay untouched."
+                  : "Recommendations are advisory — an admin can apply them to the Alert Rules."}
+              </p>
+            </div>
+          )}
+        </Panel>
       )}
     </div>
   );
+}
+
+// ─── Shared forecast table ────────────────────────────────────────────────────
+// Disk, UPS and link forecasts render through this one component. Keeping a single
+// table means the three panels cannot drift apart in how they colour an ETA, phrase a
+// status or report a fit — which they previously could, being three copies.
+function ForecastPanel({
+  title, subtitle, entityHeader, etaHeader, byHeader, rows, loading, empty, note,
+}: {
+  title: string;
+  subtitle: string;
+  entityHeader: string;
+  etaHeader: string;
+  byHeader: string;
+  rows: ForecastRow[];
+  loading: boolean;
+  empty: string;
+  note: string;
+}) {
+  return (
+    <Panel title={title} subtitle={subtitle}>
+      {loading ? (
+        <Empty>Loading forecasts…</Empty>
+      ) : rows.length === 0 ? (
+        <Empty>{empty}</Empty>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ color: gf.textDim, textAlign: "left" }}>
+                <Th>{entityHeader}</Th>
+                <Th>Current</Th>
+                <Th>Trend / day</Th>
+                <Th>{etaHeader}</Th>
+                <Th>{byHeader}</Th>
+                <Th>Confidence</Th>
+                <Th title="Out-of-sample R² (fit quality) · mean absolute error">Fit (R² · MAE)</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.key} style={{ borderTop: `1px solid ${gf.divider}` }}>
+                  <Td>
+                    <DeviceLabel name={r.name} typeLabel={r.typeLabel} sub={r.sub} />
+                    {r.volumes.length > 1 && <VolumeChips volumes={r.volumes} />}
+                  </Td>
+                  <Td>
+                    <div className="flex items-center gap-2">
+                      <span>{r.currentText}</span>
+                      {r.barPct != null && (
+                        <div className="h-1.5 w-16 rounded-full overflow-hidden" style={{ background: gf.hover }}>
+                          <div style={{ width: `${Math.min(100, r.barPct)}%`, height: "100%", background: etaColor(r.etaDays) }} />
+                        </div>
+                      )}
+                    </div>
+                  </Td>
+                  <Td><TrendCell value={r.slopePerDay} suffix={r.slopeSuffix} risingIsBad={r.risingIsBad} /></Td>
+                  <Td>
+                    {r.forecasting && r.etaDays != null ? (
+                      <span style={{ color: etaColor(r.etaDays), fontWeight: 600 }}>{fmtEta(r.etaDays)}</span>
+                    ) : (
+                      <span style={{ color: gf.textMuted }}>{r.statusText}</span>
+                    )}
+                  </Td>
+                  <Td>
+                    <span style={{ color: gf.textMuted }}>
+                      {r.forecasting && r.etaDays != null ? fmtFullBy(r.etaDays) : "—"}
+                    </span>
+                  </Td>
+                  <Td><Badge color={CONF_COLOR[r.confidence]} label={r.confidence} /></Td>
+                  <Td>
+                    <span style={{ color: gf.textDim }}>
+                      {r.fitR2 == null ? "—" : `R²=${r.fitR2}`}{r.mae == null ? "" : ` · ±${r.mae}${r.maeSuffix}`}
+                    </span>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>{note}</p>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// Name + class badge + optional secondary line. The badge is what disambiguates a
+// server from a router from a UPS once all three forecast on the same page.
+function DeviceLabel({ name, typeLabel, sub }: { name: string; typeLabel: string | null; sub: string | null }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="flex items-center gap-1.5">
+        <span style={{ color: gf.textPrimary }}>{name}</span>
+        {typeLabel && <TypeBadge label={typeLabel} />}
+      </span>
+      {sub && <span className="text-[10px]" style={{ color: gf.textDim }}>{sub}</span>}
+    </div>
+  );
+}
+
+function TypeBadge({ label }: { label: string }) {
+  const color = TYPE_COLOR[label] ?? GRAY;
+  return (
+    <span
+      className="px-1 py-px text-[9px] uppercase tracking-wider rounded-[2px]"
+      style={{ color, background: `${color}1a`, border: `1px solid ${color}44` }}
+    >
+      {label}
+    </span>
+  );
+}
+
+// Per-volume detail for a multi-volume server: the headline row forecasts the
+// fastest-filling mount, but an operator still needs to see the others.
+function VolumeChips({ volumes }: { volumes: VolumeForecast[] }) {
+  return (
+    <div className="flex flex-wrap gap-1 mt-1">
+      {volumes.map((v) => (
+        <span
+          key={v.mount}
+          className="px-1 py-px text-[9px] rounded-[2px]"
+          style={{ color: gf.textMuted, background: gf.hover, border: `1px solid ${gf.border}` }}
+          title={v.etaDays != null ? `${v.mount} — full in ~${v.etaDays} days` : `${v.mount} — ${v.status}`}
+        >
+          {v.mount} {v.currentPercent == null ? "—" : `${v.currentPercent}%`}
+          {v.etaDays != null && <span style={{ color: etaColor(v.etaDays) }}> · {fmtEta(v.etaDays)}</span>}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// Direction arrow + colour. Which direction is BAD depends on the metric: a disk or a
+// link rising is trouble, a UPS runtime falling is.
+function TrendCell({ value, suffix, risingIsBad }: { value: number | null; suffix: string; risingIsBad: boolean }) {
+  if (value == null) return <span style={{ color: gf.textMuted }}>—</span>;
+  const bad = risingIsBad ? value > 0 : value < 0;
+  const good = risingIsBad ? value < 0 : value > 0;
+  const color = bad ? ORANGE : good ? GREEN : gf.textMuted;
+  const arrow = value > 0 ? "▲" : value < 0 ? "▼" : "■";
+  return <span style={{ color }}>{arrow} {Math.abs(value)}{suffix}</span>;
 }
 
 // ─── tiny presentational helpers ──────────────────────────────────────────────
@@ -1054,10 +1184,10 @@ function AdviceCallout({ level, children }: { level: "critical" | "warning"; chi
 }
 
 // Compose the human recommendation for a trend that's heading toward an alert threshold.
-function adviceSentence(trend: MetricTrend, serverName: string | null): string {
+function adviceSentence(trend: MetricTrend, deviceName: string | null): string {
   const a = trend.advice;
   if (!a) return "";
-  const subj = serverName ? `${trend.label} on ${serverName}` : `Server-room ${trend.label.toLowerCase()}`;
+  const subj = deviceName ? `${trend.label} on ${deviceName}` : `Server-room ${trend.label.toLowerCase()}`;
   const thr = `${a.threshold}${trend.unit}`;
   const tail = `Recommended: ${a.action}.`;
   if (a.already) return `${subj} is already above its ${a.severity} threshold (${thr}). ${tail}`;

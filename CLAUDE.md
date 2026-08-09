@@ -129,7 +129,9 @@ backend/services/
   auditService.js               ← audit(): append a user action to `system_logs` (module: auth|aircon|users|alerts|reports|devices|network) — the trail the **History** page reads. Best-effort BY DESIGN: an audit-write failure never breaks the action. Report generate/download/email/delete all log here
   serverMetricUtils.js          ← PURE helpers for the server-metric path (NUMERIC_FIELDS, validateSample, sanitizeVolumes, sanitizeInterval, formatUptime, offlineWindowSec, backfillTimestamp). **Deliberately import-free** so `backend/tests/` runs with no MySQL/InfluxDB/.env. Imported by serverMetricsHandler + agentService
   historyRange.js               ← PURE range resolver shared by the history endpoints: presets (`-1h/-6h/-24h/-7d/-30d`, each window sized to ~150-200 points) **plus a custom absolute window** (`?start=&stop=` ISO, `stop` defaults to now). Sizes a custom window's aggregate from its span so any range draws at the same density. Owns the Flux-injection guarantee — presets are whitelisted and custom bounds are re-serialised from `Date`, so no user text reaches the query; a malformed CUSTOM window is a 400 while an unknown PRESET still falls back to `-1h`. Also **import-free** (tested in `tests/historyRange.test.js`). Used by serverHistoryHandler; networkHistoryHandler + upsHistoryHandler have the identical shape and should adopt it
-backend/tests/                  ← `npm test` (`node --test`, zero deps). `contract.test.js` PARSES `go-agent/internal/collector/metrics.go` and fails if its json tags drift from NUMERIC_FIELDS — the guard for the hand-duplicated Go↔Node metric contract
+  analyticsMath.js              ← PURE predictive-analytics math — `linearRegression`/`score` (R²/MAE), `splitTrainTest`/`validate` (CHRONOLOGICAL 80/20 — never shuffle a time series), `percentile`, `ewma`, `holtLinear`, `forecastSeries` (project to a ceiling → disk ETA), `projectToBound` (down to a floor for UPS runtime, up to a ceiling for link util), `worstVolumeForecast`, plus the ETA gates (`MIN_ETA_R2` 0.4 / `MAX_ETA_DAYS` 365 / `MIN_POINTS` 6) and the advisory copy. **Import-free** like serverMetricUtils/historyRange, so `tests/analyticsMath.test.js` runs it with no MySQL/InfluxDB/.env. See `predictive-analytics.md` §15
+  analyticsService.js           ← the I/O half of Predictive Analytics: InfluxDB reads + MySQL reads + result shaping (the math is in analyticsMath.js). `forecastDiskFull` regresses **every volume** (`server_volumes`, per `mount`) and headlines the fastest-filling one — matching agentService's worst-volume alerting; `forecastUpsBattery` (`ups_metrics.runtime_remaining_min` → replacement ETA), `forecastLinkSaturation` (`network_traffic.utilization_pct` per interface → saturation ETA), `forecastTrend` (EWMA + Holt's linear + threshold-crossing advice from `alert_rules`), `detectAnomalies` (per-hour-of-day z-score + IQR), `recommendThresholds` (p95/p99 vs current global rules), `alertSummary` (MTTR etc. over MySQL `alerts`). **Device names resolve from MySQL** (`COALESCE(NULLIF(display_name,''), device_name)` + `device_type` + `network_interfaces.location_label`) — NOT the frozen InfluxDB `device_name` tag, so a renamed device reads the same here as everywhere else (`predictive-analytics.md` §14). Backs `routes/analytics.js`
+backend/tests/                  ← `npm test` (`node --test`, zero deps). `contract.test.js` PARSES `go-agent/internal/collector/metrics.go` and fails if its json tags drift from NUMERIC_FIELDS — the guard for the hand-duplicated Go↔Node metric contract. `analyticsMath.test.js` pins the regression/ETA behaviour, incl. the confidence gate (a noisy series must yield NO ETA)
 backend/handlers/
   sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers + raises per-metric room-level alerts (temperature/gas/humidity) on band escalation, evaluated against `alert_rules` (alertRulesService) — replaces the old firmware-status escalation
   querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
@@ -214,6 +216,20 @@ SESSION_NOTES.md                ← per-session work log
 - **`routes/alerts.js` is now REAL** (no longer mock): `services/alertsService.js` backs the shared alert **lifecycle** — `GET /api/alerts` (history, `?status=` filter), `POST /api/alerts/:id/acknowledge`, `POST /api/alerts/:id/resolve`, `GET /api/alerts/count` (open-alert count → sidebar **Alerts badge**), all admin + it_staff. Sets `alerts.status` + `acknowledged_by`/`acknowledged_at`/`resolved_at`. **Auto-resolves** open alerts when the metric recovers to normal (wired into `checkThresholds` + `sensorHandler`). Broadcasts `alertUpdated`. UI = **Alerts** page (`pages/Alerts.tsx`) + live unresolved-count badge on the nav (`NotificationContext.openAlertCount`). Shared incident state, distinct from the per-user bell (`is_read`). **Resolve attribution:** single "by {acknowledger}" (resolve folds into `acknowledged_by`); a `resolved_by` column exists in the schema but is **DORMANT/unused** (separate-resolver UI was built then reverted — see `email-popup-notifications.md` §13.8).
 
 > The `reports.js` generate gate uses `requireRole("admin", "it_staff")`; the **Reports page** mirrors this (Generate button = admin/it_staff, Delete = admin). The old `super_admin` role check in the page was fixed to `admin`.
+
+> **Predictive Analytics (real, live data).** `services/analyticsMath.js` (pure math) +
+> `services/analyticsService.js` (Influx/MySQL reads) + `routes/analytics.js`
+> (`GET /api/analytics/forecast/disk[/:id]`, `/forecast/ups-battery`,
+> `/forecast/link-saturation`, `/trends/:metric`, `/anomalies`, `/recommendations`,
+> `/alerts/summary` — all `requireRole("admin","it_staff")`, read-only insight) power the
+> **Analytics** page (`pages/Analytics.tsx`, sidebar nav under Operations, both roles).
+> Supervised **linear regression** with a chronological train/test split and an R² gate is
+> the ML centrepiece — a noisy series reports "Stable" rather than a bogus date; EWMA /
+> Holt's linear / z-score / percentiles are **statistics**, not ML (say it that way in a
+> defense). Forecast ETAs run on **live** data from the Go agents, the SNMP poller and the
+> MikroTik poller. Admin can push a p95/p99 **recommendation** straight into `alert_rules`.
+> Full guide: `predictive-analytics.md` (math §2–§4, device identity §14, tests §15) +
+> `predictive-analytics-study-guide.md`.
 
 > **Configurable alert thresholds (real, not mock).** The previously-unused `alert_rules` table now drives all threshold alerting. `routes/alertRules.js` (`GET/POST/PUT/DELETE /api/alert-rules`, **admin-only**) + `services/alertRulesService.js` manage them; the **Alert Rules** admin page (`pages/AlertRules.tsx`, sidebar nav, admin-only) is the UI. Scope = global default (`device_id=NULL`) + optional per-server override; fallback = rules-only (no rule → silent). The rules ship **pre-seeded** in `v12cspc-ictu-monitoring-system.sql`; alerting is rules-only, so an empty `alert_rules` table means silence. Old hardcoded 80/90 (servers) + firmware env thresholds are removed in favor of these rules.
 
@@ -361,7 +377,7 @@ Panel border-radius: `2px` (not `rounded-xl`). Font: `'JetBrains Mono', monospac
 ### Page Style Status
 | Page | Style |
 |------|-------|
-| Dashboard, Environment, AirConditioner, ServerMetrics, AlertRules, Alerts, NetworkMonitoring, UpsMonitoring, Reports, Sidebar, Header | ✅ Grafana tokens |
+| Dashboard, Environment, AirConditioner, ServerMetrics, AlertRules, Alerts, Analytics, NetworkMonitoring, UpsMonitoring, Reports, Sidebar, Header | ✅ Grafana tokens |
 | History, Settings, UserManagement | ⚠️ still use old `slate-*` classes |
 | ServerDetail | hybrid: `slate-*` base + `dark:` overrides (light/dark adapted, not `--gf-*`) |
 

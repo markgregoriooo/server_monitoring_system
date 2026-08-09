@@ -1,112 +1,90 @@
 import db from "../config/mysql.js";
 import { queryClient, bucket } from "../config/influx.js";
 import alertRulesService from "./alertRulesService.js";
+import {
+  MIN_POINTS,
+  linearRegression, score, splitTrainTest, percentile,
+  ewma, holtLinear,
+  forecastSeries, projectToBound, worstVolumeForecast, byEtaAsc,
+  round1, round2, clampInt, clampNum, confidenceLabel, mean, stddev,
+  localHour, everyForHours, parseEveryMs,
+  actionFor,
+} from "./analyticsMath.js";
 
-// Predictive analytics engine (Phase 1). Pure-JS statistics + InfluxDB reads — no
-// Python service. Two capabilities now: disk-full ETA (supervised linear
-// regression, validated train/test) and alert analytics (over the real `alerts`
-// table). See predictive-analytics.md for the math and the wider roadmap.
+// Predictive analytics engine. The STATISTICS live in `analyticsMath.js` (import-free,
+// unit-tested under backend/tests/); this file is the I/O half — InfluxDB reads, MySQL
+// reads, and the shaping of results for the API. See predictive-analytics.md for the
+// math (§2–§4) and the roadmap (§8).
+//
+// Re-exported so the public surface is unchanged for anything importing from here.
+export {
+  linearRegression, score, splitTrainTest, percentile, ewma, holtLinear,
+} from "./analyticsMath.js";
 
-// ─── Math: ordinary least-squares simple linear regression ────────────────────
-// points: [{ x, y }]; we use x = hours-since-first-sample. Returns slope/intercept
-// plus in-sample R²/MAE, or null if a line cannot be fit (too few / degenerate).
-export function linearRegression(points) {
-  const n = points.length;
-  if (n < 2) return null;
-  let sx = 0, sy = 0;
-  for (const p of points) { sx += p.x; sy += p.y; }
-  const xb = sx / n, yb = sy / n;
-  let num = 0, den = 0;
-  for (const p of points) { num += (p.x - xb) * (p.y - yb); den += (p.x - xb) ** 2; }
-  if (den === 0) return null; // all x identical → no slope
-  const slope = num / den;
-  const intercept = yb - slope * xb;
-  const { r2, mae } = score({ slope, intercept }, points);
-  return { slope, intercept, r2, mae };
+// ─── Device identity ──────────────────────────────────────────────────────────
+// MySQL is the ONLY authority on what a device is called. The InfluxDB `device_name`
+// tag is stamped at write time and never rewritten, so history spans every name a
+// device has ever had — and since we group by device_id and read the name off the
+// first row, an un-resolved forecast would show the OLDEST label. A server renamed
+// from the dashboard (devices.display_name) would keep reporting its raw hostname
+// here while every other page shows the friendly name.
+//
+// display_name lives on the shared `devices` table, so the same COALESCE resolves
+// servers, routers, MikroTik and UPS identically — matching agentService's
+// effective-name rule. Devices absent from MySQL (the 9001/9002/9101 dev-seed ids,
+// or a decommissioned row whose Influx history outlives it) keep the tag name.
+const DEVICE_TYPE_LABEL = {
+  server: "Server",
+  router: "Router",
+  mikrotik: "MikroTik",
+  ups: "UPS",
+  esp32: "Sensor",
+  aircon: "Aircon",
+};
+
+async function fetchDeviceIdentities(ids) {
+  const clean = [...new Set(ids.map(Number).filter(Number.isInteger))];
+  if (!clean.length) return new Map();
+  const [rows] = await db.query(
+    `SELECT device_id,
+            COALESCE(NULLIF(display_name, ''), device_name) AS name,
+            device_name AS hostname,
+            display_name AS displayName,
+            device_type  AS type,
+            location
+       FROM devices
+      WHERE device_id IN (?)`,
+    [clean],
+  );
+  return new Map(
+    rows.map((r) => [
+      Number(r.device_id),
+      {
+        name: r.name,
+        hostname: r.hostname,
+        displayName: r.displayName ?? null,
+        type: r.type,
+        typeLabel: DEVICE_TYPE_LABEL[r.type] ?? r.type,
+        location: r.location ?? null,
+      },
+    ]),
+  );
 }
 
-// R²/MAE of a model on a set of points (in- or out-of-sample). R² uses the mean of
-// the evaluated set, per convention.
-export function score(model, points) {
-  const n = points.length;
-  if (!n) return { r2: null, mae: null };
-  const yb = points.reduce((s, p) => s + p.y, 0) / n;
-  let ssRes = 0, ssTot = 0, absErr = 0;
-  for (const p of points) {
-    const yhat = model.slope * p.x + model.intercept;
-    ssRes += (p.y - yhat) ** 2;
-    ssTot += (p.y - yb) ** 2;
-    absErr += Math.abs(p.y - yhat);
-  }
-  const r2 = ssTot === 0 ? (ssRes === 0 ? 1 : 0) : 1 - ssRes / ssTot;
-  return { r2, mae: absErr / n };
-}
-
-// Chronological split — time series MUST train on the past and test on the recent
-// tail (a random split leaks the future into training).
-export function splitTrainTest(points, ratio = 0.8) {
-  const cut = Math.floor(points.length * ratio);
-  return { train: points.slice(0, cut), test: points.slice(cut) };
-}
-
-// ─── small helpers ────────────────────────────────────────────────────────────
-const round1 = (v) => Math.round(v * 10) / 10;
-const round2 = (v) => Math.round(v * 100) / 100;
-const clampInt = (v, min, max, dflt) => {
-  const n = parseInt(v, 10);
-  if (!Number.isFinite(n)) return dflt;
-  return Math.min(max, Math.max(min, n));
-};
-const clampNum = (v, min, max, dflt) => {
-  const n = parseFloat(v);
-  if (!Number.isFinite(n)) return dflt;
-  return Math.min(max, Math.max(min, n));
-};
-const confidenceLabel = (r2) => {
-  if (r2 == null) return "low";
-  if (r2 >= 0.7) return "high";
-  if (r2 >= 0.4) return "medium";
-  return "low";
-};
-
-// ─── Advisory copy ────────────────────────────────────────────────────────────
-// Plain-language remediation per metric — the "what to do" once analytics flags a
-// concern. Keyed by the alert_rules metric vocabulary; network/UPS entries are ready
-// for when those branches merge (§8). Composed into messages by the advice helpers.
-const METRIC_ACTION = {
-  cpu: "upgrade the CPU, rebalance the workload, or investigate runaway processes",
-  mem: "upgrade the RAM or investigate memory-heavy processes",
-  disk: "free up space or expand the disk/volume",
-  temperature: "improve server-room cooling or check the air conditioning",
-  gas: "ventilate the room and check for a smoke or gas source",
-  humidity: "review dehumidification / HVAC in the server room",
-  net_in: "upgrade the uplink bandwidth or investigate heavy talkers",
-  net_out: "upgrade the uplink bandwidth or investigate heavy talkers",
-};
-const actionFor = (metric) => METRIC_ACTION[metric] ?? "review this server's capacity";
-const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-
-// Disk-specific advice from the ETA urgency (mirrors the page's red<7 / orange<30 bands).
-function diskAdvice(name, status, etaDays, full) {
-  if (status === "full")
-    return { level: "critical", message: `${name}: disk is at capacity (~${full}%). ${cap(actionFor("disk"))} immediately.` };
-  if (status !== "filling" || etaDays == null) return null;
-  const e = etaDays < 1 ? "less than a day" : `~${etaDays} day${etaDays >= 2 ? "s" : ""}`;
-  if (etaDays < 7)
-    return { level: "critical", message: `${name}: disk projected to reach ${full}% in ${e}. Act now — ${actionFor("disk")}.` };
-  if (etaDays < 30)
-    return { level: "warning", message: `${name}: disk projected to reach ${full}% in ${e}. Plan ahead — schedule cleanup or add storage.` };
-  return null;
+// Overlay the authoritative identity onto a grouped series entry, falling back to the
+// Influx tag when MySQL has no such device.
+function identify(entry, identities) {
+  const id = identities.get(Number(entry.deviceId));
+  return {
+    name: id?.name ?? entry.name,
+    hostname: id?.hostname ?? null,
+    deviceType: id?.type ?? null,
+    typeLabel: id?.typeLabel ?? null,
+    location: id?.location ?? null,
+  };
 }
 
 // ─── Disk-full ETA forecast ───────────────────────────────────────────────────
-const MIN_POINTS = 6;       // need a real series before we trust a slope
-const STABLE_EPS = 0.0001;  // %/hour below this magnitude = effectively flat
-// ETA output gate (predictive-analytics.md §3): only surface a date when the fit is
-// trustworthy AND the horizon is sane. A near-flat/noisy disk has a tiny positive slope
-// that is real arithmetic but a meaningless forecast (e.g. ~660 days) — show "Stable".
-const MIN_ETA_R2 = 0.4;     // below this = "low" confidence → don't trust an ETA
-const MAX_ETA_DAYS = 365;   // a >1-year projection from a short window isn't a real forecast
 // A device whose newest sample is older than this is offline / decommissioned — or a
 // duplicate "ghost" enrollment an unstable agent MAC left behind in InfluxDB — so it is
 // excluded from the all-servers forecast (you can't forecast a server that stopped
@@ -149,85 +127,34 @@ async function fetchDiskSeries(lookbackDays, deviceId) {
   return byDevice;
 }
 
-function forecastSeries(entry, full) {
-  const raw = entry.raw.sort((a, b) => a.t - b.t);
-  const current = raw.length ? raw[raw.length - 1].y : null;
-  const base = {
-    deviceId: entry.deviceId,
-    name: entry.name,
-    currentPercent: current == null ? null : round1(current),
-    slopePerDay: null,
-    etaDays: null,
-    full,
-    fitR2: null,
-    mae: null,
-    confidence: "low",
-    sampleCount: raw.length,
-    status: "insufficient_data",
-    advice: null,
-  };
-  if (raw.length < MIN_POINTS) return base;
-
-  const t0 = raw[0].t;
-  const points = raw.map((p) => ({ x: (p.t - t0) / 3_600_000, y: p.y }));
-  const model = linearRegression(points);
-  if (!model) return base;
-
-  // Out-of-sample validation: fit on the past 80%, score on the recent 20%. The
-  // ETA itself uses the all-points model (more data = steadier estimate); the
-  // held-out score is what tells us whether to trust it.
-  let r2 = model.r2, mae = model.mae;
-  if (points.length >= 10) {
-    const { train, test } = splitTrainTest(points, 0.8);
-    const tm = linearRegression(train);
-    if (tm && test.length >= 2) ({ r2, mae } = score(tm, test));
-  }
-
-  const lastX = points[points.length - 1].x;
-  const slopePerDay = model.slope * 24;
-
-  let etaDays = null;
-  let status = "stable";
-  if (model.slope > STABLE_EPS) {
-    if (current >= full) {
-      etaDays = 0;
-      status = "full"; // measured fact, not a forecast — always trustworthy
-    } else {
-      const xFull = (full - model.intercept) / model.slope;
-      const projectedDays = Math.max(0, (xFull - lastX) / 24);
-      const trustworthy = r2 != null && r2 >= MIN_ETA_R2;
-      if (trustworthy && projectedDays <= MAX_ETA_DAYS) {
-        etaDays = projectedDays;
-        status = "filling";
-      } else {
-        // Slope is technically positive but the fit is low-confidence or the horizon is
-        // absurdly far — not meaningfully filling. Report "Stable" instead of a bogus date.
-        status = "stable";
-      }
-    }
-  } else if (model.slope < -STABLE_EPS) {
-    status = "falling";
-  }
-
-  const etaRounded = etaDays == null ? null : round1(etaDays);
-  return {
-    ...base,
-    slopePerDay: round2(slopePerDay),
-    etaDays: etaRounded,
-    fitR2: r2 == null ? null : round2(r2),
-    mae: mae == null ? null : round2(mae),
-    confidence: confidenceLabel(r2),
-    status,
-    advice: diskAdvice(entry.name, status, etaRounded, full),
-  };
-}
-
 // Disk-full ETA for every server with data (or one, if deviceId given). Soonest
 // ETA first; "no ETA" (stable/falling/insufficient) sinks to the bottom.
+//
+// Forecasts EVERY fixed volume (`server_volumes`, one series per mount) and headlines the
+// soonest to fill, because that is what disk alerting does: main moved checkThresholds to
+// the worst volume, so regressing root-only `disk_percent` meant a server filling its data
+// volume raised a Disk alert while the forecast beside it read "Stable". Servers with no
+// per-volume history — pre-`server_volumes` data — still fall back to the root series.
 async function forecastDiskFull({ deviceId = null, lookbackDays = 14, full = 100 } = {}) {
   const fullPct = clampNum(full, 50, 100, 100);
-  const byDevice = await fetchDiskSeries(lookbackDays, deviceId);
+  const [byDevice, volGrouped] = await Promise.all([
+    fetchDiskSeries(lookbackDays, deviceId),
+    fetchSeriesGrouped("server_volumes", "percent", {
+      deviceId,
+      days: clampInt(lookbackDays, 1, 90, 14),
+      keys: ["mount"],
+    }),
+  ]);
   const cutoff = Date.now() - ACTIVE_WITHIN_MS;
+  const identities = await fetchDeviceIdentities([...byDevice.values()].map((e) => e.deviceId));
+
+  const volsByDevice = new Map();
+  for (const v of volGrouped.values()) {
+    if (!v.sub) continue; // no mount tag = not a per-volume point
+    if (!volsByDevice.has(v.deviceId)) volsByDevice.set(v.deviceId, []);
+    volsByDevice.get(v.deviceId).push(v);
+  }
+
   const results = [];
   for (const entry of byDevice.values()) {
     // When listing ALL servers, drop dead/superseded enrollments: a series whose newest
@@ -238,7 +165,46 @@ async function forecastDiskFull({ deviceId = null, lookbackDays = 14, full = 100
       const newest = entry.raw.reduce((m, p) => (p.t > m ? p.t : m), 0);
       if (newest < cutoff) continue;
     }
-    results.push(forecastSeries(entry, fullPct));
+    const ident = identify(entry, identities);
+    const vols = volsByDevice.get(Number(entry.deviceId)) ?? [];
+
+    if (!vols.length) {
+      // No per-volume history: root-only forecast, exactly as before.
+      results.push({
+        ...forecastSeries({ ...entry, name: ident.name }, fullPct),
+        ...ident,
+        mount: null,
+        volumes: [],
+      });
+      continue;
+    }
+
+    // Name each volume's advice by its mount only when there's more than one, mirroring
+    // how agentService phrases the alert ("Disk critical (D:\)").
+    const multi = vols.length > 1;
+    const perVolume = vols.map((v) => ({
+      ...forecastSeries(
+        { deviceId: entry.deviceId, name: multi ? `${ident.name} (${v.sub})` : ident.name, raw: v.raw },
+        fullPct,
+      ),
+      mount: v.sub,
+    }));
+    const headline = worstVolumeForecast(perVolume);
+    results.push({
+      ...headline,
+      ...ident,
+      mount: headline.mount,
+      volumes: perVolume
+        .map((v) => ({
+          mount: v.mount,
+          currentPercent: v.currentPercent,
+          slopePerDay: v.slopePerDay,
+          etaDays: v.etaDays,
+          status: v.status,
+          confidence: v.confidence,
+        }))
+        .sort((a, b) => (b.currentPercent ?? -1) - (a.currentPercent ?? -1)),
+    });
   }
   results.sort((a, b) => {
     if (a.etaDays == null && b.etaDays == null) return 0;
@@ -326,11 +292,6 @@ export function metricMeta(metric) {
   return Object.prototype.hasOwnProperty.call(METRICS, metric) ? METRICS[metric] : null;
 }
 
-// Server-room local hour (UTC+8) — so the per-hour-of-day baseline labels "2 PM" the way
-// the operators read the clock. Influx timestamps are UTC; we offset for bucketing only.
-const TZ_OFFSET_H = 8;
-const localHour = (ms) => (new Date(ms).getUTCHours() + TZ_OFFSET_H) % 24;
-
 // ─── Generic series fetch ─────────────────────────────────────────────────────
 // Returns sorted [{ t: epochMs, y }]. rangeExpr ("-48h"/"-14d") and every ("15m"/"1h")
 // are built internally from clamped numbers by callers — never raw user input — so the
@@ -395,61 +356,6 @@ async function fetchMetricSeries(metric, { deviceId = null, rangeExpr = "-14d", 
     .map((r) => ({ t: Date.parse(r._time), y: Number(r._value) }))
     .sort((a, b) => a.t - b.t);
 }
-
-// ─── Phase 4 stats: percentiles ───────────────────────────────────────────────
-// Linear-interpolated percentile (p in 0..100). Returns null for an empty set.
-export function percentile(values, p) {
-  const a = values.filter((v) => Number.isFinite(v)).sort((x, y) => x - y);
-  if (!a.length) return null;
-  if (a.length === 1) return a[0];
-  const idx = (p / 100) * (a.length - 1);
-  const lo = Math.floor(idx), hi = Math.ceil(idx);
-  return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (idx - lo);
-}
-
-const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
-const stddev = (a, m = mean(a)) => {
-  if (a.length < 2) return 0;
-  return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / (a.length - 1));
-};
-
-// ─── Phase 2 smoothing: EWMA + Holt's linear trend ────────────────────────────
-// Exponentially weighted moving average. alpha∈(0,1]; higher = more responsive to
-// recent points. Statistics, not ML — used for the smoothed trend line.
-export function ewma(values, alpha = 0.3) {
-  if (!values.length) return [];
-  const out = [values[0]];
-  for (let i = 1; i < values.length; i++) out.push(alpha * values[i] + (1 - alpha) * out[i - 1]);
-  return out;
-}
-
-// Holt's linear method (double exponential smoothing): tracks a level + a trend — the
-// NON-seasonal case of Holt-Winters. Daily seasonality is captured separately by the
-// per-hour-of-day baseline (anomaly detection), so a linear trend is the right
-// short-horizon projector here. forecast(h) extrapolates h steps past the last point.
-export function holtLinear(values, { alpha = 0.5, beta = 0.2 } = {}) {
-  const n = values.length;
-  if (n < 2) return null;
-  let level = values[0];
-  let trend = values[1] - values[0];
-  const smoothed = [level];
-  for (let i = 1; i < n; i++) {
-    const prevLevel = level;
-    level = alpha * values[i] + (1 - alpha) * (level + trend);
-    trend = beta * (level - prevLevel) + (1 - beta) * trend;
-    smoothed.push(level);
-  }
-  return { level, trend, smoothed, forecast: (h) => level + h * trend };
-}
-
-// Window helper: pick an aggregate bucket appropriate to the lookback length.
-const everyForHours = (h) => (h <= 24 ? "15m" : h <= 72 ? "30m" : "1h");
-const parseEveryMs = (e) => {
-  const m = /^(\d+)([smhd])$/.exec(e);
-  if (!m) return 3_600_000;
-  const n = Number(m[1]);
-  return n * { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2]];
-};
 
 // Short-horizon trend + projection for one metric (Phase 2). EWMA = smoothed history;
 // Holt's linear = the forward projection. Returns the recent series, the projection, and
@@ -672,85 +578,29 @@ async function fetchSeriesGrouped(measurement, field, { deviceId = null, days = 
   return map;
 }
 
-// Linear projection of a series to a bound. direction "down" = value falling to a floor
-// (UPS runtime); "up" = value rising to a ceiling (link utilization). Mirrors
-// forecastSeries() gating (R² ≥ MIN_ETA_R2, horizon ≤ MAX_ETA_DAYS) so a noisy/flat
-// series reports "stable" rather than a bogus date.
-function projectToBound(raw, { bound, direction }) {
-  const sorted = [...raw].sort((a, b) => a.t - b.t);
-  const current = sorted.length ? sorted[sorted.length - 1].y : null;
-  const out = {
-    current: current == null ? null : round1(current),
-    slopePerDay: null, etaDays: null, fitR2: null, mae: null,
-    confidence: "low", sampleCount: sorted.length, status: "insufficient_data",
-  };
-  if (sorted.length < MIN_POINTS) return out;
-
-  const t0 = sorted[0].t;
-  const points = sorted.map((p) => ({ x: (p.t - t0) / 3_600_000, y: p.y }));
-  const model = linearRegression(points);
-  if (!model) return out;
-
-  let r2 = model.r2, mae = model.mae;
-  if (points.length >= 10) {
-    const { train, test } = splitTrainTest(points, 0.8);
-    const tm = linearRegression(train);
-    if (tm && test.length >= 2) ({ r2, mae } = score(tm, test));
-  }
-  out.slopePerDay = round2(model.slope * 24);
-  out.fitR2 = r2 == null ? null : round2(r2);
-  out.mae = mae == null ? null : round2(mae);
-  out.confidence = confidenceLabel(r2);
-
-  const lastX = points[points.length - 1].x;
-  const trustworthy = r2 != null && r2 >= MIN_ETA_R2;
-  const projectDays = () => Math.max(0, ((bound - model.intercept) / model.slope - lastX) / 24);
-
-  if (direction === "down") {
-    if (current <= bound) { out.status = "reached"; out.etaDays = 0; }
-    else if (model.slope < -STABLE_EPS) {
-      const days = projectDays();
-      if (trustworthy && days <= MAX_ETA_DAYS) { out.status = "declining"; out.etaDays = round1(days); }
-      else out.status = "stable";
-    } else out.status = "stable";
-  } else {
-    if (current >= bound) { out.status = "reached"; out.etaDays = 0; }
-    else if (model.slope > STABLE_EPS) {
-      const days = projectDays();
-      if (trustworthy && days <= MAX_ETA_DAYS) { out.status = "rising"; out.etaDays = round1(days); }
-      else out.status = "stable";
-    } else out.status = "stable";
-  }
-  return out;
-}
-
-const byEtaAsc = (a, b) => {
-  if (a.etaDays == null && b.etaDays == null) return 0;
-  if (a.etaDays == null) return 1;
-  if (b.etaDays == null) return -1;
-  return a.etaDays - b.etaDays;
-};
-
 // UPS battery degradation: regress runtime_remaining_min down to a critical floor →
 // "replace battery in ~N days" (the UPS analogue of disk-full ETA). Runtime depends on
 // load, so this is most reliable when load is steady; the R² gate guards the rest.
 async function forecastUpsBattery({ deviceId = null, lookbackDays = 30, floorMinutes = 5 } = {}) {
   const floor = clampNum(floorMinutes, 1, 60, 5);
   const grouped = await fetchSeriesGrouped("ups_metrics", "runtime_remaining_min", { deviceId, days: lookbackDays });
+  const identities = await fetchDeviceIdentities([...grouped.values()].map((e) => e.deviceId));
   const results = [];
   for (const e of grouped.values()) {
+    const ident = identify(e, identities);
+    const name = ident.name;
     const p = projectToBound(e.raw, { bound: floor, direction: "down" });
     const eta = p.etaDays;
     const advice =
       p.status === "reached"
-        ? { level: "critical", message: `${e.name}: runtime at/below ${floor} min — replace the battery now.` }
+        ? { level: "critical", message: `${name}: runtime at/below ${floor} min — replace the battery now.` }
         : p.status === "declining" && eta != null && eta < 14
-          ? { level: "critical", message: `${e.name}: battery runtime projected below ${floor} min in ~${eta} days — schedule replacement.` }
+          ? { level: "critical", message: `${name}: battery runtime projected below ${floor} min in ~${eta} days — schedule replacement.` }
           : p.status === "declining" && eta != null && eta < 60
-            ? { level: "warning", message: `${e.name}: battery runtime declining — projected critical in ~${eta} days. Plan a replacement.` }
+            ? { level: "warning", message: `${name}: battery runtime declining — projected critical in ~${eta} days. Plan a replacement.` }
             : null;
     results.push({
-      deviceId: e.deviceId, name: e.name, floorMinutes: floor,
+      deviceId: e.deviceId, ...ident, floorMinutes: floor,
       currentRuntimeMin: p.current, slopePerDay: p.slopePerDay, etaDays: eta,
       fitR2: p.fitR2, mae: p.mae, confidence: p.confidence,
       sampleCount: p.sampleCount, status: p.status, advice,
@@ -760,25 +610,61 @@ async function forecastUpsBattery({ deviceId = null, lookbackDays = 30, floorMin
   return results;
 }
 
+// Current per-interface labels from MySQL. Same authority argument as device names:
+// `network_interfaces.location_label` is what an admin edits (and what the MikroTik
+// poller re-syncs), while the Influx `location_label` tag is frozen at write time.
+// Resolving here also keeps grouping keyed on interface_name alone — grouping on the
+// label instead would split one port's history in two the moment someone relabels it.
+async function fetchInterfaceLabels(deviceIds) {
+  const clean = [...new Set(deviceIds.map(Number).filter(Number.isInteger))];
+  if (!clean.length) return new Map();
+  const [rows] = await db.query(
+    `SELECT device_id, interface_name, location_label
+       FROM network_interfaces
+      WHERE device_id IN (?)`,
+    [clean],
+  );
+  return new Map(
+    rows
+      .filter((r) => (r.location_label ?? "").trim())
+      .map((r) => [`${Number(r.device_id)}|${r.interface_name}`, r.location_label.trim()]),
+  );
+}
+
 // Link saturation: regress per-interface utilization_pct UP to a ceiling →
 // "uplink hits 90% in ~N days". Network capacity planning.
+//
+// On the campus MikroTik an interface IS a building, so the location label is the name
+// an operator actually recognises — "ether1" alone is unidentifiable when every router
+// has one. We return both and let the UI lead with the label.
 async function forecastLinkSaturation({ deviceId = null, lookbackDays = 30, ceiling = 90 } = {}) {
   const cap = clampNum(ceiling, 50, 100, 90);
   const grouped = await fetchSeriesGrouped("network_traffic", "utilization_pct", { deviceId, days: lookbackDays, keys: ["interface_name"] });
+  const deviceIds = [...grouped.values()].map((e) => e.deviceId);
+  const [identities, labels] = await Promise.all([
+    fetchDeviceIdentities(deviceIds),
+    fetchInterfaceLabels(deviceIds),
+  ]);
   const results = [];
   for (const e of grouped.values()) {
+    const ident = identify(e, identities);
+    const ifName = e.sub;
+    const label = labels.get(`${Number(e.deviceId)}|${ifName}`) ?? null;
+    // "Core Router ether1 (ISP Uplink)" — device, port, and what the port actually serves.
+    const where = `${ident.name} ${ifName}${label ? ` (${label})` : ""}`;
     const p = projectToBound(e.raw, { bound: cap, direction: "up" });
     const eta = p.etaDays;
     const advice =
       p.status === "reached"
-        ? { level: "critical", message: `${e.name} ${e.sub}: link at/above ${cap}% — upgrade the uplink or rebalance traffic.` }
+        ? { level: "critical", message: `${where}: link at/above ${cap}% — upgrade the uplink or rebalance traffic.` }
         : p.status === "rising" && eta != null && eta < 14
-          ? { level: "critical", message: `${e.name} ${e.sub}: projected to reach ${cap}% in ~${eta} days — plan an uplink upgrade.` }
+          ? { level: "critical", message: `${where}: projected to reach ${cap}% in ~${eta} days — plan an uplink upgrade.` }
           : p.status === "rising" && eta != null && eta < 60
-            ? { level: "warning", message: `${e.name} ${e.sub}: utilization trending up — projected to hit ${cap}% in ~${eta} days.` }
+            ? { level: "warning", message: `${where}: utilization trending up — projected to hit ${cap}% in ~${eta} days.` }
             : null;
     results.push({
-      deviceId: e.deviceId, name: e.name, interface: e.sub, ceiling: cap,
+      deviceId: e.deviceId, ...ident,
+      interface: ifName, interfaceLabel: label, ceiling: cap,
       currentUtil: p.current, slopePerDay: p.slopePerDay, etaDays: eta,
       fitR2: p.fitR2, mae: p.mae, confidence: p.confidence,
       sampleCount: p.sampleCount, status: p.status, advice,

@@ -23,12 +23,11 @@ data-driven threshold suggestions — instead of only reactive threshold alerts.
   regression), and it runs in pure Node — no Python service, fully explainable.
 - **Flagship feature:** **disk-full ETA** — "Server X reaches 100% disk in ~9
   days." The single most useful prediction for a server room.
-- **Scope now:** servers + environment + alerts (all already on `main`), **plus
-  network/UPS/MikroTik analytics** — now built on this branch ahead of the merge
-  (they reuse the same engine, so it was additive, not a rewrite). The **live SNMP
-  ingestion** they read still lives on the `router-ups-monitoring` /
-  `mikrotik-monitoring` branches, so real ETAs await that merge; until then it's
-  dev-verified against seeded/simulated data. See §8.
+- **Scope now:** servers + environment + alerts, **plus network/UPS/MikroTik
+  analytics** — all of it live. The SNMP/MikroTik pollers that write
+  `ups_metrics` / `network_traffic` / `router_metrics` merged into `main`, and the
+  analytics merged onto that (branch `analytics-integration`), so every forecast now
+  reads **real** data. See §8.
 - **Honesty note for a defense:** linear regression *is* ML. Holt-Winters/EWMA
   and z-score are *statistics*, not ML. Don't oversell — see §1.
 
@@ -46,19 +45,28 @@ data-driven threshold suggestions — instead of only reactive threshold alerts.
 > Verified: backend `node --check`, frontend `tsc --noEmit` clean, route mounted.
 > See §10 for the Phase-1 checklist and SESSION_NOTES.md.
 >
-> **Update (2026-07-01): Phase 2b/3b (network/UPS/MikroTik analytics) now BUILT**
-> on this branch, ahead of the router/mikrotik merge — `forecastUpsBattery()`
-> (runtime → battery-replacement ETA) + `forecastLinkSaturation()` (interface
-> utilization → uplink-saturation ETA) + MikroTik `router_cpu`/`router_mem`/`router_clients`
+> **Update (2026-07-01): Phase 2b/3b (network/UPS/MikroTik analytics) BUILT** —
+> `forecastUpsBattery()` (runtime → battery-replacement ETA) + `forecastLinkSaturation()`
+> (interface utilization → uplink-saturation ETA) + MikroTik `router_cpu`/`router_mem`/`router_clients`
 > trend & anomaly metrics; exposed at `GET /api/analytics/forecast/ups-battery` and
 > `/forecast/link-saturation`, with matching Analytics-page panels. Reuses the same
 > regression core via `projectToBound()` (project *down* to a floor for battery,
 > *up* to a ceiling for link) — additive, no rewrite.
-> **Caveat:** only the *analytics* is here. Live **SNMP ingestion** (writing
-> `ups_metrics` / `network_traffic` / `router_metrics` to InfluxDB) still lives on the
-> router-ups / mikrotik branches, so **real** ETAs await that merge. For now it's
-> dev-verified against the `dev-snmpsim` simulator + `backend/scripts/seed-analytics-history.js`
-> (synthetic trending history). See §8 and §12.
+>
+> **Update (2026-08-09): merged with `main` and finished** — branch
+> `analytics-integration` = `main` (SNMP + MikroTik pollers, per-volume disk, server
+> display names) + the analytics work. What changed on merge:
+> - **Live data, not seeded.** The pollers write the exact fields the forecasts read
+>   (`ups_metrics.runtime_remaining_min`, `network_traffic.utilization_pct` +
+>   `interface_name`, `router_metrics.cpu_percent`/`mem_percent`/`connected_clients`),
+>   so §12 item 8 is closed. `seed-analytics-history.js` is now dev-only convenience.
+> - **Disk forecasts every VOLUME** (`server_volumes`) and headlines the fastest-filling
+>   one. Root-only `disk_percent` contradicted `main`'s worst-volume alerting — a server
+>   filling `D:` alerted while the forecast read "Stable".
+> - **Device identity comes from MySQL**, not the frozen InfluxDB `device_name` tag, so a
+>   renamed device reads the same here as on every other page. See §14.
+> - **The math is unit-tested** — extracted to `services/analyticsMath.js` (import-free)
+>   with 48 tests in `backend/tests/analyticsMath.test.js`. See §15.
 
 ---
 
@@ -208,18 +216,22 @@ loop: analytics → better config → fewer false alarms.
 
 | Source | Store | Measurement / table | Fields we use |
 |---|---|---|---|
-| Servers | InfluxDB | `server_metrics` | `disk_percent`, `disk_used_gb`, `disk_total_gb`, `cpu_percent`, `mem_percent` (tags: `device_id`, `device_name`) |
+| Servers | InfluxDB | `server_metrics` | `cpu_percent`, `mem_percent` (tags: `device_id`, `device_name`) |
+| Server volumes | InfluxDB | `server_volumes` | `percent` per mount (tags: `device_id`, `mount`) — what the disk ETA regresses |
 | Environment | InfluxDB | `sensor_environment` | temperature, gas, humidity |
+| Routers / MikroTik | InfluxDB | `router_metrics` | `cpu_percent`, `mem_percent`, `connected_clients` |
+| Interfaces | InfluxDB | `network_traffic` | `utilization_pct` (tags: `device_id`, `interface_name`) |
+| UPS | InfluxDB | `ups_metrics` | `runtime_remaining_min` |
 | Alerts | MySQL | `alerts` | severity, type, device, `created_at`, `acknowledged_at`, `resolved_at` |
+| Device identity | MySQL | `devices`, `network_interfaces` | `display_name`/`device_name`, `device_type`, `location_label` — see §14 |
 
 Read via the shared InfluxDB clients in `backend/config/influx.js`
 (`queryClient`, `bucket`) — same path `serverHistoryHandler.js` already uses.
 
-> **Network/UPS (`router_metrics` / `network_traffic` / `ups_metrics`):** the
-> analytics that forecasts on these is now **built** (§8 row 2b/3b, §12), but the
-> **live ingestion** that writes them still lives on the router/mikrotik branches —
-> not on `main` yet. Until that merges, they're fed by the `dev-snmpsim` simulator
-> and `backend/scripts/seed-analytics-history.js` (dev/test only). See §8.
+> **All of these are live.** The SNMP + MikroTik pollers on `main` write the
+> router/UPS/interface measurements, so nothing here depends on seeded data any more.
+> `backend/scripts/seed-analytics-history.js` remains only as a dev convenience for
+> working on forecasts without waiting weeks for history to accrue.
 
 ---
 
@@ -317,7 +329,7 @@ Build off `main` (this branch). Each phase is shippable on its own.
 | **2** | Trend charts (rolling mean, hour/day heatmaps) + EWMA temp/CPU projection | `server_metrics`, `sensor_environment` | Phase 1 |
 | **3** | Anomaly detection (z-score / per-hour baseline) | same | Phase 1 |
 | **4** | Threshold **recommendations** → Alert Rules page | history + `alert_rules` | Phase 1 + `alertRulesService` |
-| **2b/3b** | **Network throughput forecast** + **UPS battery degradation** + MikroTik trend/anomaly — **analytics ✅ BUILT (2026-07-01)**; live SNMP ingestion ⏳ | `router_metrics`, `ups_metrics`, `network_traffic` | engine already built off `main`; **real data** needs router-ups + mikrotik merged, then rebase |
+| **2b/3b** | **Network throughput forecast** + **UPS battery degradation** + MikroTik trend/anomaly — ✅ **DONE, on live data (2026-08-09)** | `router_metrics`, `ups_metrics`, `network_traffic` | merged with `main`, so the SNMP + MikroTik pollers now feed it |
 
 **Why not wait for the other branches:** the flagship and ~half the scope need
 only data already on `main`. Building on top of unfinished, still-rebasing
@@ -329,10 +341,10 @@ and add §8 row "2b/3b" — same engine, additive code.
 `Sidebar.tsx`, `api.ts`, `data/users.ts`, `server.js` route list) — each feature
 adds its own line; trivial conflicts, not structural.
 
-> **Done ahead of schedule:** the 2b/3b **analytics** (engine + endpoints + UI)
-> was actually built on this branch before the router/mikrotik merge, validated
-> against seeded/simulated history. Only the **live SNMP data pipeline** now
-> depends on that merge — see the §12 checklist.
+> **How it played out:** the 2b/3b **analytics** was built ahead of the router/mikrotik
+> merge and validated against seeded history; the merge then supplied the live pipeline
+> without a single change to the forecast code — the field names lined up exactly. That
+> is the payoff of branching off `main` rather than off an in-flight branch.
 
 ---
 
@@ -391,7 +403,7 @@ source, so server and environment metrics flow through one `fetchMetricSeries()`
    is predicted to cross the metric's effective `alert_rules` threshold within the horizon
    ("Memory on Server-01 is projected to cross the warning threshold (80%) in ~6h —
    upgrade the RAM…"). Rendered as `AdviceCallout`s under the Disk and Trend panels.
-   Network/UPS action copy is pre-seeded for the deferred §8 work.
+   Network/UPS/router action copy lives in `analyticsMath.METRIC_ACTION`.
 5. ✅ Verified: backend `node --check`, frontend `tsc --noEmit` clean.
 6. ⏳ Live test matures with history (trend/anomaly need ~1 week; recommendations ~2 weeks).
 
@@ -401,12 +413,10 @@ source, so server and environment metrics flow through one `fetchMetricSeries()`
 > Phases 2–4 are **statistics, not ML** — linear regression (Phase 1) remains the sole ML
 > centerpiece. Phrase accordingly (see §9).
 
-> **Next:** the network/UPS/MikroTik **forecast code is now built too** (§12) — what
-> remains is the **live SNMP ingestion**: after the router-ups / mikrotik branches
-> merge to `main`, rebase and point these same forecasts at real `ups_metrics` /
-> `network_traffic` / `router_metrics` instead of seeded data.
+> **Status:** all of §10–§12 now runs on live data (see the 2026-08-09 update at the
+> top). Remaining work is maturity, not code — forecasts sharpen as history accrues.
 
-## 12. Build order checklist (Phase 2b/3b) — analytics ✅ DONE (2026-07-01)
+## 12. Build order checklist (Phase 2b/3b) — ✅ DONE (analytics 2026-07-01, live data 2026-08-09)
 
 Built on this branch **ahead of** the router-ups / mikrotik merge, so the same
 engine is proven before the data lands. All additive — the server/environment
@@ -432,14 +442,15 @@ paths (§10, §11) are untouched.
 7. ✅ Dev data: `dev-snmpsim/data/*.snmprec` (flat live values) +
    `backend/scripts/seed-analytics-history.js` (synthetic **trending** ~30-day
    history so ETAs are meaningful without hardware). Test device_ids 9001/9002/9101.
-8. ⏳ **Remaining = live ingestion, not analytics.** Real `ups_metrics` /
-   `network_traffic` / `router_metrics` writers (SNMP pollers) merge in with the
-   router-ups / mikrotik branches; then rebase and the forecasts light up on real data.
+8. ✅ **Live ingestion — closed 2026-08-09.** The SNMP + MikroTik pollers merged from
+   `main` write exactly the fields these forecasts read, verified field-by-field against
+   `upsMetricsHandler.js` / `networkMetricsHandler.js`. No forecast code changed.
 
-> **Honesty note:** this is still the §9 caveat — the forecasts are validated
-> against *seeded* trends today. They become *real* predictions only once live
-> SNMP data has accrued (~1–2 weeks post-merge). No new math vs Phase 1: UPS/link
-> reuse the linear-regression core; MikroTik reuses the Phase 2–3 trend/anomaly code.
+> **Honesty note:** the forecasts now read live SNMP/MikroTik data, but §9 still
+> applies — a *trustworthy* ETA needs ~1–2 weeks of accrued history, and until then the
+> R² gate reports "Stable"/"need more data" rather than a number. No new math vs
+> Phase 1: UPS/link reuse the linear-regression core; MikroTik reuses the Phase 2–3
+> trend/anomaly code.
 
 ---
 
@@ -560,3 +571,82 @@ devices; a sharp daytime drop → outage).
 > *trend smoothing* (§13.4), **not** anomaly bands. Describe it as "per-hour z-score
 > with IQR context." And per §9: only the regression ETAs (disk/UPS/link) are ML —
 > the MikroTik trend + anomaly are **statistics**.
+
+---
+
+## 14. Device identity — why names come from MySQL, not InfluxDB
+
+With servers, MikroTik, routers and UPS all forecasting on one page, "which device is
+this row?" stopped being obvious. Two rules now govern every name the Analytics page shows.
+
+### 14.1 The name is resolved at QUERY time, from MySQL
+
+Every ingest handler stamps a `device_name` **tag** onto its InfluxDB points. That tag is
+frozen at write time and never rewritten, so a 30-day window contains every name the
+device has had. Reading the name off the series therefore gives you the name it had when
+the *oldest* point was written — the exact opposite of what you want.
+
+`analyticsService.fetchDeviceIdentities()` resolves against MySQL instead:
+
+```sql
+SELECT device_id,
+       COALESCE(NULLIF(display_name, ''), device_name) AS name,
+       device_name AS hostname, device_type AS type, location
+  FROM devices WHERE device_id IN (?)
+```
+
+That is the same effective-name rule `agentService` uses, so a server renamed from the
+dashboard (`devices.display_name`, the `serverRenamed` socket event) reads identically on
+the Analytics page and everywhere else. `display_name` lives on the shared `devices`
+table, so one query covers all four device classes.
+
+**Fallback:** a device_id with no MySQL row keeps the Influx tag name. That covers the
+dev-seed ids (9001/9002/9101) and a decommissioned device whose history outlives its row.
+
+### 14.2 Interfaces are labelled by what they serve
+
+`forecastLinkSaturation()` groups by `interface_name` and resolves
+`network_interfaces.location_label` separately (`fetchInterfaceLabels()`), for the same
+reason: the label is what an admin edits and the MikroTik poller re-syncs, while the
+Influx tag is frozen. Grouping on the *label* would also split one port's history in two
+the moment somebody relabels it.
+
+The UI leads with the label and keeps the port as the sub-line — on the campus MikroTik
+an interface **is** a building (§13.1), so "CSICT Building" identifies a row and
+"ether1" does not.
+
+### 14.3 What the API returns
+
+Every forecast row now carries: `name` (operator-facing), `hostname` (the raw
+`device_name`, shown when it differs — i.e. the device was renamed), `deviceType` +
+`typeLabel` (`Server` / `Router` / `MikroTik` / `UPS`), and `location`. The page renders
+these through one `<DeviceLabel>` component with a colour-coded class badge.
+
+---
+
+## 15. Tests — where the ML claim gets its evidence
+
+The statistics live in **`backend/services/analyticsMath.js`**, which has **no imports**.
+That is deliberate: `analyticsService.js` opens MySQL and InfluxDB connections at import
+time, so anything defined there cannot be unit-tested without a running stack. This is
+the same split the repo already uses for `serverMetricUtils.js` and `historyRange.js`.
+
+`backend/tests/analyticsMath.test.js` runs under plain `npm test` (`node --test`, no DB,
+no `.env`, no network) and covers:
+
+| Area | What is pinned down |
+|---|---|
+| `linearRegression` | exact slope/intercept on a known line; null on degenerate input |
+| `score` | R²=1 on a perfect fit; **R² < 0 when worse than the mean**; MAE doesn't cancel |
+| `splitTrainTest` / `validate` | the split is **chronological**, loses no points, and scores out-of-sample |
+| `forecastSeries` | filling / stable / falling / full / insufficient_data; **noise yields no ETA** |
+| `projectToBound` | UPS down-to-floor and link up-to-ceiling, both gated the same way |
+| `worstVolumeForecast` | soonest-to-fill beats fullest-right-now |
+| `percentile`, `ewma`, `holtLinear` | textbook values, hand-checked |
+| `clampInt` / `clampNum` | junk input can never reach Flux (the injection guarantee) |
+
+**Why this matters for a defense.** "We trained a supervised model and validated it on a
+held-out window" is a claim a panel can ask you to prove. The test that asserts R² goes
+*negative* when the model is worse than the mean, and the one that asserts a noisy series
+produces **no ETA at all**, are the evidence that the confidence gate in §3 is real and
+not decoration.
