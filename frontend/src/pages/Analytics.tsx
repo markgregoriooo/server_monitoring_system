@@ -209,12 +209,14 @@ const ALERT_LOOKBACKS = [D(7), D(30), D(90)];
 // point of a data-driven suggestion. 30 days is a representative period: long enough not
 // to tune to a quiet week, short enough not to bake in load the hardware has outgrown.
 const REC_WINDOW_DAYS = 30;
-// Trend is a SHORT-horizon projector (EWMA + Holt's linear), so its window is hours.
-const TREND_LOOKBACKS: LookbackOption[] = [
-  { value: 24, label: "24h" },
-  { value: 48, label: "48h" },
-  { value: 168, label: "7d" },
-];
+// Trend has NO lookback control, deliberately. Its projector is exponential smoothing
+// (EWMA a=0.3 then Holt's a=0.5), which by design forgets: at 15-minute buckets a point
+// five hours old carries a weight near 0.0008, so feeding it 7 days instead of 48 hours
+// barely moves the projection. A control that cannot meaningfully change the output
+// should not imply that it can — it would be a chart-zoom wearing a model-parameter
+// label. Fixed at 48h, which is ample history for the fit. See predictive-analytics.md
+// section 16.7. (The ANOMALY window below IS a real model parameter and stays adjustable.)
+const TREND_LOOKBACK_HOURS = 48;
 // How far AHEAD the projection runs, deliberately independent of the lookback. Deriving
 // it from the lookback coupled two unrelated questions — picking a 24h window to steady
 // the trend line also silently shortened the forecast to 6h, which is not what "look back
@@ -333,7 +335,6 @@ export default function Analytics() {
   const [diskDays, setDiskDays] = useState<number>(30);
   const [linkDays, setLinkDays] = useState<number>(90);
   const [upsDays, setUpsDays] = useState<number>(180);
-  const [trendHours, setTrendHours] = useState<number>(48);
   const [anomDays, setAnomDays] = useState<number>(14);
   const [alertDays, setAlertDays] = useState<number>(30);
   const [tab, setTab] = useState<TabKey>("forecasts");
@@ -429,13 +430,13 @@ export default function Analytics() {
     if (!silent) setFocusLoading(true);
     const dev = needsDevice ? selDevice : null;
     const [t, a] = await Promise.all([
-      api.getMetricTrend(selMetric, { deviceId: dev, hours: trendHours, horizon: TREND_HORIZON_HOURS }),
+      api.getMetricTrend(selMetric, { deviceId: dev, hours: TREND_LOOKBACK_HOURS, horizon: TREND_HORIZON_HOURS }),
       api.getAnomalies(selMetric, { deviceId: dev, days: anomDays }),
     ]);
     setTrend(t.success ? (t.data?.trend ?? null) : null);
     setAnom(a.success ? (a.data?.result ?? null) : null);
     if (!silent) setFocusLoading(false);
-  }, [selMetric, selDevice, needsDevice, trendHours, anomDays]);
+  }, [selMetric, selDevice, needsDevice, anomDays]);
 
   useEffect(() => { if (tab === "trends") loadFocus(); }, [tab, loadFocus]);
 
@@ -825,8 +826,7 @@ export default function Analytics() {
           {/* ── Trend & short-term projection ── */}
           <Panel
             title="Trend & Short-Term Projection"
-            subtitle={`EWMA-smoothed history + Holt's linear (double-exponential) projection — last ${trend?.lookbackHours ?? trendHours}h of history, next ~${trend?.horizonHours ?? TREND_HORIZON_HOURS}h`}
-            action={<LookbackPicker value={trendHours} options={TREND_LOOKBACKS} onChange={setTrendHours} />}
+            subtitle={`EWMA-smoothed history + Holt's linear (double-exponential) projection — last ${trend?.lookbackHours ?? TREND_LOOKBACK_HOURS}h of history, next ~${trend?.horizonHours ?? TREND_HORIZON_HOURS}h`}
           >
             {focusLoading ? (
               <Empty>Loading trend…</Empty>

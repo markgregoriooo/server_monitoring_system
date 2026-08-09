@@ -665,7 +665,7 @@ whether the window is long enough to contain the signal.
 | Disk-full | 14 / 30 / **90**d | 30d | Disks fill over weeks. 14d is easily skewed by one large copy or a log rotation |
 | Link saturation | 30 / **90** / 180d | 90d | Campus traffic grows over a semester |
 | UPS battery | 90 / **180** / 365d | 180d | A UPS battery ages over **years** |
-| Trend projection | 24h / **48h** / 7d | 48h | Short-horizon EWMA + Holt's. Horizon is a FIXED 12h — see §16.6 |
+| Trend projection | *(fixed)* | 48h back, 12h ahead | Smoothing forgets old points anyway — see §16.6–16.7 |
 | Anomaly baseline | 7 / **14** / 30d | 14d | Needs several samples per hour-of-day bucket |
 | Alert analytics | 7 / **30** / 90d | 30d | Descriptive; 30d is the usual incident-review period |
 | Recommendations | *(fixed)* | 30d | Deliberately not tunable — see §16.5 |
@@ -742,3 +742,30 @@ Holt's fit see.
 The panel subtitle is rendered from the values the **backend returned**
 (`trend.lookbackHours` / `trend.horizonHours`), not from the pending selector state, so it
 can never describe a window other than the one actually plotted.
+
+### 16.7 Why the trend panel has no lookback control either
+
+Its projector is exponential smoothing — EWMA (α=0.3) feeding Holt's linear (α=0.5,
+β=0.2) — and exponential smoothing is *designed to forget*:
+
+```
+EWMA weight of a point k buckets back = 0.3 x 0.7^k
+Holt level weight decays as 0.5^k
+```
+
+At 15-minute buckets a point five hours old carries a weight around 0.0008. Beyond
+roughly half a day, history contributes essentially nothing to the projection, so
+switching a 48-hour window to 7 days barely moves the forecast. What such a control
+would really change is how much history is *drawn on the chart*, plus a secondary effect
+where the bucket widens (15m -> 30m -> 1h) and slightly alters the trend estimate.
+
+That makes it a chart-zoom wearing a model-parameter label. By the same rule applied to
+threshold recommendations (§16.5), a control that cannot meaningfully change the output
+should not imply that it can — so the window is fixed at **48h**
+(`TREND_LOOKBACK_HOURS`), which is ample history for the fit.
+
+> **Contrast this with the ANOMALY window, which stays adjustable.** There the lookback
+> is a genuine model parameter: it sets how many samples land in each hour-of-day bucket,
+> and therefore how stable the mean/deviation baseline is and which points get flagged.
+> Same tab, opposite conclusion, for a concrete reason — the anomaly detector uses every
+> point in the window equally, the trend projector does not.
