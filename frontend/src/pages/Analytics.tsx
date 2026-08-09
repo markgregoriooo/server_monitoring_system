@@ -863,45 +863,39 @@ export default function Analytics() {
             {/* Changing the metric deliberately does NOT clear the device: CPU → Memory
                 should keep you on the same server. The repair effect above swaps it only
                 when the new metric belongs to the other device class. */}
-            <select
-              value={selMetric}
-              onChange={(e) => setSelMetric(e.target.value)}
-              className="px-2 py-1 text-[1em] rounded-[2px] outline-none"
-              style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
-            >
-              <optgroup label="Server Room">
+            <Select value={selMetric} onChange={(e) => setSelMetric(e.target.value)} title="Metric to trend and baseline">
+              <optgroup label="Server Room" style={OPTION_STYLE}>
                 {METRIC_OPTIONS.filter((m) => m.scope === "env").map((m) => (
-                  <option key={m.key} value={m.key}>{m.label}</option>
+                  <option key={m.key} value={m.key} style={OPTION_STYLE}>{m.label}</option>
                 ))}
               </optgroup>
-              <optgroup label="Servers">
+              <optgroup label="Servers" style={OPTION_STYLE}>
                 {METRIC_OPTIONS.filter((m) => m.scope === "server").map((m) => (
-                  <option key={m.key} value={m.key}>{m.label}</option>
+                  <option key={m.key} value={m.key} style={OPTION_STYLE}>{m.label}</option>
                 ))}
               </optgroup>
-              <optgroup label="Network / MikroTik">
+              <optgroup label="Network / MikroTik" style={OPTION_STYLE}>
                 {METRIC_OPTIONS.filter((m) => m.scope === "router").map((m) => (
-                  <option key={m.key} value={m.key}>{m.label}</option>
+                  <option key={m.key} value={m.key} style={OPTION_STYLE}>{m.label}</option>
                 ))}
               </optgroup>
-            </select>
+            </Select>
             {needsDevice && (
               deviceOptions.length === 0 ? (
                 <span className="text-[0.9em]" style={{ color: gf.textDim }}>no devices with data yet</span>
               ) : (
-                <select
+                <Select
                   value={selDevice ?? ""}
                   onChange={(e) => setSelDevice(e.target.value ? Number(e.target.value) : null)}
-                  className="px-2 py-1 text-[1em] rounded-[2px] outline-none"
-                  style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
+                  title="Device this metric is read from"
                 >
                   {/* Class prefix keeps two devices with similar names apart in the list. */}
                   {deviceOptions.map((s) => (
-                    <option key={s.id} value={s.id}>
+                    <option key={s.id} value={s.id} style={OPTION_STYLE}>
                       {s.typeLabel ? `${s.typeLabel} · ${s.name}` : s.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               )
             )}
             {!needsDevice && (
@@ -1057,14 +1051,24 @@ export default function Analytics() {
                             </Td>
                             {isAdmin && (
                               <Td>
+                                {/* Raised ONLY when it will actually do something. A rule
+                                    already matching its suggestion stays flat and dim, so
+                                    the rows that need an admin's attention stand proud of
+                                    the ones that don't — this writes to live alert rules,
+                                    so it should never look armed when it isn't. */}
                                 <button
                                   disabled={!changed || applying === r.metric}
                                   onClick={() => applyRecommendation(r)}
-                                  className="px-2 py-0.5 text-[0.9em] rounded-[2px] transition-colors disabled:opacity-40"
+                                  className="px-3 py-1.5 text-[0.9em] rounded-[3px] transition-all disabled:opacity-50"
                                   style={{
-                                    background: changed ? gf.accent : gf.panel,
+                                    background: changed ? gf.accent : gf.bg,
                                     color: changed ? "#fff" : gf.textDim,
+                                    fontWeight: changed ? 700 : 500,
                                     border: `1px solid ${changed ? gf.accent : gf.border}`,
+                                    boxShadow: changed
+                                      ? "0 1px 4px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.22)"
+                                      : "inset 0 1px 3px rgba(0,0,0,0.3)",
+                                    cursor: changed ? "pointer" : "default",
                                   }}
                                 >
                                   {applying === r.metric ? "…" : changed ? "Apply" : "✓ in sync"}
@@ -1189,6 +1193,51 @@ function DeviceLabel({ name, typeLabel, sub }: { name: string; typeLabel: string
       </span>
       {sub && <span className="text-[0.9em]" style={{ color: gf.textDim }}>{sub}</span>}
     </div>
+  );
+}
+
+// Depth here is a consistent language, not decoration:
+//   RECESSED (inset shadow) = something you put a value INTO — the select controls and
+//                             the lookback track.
+//   RAISED   (drop shadow + light top edge) = something that ACTS or is currently chosen —
+//                             the selected lookback segment and an armed Apply button.
+// Native <select> loses its arrow under appearance:none, so a chevron is drawn back in.
+// The <option> list is rendered by the OS, so its styling is best-effort and only some
+// browsers honour it — the control itself carries the design either way.
+const OPTION_STYLE = { background: "var(--gf-panel)", color: "var(--gf-text-primary)" } as const;
+
+function Select({ value, onChange, title, children }: {
+  value: string | number;
+  onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span className="relative inline-flex items-center">
+      <select
+        value={value}
+        onChange={onChange}
+        title={title}
+        className="appearance-none pl-3 pr-8 py-1.5 text-[0.9em] rounded-[3px] outline-none cursor-pointer transition-shadow"
+        style={{
+          background: gf.bg,
+          color: gf.textPrimary,
+          fontFamily: mono,
+          fontWeight: 600,
+          border: `1px solid ${gf.border}`,
+          boxShadow: "inset 0 2px 4px rgba(0,0,0,0.38)",
+        }}
+      >
+        {children}
+      </select>
+      <span
+        aria-hidden
+        className="pointer-events-none absolute right-2.5 text-[0.8em]"
+        style={{ color: gf.textMuted }}
+      >
+        ▼
+      </span>
+    </span>
   );
 }
 
