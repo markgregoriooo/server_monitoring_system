@@ -42,6 +42,10 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
         border: "1px solid var(--gf-panel-border)",
         borderRadius: 8,
         boxShadow: "var(--gf-shadow)",
+        // Constant gap under the last row. Previously this was pb-2 on the scrolling
+        // list, so it travelled with the content and the final notification finished
+        // hard against the panel's rounded corner.
+        paddingBottom: 10,
         fontFamily: "'JetBrains Mono', monospace",
       }}
       role="dialog"
@@ -59,7 +63,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
           {unreadCount > 0 && (
             <button
               onClick={() => markAllRead()}
-              className="text-[13px] transition-colors"
+              className="text-[13px] px-2.5 py-1 rounded-[2px] transition-colors"
               style={{ color: "var(--gf-accent)" }}
               onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.8")}
               onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
@@ -70,7 +74,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
           {items.length > 0 && (
             <button
               onClick={() => clearAll()}
-              className="text-[13px] transition-colors"
+              className="text-[13px] px-2.5 py-1 rounded-[2px] transition-colors"
               style={{ color: "var(--gf-text-muted)" }}
               onMouseEnter={(e) => (e.currentTarget.style.color = "var(--gf-text-primary)")}
               onMouseLeave={(e) => (e.currentTarget.style.color = "var(--gf-text-muted)")}
@@ -148,7 +152,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
       )}
 
       {/* List */}
-      <div className="overflow-y-auto pb-2">
+      <div className="overflow-y-auto flex-1 min-h-0">
         {visibleItems.length === 0 ? (
           <div className="px-3 py-10 text-center text-[14px]" style={{ color: "var(--gf-text-muted)" }}>
             {filter === "unread" ? "No unread notifications" : "No notifications"}
