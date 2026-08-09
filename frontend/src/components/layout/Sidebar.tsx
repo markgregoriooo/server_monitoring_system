@@ -477,27 +477,13 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
                 </div>
               </button>
 
-              {/* RECESSED, not raised — signing out is the way out, not the thing you
-                  came here to do. Same rule as Cancel elsewhere, and it keeps the theme
-                  button above it as the only lifted control in this block.
-                  Hover stays in JS here because the inline colour would otherwise beat a
-                  CSS :hover rule on specificity. */}
+              {/* Raised, matching the theme button above it — the footer reads as two
+                  pressable controls rather than one button and one outline. Colour is set
+                  to primary up front rather than on hover, because an inline colour beats
+                  .gf-btn's :hover rule on specificity. */}
               <button onClick={logout}
-                className="w-full py-1.5 rounded-[3px] text-[12px] tracking-wider transition-all active:scale-[0.98]"
-                style={{
-                  color: "var(--gf-text-muted)",
-                  background: "var(--gf-bg)",
-                  border: "1px solid var(--gf-panel-border)",
-                  boxShadow: "var(--gf-btn-shadow-active)",
-                }}
-                onMouseEnter={e => {
-                  e.currentTarget.style.color = "var(--gf-text-primary)";
-                  e.currentTarget.style.borderColor = "var(--gf-btn-border-hover)";
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.color = "var(--gf-text-muted)";
-                  e.currentTarget.style.borderColor = "var(--gf-panel-border)";
-                }}>
+                className="gf-btn w-full py-1.5 text-[12px] tracking-wider"
+                style={{ color: "var(--gf-text-primary)", borderRadius: 3, fontWeight: 600 }}>
                 Sign Out
               </button>
             </div>
