@@ -1062,16 +1062,16 @@ export default function Analytics() {
                                 <button
                                   disabled={!changed || applying === r.metric}
                                   onClick={() => applyRecommendation(r)}
-                                  className="px-3 py-1.5 text-[0.9em] rounded-[3px] transition-all disabled:opacity-50"
+                                  className={`px-3 py-1.5 text-[0.9em] rounded-[3px] transition-all disabled:opacity-50 ${changed ? "gf-btn" : ""}`}
                                   style={{
-                                    background: changed ? gf.accent : gf.bg,
-                                    color: changed ? "#fff" : gf.textDim,
+                                    color: changed ? gf.textPrimary : gf.textDim,
                                     fontWeight: changed ? 700 : 500,
-                                    border: `1px solid ${changed ? gf.accent : gf.border}`,
-                                    boxShadow: changed
-                                      ? "0 1px 4px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.22)"
-                                      : "inset 0 1px 3px rgba(0,0,0,0.3)",
                                     cursor: changed ? "pointer" : "default",
+                                    ...(changed ? {} : {
+                                      background: gf.bg,
+                                      border: `1px solid ${gf.border}`,
+                                      boxShadow: "var(--gf-btn-shadow-active)",
+                                    }),
                                   }}
                                 >
                                   {applying === r.metric ? "…" : changed ? "Apply" : "✓ in sync"}
@@ -1282,17 +1282,19 @@ function Select({ value, options, onChange, title }: {
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={onKeyDown}
-        className="flex items-center gap-2 pl-3 pr-2.5 py-1.5 text-[0.9em] rounded-[3px] outline-none cursor-pointer transition-all"
+        // Recessed while closed (a field), raised while open (an active surface). Both
+        // shadows come from the theme's own button tokens, so they hold up in light mode
+        // where a hardcoded black shadow just looks like dirt.
+        className={`flex items-center gap-2 pl-3 pr-2.5 py-1.5 text-[0.9em] rounded-[3px] outline-none cursor-pointer transition-all ${open ? "gf-btn" : ""}`}
         style={{
-          background: gf.bg,
           color: gf.textPrimary,
           fontFamily: mono,
           fontWeight: 600,
-          border: `1px solid ${gf.border}`,
-          // Recessed while closed (a field), raised while open (an active surface).
-          boxShadow: open
-            ? "0 2px 8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.16)"
-            : "inset 0 2px 4px rgba(0,0,0,0.38)",
+          ...(open ? {} : {
+            background: gf.bg,
+            border: `1px solid ${gf.border}`,
+            boxShadow: "var(--gf-btn-shadow-active)",
+          }),
         }}
       >
         <span>{current?.label ?? "—"}</span>
@@ -1309,9 +1311,9 @@ function Select({ value, options, onChange, title }: {
           className="absolute left-0 top-full mt-1.5 z-50 min-w-full max-h-72 overflow-y-auto rounded-[3px] py-1"
           style={{
             background: gf.panel,
-            border: `1px solid ${gf.border}`,
-            // Deep elevation — this is what a native option list cannot be given.
-            boxShadow: "0 12px 32px rgba(0,0,0,0.6), 0 3px 8px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.10)",
+            // --gf-shadow is the token defined for exactly this (dropdowns/toasts): a
+            // light ring on dark so the edge reads, a darker drop shadow on light.
+            boxShadow: "var(--gf-shadow)",
           }}
         >
           {options.map((o, i) => {
@@ -1340,7 +1342,8 @@ function Select({ value, options, onChange, title }: {
                     background: active ? gf.hoverStrong : "transparent",
                     color: selected ? gf.textPrimary : gf.textMuted,
                     fontWeight: selected ? 700 : 500,
-                    boxShadow: selected ? "inset 3px 0 0 rgba(255,255,255,0.30)" : "none",
+                    // currentColor-style bar: light on dark, dark on light.
+                    boxShadow: selected ? `inset 3px 0 0 ${gf.textPrimary}` : "none",
                   }}
                 >
                   <span className="whitespace-nowrap">{o.label}</span>
@@ -1367,38 +1370,37 @@ function LookbackPicker({ value, options, onChange }: {
   return (
     <span className="flex items-center gap-2">
       <span className="text-[0.82em] uppercase tracking-widest" style={{ color: gf.textDim }}>Lookback</span>
+      {/* Recessed track holding a raised key. The active segment uses the shared .gf-btn
+          surface (--gf-btn-face / sheen / shadow), which is defined per theme — a
+          hand-picked grey read as almost nothing in dark (#181B1F on #111217 is barely
+          seven levels apart) and washed out entirely in light. The token set is tuned for
+          exactly this: a face that sits ABOVE the page tone in dark, and white with a real
+          border plus sheen in light, where white-on-white needs the border to exist. */}
       <span
-        className="flex rounded-[3px] overflow-hidden"
+        className="flex gap-0.5 p-0.5 rounded-[3px]"
         style={{
           background: gf.bg,
           border: `1px solid ${gf.border}`,
-          boxShadow: "inset 0 2px 4px rgba(0,0,0,0.38)",
+          boxShadow: "var(--gf-btn-shadow-active)", // theme-aware inset (recessed track)
         }}
       >
-        {options.map((o, i) => {
+        {options.map((o) => {
           const active = value === o.value;
           return (
             <button
               key={o.value}
               onClick={() => onChange(o.value)}
               aria-pressed={active}
-              className="px-3 py-1.5 text-[0.9em] transition-all"
+              // No accent colour on purpose: this is a view filter, not an action, and
+              // three sets of blue segments competed with the alert severities and the
+              // Apply button. Surface + weight carry the active state instead, which also
+              // survives a wall display and anyone who can't rely on the blue.
+              className={`px-3 py-1 text-[0.9em] rounded-[2px] cursor-pointer transition-all ${active ? "gf-btn" : ""}`}
               style={{
-                // No accent colour here on purpose: this is a view filter, not an action,
-                // and three of them stacked in blue competed with the alert severities and
-                // the Apply button for attention. The raised surface plus the weight carry
-                // the active state instead — which was always the more robust signal.
-                background: active ? gf.panel : "transparent",
                 color: active ? gf.textPrimary : gf.textMuted,
                 fontWeight: active ? 700 : 500,
                 letterSpacing: active ? "0.02em" : undefined,
-                // Left divider between segments (not before the first) keeps the group
-                // reading as one control while still separating the hit areas.
-                borderLeft: i === 0 ? "none" : `1px solid ${gf.border}`,
-                boxShadow: active
-                  ? "0 1px 4px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.22)"
-                  : "none",
-                cursor: "pointer",
+                ...(active ? {} : { background: "transparent", border: "1px solid transparent" }),
               }}
             >
               {o.label}
