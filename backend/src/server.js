@@ -11,6 +11,7 @@ import agentService from "../services/agentService.js";
 import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
+import analyticsAlerts from "../services/analyticsAlerts.js";
 import esp32Monitor from "../services/esp32Monitor.js";
 import snmpPollerService from "../services/snmpPollerService.js";
 import mikrotikPollerService from "../services/mikrotikPollerService.js";
@@ -248,6 +249,28 @@ setInterval(async () => {
 // reading itself (esp32Monitor.markSeen), not here, so it's instant.
 const ESP32_SWEEP_MS = 10_000;
 setInterval(() => esp32Monitor.sweep(), ESP32_SWEEP_MS);
+
+// Predictive alerting — turn the forecasts into real alerts. Without this the analytics
+// is pull-only: a disk projected to fill in three days reaches nobody unless someone has
+// the Analytics page open. Runs on its own (slow) cadence because each pass is several
+// Flux queries over weeks of history, and a multi-week regression does not move between
+// two agent posts. First run is delayed so MySQL/InfluxDB are warm and a restart doesn't
+// stampede the DB. See services/analyticsAlerts.js.
+const ANALYTICS_ALERT_INTERVAL_MS =
+  (Number(process.env.ANALYTICS_ALERT_INTERVAL_H) || 6) * 60 * 60 * 1000;
+const ANALYTICS_ALERT_DELAY_MS = 60_000;
+const runAnalyticsAlerts = async () => {
+  try {
+    const raised = await analyticsAlerts.runForecastAlerts();
+    if (raised) console.log(`[analytics-alerts] ${raised} forecast alert(s) raised/refreshed`);
+  } catch (err) {
+    console.error("[analytics-alerts] error:", err.message);
+  }
+};
+setTimeout(() => {
+  runAnalyticsAlerts();
+  setInterval(runAnalyticsAlerts, ANALYTICS_ALERT_INTERVAL_MS);
+}, ANALYTICS_ALERT_DELAY_MS);
 
 // Notification retention — purge alerts (and, via cascade, their per-user feed
 // rows) older than NOTIFY_RETENTION_DAYS so the tables don't grow unbounded.

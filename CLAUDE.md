@@ -66,6 +66,15 @@ NOTIFY_EMAIL_MIN_SEVERITY= # min severity that triggers an email: info|warning|c
 NOTIFY_EMAIL_TO=        # optional: force ALL alert emails to this address (testing); blank = send to each active user's real email
 NOTIFY_COOLDOWN_MIN=    # de-dup window in minutes — same device+type+severity won't re-alert within it (restart-proof); blank = 30
 ALERT_RECOVERY_SAMPLES= # consecutive "normal" readings required before an alert AUTO-RESOLVES; blank = 3. Stops a metric oscillating around its threshold from producing an alert/resolve storm. Escalation is unaffected (still instant). Applies to servers, the environment, AND routers/MikroTik/UPS (deviceAlerts evalMetric + evalEvent — the boolean events too, since a link up/down has no threshold to hang hysteresis on). ⚠️ Counts SAMPLES, not seconds — wall-clock = count x that source's interval: ~30s for a default Go agent (`-interval 10`, but it's per-agent, so an `-interval 60` server takes 3 MINUTES), ~9s for the ESP32 (`LOG_INTERVAL 3000`), ~3 min on the 60s SNMP poll, ~1.5 min on the 30s MikroTik poll. Device offline/unreachable (`device_offline`) is NOT streak-gated — the poller's own status transition guards it, so an outage still surfaces on the first failed poll. See alertBandState.confirmRecovery
+ANALYTICS_ALERT_INTERVAL_H=   # how often the PREDICTIVE alerting job runs, in hours; blank = 6. Each pass is several Flux queries over weeks of history, so this is deliberately slow — a multi-week regression doesn't move between two agent posts. See services/analyticsAlerts.js
+ANALYTICS_ALERT_CRITICAL_DAYS= # forecast ETA at/below this many days raises a CRITICAL alert; blank = 7
+ANALYTICS_ALERT_WARNING_DAYS=  # ETA at/below this raises a WARNING; beyond it nothing is raised (nothing to act on yet); blank = 30
+ANALYTICS_ALERT_COOLDOWN_MIN=  # de-dup window for FORECAST alerts specifically; blank = 1440 (24h). The 30-min NOTIFY_COOLDOWN_MIN default suits a live metric flapping at a threshold, not a projection that moves over days
+ANALYTICS_ALERT_DISK_DAYS=     # lookback for the alerting job's disk forecast; blank = 30
+ANALYTICS_ALERT_LINK_DAYS=     # lookback for link saturation; blank = 90
+ANALYTICS_ALERT_UPS_DAYS=      # lookback for UPS battery; blank = 180 (battery ageing needs months — see predictive-analytics.md §16.1)
+ANALYTICS_ANOMALY_ALERTS=      # false disables anomaly ALERTS (the Analytics page still shows them); blank = enabled
+ANALYTICS_ANOMALY_DAYS=        # baseline window for the alerting job's anomaly scan; blank = 14
 NOTIFY_RETENTION_DAYS=  # alerts older than this are purged daily (feed rows cascade); blank = 30
 REPORT_RETENTION_DAYS=  # generated reports older than this are purged daily — MySQL row AND both files under backend/reports/; blank = 90. Longer than the alerts default on purpose: a report is an artifact someone deliberately generated. See report-page.md
 ```

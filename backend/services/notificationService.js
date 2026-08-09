@@ -57,7 +57,7 @@ function toClient(r) {
 // Raise one alert and fan it out to every active user. Best-effort: a notification
 // failure must never break the monitoring path that triggered it, so this swallows
 // errors and returns the new alert_id (or null on failure).
-async function raiseAlert({ deviceId, type, title, message, severity = "info", metricValue = null, alertRuleId = null }) {
+async function raiseAlert({ deviceId, type, title, message, severity = "info", metricValue = null, alertRuleId = null, cooldownMin = null }) {
   try {
     if (!SEVERITIES.includes(severity)) severity = "info";
     const dId = deviceId ?? null;
@@ -72,14 +72,19 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
     // RECURRENCE re-alerts immediately instead of waiting out the window. This matches
     // how real incident tools de-dup (per open incident, not a blind wall clock).
     // `<=>` is MySQL's null-safe equals, since device_id may be NULL (system alerts).
-    const cooldownMin = Number(process.env.NOTIFY_COOLDOWN_MIN) || 30;
+    // Callers may override the window. A live metric flapping around its threshold wants
+    // the short default; a FORECAST ("disk full in ~6 days") moves on a scale of days, so
+    // re-announcing it every 30 minutes would be noise — analyticsAlerts passes a much
+    // longer window. Auto-resolve on recovery still works either way, since the de-dup is
+    // scoped to alerts that are still open.
+    const cooldown = Number(cooldownMin) || Number(process.env.NOTIFY_COOLDOWN_MIN) || 30;
     const [[recent]] = await db.query(
       `SELECT alert_id FROM alerts
         WHERE device_id <=> ? AND type = ? AND severity = ?
           AND status <> 'resolved'
           AND created_at > (NOW() - INTERVAL ? MINUTE)
         ORDER BY alert_id DESC LIMIT 1`,
-      [dId, type, severity, cooldownMin],
+      [dId, type, severity, cooldown],
     );
     if (recent) return recent.alert_id;
 
