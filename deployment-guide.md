@@ -85,8 +85,8 @@ agents and firmware cache the address, and ICTU's proxy needs a fixed target.
 of the full schema (24 tables) and already includes everything the old `migrations/`
 folder used to apply.
 
-> **Upgrading an EXISTING database?** One statement is needed, and only if the database
-> was loaded before 2026-08-09: the **Capacity Forecast** report type is a new value in
+> **Upgrading a database loaded before 2026-08-09?** One statement is needed (already
+> applied on the development database): the **Capacity Forecast** report type is a new value in
 > the `reports.type` ENUM, and MySQL rejects a value outside the list. A fresh load of
 > the schema above already has it.
 >
