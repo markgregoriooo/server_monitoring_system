@@ -58,14 +58,14 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
         className="flex items-center justify-between px-2 py-2.5 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--gf-divider)" }}
       >
-        <span className="text-[14px] font-semibold tracking-wide" style={{ color: "var(--gf-text-primary)" }}>
+        <span className="text-[14px] font-semibold tracking-wide truncate min-w-0" style={{ color: "var(--gf-text-primary)" }}>
           NOTIFICATIONS{unreadCount > 0 ? ` (${unreadCount})` : ""}
         </span>
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2 shrink-0">
           {unreadCount > 0 && (
             <button
               onClick={() => markAllRead()}
-              className="text-[11px] px-1.5 py-0.5 rounded-[2px] transition-colors"
+              className="text-[11px] px-1.5 py-0.5 rounded-[2px] whitespace-nowrap shrink-0 transition-colors"
               style={{ color: "var(--gf-accent)" }}
               onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.8")}
               onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
@@ -76,7 +76,7 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
           {items.length > 0 && (
             <button
               onClick={() => clearAll()}
-              className="text-[11px] px-1.5 py-0.5 rounded-[2px] transition-colors"
+              className="text-[11px] px-1.5 py-0.5 rounded-[2px] whitespace-nowrap shrink-0 transition-colors"
               style={{ color: "var(--gf-text-muted)" }}
               onMouseEnter={(e) => (e.currentTarget.style.color = "var(--gf-text-primary)")}
               onMouseLeave={(e) => (e.currentTarget.style.color = "var(--gf-text-muted)")}
