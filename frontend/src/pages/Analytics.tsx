@@ -91,7 +91,7 @@ interface AlertSummary {
   mttrMinutes: number | null;
   bySeverity: { severity: string; count: number }[];
   byDay: { day: string; count: number }[];
-  topDevices: { deviceId: number | null; name: string; count: number }[];
+  topDevices: { deviceId: number | null; name: string; typeLabel: string | null; count: number }[];
   topTypes: { type: string; count: number }[];
 }
 
@@ -189,6 +189,13 @@ const LOOKBACKS = [7, 14, 30];
 // each refresh runs several Flux queries.
 const LIVE_REFRESH_MS = 15_000;
 const mono = "'JetBrains Mono', monospace";
+
+// Adaptive type scale. The page sets ONE root size that grows with the viewport and every
+// text size on it is expressed in `em` relative to this — so the whole page scales
+// smoothly (no breakpoint jumps) and stays readable on a laptop as well as on the wall
+// display in the server room. 11px floor keeps the dense tables legible on a phone;
+// 13.5px ceiling stops it ballooning on a large monitor.
+const ROOT_FONT = "clamp(11px, 0.25vw + 10.2px, 13.5px)";
 
 const METRIC_OPTIONS = [
   { key: "temperature", label: "Temperature", scope: "env" },
@@ -529,12 +536,12 @@ export default function Analytics() {
   );
 
   return (
-    <div className="p-4 sm:p-6 space-y-6" style={{ fontFamily: mono, color: gf.textPrimary }}>
+    <div className="p-4 sm:p-6 space-y-6" style={{ fontFamily: mono, color: gf.textPrimary, fontSize: ROOT_FONT }}>
       {/* ── Header / controls ── */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-bold">Predictive Analytics</h1>
-          <p className="text-[11px]" style={{ color: gf.textMuted }}>
+          <h1 className="text-[1.6em] font-bold">Predictive Analytics</h1>
+          <p className="text-[1em]" style={{ color: gf.textMuted }}>
             Forecasts &amp; insight from historical metrics — supervised linear regression (validated) + alert statistics.
           </p>
         </div>
@@ -542,12 +549,12 @@ export default function Analytics() {
           {/* Lookback only drives the regression forecast tables, so show it only there. */}
           {tab === "forecasts" && (
             <>
-              <span className="text-[10px] uppercase tracking-widest" style={{ color: gf.textDim }}>Lookback</span>
+              <span className="text-[0.9em] uppercase tracking-widest" style={{ color: gf.textDim }}>Lookback</span>
               {LOOKBACKS.map((d) => (
                 <button
                   key={d}
                   onClick={() => setDays(d)}
-                  className="px-2.5 py-1 text-[11px] rounded-[2px] transition-colors"
+                  className="px-2.5 py-1 text-[1em] rounded-[2px] transition-colors"
                   style={{
                     background: days === d ? gf.accent : gf.panel,
                     color: days === d ? "#fff" : gf.textMuted,
@@ -560,7 +567,7 @@ export default function Analytics() {
             </>
           )}
           <span
-            className="flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-widest rounded-[2px]"
+            className="flex items-center gap-1.5 px-2 py-1 text-[0.9em] uppercase tracking-widest rounded-[2px]"
             style={{ color: GREEN, background: gf.panel, border: `1px solid ${gf.border}` }}
             title="Auto-updates as new metrics stream in — no refresh needed"
           >
@@ -576,7 +583,7 @@ export default function Analytics() {
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className="px-3 py-2 text-[11px] transition-colors"
+            className="px-3 py-2 text-[1em] transition-colors"
             style={{
               marginBottom: -1,
               color: tab === t.key ? gf.textPrimary : gf.textMuted,
@@ -590,7 +597,7 @@ export default function Analytics() {
       </div>
 
       {error && (
-        <div className="px-3 py-2 text-[11px] rounded-[2px]" style={{ color: RED, background: `${RED}14`, border: `1px solid ${RED}40` }}>
+        <div className="px-3 py-2 text-[1em] rounded-[2px]" style={{ color: RED, background: `${RED}14`, border: `1px solid ${RED}40` }}>
           {error}
         </div>
       )}
@@ -692,6 +699,7 @@ export default function Analytics() {
                         <BarRow
                           key={`${d.deviceId}-${d.name}`}
                           label={d.name}
+                          typeLabel={d.typeLabel}
                           count={d.count}
                           max={Math.max(...summary.topDevices.map((x) => x.count))}
                           color={gf.accent}
@@ -708,7 +716,7 @@ export default function Analytics() {
                     {summary.topTypes.map((t) => (
                       <span
                         key={t.type}
-                        className="px-2 py-0.5 text-[10px] rounded-[2px]"
+                        className="px-2 py-0.5 text-[0.9em] rounded-[2px]"
                         style={{ background: gf.hover, color: gf.textMuted, border: `1px solid ${gf.border}` }}
                       >
                         {t.type} · {t.count}
@@ -731,11 +739,11 @@ export default function Analytics() {
         <>
           {/* ── Metric focus: selector drives Trend + Anomaly panels ── */}
           <div className="flex flex-wrap items-center gap-3">
-            <span className="text-[10px] uppercase tracking-widest" style={{ color: gf.textDim }}>Metric</span>
+            <span className="text-[0.9em] uppercase tracking-widest" style={{ color: gf.textDim }}>Metric</span>
             <select
               value={selMetric}
               onChange={(e) => { setSelMetric(e.target.value); setSelDevice(null); }}
-              className="px-2 py-1 text-[11px] rounded-[2px] outline-none"
+              className="px-2 py-1 text-[1em] rounded-[2px] outline-none"
               style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
             >
               <optgroup label="Server Room">
@@ -756,12 +764,12 @@ export default function Analytics() {
             </select>
             {needsDevice && (
               deviceOptions.length === 0 ? (
-                <span className="text-[10px]" style={{ color: gf.textDim }}>no devices with data yet</span>
+                <span className="text-[0.9em]" style={{ color: gf.textDim }}>no devices with data yet</span>
               ) : (
                 <select
                   value={selDevice ?? ""}
                   onChange={(e) => setSelDevice(e.target.value ? Number(e.target.value) : null)}
-                  className="px-2 py-1 text-[11px] rounded-[2px] outline-none"
+                  className="px-2 py-1 text-[1em] rounded-[2px] outline-none"
                   style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
                 >
                   {/* Class prefix keeps two devices with similar names apart in the list. */}
@@ -774,7 +782,7 @@ export default function Analytics() {
               )
             )}
             {!needsDevice && (
-              <span className="text-[10px]" style={{ color: gf.textDim }}>room-wide — no device to pick</span>
+              <span className="text-[0.9em]" style={{ color: gf.textDim }}>room-wide — no device to pick</span>
             )}
           </div>
 
@@ -789,7 +797,7 @@ export default function Analytics() {
               <Empty>Not enough history for this metric yet.</Empty>
             ) : (
               <div className="space-y-3">
-                <div className="flex flex-wrap items-center gap-4 text-[11px]">
+                <div className="flex flex-wrap items-center gap-4 text-[1em]">
                   <LegendDot color={GRAY} label="actual" />
                   <LegendDot color={gf.accent as string} label="EWMA (smoothed)" />
                   <LegendDot color={ORANGE} label="projection" dashed />
@@ -840,7 +848,7 @@ export default function Analytics() {
                   <Empty>No anomalies — every reading is normal for its hour of day.</Empty>
                 ) : (
                   <div className="overflow-x-auto">
-                    <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+                    <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ color: gf.textDim, textAlign: "left" }}>
                           <Th>When</Th><Th>Reading</Th><Th>Expected (that hour)</Th><Th>z-score</Th><Th>Flags</Th>
@@ -863,7 +871,7 @@ export default function Analytics() {
                       </tbody>
                     </table>
                     {anom.anomalyCount > 12 && (
-                      <p className="mt-2 text-[10px]" style={{ color: gf.textDim }}>+ {anom.anomalyCount - 12} more</p>
+                      <p className="mt-2 text-[0.9em]" style={{ color: gf.textDim }}>+ {anom.anomalyCount - 12} more</p>
                     )}
                   </div>
                 )}
@@ -885,7 +893,7 @@ export default function Analytics() {
             <Empty>No data to base recommendations on yet.</Empty>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+              <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ color: gf.textDim, textAlign: "left" }}>
                     <Th>Metric</Th><Th>p50</Th><Th>p95</Th><Th>p99</Th><Th>Max</Th>
@@ -928,7 +936,7 @@ export default function Analytics() {
                                 <button
                                   disabled={!changed || applying === r.metric}
                                   onClick={() => applyRecommendation(r)}
-                                  className="px-2 py-0.5 text-[10px] rounded-[2px] transition-colors disabled:opacity-40"
+                                  className="px-2 py-0.5 text-[0.9em] rounded-[2px] transition-colors disabled:opacity-40"
                                   style={{
                                     background: changed ? gf.accent : gf.panel,
                                     color: changed ? "#fff" : gf.textDim,
@@ -946,7 +954,7 @@ export default function Analytics() {
                   })}
                 </tbody>
               </table>
-              <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>
+              <p className="mt-3 text-[0.9em]" style={{ color: gf.textDim }}>
                 {isAdmin
                   ? "Apply writes the value into the global Alert Rules (comparison “>”). Per-server overrides stay untouched."
                   : "Recommendations are advisory — an admin can apply them to the Alert Rules."}
@@ -984,7 +992,7 @@ function ForecastPanel({
         <Empty>{empty}</Empty>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+          <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ color: gf.textDim, textAlign: "left" }}>
                 <Th>{entityHeader}</Th>
@@ -1027,16 +1035,12 @@ function ForecastPanel({
                     </span>
                   </Td>
                   <Td><Badge color={CONF_COLOR[r.confidence]} label={r.confidence} /></Td>
-                  <Td>
-                    <span style={{ color: gf.textDim }}>
-                      {r.fitR2 == null ? "—" : `R²=${r.fitR2}`}{r.mae == null ? "" : ` · ±${r.mae}${r.maeSuffix}`}
-                    </span>
-                  </Td>
+                  <Td><FitCell r2={r.fitR2} mae={r.mae} maeSuffix={r.maeSuffix} /></Td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <p className="mt-3 text-[10px]" style={{ color: gf.textDim }}>{note}</p>
+          <p className="mt-3 text-[0.9em]" style={{ color: gf.textDim }}>{note}</p>
         </div>
       )}
     </Panel>
@@ -1052,8 +1056,23 @@ function DeviceLabel({ name, typeLabel, sub }: { name: string; typeLabel: string
         <span style={{ color: gf.textPrimary }}>{name}</span>
         {typeLabel && <TypeBadge label={typeLabel} />}
       </span>
-      {sub && <span className="text-[10px]" style={{ color: gf.textDim }}>{sub}</span>}
+      {sub && <span className="text-[0.9em]" style={{ color: gf.textDim }}>{sub}</span>}
     </div>
+  );
+}
+
+// R² below zero just means "worse than predicting the average" — the sign is the whole
+// message. Printing the raw figure (R²=-19083549.75, which a dead-flat series really can
+// produce) is noise that reads like a broken number, so collapse it to a word. MAE still
+// shows: it stays meaningful in the metric's own unit however bad the fit is.
+function FitCell({ r2, mae, maeSuffix }: { r2: number | null; mae: number | null; maeSuffix: string }) {
+  const maeText = mae == null ? "" : `±${mae}${maeSuffix}`;
+  if (r2 == null) return <span style={{ color: gf.textDim }}>{maeText || "—"}</span>;
+  const poor = r2 < 0;
+  return (
+    <span style={{ color: gf.textDim }} title={poor ? `R² = ${r2} — the trend line fits worse than a flat average` : undefined}>
+      {poor ? "no trend" : `R²=${r2}`}{maeText && ` · ${maeText}`}
+    </span>
   );
 }
 
@@ -1061,7 +1080,7 @@ function TypeBadge({ label }: { label: string }) {
   const color = TYPE_COLOR[label] ?? GRAY;
   return (
     <span
-      className="px-1 py-px text-[9px] uppercase tracking-wider rounded-[2px]"
+      className="px-1 py-px text-[0.82em] uppercase tracking-wider rounded-[2px]"
       style={{ color, background: `${color}1a`, border: `1px solid ${color}44` }}
     >
       {label}
@@ -1077,7 +1096,7 @@ function VolumeChips({ volumes }: { volumes: VolumeForecast[] }) {
       {volumes.map((v) => (
         <span
           key={v.mount}
-          className="px-1 py-px text-[9px] rounded-[2px]"
+          className="px-1 py-px text-[0.82em] rounded-[2px]"
           style={{ color: gf.textMuted, background: gf.hover, border: `1px solid ${gf.border}` }}
           title={v.etaDays != null ? `${v.mount} — full in ~${v.etaDays} days` : `${v.mount} — ${v.status}`}
         >
@@ -1105,8 +1124,8 @@ function Panel({ title, subtitle, children }: { title: string; subtitle?: string
   return (
     <section className="rounded-[2px]" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
       <div className="px-4 py-3" style={{ borderBottom: `1px solid ${gf.divider}` }}>
-        <h2 className="text-[13px] font-semibold">{title}</h2>
-        {subtitle && <p className="text-[10px] mt-0.5" style={{ color: gf.textDim }}>{subtitle}</p>}
+        <h2 className="text-[1.18em] font-semibold">{title}</h2>
+        {subtitle && <p className="text-[0.9em] mt-0.5" style={{ color: gf.textDim }}>{subtitle}</p>}
       </div>
       <div className="p-4">{children}</div>
     </section>
@@ -1114,14 +1133,14 @@ function Panel({ title, subtitle, children }: { title: string; subtitle?: string
 }
 
 function Th({ children, title }: { children: React.ReactNode; title?: string }) {
-  return <th className="font-medium pb-2 pr-4 text-[10px] uppercase tracking-wider" title={title}>{children}</th>;
+  return <th className="font-medium pb-2 pr-4 text-[0.9em] uppercase tracking-wider" title={title}>{children}</th>;
 }
 function Td({ children }: { children: React.ReactNode }) {
   return <td className="py-2 pr-4 align-middle">{children}</td>;
 }
 function Badge({ color, label }: { color: string; label: string }) {
   return (
-    <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider rounded-[2px]"
+    <span className="px-1.5 py-0.5 text-[0.82em] uppercase tracking-wider rounded-[2px]"
       style={{ color, background: `${color}1f`, border: `1px solid ${color}55` }}>
       {label}
     </span>
@@ -1130,25 +1149,30 @@ function Badge({ color, label }: { color: string; label: string }) {
 function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div className="rounded-[2px] px-3 py-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
-      <div className="text-[9px] uppercase tracking-widest" style={{ color: gf.textDim }}>{label}</div>
-      <div className="text-lg font-bold mt-0.5" style={{ color: color ?? gf.textPrimary }}>{value}</div>
+      <div className="text-[0.82em] uppercase tracking-widest" style={{ color: gf.textDim }}>{label}</div>
+      <div className="text-[1.6em] font-bold mt-0.5" style={{ color: color ?? gf.textPrimary }}>{value}</div>
     </div>
   );
 }
 function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <div className="text-[9px] uppercase tracking-widest mb-2" style={{ color: gf.textDim }}>{children}</div>;
+  return <div className="text-[0.82em] uppercase tracking-widest mb-2" style={{ color: gf.textDim }}>{children}</div>;
 }
 function Dim({ children }: { children: React.ReactNode }) {
-  return <span className="text-[11px]" style={{ color: gf.textDim }}>{children}</span>;
+  return <span className="text-[1em]" style={{ color: gf.textDim }}>{children}</span>;
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="py-6 text-center text-[11px]" style={{ color: gf.textDim }}>{children}</div>;
+  return <div className="py-6 text-center text-[1em]" style={{ color: gf.textDim }}>{children}</div>;
 }
-function BarRow({ label, count, max, color }: { label: string; count: number; max: number; color: string }) {
+function BarRow({ label, count, max, color, typeLabel }: {
+  label: string; count: number; max: number; color: string; typeLabel?: string | null;
+}) {
   const pct = max > 0 ? (count / max) * 100 : 0;
   return (
-    <div className="flex items-center gap-2 text-[11px]">
-      <span className="w-28 truncate" style={{ color: gf.textMuted }} title={label}>{label}</span>
+    <div className="flex items-center gap-2 text-[1em]">
+      <span className="w-36 shrink-0 flex items-center gap-1" style={{ color: gf.textMuted }} title={label}>
+        <span className="truncate">{label}</span>
+        {typeLabel && <TypeBadge label={typeLabel} />}
+      </span>
       <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: gf.hover }}>
         <div style={{ width: `${pct}%`, height: "100%", background: color }} />
       </div>
@@ -1174,7 +1198,7 @@ function AdviceCallout({ level, children }: { level: "critical" | "warning"; chi
   const color = level === "critical" ? RED : ORANGE;
   return (
     <div
-      className="flex items-start gap-2 px-3 py-2 text-[11px] rounded-[2px]"
+      className="flex items-start gap-2 px-3 py-2 text-[1em] rounded-[2px]"
       style={{ color: gf.textPrimary, background: `${color}14`, border: `1px solid ${color}40` }}
     >
       <span style={{ color, lineHeight: "1.4" }}>{level === "critical" ? "●" : "▲"}</span>
@@ -1246,12 +1270,12 @@ function TrendChart({
         <path d={path(hist.map((h) => ({ t: h.t, v: h.e })))} fill="none" stroke="var(--gf-accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
         <path d={path(projLine)} fill="none" stroke={ORANGE} strokeWidth={2} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
       </svg>
-      <div className="flex justify-between text-[10px] mt-1" style={{ color: gf.textDim }}>
+      <div className="flex justify-between text-[0.9em] mt-1" style={{ color: gf.textDim }}>
         <span>{vMin.toFixed(1)}{unit} – {vMax.toFixed(1)}{unit}</span>
         <span>now → +{proj.at(-1) ? Math.round((proj.at(-1)!.t - lastE.t) / 3_600_000) : 0}h</span>
       </div>
       {/* time axis: left edge = oldest sample, right edge = forecast end (chart x spans tMin..tMax) */}
-      <div className="flex justify-between text-[10px] mt-0.5" style={{ color: gf.textDim }}>
+      <div className="flex justify-between text-[0.9em] mt-0.5" style={{ color: gf.textDim }}>
         <span>{fmtClock(tMin)}</span>
         <span>{fmtClock(proj.at(-1)?.t ?? lastE.t)}</span>
       </div>
@@ -1294,7 +1318,7 @@ function HourlyForecast({
     <div>
       <SectionLabel>Hourly forecast</SectionLabel>
       <div className="overflow-x-auto">
-        <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+        <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ color: gf.textDim, textAlign: "left" }}>
               <Th>When</Th><Th>Predicted</Th><Th>Change vs prev. hour</Th>
@@ -1325,7 +1349,7 @@ function HourlyForecast({
             ))}
           </tbody>
         </table>
-        <p className="mt-2 text-[10px]" style={{ color: gf.textDim }}>
+        <p className="mt-2 text-[0.9em]" style={{ color: gf.textDim }}>
           Projected values (Holt’s linear) sampled hourly over the forecast horizon — indicative, not exact.
         </p>
       </div>

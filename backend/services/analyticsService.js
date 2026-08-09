@@ -84,12 +84,31 @@ function identify(entry, identities) {
   };
 }
 
-// ─── Disk-full ETA forecast ───────────────────────────────────────────────────
-// A device whose newest sample is older than this is offline / decommissioned — or a
-// duplicate "ghost" enrollment an unstable agent MAC left behind in InfluxDB — so it is
-// excluded from the all-servers forecast (you can't forecast a server that stopped
+// ─── Which series belong on an "all devices" list ─────────────────────────────
+// A device whose newest sample is older than this is offline / decommissioned, so it is
+// excluded from the all-devices forecasts (you can't forecast something that stopped
 // reporting). An explicit single-device request is always shown regardless.
 const ACTIVE_WITHIN_MS = 24 * 60 * 60 * 1000;
+
+// InfluxDB history OUTLIVES the MySQL device row. Removing a device from the dashboard
+// deletes its `devices` row but not its measurements, and re-adding the same hardware
+// mints a NEW device_id — so a router that has been removed and re-added a few times
+// leaves one orphaned series per retired id. Grouping is by device_id, so each of those
+// ghosts renders as its own row: the same five interfaces repeated once per past
+// registration, with no MySQL row to name or classify them.
+//
+// A device_id with no `devices` row is therefore not a device any more, and is dropped
+// from list views. This also excludes the dev-seed ids (9001/9002/9101) written by
+// scripts/seed-analytics-history.js unless they are registered in MySQL — real data has
+// superseded them. A single-device request (`deviceId` given) still renders whatever it
+// finds, so an explicit lookup can never come back mysteriously empty.
+function isCurrentDevice(entry, identities, cutoff) {
+  if (!identities.has(Number(entry.deviceId))) return false; // retired / never registered
+  const newest = entry.raw.reduce((m, p) => (p.t > m ? p.t : m), 0);
+  return newest >= cutoff;
+}
+
+// ─── Disk-full ETA forecast ───────────────────────────────────────────────────
 
 // Pull hourly-averaged disk_percent per server. Window + device id are whitelisted
 // (clamped int / Number) before they touch Flux — no injection surface, mirroring
@@ -157,14 +176,9 @@ async function forecastDiskFull({ deviceId = null, lookbackDays = 14, full = 100
 
   const results = [];
   for (const entry of byDevice.values()) {
-    // When listing ALL servers, drop dead/superseded enrollments: a series whose newest
-    // sample is stale is an offline or decommissioned device — and exactly the duplicate
-    // "ghost" an unstable agent MAC leaves behind in InfluxDB. A specific deviceId request
-    // is always shown.
-    if (deviceId == null) {
-      const newest = entry.raw.reduce((m, p) => (p.t > m ? p.t : m), 0);
-      if (newest < cutoff) continue;
-    }
+    // When listing ALL servers, drop retired/stale enrollments — including the duplicate
+    // "ghost" an unstable agent MAC leaves behind in InfluxDB.
+    if (deviceId == null && !isCurrentDevice(entry, identities, cutoff)) continue;
     const ident = identify(entry, identities);
     const vols = volsByDevice.get(Number(entry.deviceId)) ?? [];
 
@@ -235,13 +249,17 @@ async function alertSummary(days = 30) {
     `SELECT DATE(created_at) AS day, COUNT(*) AS c
        FROM alerts WHERE ${since} GROUP BY DATE(created_at) ORDER BY day`,
   );
+  // Same effective-name rule as everywhere else (§14): the admin's display_name wins,
+  // so a renamed server is named here exactly as it is on the Servers page. A NULL
+  // device_id is a room-level environment alert, which has no device row by design.
   const [topDevices] = await db.query(
     `SELECT a.device_id AS deviceId,
-            COALESCE(d.device_name, 'Room / environment') AS name,
+            COALESCE(NULLIF(d.display_name, ''), d.device_name, 'Room / environment') AS name,
+            d.device_type AS type,
             COUNT(*) AS c
        FROM alerts a LEFT JOIN devices d ON d.device_id = a.device_id
       WHERE a.${since}
-      GROUP BY a.device_id, name ORDER BY c DESC LIMIT 5`,
+      GROUP BY a.device_id, name, d.device_type ORDER BY c DESC LIMIT 5`,
   );
   const [topTypes] = await db.query(
     `SELECT type, COUNT(*) AS c FROM alerts WHERE ${since} GROUP BY type ORDER BY c DESC LIMIT 5`,
@@ -263,6 +281,7 @@ async function alertSummary(days = 30) {
     topDevices: topDevices.map((r) => ({
       deviceId: r.deviceId,
       name: r.name,
+      typeLabel: r.type ? (DEVICE_TYPE_LABEL[r.type] ?? r.type) : null,
       count: Number(r.c),
     })),
     topTypes: topTypes.map((r) => ({ type: r.type, count: Number(r.c) })),
@@ -585,8 +604,10 @@ async function forecastUpsBattery({ deviceId = null, lookbackDays = 30, floorMin
   const floor = clampNum(floorMinutes, 1, 60, 5);
   const grouped = await fetchSeriesGrouped("ups_metrics", "runtime_remaining_min", { deviceId, days: lookbackDays });
   const identities = await fetchDeviceIdentities([...grouped.values()].map((e) => e.deviceId));
+  const cutoff = Date.now() - ACTIVE_WITHIN_MS;
   const results = [];
   for (const e of grouped.values()) {
+    if (deviceId == null && !isCurrentDevice(e, identities, cutoff)) continue;
     const ident = identify(e, identities);
     const name = ident.name;
     const p = projectToBound(e.raw, { bound: floor, direction: "down" });
@@ -645,8 +666,12 @@ async function forecastLinkSaturation({ deviceId = null, lookbackDays = 30, ceil
     fetchDeviceIdentities(deviceIds),
     fetchInterfaceLabels(deviceIds),
   ]);
+  const cutoff = Date.now() - ACTIVE_WITHIN_MS;
   const results = [];
   for (const e of grouped.values()) {
+    // Without this a router removed and re-added N times renders its whole interface
+    // list N+1 times over — one block per retired device_id (see isCurrentDevice).
+    if (deviceId == null && !isCurrentDevice(e, identities, cutoff)) continue;
     const ident = identify(e, identities);
     const ifName = e.sub;
     const label = labels.get(`${Number(e.deviceId)}|${ifName}`) ?? null;
