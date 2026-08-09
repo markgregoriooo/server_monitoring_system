@@ -385,7 +385,9 @@ export default function Analytics() {
   const [upsForecasts, setUpsForecasts] = useState<UpsBatteryForecast[]>([]);
   const [linkForecasts, setLinkForecasts] = useState<LinkForecast[]>([]);
   const [summary, setSummary] = useState<AlertSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [diskLoading, setDiskLoading] = useState(true);
+  const [upsLoading, setUpsLoading] = useState(true);
+  const [linkLoading, setLinkLoading] = useState(true);
   const [error, setError] = useState("");
 
   // Phase 2/3 — metric focus (one selector drives both Trend and Anomaly panels).
@@ -396,7 +398,8 @@ export default function Analytics() {
   const [selDevice, setSelDevice] = usePersistedState<number | null>("deviceId", null);
   const [trend, setTrend] = useState<MetricTrend | null>(null);
   const [anom, setAnom] = useState<AnomalyResult | null>(null);
-  const [focusLoading, setFocusLoading] = useState(false);
+  const [trendLoading, setTrendLoading] = useState(false);
+  const [anomLoading, setAnomLoading] = useState(false);
 
   // Phase 4 — threshold recommendations.
   const [recs, setRecs] = useState<Recommendation[]>([]);
@@ -410,24 +413,38 @@ export default function Analytics() {
     if (s.success) setSummary(s.data?.summary ?? null);
   }, [alertDays]);
 
-  const loadForecasts = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError("");
-    const [f, ups, link] = await Promise.all([
-      api.getDiskForecast(diskDays),
-      api.getUpsBatteryForecast(upsDays),
-      api.getLinkSaturationForecast(linkDays),
-    ]);
-    if (f.success) setForecasts(f.data?.forecasts ?? []);
+  // The three forecasts load INDEPENDENTLY, each keyed to its own lookback. Fetching them
+  // together meant adjusting the UPS window also re-fetched disk and link and blanked all
+  // three panels — the page collapsed by the height of three tables and the browser
+  // clamped the scroll back to the top, away from the control just used.
+  const loadDisk = useCallback(async (silent = false) => {
+    if (!silent) setDiskLoading(true);
+    const f = await api.getDiskForecast(diskDays);
+    if (f.success) { setForecasts(f.data?.forecasts ?? []); setError(""); }
     else if (!silent) setError(f.error || "Failed to load forecasts.");
-    if (ups.success) setUpsForecasts(ups.data?.forecasts ?? []);
-    if (link.success) setLinkForecasts(link.data?.forecasts ?? []);
-    if (!silent) setLoading(false);
-  }, [diskDays, upsDays, linkDays]);
+    if (!silent) setDiskLoading(false);
+  }, [diskDays]);
 
-  // Forecasts load on mount + lookback change (also the source of the device lists the
-  // Trends tab's selector needs). The other tabs load lazily when first activated.
-  useEffect(() => { loadForecasts(); }, [loadForecasts]);
+  const loadUps = useCallback(async (silent = false) => {
+    if (!silent) setUpsLoading(true);
+    const ups = await api.getUpsBatteryForecast(upsDays);
+    if (ups.success) setUpsForecasts(ups.data?.forecasts ?? []);
+    if (!silent) setUpsLoading(false);
+  }, [upsDays]);
+
+  const loadLink = useCallback(async (silent = false) => {
+    if (!silent) setLinkLoading(true);
+    const link = await api.getLinkSaturationForecast(linkDays);
+    if (link.success) setLinkForecasts(link.data?.forecasts ?? []);
+    if (!silent) setLinkLoading(false);
+  }, [linkDays]);
+
+  // Forecasts load on mount + their own lookback change (they are also the source of the
+  // device lists the Trends tab's selector needs, so they load regardless of active tab).
+  // The other tabs load lazily when first activated.
+  useEffect(() => { loadDisk(); }, [loadDisk]);
+  useEffect(() => { loadUps(); }, [loadUps]);
+  useEffect(() => { loadLink(); }, [loadLink]);
   useEffect(() => { if (tab === "alerts") loadSummary(); }, [tab, loadSummary]);
 
   // Live alert analytics: re-pull the summary whenever an alert is raised
@@ -477,20 +494,34 @@ export default function Analytics() {
     if (!stillValid) setSelDevice(first.id);
   }, [needsDevice, selDevice, deviceOptions]);
 
-  const loadFocus = useCallback(async (silent = false) => {
-    if (needsDevice && selDevice == null) { setTrend(null); setAnom(null); return; }
-    if (!silent) setFocusLoading(true);
-    const dev = needsDevice ? selDevice : null;
-    const [t, a] = await Promise.all([
-      api.getMetricTrend(selMetric, { deviceId: dev, hours: TREND_LOOKBACK_HOURS, horizon: TREND_HORIZON_HOURS }),
-      api.getAnomalies(selMetric, { deviceId: dev, days: anomDays }),
-    ]);
-    setTrend(t.success ? (t.data?.trend ?? null) : null);
-    setAnom(a.success ? (a.data?.result ?? null) : null);
-    if (!silent) setFocusLoading(false);
-  }, [selMetric, selDevice, needsDevice, anomDays]);
+  // Trend and anomalies load INDEPENDENTLY. Sharing one loader meant changing the anomaly
+  // window also re-fetched the trend and blanked both panels to "Loading…" — the page lost
+  // the ~500px of chart and tables, the document shrank, and the browser clamped the
+  // scroll position back to the top, throwing the reader away from the very control they
+  // had just used. Anomaly reloads now leave the trend chart untouched.
+  const focusDevice = needsDevice ? selDevice : null;
+  const focusReady = !needsDevice || selDevice != null;
 
-  useEffect(() => { if (tab === "trends") loadFocus(); }, [tab, loadFocus]);
+  const loadTrend = useCallback(async (silent = false) => {
+    if (!focusReady) { setTrend(null); return; }
+    if (!silent) setTrendLoading(true);
+    const t = await api.getMetricTrend(selMetric, {
+      deviceId: focusDevice, hours: TREND_LOOKBACK_HOURS, horizon: TREND_HORIZON_HOURS,
+    });
+    setTrend(t.success ? (t.data?.trend ?? null) : null);
+    if (!silent) setTrendLoading(false);
+  }, [selMetric, focusDevice, focusReady]);
+
+  const loadAnom = useCallback(async (silent = false) => {
+    if (!focusReady) { setAnom(null); return; }
+    if (!silent) setAnomLoading(true);
+    const a = await api.getAnomalies(selMetric, { deviceId: focusDevice, days: anomDays });
+    setAnom(a.success ? (a.data?.result ?? null) : null);
+    if (!silent) setAnomLoading(false);
+  }, [selMetric, focusDevice, focusReady, anomDays]);
+
+  useEffect(() => { if (tab === "trends") loadTrend(); }, [tab, loadTrend]);
+  useEffect(() => { if (tab === "trends") loadAnom(); }, [tab, loadAnom]);
 
   const loadRecs = useCallback(async (silent = false) => {
     if (!silent) setRecsLoading(true);
@@ -512,8 +543,8 @@ export default function Analytics() {
       if (timer) return;                         // a refresh is already queued in this window
       timer = setTimeout(() => {
         timer = null;
-        if (tab === "forecasts") loadForecasts(true);
-        else if (tab === "trends") loadFocus(true);
+        if (tab === "forecasts") { loadDisk(true); loadUps(true); loadLink(true); }
+        else if (tab === "trends") { loadTrend(true); loadAnom(true); }
         else if (tab === "recs") loadRecs(true);
       }, LIVE_REFRESH_MS);
     };
@@ -523,7 +554,7 @@ export default function Analytics() {
       for (const e of events) socket.off(e, trigger);
       if (timer) clearTimeout(timer);
     };
-  }, [tab, loadForecasts, loadFocus, loadRecs]);
+  }, [tab, loadDisk, loadUps, loadLink, loadTrend, loadAnom, loadRecs]);
 
   // Admin only: push the suggested warn (p95) + crit (p99) into the global alert_rules,
   // updating the existing rule if there is one, else creating it (comparison ">").
@@ -687,7 +718,7 @@ export default function Analytics() {
       {tab === "forecasts" && (
         <>
           {/* Action summary — the whole point of the page, so it goes first. */}
-          {!loading && allAdvice.length > 0 && (
+          {allAdvice.length > 0 && (
             <Panel title="Action Needed" subtitle="Every forecast currently projecting a problem, most urgent first">
               <div className="space-y-1.5">
                 {allAdvice.map((a) => (
@@ -704,7 +735,7 @@ export default function Analytics() {
             etaHeader="ETA to full"
             byHeader="Full by"
             rows={diskRows}
-            loading={loading}
+            loading={diskLoading}
             lookback={{ value: diskDays, options: DISK_LOOKBACKS, onChange: setDiskDays }}
             empty="No server disk history yet. Forecasts appear once agents have reported for a while."
             note="Disks fill over weeks, so 30 days is the useful default — a 14-day window is easily skewed by one large copy or a log rotation. ETA is shown only for an upward trend."
@@ -717,7 +748,7 @@ export default function Analytics() {
             etaHeader="ETA to critical"
             byHeader="Replace by"
             rows={upsRows}
-            loading={loading}
+            loading={upsLoading}
             lookback={{ value: upsDays, options: UPS_LOOKBACKS, onChange: setUpsDays }}
             empty="No UPS history yet. Runtime history builds up once the SNMP poller has been running against a UPS."
             note="A UPS battery ages over YEARS, and runtime also moves with load — so months of history are needed before a decline is separable from normal load swings. Below ~90 days expect Stable, which is the honest answer, not a fault."
@@ -730,7 +761,7 @@ export default function Analytics() {
             etaHeader={`ETA to ${linkForecasts[0]?.ceiling ?? 90}%`}
             byHeader="Saturates by"
             rows={linkRows}
-            loading={loading}
+            loading={linkLoading}
             lookback={{ value: linkDays, options: LINK_LOOKBACKS, onChange: setLinkDays }}
             empty="No interface history yet. Each router/MikroTik port appears once the poller has collected traffic counters."
             note="On the campus MikroTik each interface is a building. Campus traffic follows the academic calendar, so a window sitting on semester start will project a ramp that later plateaus — read these as capacity planning, not promises."
@@ -883,12 +914,12 @@ export default function Analytics() {
             title="Trend & Short-Term Projection"
             subtitle={`EWMA-smoothed history + Holt's linear (double-exponential) projection — last ${trend?.lookbackHours ?? TREND_LOOKBACK_HOURS}h of history, next ~${trend?.horizonHours ?? TREND_HORIZON_HOURS}h`}
           >
-            {focusLoading ? (
+            {trendLoading && !trend ? (
               <Empty>Loading trend…</Empty>
             ) : !trend || trend.status !== "ok" ? (
               <Empty>Not enough history for this metric yet.</Empty>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3" style={{ opacity: trendLoading ? 0.5 : 1, transition: "opacity 120ms" }}>
                 <div className="flex flex-wrap items-center gap-4 text-[1em]">
                   <LegendDot color={GRAY} label="actual" />
                   <LegendDot color={gf.accent as string} label="EWMA (smoothed)" />
@@ -923,12 +954,12 @@ export default function Analytics() {
             subtitle={anom ? `Per-hour-of-day baseline · |z| > ${anom.z} over ${anom.days} days` : "Per-hour-of-day z-score + IQR"}
             action={<LookbackPicker value={anomDays} options={ANOMALY_LOOKBACKS} onChange={setAnomDays} />}
           >
-            {focusLoading ? (
+            {anomLoading && !anom ? (
               <Empty>Scanning…</Empty>
             ) : !anom || anom.status !== "ok" ? (
               <Empty>Not enough history to baseline this metric yet.</Empty>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-4" style={{ opacity: anomLoading ? 0.5 : 1, transition: "opacity 120ms" }}>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                   <Stat label="Anomalies" value={String(anom.anomalyCount)} color={anom.anomalyCount > 0 ? ORANGE : GREEN} />
                   <Stat label="Points scanned" value={String(anom.totalPoints)} />
@@ -1084,12 +1115,12 @@ function ForecastPanel({
       subtitle={subtitle}
       action={<LookbackPicker {...lookback} />}
     >
-      {loading ? (
+      {loading && rows.length === 0 ? (
         <Empty>Loading forecasts…</Empty>
       ) : rows.length === 0 ? (
         <Empty>{empty}</Empty>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto" style={{ opacity: loading ? 0.5 : 1, transition: "opacity 120ms" }}>
           <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ color: gf.textDim, textAlign: "left" }}>
@@ -1161,26 +1192,53 @@ function DeviceLabel({ name, typeLabel, sub }: { name: string; typeLabel: string
   );
 }
 
+// Segmented control rather than loose buttons: the options are mutually exclusive, and
+// one solid group reads as a single switch instead of three things to click. The depth is
+// doing work, not decoration — the track is RECESSED (inset shadow) and the selected
+// segment is RAISED out of it (drop shadow + a light top edge), so which window is active
+// is legible from the shape alone, before the accent colour is read. Matters on a wall
+// display and for anyone who can't rely on the blue.
 function LookbackPicker({ value, options, onChange }: {
   value: number; options: readonly LookbackOption[]; onChange: (d: number) => void;
 }) {
   return (
-    <span className="flex items-center gap-1">
-      <span className="text-[0.82em] uppercase tracking-widest mr-1" style={{ color: gf.textDim }}>Lookback</span>
-      {options.map((o) => (
-        <button
-          key={o.value}
-          onClick={() => onChange(o.value)}
-          className="px-2 py-0.5 text-[0.9em] rounded-[2px] transition-colors"
-          style={{
-            background: value === o.value ? gf.accent : gf.panel,
-            color: value === o.value ? "#fff" : gf.textMuted,
-            border: `1px solid ${value === o.value ? gf.accent : gf.border}`,
-          }}
-        >
-          {o.label}
-        </button>
-      ))}
+    <span className="flex items-center gap-2">
+      <span className="text-[0.82em] uppercase tracking-widest" style={{ color: gf.textDim }}>Lookback</span>
+      <span
+        className="flex rounded-[3px] overflow-hidden"
+        style={{
+          background: gf.bg,
+          border: `1px solid ${gf.border}`,
+          boxShadow: "inset 0 2px 4px rgba(0,0,0,0.38)",
+        }}
+      >
+        {options.map((o, i) => {
+          const active = value === o.value;
+          return (
+            <button
+              key={o.value}
+              onClick={() => onChange(o.value)}
+              aria-pressed={active}
+              className="px-3 py-1.5 text-[0.9em] transition-all"
+              style={{
+                background: active ? gf.accent : "transparent",
+                color: active ? "#fff" : gf.textMuted,
+                fontWeight: active ? 700 : 500,
+                letterSpacing: active ? "0.02em" : undefined,
+                // Left divider between segments (not before the first) keeps the group
+                // reading as one control while still separating the hit areas.
+                borderLeft: i === 0 ? "none" : `1px solid ${gf.border}`,
+                boxShadow: active
+                  ? "0 1px 4px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.22)"
+                  : "none",
+                cursor: "pointer",
+              }}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </span>
     </span>
   );
 }
