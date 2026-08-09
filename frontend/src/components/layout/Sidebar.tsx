@@ -322,7 +322,8 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
             onClick={onToggleCollapse}
             aria-label="Hide sidebar"
             title="Hide sidebar (Ctrl/⌘ B)"
-            className="gf-icon-btn hidden lg:flex ml-auto flex-shrink-0"
+            className="gf-btn hidden lg:flex ml-auto flex-shrink-0 items-center justify-center w-7 h-7"
+            style={{ color: "var(--gf-text-muted)", borderRadius: 3 }}
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M10 4L6 8l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
@@ -478,8 +479,16 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
               </button>
 
               <button onClick={logout}
-                className="w-full py-1.5 rounded text-[12px] tracking-wider transition-colors"
-                style={{ color: "var(--gf-text-muted)", border: "1px solid var(--gf-panel-border)" }}
+                className="w-full py-1.5 rounded-[3px] text-[12px] tracking-wider transition-all active:translate-y-px"
+                style={{
+                  color: "var(--gf-text-muted)",
+                  background: "var(--gf-hover)",
+                  border: "1px solid var(--gf-panel-border)",
+                  // Token, not a literal rgba: a hand-picked black shadow reads as dirt
+                  // in light mode. Shadow only — the raised FACE and sheen are what would
+                  // make this shout, and it should not.
+                  boxShadow: "var(--gf-btn-shadow)",
+                }}
                 onMouseEnter={e => {
                   e.currentTarget.style.color      = "var(--gf-text-primary)";
                   e.currentTarget.style.background = "var(--gf-hover)";

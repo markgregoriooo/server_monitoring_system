@@ -272,31 +272,21 @@
     justify-content: center;
     width: 28px;
     height: 28px;
-    border-radius: 3px;
-    /* Raised, like .gf-btn. These were a flat tint while every other pressable surface
-       in the app lifted, so the icon controls — bell, menu, collapse arrows, pop-out —
-       read as decoration sitting next to real buttons. The sidebar's collapse arrow and
-       the Header's do the same job, so both take it from here rather than each styling
-       itself. */
-    border: 1px solid var(--gf-btn-border);
-    background-color: var(--gf-btn-face);
-    background-image: var(--gf-btn-sheen);
-    box-shadow: var(--gf-btn-shadow);
+    border-radius: 2px;
+    border: 1px solid var(--gf-panel-border);
+    background: var(--gf-hover);
     color: var(--gf-text-muted);
     transition: background-color .12s ease, color .12s ease,
                 border-color .12s ease, box-shadow .12s ease, transform .06s ease;
   }
   .gf-icon-btn:hover {
-    background-color: var(--gf-btn-face-hover);
-    border-color: var(--gf-btn-border-hover);
+    background: var(--gf-hover-strong);
+    border-color: var(--gf-btn-border);
     color: var(--gf-text-primary);
   }
-  /* Pressed: drop 1px and invert to an inset shadow, so it reads as pushed INTO the
-     page rather than merely changing colour. */
   .gf-icon-btn:active {
     transform: translateY(1px);
     box-shadow: var(--gf-btn-shadow-active);
-    background-image: none;
   }
   .gf-icon-btn:focus-visible { outline: 2px solid var(--gf-accent); outline-offset: 1px; }
   /* Dropdown open — the button stays visibly engaged while its panel is showing. */
