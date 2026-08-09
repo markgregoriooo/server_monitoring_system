@@ -322,10 +322,7 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
             onClick={onToggleCollapse}
             aria-label="Hide sidebar"
             title="Hide sidebar (Ctrl/⌘ B)"
-            className="hidden lg:flex ml-auto flex-shrink-0 items-center justify-center w-6 h-6 rounded transition-colors"
-            style={{ color: "var(--gf-text-muted)" }}
-            onMouseEnter={e => { e.currentTarget.style.color = "var(--gf-text-primary)"; e.currentTarget.style.background = "var(--gf-hover)"; }}
-            onMouseLeave={e => { e.currentTarget.style.color = "var(--gf-text-muted)"; e.currentTarget.style.background = "transparent"; }}
+            className="gf-icon-btn hidden lg:flex ml-auto flex-shrink-0"
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M10 4L6 8l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
@@ -416,11 +413,15 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
               style={{ color: "var(--gf-text-dim)" }}>
               Theme
             </span>
+            {/* Raised like every other pressable control. It was a flat tint with JS
+                hover — the one button in the rail that gave no sign it could be pressed,
+                sitting directly under nav rows that now lift. Hover/press come from
+                .gf-btn, so it also gains the pressed state inline styles cannot express.
+                The label already names the theme you'll GET, not the one you're in. */}
             <button onClick={toggleTheme}
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[12px] transition-colors"
-              style={{ color: "var(--gf-text-muted)", background: "var(--gf-hover)" }}
-              onMouseEnter={e => (e.currentTarget.style.color = "var(--gf-text-primary)")}
-              onMouseLeave={e => (e.currentTarget.style.color = "var(--gf-text-muted)")}>
+              title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+              className="gf-btn flex items-center gap-1.5 px-2.5 py-1 text-[12px]"
+              style={{ color: "var(--gf-text-primary)", borderRadius: 3, fontWeight: 600 }}>
               {theme === "dark" ? (
                 <>
                   <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
@@ -476,16 +477,26 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
                 </div>
               </button>
 
+              {/* RECESSED, not raised — signing out is the way out, not the thing you
+                  came here to do. Same rule as Cancel elsewhere, and it keeps the theme
+                  button above it as the only lifted control in this block.
+                  Hover stays in JS here because the inline colour would otherwise beat a
+                  CSS :hover rule on specificity. */}
               <button onClick={logout}
-                className="w-full py-1.5 rounded text-[12px] tracking-wider transition-colors"
-                style={{ color: "var(--gf-text-muted)", border: "1px solid var(--gf-panel-border)" }}
+                className="w-full py-1.5 rounded-[3px] text-[12px] tracking-wider transition-all active:scale-[0.98]"
+                style={{
+                  color: "var(--gf-text-muted)",
+                  background: "var(--gf-bg)",
+                  border: "1px solid var(--gf-panel-border)",
+                  boxShadow: "var(--gf-btn-shadow-active)",
+                }}
                 onMouseEnter={e => {
-                  e.currentTarget.style.color      = "var(--gf-text-primary)";
-                  e.currentTarget.style.background = "var(--gf-hover)";
+                  e.currentTarget.style.color = "var(--gf-text-primary)";
+                  e.currentTarget.style.borderColor = "var(--gf-btn-border-hover)";
                 }}
                 onMouseLeave={e => {
-                  e.currentTarget.style.color      = "var(--gf-text-muted)";
-                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.color = "var(--gf-text-muted)";
+                  e.currentTarget.style.borderColor = "var(--gf-panel-border)";
                 }}>
                 Sign Out
               </button>
