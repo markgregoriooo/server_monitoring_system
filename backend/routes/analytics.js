@@ -98,6 +98,9 @@ router.get(
   asyncHandler(async (req, res) => {
     const recommendations = await analyticsService.recommendThresholds({
       lookbackDays: req.query.days,
+      // Optional: narrow to one server so a busy box can get its own thresholds
+      // instead of inheriting a fleet-wide p95 that suits neither it nor an idle one.
+      deviceId: parseDeviceId(req.query.deviceId),
     });
     res.json({ recommendations });
   }),

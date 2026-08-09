@@ -857,3 +857,37 @@ be narrowed to one device or left campus-wide across all three forecast kinds.
 > `migrations/2026-08-09_report_forecast_type.sql`. The v12 schema export already includes
 > it, so a fresh install needs nothing. This is why the earlier `network` and `ups` types
 > needed no migration — they were already in the ENUM.
+
+---
+
+## 19. Two smaller corrections
+
+### 19.1 The UPS's own verdict outranks our regression
+
+`ups_metrics.battery_status` is the RFC 1628 `upsBatteryStatus` enum (1 unknown, 2 normal,
+3 low, 4 depleted) — stored by `upsMetricsHandler` precisely because it is the signal that
+reveals itself over months. The forecast ignored it and regressed runtime alone.
+
+It now takes **precedence** when it is worse, because the two are not equal evidence:
+
+- `battery_status` is a **measurement** the UPS makes about itself.
+- Our ETA is an **inference** from runtime, which also moves with load (§16.1).
+
+So a battery the hardware calls `depleted` raises a critical advisory *regardless of what
+the trend says*. A quiet regression must never talk over the device.
+
+The **worst** state in the window is used, not the latest: a battery that dipped to `low`
+under load and recovered is still one to look at.
+
+### 19.2 Threshold recommendations can now be per server
+
+`recommendThresholds` pooled every server, matching the global rule's scope. That is right
+for a global default and wrong for a fleet that isn't uniform — a busy database server and
+an idle file server share a p95 that suits neither, so the global rule either cries wolf on
+the quiet box or stays silent on the loud one.
+
+Passing `?deviceId=` scopes the suggestion to one server and compares it against that
+server's **effective** rules (its own override if it has one, else the global), so "in
+sync" means what it says. Applying writes a per-server override and leaves the global rule
+alone. Environment metrics are skipped when scoped — there is no per-device version of
+"the server room is too hot".

@@ -59,6 +59,9 @@ interface DiskForecast extends DeviceIdentity {
 
 interface UpsBatteryForecast extends DeviceIdentity {
   historyDays: number;
+  // The UPS's own RFC 1628 verdict, which outranks our regression when it is worse.
+  batteryStatus: string | null;
+  batteryStatusWorst: string | null;
   floorMinutes: number;
   currentRuntimeMin: number | null;
   slopePerDay: number | null;
@@ -440,6 +443,8 @@ export default function Analytics() {
   const [recs, setRecs] = useState<Recommendation[]>([]);
   const [recsLoading, setRecsLoading] = useState(true);
   const [accuracy, setAccuracy] = useState<AccuracyResult | null>(null);
+  // null = fleet-wide (the global rule's scope); an id narrows to that server.
+  const [recDevice, setRecDevice] = useState<number | null>(null);
   const [applying, setApplying] = useState<string | null>(null);
 
   // Refresh just the alert summary (no full-panel spinner) so the live socket-driven
@@ -580,10 +585,10 @@ export default function Analytics() {
 
   const loadRecs = useCallback(async (silent = false) => {
     if (!silent) setRecsLoading(true);
-    const r = await api.getRecommendations(REC_WINDOW_DAYS);
+    const r = await api.getRecommendations(REC_WINDOW_DAYS, recDevice);
     if (r.success) setRecs(r.data?.recommendations ?? []);
     if (!silent) setRecsLoading(false);
-  }, []);
+  }, [recDevice]);
 
   useEffect(() => { if (tab === "recs") loadRecs(); }, [tab, loadRecs]);
 
@@ -666,7 +671,11 @@ export default function Analytics() {
       key: `ups-${u.deviceId}`,
       name: u.name,
       typeLabel: u.typeLabel,
-      sub: u.location,
+      // Lead the sub-line with the hardware's own verdict when it is anything but
+      // normal — that is a measurement from the device, not an inference from a trend.
+      sub: u.batteryStatusWorst && u.batteryStatusWorst !== "normal" && u.batteryStatusWorst !== "unknown"
+        ? `UPS reports battery: ${u.batteryStatusWorst.toUpperCase()}`
+        : u.location,
       currentText: u.currentRuntimeMin == null ? "—" : `${u.currentRuntimeMin} min`,
       barPct: null, // runtime has no natural 0-100 scale
       slopePerDay: u.slopePerDay,
@@ -1101,8 +1110,31 @@ export default function Analytics() {
       {tab === "recs" && (
         <Panel
           title="Threshold Recommendations"
-          subtitle={`Suggested alert-rule values from the last ${REC_WINDOW_DAYS} days — warn = p95, critical = p99`}
+          subtitle={
+            recDevice == null
+              ? `All servers pooled · last ${REC_WINDOW_DAYS} days · warn = p95, critical = p99`
+              : `${servers.find((s) => s.id === recDevice)?.name ?? "Server"} only · last ${REC_WINDOW_DAYS} days`
+          }
+          action={
+            servers.length > 0 ? (
+              <Select
+                value={recDevice == null ? "" : String(recDevice)}
+                options={[
+                  { value: "", label: "All servers", group: null },
+                  ...servers.map((s) => ({ value: String(s.id), label: s.name, group: "Per server" })),
+                ]}
+                onChange={(v) => setRecDevice(v ? Number(v) : null)}
+                title="Suggest thresholds for one server instead of the whole fleet"
+              />
+            ) : undefined
+          }
         >
+          {recDevice != null && (
+            <p className="mb-3 text-[0.9em]" style={{ color: gf.textMuted }}>
+              A busy server and an idle one share a pooled p95 that suits neither. Applying
+              here writes a per-server override, leaving the global rule untouched.
+            </p>
+          )}
           {recsLoading ? (
             <Empty>Computing…</Empty>
           ) : recs.length === 0 ? (

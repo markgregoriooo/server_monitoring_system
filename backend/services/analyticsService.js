@@ -539,13 +539,28 @@ function roundForUnit(v, meta) {
   return Math.round(v); // ppm
 }
 
-async function recommendThresholds({ lookbackDays = 14 } = {}) {
+// `deviceId` narrows the suggestion to ONE server. Pooling every server (the default,
+// matching the global rule's scope) is right for a global default, but it is exactly wrong
+// for a fleet that isn't uniform: a busy database server and an idle file server share a
+// p95 that suits neither, so the global rule either cries wolf on the quiet box or stays
+// silent on the loud one. A per-device suggestion is compared against that device's
+// EFFECTIVE rules — its own override if it has one, else the global — so "in sync" means
+// what it says.
+async function recommendThresholds({ lookbackDays = 14, deviceId = null } = {}) {
   const days = clampInt(lookbackDays, 1, 90, 14);
+  const scoped = deviceId != null;
   const out = [];
   for (const [metric, meta] of Object.entries(METRICS)) {
     if (meta.recommend === false) continue; // device-class metrics opt out of threshold recs
-    const series = await fetchMetricSeries(metric, { rangeExpr: `-${days}d`, every: "30m" });
-    const rules = await alertRulesService.getEffectiveRules(null, metric);
+    // Environment metrics are room-level: there is no per-device version of "the server
+    // room is too hot", so a scoped request simply skips them.
+    if (scoped && meta.source !== "server") continue;
+    const series = await fetchMetricSeries(metric, {
+      deviceId: scoped ? deviceId : null,
+      rangeExpr: `-${days}d`,
+      every: "30m",
+    });
+    const rules = await alertRulesService.getEffectiveRules(scoped ? deviceId : null, metric);
     const cw = rules.find((r) => r.severity === "warning");
     const cc = rules.find((r) => r.severity === "critical");
     const currentWarn = cw ? Number(cw.threshold_value) : null;
@@ -553,6 +568,7 @@ async function recommendThresholds({ lookbackDays = 14 } = {}) {
 
     const row = {
       metric, label: meta.label, unit: meta.unit, sampleCount: series.length,
+      deviceId: scoped ? deviceId : null,
       p50: null, p95: null, p99: null, max: null,
       suggestedWarn: null, suggestedCrit: null,
       currentWarn, currentCrit,
@@ -675,9 +691,38 @@ async function fetchSeriesGrouped(measurement, field, { deviceId = null, days = 
 // UPS battery degradation: regress runtime_remaining_min down to a critical floor →
 // "replace battery in ~N days" (the UPS analogue of disk-full ETA). Runtime depends on
 // load, so this is most reliable when load is steady; the R² gate guards the rest.
+// RFC 1628 upsBatteryStatus. The UPS's OWN verdict on its battery, which is worth more
+// than a regression when it disagrees: a manufacturer saying "low" is a measurement, while
+// our runtime trend is an inference from data that also moves with load. Stored by
+// upsMetricsHandler precisely because it is the signal that reveals itself over months.
+const BATTERY_STATUS = { 1: "unknown", 2: "normal", 3: "low", 4: "depleted" };
+
+async function fetchBatteryStatus(deviceId, days) {
+  const grouped = await fetchSeriesGrouped("ups_metrics", "battery_status", { deviceId, days });
+  const out = new Map();
+  for (const e of grouped.values()) {
+    const sorted = [...e.raw].sort((a, b) => a.t - b.t);
+    const latest = sorted[sorted.length - 1];
+    if (!latest) continue;
+    // Worst state seen in the window, not just the latest: a battery that dipped to
+    // "low" under load and recovered is still a battery worth looking at.
+    const worst = sorted.reduce((w, p) => (p.y > w ? p.y : w), 0);
+    out.set(e.deviceId, {
+      code: Math.round(latest.y),
+      label: BATTERY_STATUS[Math.round(latest.y)] ?? "unknown",
+      worstCode: Math.round(worst),
+      worstLabel: BATTERY_STATUS[Math.round(worst)] ?? "unknown",
+    });
+  }
+  return out;
+}
+
 async function forecastUpsBattery({ deviceId = null, lookbackDays = 180, floorMinutes = 5 } = {}) {
   const floor = clampNum(floorMinutes, 1, 60, 5);
-  const grouped = await fetchSeriesGrouped("ups_metrics", "runtime_remaining_min", { deviceId, days: lookbackDays });
+  const [grouped, batteryStatus] = await Promise.all([
+    fetchSeriesGrouped("ups_metrics", "runtime_remaining_min", { deviceId, days: lookbackDays }),
+    fetchBatteryStatus(deviceId, lookbackDays),
+  ]);
   const identities = await fetchDeviceIdentities([...grouped.values()].map((e) => e.deviceId));
   const cutoff = Date.now() - ACTIVE_WITHIN_MS;
   const results = [];
@@ -687,16 +732,29 @@ async function forecastUpsBattery({ deviceId = null, lookbackDays = 180, floorMi
     const name = ident.name;
     const p = projectToBound(e.raw, { bound: floor, direction: "down" });
     const eta = p.etaDays;
+    const status = batteryStatus.get(e.deviceId) ?? null;
+    // The UPS's own verdict OVERRIDES the regression when it is worse. "depleted"/"low"
+    // is a measurement from the device; our ETA is an inference from runtime that also
+    // moves with load, so a quiet trend must never talk over the hardware.
+    const declared =
+      status && status.worstCode >= 4
+        ? { level: "critical", message: `${name}: the UPS reports its battery as DEPLETED — replace it now, regardless of the runtime trend.` }
+        : status && status.worstCode === 3
+          ? { level: "warning", message: `${name}: the UPS reported battery LOW during this window — verify the battery even if runtime looks steady.` }
+          : null;
     const advice =
-      p.status === "reached"
+      declared ??
+      (p.status === "reached"
         ? { level: "critical", message: `${name}: runtime at/below ${floor} min — replace the battery now.` }
         : p.status === "declining" && eta != null && eta < 14
           ? { level: "critical", message: `${name}: battery runtime projected below ${floor} min in ~${eta} days — schedule replacement.` }
           : p.status === "declining" && eta != null && eta < 60
             ? { level: "warning", message: `${name}: battery runtime declining — projected critical in ~${eta} days. Plan a replacement.` }
-            : null;
+            : null);
     results.push({
       deviceId: e.deviceId, ...ident, floorMinutes: floor, historyDays: spanDays(e.raw),
+      batteryStatus: status?.label ?? null,
+      batteryStatusWorst: status?.worstLabel ?? null,
       currentRuntimeMin: p.current, slopePerDay: p.slopePerDay, etaDays: eta,
       fitR2: p.fitR2, mae: p.mae, confidence: p.confidence,
       sampleCount: p.sampleCount, status: p.status, advice,

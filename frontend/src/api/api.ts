@@ -973,9 +973,13 @@ export const api = {
   },
 
   // Suggested alert-rule thresholds (percentiles) vs current global rules.
-  getRecommendations: async (days?: number): Promise<ApiResult> => {
+  // deviceId narrows the suggestion to one server instead of pooling the whole fleet.
+  getRecommendations: async (days?: number, deviceId?: number | null): Promise<ApiResult> => {
     try {
-      const res = await apiClient.get("/analytics/recommendations", days ? { params: { days } } : undefined);
+      const params: Record<string, string | number> = {};
+      if (days) params.days = days;
+      if (deviceId != null) params.deviceId = deviceId;
+      const res = await apiClient.get("/analytics/recommendations", { params });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
