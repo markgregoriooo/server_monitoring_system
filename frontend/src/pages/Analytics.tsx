@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
 import { socket } from "../socket/socket";
@@ -377,6 +377,11 @@ interface ForecastRow {
   advice: Advice | null;
   volumes: VolumeForecast[];
   historyDays: number;      // actual span of data behind this row
+  // Set only where rows should collapse under a parent device (link saturation).
+  // null = render flat.
+  groupKey: string | null;
+  groupLabel: string | null;
+  groupTypeLabel: string | null;
 }
 
 export default function Analytics() {
@@ -621,6 +626,7 @@ export default function Analytics() {
       advice: f.advice,
       volumes: f.volumes,
       historyDays: f.historyDays,
+      groupKey: null, groupLabel: null, groupTypeLabel: null,
     })),
     [forecasts],
   );
@@ -646,6 +652,7 @@ export default function Analytics() {
       advice: u.advice,
       volumes: [],
       historyDays: u.historyDays,
+      groupKey: null, groupLabel: null, groupTypeLabel: null,
     })),
     [upsForecasts],
   );
@@ -654,10 +661,11 @@ export default function Analytics() {
     () => linkForecasts.map((l) => ({
       key: `link-${l.deviceId}-${l.interface}`,
       // On the campus MikroTik an interface IS a building, so lead with the label an
-      // operator recognises and keep the port as the technical sub-line.
+      // operator recognises and keep the port as the technical sub-line. The device name
+      // and class now live on the group header, so repeating them per row would be noise.
       name: l.interfaceLabel ?? l.interface,
-      typeLabel: l.typeLabel,
-      sub: l.interfaceLabel ? `${l.name} · ${l.interface}` : l.name,
+      typeLabel: null,
+      sub: l.interfaceLabel ? l.interface : null,
       currentText: l.currentUtil == null ? "—" : `${l.currentUtil}%`,
       barPct: l.currentUtil,
       slopePerDay: l.slopePerDay,
@@ -673,6 +681,9 @@ export default function Analytics() {
       advice: l.advice,
       volumes: [],
       historyDays: l.historyDays,
+      groupKey: String(l.deviceId),
+      groupLabel: l.name,
+      groupTypeLabel: l.typeLabel,
     })),
     [linkForecasts],
   );
@@ -694,7 +705,7 @@ export default function Analytics() {
         <div>
           <h1 className="text-[1.6em] font-bold">Predictive Analytics</h1>
           <p className="text-[1em]" style={{ color: gf.textMuted }}>
-            Forecasts &amp; insight from historical metrics — supervised linear regression (validated) + alert statistics.
+            Validated linear regression over historical metrics, plus alert statistics.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -739,7 +750,7 @@ export default function Analytics() {
         <>
           {/* Action summary — the whole point of the page, so it goes first. */}
           {allAdvice.length > 0 && (
-            <Panel title="Action Needed" subtitle="Every forecast currently projecting a problem, most urgent first">
+            <Panel title="Action Needed" subtitle="Most urgent first">
               <div className="space-y-1.5">
                 {allAdvice.map((a) => (
                   <AdviceCallout key={a.key} level={a.advice.level}>{a.advice.message}</AdviceCallout>
@@ -750,7 +761,7 @@ export default function Analytics() {
 
           <ForecastPanel
             title="Disk-Full Forecast"
-            subtitle={`Regression on ${diskDays}-day usage trend → time to ${forecasts[0]?.full ?? 100}% capacity, per server's fastest-filling volume`}
+            subtitle={`Time to ${forecasts[0]?.full ?? 100}% · ${diskDays}-day trend · fastest-filling volume`}
             entityHeader="Server"
             etaHeader="ETA to full"
             byHeader="Full by"
@@ -758,12 +769,12 @@ export default function Analytics() {
             loading={diskLoading}
             lookback={{ value: diskDays, options: DISK_LOOKBACKS, onChange: setDiskDays }}
             empty="No server disk history yet. Forecasts appear once agents have reported for a while."
-            note="Disks fill over weeks, so 30 days is the useful default — a 14-day window is easily skewed by one large copy or a log rotation. ETA is shown only for an upward trend."
+            note="An ETA appears only for a rising trend. Disks fill over weeks, so a short window is easily skewed by one large copy or a log rotation."
           />
 
           <ForecastPanel
             title="UPS Battery Forecast"
-            subtitle={`Regression on ${upsDays}-day runtime trend → time until runtime hits the critical floor (battery replacement)`}
+            subtitle={`Time to the ${upsForecasts[0]?.floorMinutes ?? 5}-min floor · ${upsDays}-day runtime trend`}
             entityHeader="UPS"
             etaHeader="ETA to critical"
             byHeader="Replace by"
@@ -771,12 +782,12 @@ export default function Analytics() {
             loading={upsLoading}
             lookback={{ value: upsDays, options: UPS_LOOKBACKS, onChange: setUpsDays }}
             empty="No UPS history yet. Runtime history builds up once the SNMP poller has been running against a UPS."
-            note="A UPS battery ages over YEARS, and runtime also moves with load — so months of history are needed before a decline is separable from normal load swings. Below ~90 days expect Stable, which is the honest answer, not a fault."
+            note="Batteries age over years and runtime also moves with load, so below ~90 days of history expect Stable — that is the honest answer, not a fault."
           />
 
           <ForecastPanel
             title="Link Saturation Forecast"
-            subtitle={`Regression on ${linkDays}-day utilization trend → time to ${linkForecasts[0]?.ceiling ?? 90}% utilization, per interface`}
+            subtitle={`Time to ${linkForecasts[0]?.ceiling ?? 90}% · ${linkDays}-day trend · grouped by device`}
             entityHeader="Interface"
             etaHeader={`ETA to ${linkForecasts[0]?.ceiling ?? 90}%`}
             byHeader="Saturates by"
@@ -784,7 +795,7 @@ export default function Analytics() {
             loading={linkLoading}
             lookback={{ value: linkDays, options: LINK_LOOKBACKS, onChange: setLinkDays }}
             empty="No interface history yet. Each router/MikroTik port appears once the poller has collected traffic counters."
-            note="On the campus MikroTik each interface is a building. Campus traffic follows the academic calendar, so a window sitting on semester start will project a ramp that later plateaus — read these as capacity planning, not promises."
+            note="On the campus MikroTik each interface is a building. Traffic follows the academic calendar, so a window on semester start projects a ramp that later plateaus — capacity planning, not promises."
           />
         </>
       )}
@@ -1116,12 +1127,79 @@ function ForecastPanel({
   note: string;
   lookback: { value: number; options: readonly LookbackOption[]; onChange: (d: number) => void };
 }) {
+  // Explicit toggles only. Absent = fall back to the default-open rule below, so a group
+  // the user has never touched still opens itself when it has something to act on, while
+  // one they deliberately collapsed stays collapsed across refreshes.
+  // The caveats matter — they are what stops a forecast being read as a promise — but
+  // three paragraphs stacked down the page drowned the actual numbers. Kept, one click away.
+  const [showNote, setShowNote] = useState(false);
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+  const toggleGroup = (key: string) =>
+    setToggled((t) => ({ ...t, [key]: !(t[key] ?? defaultOpen(key)) }));
+
+  // Rows carrying a groupKey are rendered as collapsible per-device sections (link
+  // saturation: one router can own a dozen interfaces, which buried everything else on
+  // the page). Rows without one render flat, as disk and UPS do — one row per device
+  // there already, so grouping would just add a layer to click through.
+  const groups = useMemo(() => {
+    if (!rows.some((r) => r.groupKey)) return null;
+    const map = new Map<string, ForecastRow[]>();
+    for (const r of rows) {
+      const k = r.groupKey ?? "—";
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(r);
+    }
+    const out = [...map.entries()].map(([key, gRows]) => {
+      const first = gRows[0];
+      const etas = gRows.map((r) => r.etaDays).filter((e): e is number => e != null);
+      return {
+        key,
+        label: first?.groupLabel ?? key,
+        typeLabel: first?.groupTypeLabel ?? null,
+        rows: gRows,
+        worstEta: etas.length ? Math.min(...etas) : null,
+        advice: gRows.filter((r) => r.advice).length,
+        critical: gRows.filter((r) => r.advice?.level === "critical").length,
+      };
+    });
+    // Most urgent device first; devices with nothing forecast sink to the bottom.
+    out.sort((a, b) => {
+      if (a.worstEta == null && b.worstEta == null) return a.label.localeCompare(b.label);
+      if (a.worstEta == null) return 1;
+      if (b.worstEta == null) return -1;
+      return a.worstEta - b.worstEta;
+    });
+    return out;
+  }, [rows]);
+
+  // Open by default when there is something to act on, or when it is the only device —
+  // a single collapsed group would just be an extra click to see the whole panel.
+  const defaultOpen = (key: string): boolean => {
+    const g = groups?.find((x) => x.key === key);
+    if (!g) return false;
+    return g.advice > 0 || (groups?.length ?? 0) === 1;
+  };
+  const isGroupOpen = (g: { key: string }): boolean => toggled[g.key] ?? defaultOpen(g.key);
+
   return (
     <Panel
       title={title}
       subtitle={subtitle}
-      action={<LookbackPicker {...lookback} />}
+      action={
+        <span className="flex items-center gap-2">
+          <InfoToggle open={showNote} onClick={() => setShowNote((v) => !v)} />
+          <LookbackPicker {...lookback} />
+        </span>
+      }
     >
+      {showNote && (
+        <p
+          className="mb-3 px-3 py-2 text-[0.9em] rounded-[2px]"
+          style={{ color: gf.textMuted, background: gf.hover, border: `1px solid ${gf.border}` }}
+        >
+          {note}
+        </p>
+      )}
       {loading && rows.length === 0 ? (
         <Empty>Loading forecasts…</Empty>
       ) : rows.length === 0 ? (
@@ -1142,7 +1220,58 @@ function ForecastPanel({
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {groups
+                ? groups.map((g) => {
+                    const open = isGroupOpen(g);
+                    return (
+                      <Fragment key={g.key}>
+                        {/* Group header doubles as the toggle. It stays a table row rather
+                            than a separate table so every group shares one set of column
+                            widths — split tables would drift out of alignment. */}
+                        <tr
+                          onClick={() => toggleGroup(g.key)}
+                          className="cursor-pointer"
+                          style={{ borderTop: `1px solid ${gf.divider}`, background: gf.hover }}
+                        >
+                          <td colSpan={8} className="py-2 pr-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span aria-hidden style={{ color: gf.textMuted, width: "1em" }}>
+                                {open ? "▾" : "▸"}
+                              </span>
+                              <span style={{ color: gf.textPrimary, fontWeight: 600 }}>{g.label}</span>
+                              {g.typeLabel && <TypeBadge label={g.typeLabel} />}
+                              <span className="text-[0.9em]" style={{ color: gf.textDim }}>
+                                {g.rows.length} interface{g.rows.length === 1 ? "" : "s"}
+                              </span>
+                              {/* Collapsed rows must not hide a problem, so the worst ETA
+                                  and any advisory are summarised on the header itself. */}
+                              {g.worstEta != null ? (
+                                <span className="text-[0.9em]" style={{ color: etaColor(g.worstEta), fontWeight: 600 }}>
+                                  soonest {fmtEta(g.worstEta)}
+                                </span>
+                              ) : (
+                                <span className="text-[0.9em]" style={{ color: gf.textMuted }}>all stable</span>
+                              )}
+                              {g.advice > 0 && (
+                                <Badge color={g.critical > 0 ? RED : ORANGE} label={`${g.advice} to act on`} />
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                        {open && g.rows.map((r) => renderRow(r))}
+                      </Fragment>
+                    );
+                  })
+                : rows.map((r) => renderRow(r))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+
+  function renderRow(r: ForecastRow) {
+    return (
                 <tr key={r.key} style={{ borderTop: `1px solid ${gf.divider}` }}>
                   <Td>
                     <DeviceLabel name={r.name} typeLabel={r.typeLabel} sub={r.sub} />
@@ -1175,14 +1304,8 @@ function ForecastPanel({
                   <Td><Badge color={CONF_COLOR[r.confidence]} label={r.confidence} /></Td>
                   <Td><FitCell r2={r.fitR2} mae={r.mae} maeSuffix={r.maeSuffix} /></Td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className="mt-3 text-[0.9em]" style={{ color: gf.textDim }}>{note}</p>
-        </div>
-      )}
-    </Panel>
-  );
+    );
+  }
 }
 
 // Name + class badge + optional secondary line. The badge is what disambiguates a
@@ -1207,6 +1330,30 @@ function DeviceLabel({ name, typeLabel, sub }: { name: string; typeLabel: string
 // Native <select> loses its arrow under appearance:none, so a chevron is drawn back in.
 // The <option> list is rendered by the OS, so its styling is best-effort and only some
 // browsers honour it — the control itself carries the design either way.
+// Reveals a panel's caveats on demand. They are worth keeping — a forecast read without
+// them is a forecast over-trusted — but they are reference material, not something to
+// re-read on every visit, so they stay one click away instead of on the page.
+function InfoToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={open}
+      aria-label="About this forecast"
+      title="About this forecast"
+      className="w-6 h-6 rounded-full text-[0.9em] leading-none cursor-pointer transition-all"
+      style={{
+        color: open ? gf.textPrimary : gf.textMuted,
+        background: open ? gf.hoverStrong : "transparent",
+        border: `1px solid ${open ? gf.border : "transparent"}`,
+        fontWeight: 700,
+      }}
+    >
+      i
+    </button>
+  );
+}
+
 interface SelectOption { value: string; label: string; group: string | null }
 
 // A CUSTOM listbox, not a native <select>. A native select's option list is drawn by the
