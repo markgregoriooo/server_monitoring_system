@@ -336,7 +336,7 @@ CREATE TABLE `reports` (
   `report_id` int(11) NOT NULL,
   `generated_by` int(11) NOT NULL,
   `title` varchar(100) DEFAULT NULL,
-  `type` enum('environment','server','alerts','aircon','network','ups') DEFAULT NULL,
+  `type` enum('environment','server','alerts','aircon','network','ups','forecast') DEFAULT NULL,
   `device_id` int(11) DEFAULT NULL,
   `status` enum('pending','generated','failed') DEFAULT NULL,
   `file_path` varchar(255) DEFAULT NULL,

@@ -47,6 +47,9 @@ const TYPES: TypeMeta[] = [
   { value: "ups", label: "UPS Power", desc: "Battery charge, runtime & load, plus on-battery and offline events.", color: "#B877D9" },
   { value: "alerts", label: "Alert History", desc: "Every alert raised in the window, counted by severity.", color: "#FF780A" },
   { value: "aircon", label: "Aircon Activity", desc: "Manual & auto IR triggers — who acted, when and why.", color: "#3CC8E8" },
+  // The one FORWARD-looking report: the period is used as the regression's lookback
+  // rather than as the window being summarised. See predictive-analytics.md §18.
+  { value: "forecast", label: "Capacity Forecast", desc: "What runs out and when — disk, UPS battery & link projections, with their measured accuracy.", color: "#E8C33C" },
 ];
 
 const RANGES = [
@@ -767,7 +770,7 @@ function EmptyState({ filtered, canGenerate, onGenerate, onClear }: { filtered: 
         <>
           <div className="text-[15px] font-semibold mb-1" style={{ color: gf.textPrimary }}>No reports yet</div>
           <div className="text-[13px] mb-4 max-w-sm" style={{ color: gf.textMuted }}>
-            {canGenerate ? "Generate a summary of environment, server, network, UPS, alert or aircon activity for any time window." : "No reports have been generated yet."}
+            {canGenerate ? "Summarise environment, server, network, UPS, alert or aircon activity for any window — or project what runs out next with a capacity forecast." : "No reports have been generated yet."}
           </div>
           {canGenerate && (
             <button onClick={onGenerate} className="gf-btn text-[13px] font-semibold px-3 py-1.5" style={{ color: gf.textPrimary }}>+ Generate your first report</button>
@@ -832,6 +835,15 @@ function TypeIcon({ type, size = 15 }: { type: string; size?: number }) {
       return (
         <svg {...p}>
           <path d="M12 2v20M2 12h20M5 5l14 14M19 5 5 19" />
+        </svg>
+      );
+    // Rising trend + arrow — matches the Analytics nav icon.
+    case "forecast":
+      return (
+        <svg {...p}>
+          <path d="M3 20V4M3 20h18" />
+          <path d="M6 15l4-4 3 3 6-6" />
+          <path d="M15 8h4v4" />
         </svg>
       );
     default:

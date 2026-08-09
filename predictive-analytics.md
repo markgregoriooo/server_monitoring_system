@@ -827,3 +827,33 @@ It measures the model against **the past it was trained near**. A metric that be
 differently in future (semester start, a new workload) will beat the backtest — which is
 §16.2's seasonality caveat, restated. A good backtest score means the method is sound on
 observed behaviour, not that the future is guaranteed to comply.
+
+---
+
+## 18. The Capacity Forecast report
+
+The only **forward-looking** report type. Every other one summarises what happened inside
+its period; this one uses the period as the regression's **lookback** and reports what is
+projected to happen next.
+
+It exists because a forecast that lives only on a dashboard cannot leave the room. The
+artifact that justifies a purchase — *"this volume fills in three weeks, here is the
+trend"* — has to be a PDF you can attach to a request, and the report pipeline (CSV +
+pdfkit, email delivery, retention) was already built.
+
+**Sections:** Disk capacity · UPS battery · Link saturation · Action needed (only when
+something is projected to go wrong) · **Forecast accuracy**.
+
+That last section is deliberate. A projection handed to a budget holder invites exactly
+one question — *"how often is this right?"* — and answering it in the same document is the
+difference between a claim and evidence. It carries the backtest from §17, fold counts
+included.
+
+**Scope:** `SCOPE_TYPES.forecast` allows server / router / mikrotik / ups, so a report can
+be narrowed to one device or left campus-wide across all three forecast kinds.
+
+> ⚠️ **Needs a migration on an existing database.** `reports.type` is an ENUM, so
+> `forecast` must be added before one can be generated:
+> `migrations/2026-08-09_report_forecast_type.sql`. The v12 schema export already includes
+> it, so a fresh install needs nothing. This is why the earlier `network` and `ups` types
+> needed no migration — they were already in the ENUM.

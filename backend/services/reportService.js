@@ -4,6 +4,7 @@ import db from "../config/mysql.js";
 import { queryClient, bucket } from "../config/influx.js";
 import { toCSV, toPDFBuffer } from "./reportRenderer.js";
 import emailService from "./emailService.js";
+import analyticsService from "./analyticsService.js";
 
 // Real reports: persisted in MySQL `reports`, with a CSV + PDF written to disk per
 // report (file_path = stem, the route appends .csv/.pdf). Data is built on generate
@@ -31,7 +32,7 @@ function init(io) {
   _io = io;
 }
 
-export const REPORT_TYPES = ["environment", "server", "network", "ups", "alerts", "aircon"];
+export const REPORT_TYPES = ["environment", "server", "network", "ups", "alerts", "aircon", "forecast"];
 const TYPE_LABEL = {
   environment: "Environment",
   server: "Server Metrics",
@@ -39,6 +40,7 @@ const TYPE_LABEL = {
   ups: "UPS Power",
   alerts: "Alert History",
   aircon: "Aircon Activity",
+  forecast: "Capacity Forecast",
 };
 
 // Which device_type a report of each kind can be scoped to. `environment` is absent
@@ -50,6 +52,9 @@ export const SCOPE_TYPES = {
   ups: ["ups"],
   aircon: ["aircon"],
   alerts: ["server", "router", "mikrotik", "ups", "aircon", "esp32"],
+  // A forecast can be narrowed to one device, but it spans three classes when unscoped
+  // (disk, battery, link) — so every forecastable type is offered.
+  forecast: ["server", "router", "mikrotik", "ups"],
 };
 
 function badRequest(msg) {
@@ -581,6 +586,103 @@ async function buildAircon(start, stop, deviceId) {
   };
 }
 
+// ─── Forecast report ──────────────────────────────────────────────────────────
+// The one FORWARD-looking report. Every other type summarises what happened inside the
+// period; this one uses the period as the regression's lookback and reports what is
+// projected to happen next — the artifact that justifies a purchase ("this volume fills
+// in three weeks, here is the trend and how accurate our forecasts have been").
+//
+// Accuracy is included deliberately: a projection handed to a budget holder without its
+// track record invites the obvious question, and answering it in the same PDF is the
+// difference between a claim and evidence. See predictive-analytics.md §17.
+async function buildForecast(start, stop, deviceId) {
+  const spanDaysReq = Math.max(
+    2,
+    Math.round((new Date(stop).getTime() - new Date(start).getTime()) / 86_400_000),
+  );
+
+  const [disks, upses, links, accuracy] = await Promise.all([
+    analyticsService.forecastDiskFull({ deviceId, lookbackDays: spanDaysReq }),
+    analyticsService.forecastUpsBattery({ deviceId, lookbackDays: spanDaysReq }),
+    analyticsService.forecastLinkSaturation({ deviceId, lookbackDays: spanDaysReq }),
+    analyticsService.forecastAccuracy({ metric: "disk", deviceId, lookbackDays: spanDaysReq, horizonDays: 7 }),
+  ]);
+
+  const dated = (etaDays) =>
+    etaDays == null ? "—" : new Date(Date.now() + etaDays * 86_400_000).toISOString().slice(0, 10);
+  const eta = (v) => (v == null ? "—" : `${v} d`);
+  const acting = [...disks, ...upses, ...links].filter((r) => r.advice);
+
+  const tables = [
+    {
+      title: "Disk capacity",
+      columns: ["Server", "Volume", "Current %", "Trend %/day", "ETA", "Projected full", "Confidence", "History d"],
+      rows: disks.map((d) => [
+        d.name, d.mount ?? "—", d.currentPercent ?? "—", d.slopePerDay ?? "—",
+        d.status === "filling" ? eta(d.etaDays) : d.status,
+        d.status === "filling" ? dated(d.etaDays) : "—",
+        d.confidence, d.historyDays,
+      ]),
+    },
+    {
+      title: "UPS battery",
+      columns: ["UPS", "Runtime min", "Trend min/day", "ETA to floor", "Replace by", "Confidence", "History d"],
+      rows: upses.map((u) => [
+        u.name, u.currentRuntimeMin ?? "—", u.slopePerDay ?? "—",
+        u.status === "declining" ? eta(u.etaDays) : u.status,
+        u.status === "declining" ? dated(u.etaDays) : "—",
+        u.confidence, u.historyDays,
+      ]),
+    },
+    {
+      title: "Link saturation",
+      columns: ["Device", "Interface", "Current %", "Trend %/day", "ETA", "Saturates by", "Confidence", "History d"],
+      rows: links.map((l) => [
+        l.name, l.interfaceLabel ? `${l.interfaceLabel} (${l.interface})` : l.interface,
+        l.currentUtil ?? "—", l.slopePerDay ?? "—",
+        l.status === "rising" ? eta(l.etaDays) : l.status,
+        l.status === "rising" ? dated(l.etaDays) : "—",
+        l.confidence, l.historyDays,
+      ]),
+    },
+  ];
+
+  if (acting.length) {
+    tables.push({
+      title: "Action needed",
+      columns: ["Severity", "Recommendation"],
+      rows: acting.map((r) => [r.advice.level, r.advice.message]),
+    });
+  }
+
+  if (accuracy?.status === "ok") {
+    tables.push({
+      title: `Forecast accuracy (backtested, ${accuracy.horizonDays}-day horizon)`,
+      columns: ["Server", "Typical miss", "Bias", "Worst miss", "Predictions checked"],
+      rows: accuracy.devices.filter((d) => d.folds > 0).map((d) => [
+        d.name, `±${d.mae}${accuracy.unit}`,
+        `${(d.bias ?? 0) > 0 ? "over" : (d.bias ?? 0) < 0 ? "under" : "even"} ${Math.abs(d.bias ?? 0)}${accuracy.unit}`,
+        `±${d.worst}${accuracy.unit}`, d.folds,
+      ]),
+    });
+  }
+
+  return {
+    summary: [
+      { label: "Lookback used", value: `${spanDaysReq} days` },
+      { label: "Volumes projected to fill", value: disks.filter((d) => d.status === "filling").length },
+      { label: "UPS batteries declining", value: upses.filter((u) => u.status === "declining").length },
+      { label: "Interfaces trending up", value: links.filter((l) => l.status === "rising").length },
+      { label: "Items needing action", value: acting.length },
+      {
+        label: "Forecast accuracy",
+        value: accuracy?.overallMae == null ? "not yet verifiable" : `±${accuracy.overallMae}${accuracy.unit}`,
+      },
+    ],
+    tables,
+  };
+}
+
 function fmtRow(d) {
   const dt = d instanceof Date ? d : new Date(d);
   return Number.isNaN(dt.getTime()) ? "" : dt.toISOString().replace("T", " ").slice(0, 19);
@@ -593,6 +695,7 @@ const BUILDERS = {
   ups: buildUps,
   alerts: buildAlerts,
   aircon: buildAircon,
+  forecast: buildForecast,
 };
 
 // ─── Client shaping ──────────────────────────────────────────────────────────
