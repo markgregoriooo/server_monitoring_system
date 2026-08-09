@@ -25,7 +25,40 @@ interface Server {
 interface SensorData {
   temperature: number;
   humidity: number;
+  // Both MQ-2 sensors, as the ESP32 reports them. The dashboard charts the worse of the
+  // two as a single "Gas" line (see handleSensor).
+  mq2_1_ppm?: number;
+  mq2_2_ppm?: number;
   timestamp: string;
+}
+
+// Router / MikroTik, as returned by GET /network and pushed on `networkMetrics`.
+interface NetIface {
+  name: string;
+  locationLabel?: string;
+  linkUp?: boolean;
+  utilizationPct?: number | null;
+}
+interface NetDevice {
+  id: number | string;
+  name?: string;
+  type?: string;              // "router" | "mikrotik"
+  status: string;
+  cpuPercent?: number | null;    // MikroTik only — SNMP leaves these null
+  memPercent?: number | null;
+  connectedClients?: number | null;
+  interfaces?: NetIface[];
+}
+
+// UPS, as returned by GET /ups and pushed on `upsMetrics`.
+interface UpsDevice {
+  id: number | string;
+  name?: string;
+  status: string;
+  batteryChargePct: number | null;
+  runtimeRemainingMin?: number | null;
+  loadPct?: number | null;
+  onBattery: boolean | null;
 }
 
 interface Aircon {
@@ -58,6 +91,12 @@ const GREEN = "#73BF69";
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
+// Environment series palette — deliberately the SAME hexes as pages/Environment.tsx, so
+// the temperature line means the same thing on both pages. Reading one chart should not
+// require re-learning the colours on the other.
+const ENV_TEMP = "#F59E0B";
+const ENV_HUM  = "#38BDF8";
+const ENV_GAS  = "#A78BFA";
 
 // A server parked for planned maintenance is not a fault — showing it red reads
 // as "down" and hides real outages in a sea of red.
@@ -220,6 +259,37 @@ function Sparkline({
 }
 
 // ─── StatPanel (Grafana stat with sparkline background) ─────────────────────────
+
+// ── Small helpers for the Network / UPS rows ────────────────────────────────
+function StatusDot({ ok }: { ok: boolean }) {
+  return (
+    <span
+      className="w-2 h-2 rounded-full shrink-0"
+      style={{ background: ok ? GREEN : RED, boxShadow: `0 0 0 3px ${(ok ? GREEN : RED)}22` }}
+    />
+  );
+}
+
+// A labelled number that only exists when the device actually reports it. Kept narrow
+// and monospaced so a column of them stays aligned as values change.
+function MiniStat({ label, value, warn }: { label: string; value: string; warn: boolean }) {
+  return (
+    <span className="flex flex-col items-end leading-tight">
+      <span className="text-[9px] tracking-wider" style={{ color: gf.textDim }}>{label}</span>
+      <span className="text-[12px] font-semibold tabular-nums" style={{ color: warn ? ORANGE : gf.textPrimary }}>
+        {value}
+      </span>
+    </span>
+  );
+}
+
+function EmptyRow({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="py-6 text-center text-[12px]" style={{ color: gf.textDim }}>
+      {children}
+    </div>
+  );
+}
 
 function StatPanel({
   label,
@@ -434,14 +504,21 @@ export default function Dashboard() {
   // aircon but not these two, so a router or UPS incident was invisible on the page
   // people actually leave open. Only the counts are needed here — the Network / UPS
   // pages own the detail.
-  const [netDevices, setNetDevices] = useState<{ id: number | string; status: string }[]>([]);
-  const [upsDevices, setUpsDevices] = useState<
-    { id: number | string; status: string; batteryChargePct: number | null; onBattery: boolean | null }[]
-  >([]);
+  // Both the initial GET and the poller's socket payload carry far more than id+status —
+  // the narrow types here were why the dashboard could only ever count these devices
+  // instead of showing them. Everything below is optional because the SNMP path leaves
+  // CPU/mem/clients null (only MikroTik reports them) and a device may be unreachable.
+  const [netDevices, setNetDevices] = useState<NetDevice[]>([]);
+  const [upsDevices, setUpsDevices] = useState<UpsDevice[]>([]);
   const [liveTemp, setLiveTemp] = useState<number | string>("--");
   const [liveHum, setLiveHum] = useState<number | string>("--");
   const [chartTemps, setChartTemps] = useState<number[]>([]);
   const [chartHums, setChartHums] = useState<number[]>([]);
+  // Gas = the WORSE of the two MQ-2 sensors, matching sensorHandler and the analytics
+  // engine. One line rather than two: on a dashboard the question is "is the air bad",
+  // not "which sensor saw it".
+  const [chartGas, setChartGas] = useState<number[]>([]);
+  const [liveGas, setLiveGas] = useState<number | string>("--");
   const [chartLabels, setChartLabels] = useState<string[]>([]);
   const [isDark, setIsDark] = useState(() =>
     document.documentElement.classList.contains("dark"),
@@ -548,6 +625,9 @@ export default function Dashboard() {
       setChartLabels((p) => [...p.slice(-300), time]);
       setChartTemps((p) => [...p.slice(-300), data.temperature]);
       setChartHums((p) => [...p.slice(-300), data.humidity]);
+      const gas = Math.max(Number(data.mq2_1_ppm ?? 0), Number(data.mq2_2_ppm ?? 0));
+      setLiveGas(gas);
+      setChartGas((p) => [...p.slice(-300), gas]);
     };
 
     // serverMetrics now arrives as a single-server update: { server: {...} }.
@@ -661,13 +741,13 @@ export default function Dashboard() {
       {
         label: "Temperature",
         data: smooth(chartTemps),
-        borderColor: ORANGE,
+        borderColor: ENV_TEMP,
         backgroundColor: (ctx: ScriptableContext<"line">) =>
-          gradientFill(ctx, "rgba(255,120,10,0.18)", "rgba(255,120,10,0.01)"),
+          gradientFill(ctx, "rgba(245,158,11,0.18)", "rgba(245,158,11,0.01)"),
         borderWidth: 1.5,
         pointRadius: 0,
         pointHoverRadius: 4,
-        pointHoverBackgroundColor: ORANGE,
+        pointHoverBackgroundColor: ENV_TEMP,
         fill: true,
         tension: 0.4,
         yAxisID: "yTemp",
@@ -675,16 +755,31 @@ export default function Dashboard() {
       {
         label: "Humidity",
         data: smooth(chartHums),
-        borderColor: BLUE,
+        borderColor: ENV_HUM,
         backgroundColor: (ctx: ScriptableContext<"line">) =>
-          gradientFill(ctx, "rgba(87,148,242,0.14)", "rgba(87,148,242,0.01)"),
+          gradientFill(ctx, "rgba(56,189,248,0.14)", "rgba(56,189,248,0.01)"),
         borderWidth: 1.5,
         pointRadius: 0,
         pointHoverRadius: 4,
-        pointHoverBackgroundColor: BLUE,
+        pointHoverBackgroundColor: ENV_HUM,
         fill: true,
         tension: 0.4,
         yAxisID: "yHum",
+      },
+      {
+        label: "Gas",
+        data: smooth(chartGas),
+        borderColor: ENV_GAS,
+        // Unfilled: three stacked translucent fills turn the plot to mud, and gas is the
+        // line you most need to read against the other two.
+        backgroundColor: "transparent",
+        borderWidth: 1.5,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHoverBackgroundColor: ENV_GAS,
+        fill: false,
+        tension: 0.4,
+        yAxisID: "yGas",
       },
     ],
   };
@@ -745,7 +840,7 @@ export default function Dashboard() {
         grid: { color: gridColor, drawTicks: false },
         border: { display: false },
         ticks: {
-          color: ORANGE,
+          color: ENV_TEMP,
           font: { size: 9, family: "monospace" },
           padding: 6,
           callback: (v) => `${v}°`,
@@ -759,13 +854,32 @@ export default function Dashboard() {
         grid: { display: false },
         border: { display: false },
         ticks: {
-          color: BLUE,
+          color: ENV_HUM,
           font: { size: 9, family: "monospace" },
           padding: 6,
           callback: (v) => `${v}%`,
         },
         min: minHumY,
         max: maxHumY,
+      },
+      // Third axis for ppm. Its grid is hidden and it sits outside the humidity axis,
+      // so adding a unit doesn't add another set of lines across the plot. Floor of 0
+      // keeps clean air pinned to the bottom instead of letting the scale zoom into
+      // sensor jitter and imply a problem.
+      yGas: {
+        type: "linear",
+        position: "right",
+        grid: { display: false },
+        border: { display: false },
+        ticks: {
+          color: ENV_GAS,
+          font: { size: 9, family: "monospace" },
+          padding: 6,
+          maxTicksLimit: 4,
+          callback: (v) => `${v}`,
+        },
+        min: 0,
+        max: chartGas.length ? Math.max(40, Math.ceil(Math.max(...chartGas) * 1.3)) : 40,
       },
     },
   };
@@ -904,12 +1018,13 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <Panel
           className="lg:col-span-2"
-          title="Temperature & Humidity"
+          title="Environment"
           right={
             <>
               {([
-                [ORANGE, typeof liveTemp === "number" ? `${liveTemp.toFixed(1)}°C` : "--", "Temp"],
-                [BLUE, typeof liveHum === "number" ? `${liveHum.toFixed(1)}%` : "--", "Hum"],
+                [ENV_TEMP, typeof liveTemp === "number" ? `${liveTemp.toFixed(1)}°C` : "--", "Temp"],
+                [ENV_HUM, typeof liveHum === "number" ? `${liveHum.toFixed(1)}%` : "--", "Hum"],
+                [ENV_GAS, typeof liveGas === "number" ? `${Math.round(liveGas)} ppm` : "--", "Gas"],
               ] as [string, string, string][]).map(([color, val, label]) => (
                 <span key={label} className="flex items-center gap-1.5 text-[13px]">
                   <span
@@ -1129,7 +1244,106 @@ export default function Dashboard() {
         </Panel>
       </div>
 
-      {/* ── Row 5: Air conditioner units ── */}
+      {/* ── Row 5: Network + UPS ──
+          Both were already fetched and kept live, but only ever surfaced as a count in
+          the tiles above. "3/3 routers online" cannot answer which port is saturating or
+          which UPS is on battery, which is the question you actually open a dashboard
+          with. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <Panel title="Network" right={
+          <span className="text-[12px]" style={{ color: gf.textMuted }}>
+            {netDevices.length ? `${netOnline}/${netDevices.length} online` : "none registered"}
+          </span>
+        }>
+          {netDevices.length === 0 ? (
+            <EmptyRow>No routers or MikroTik registered yet.</EmptyRow>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {netDevices.map((d) => {
+                const offline = d.status !== "Online";
+                // An interface is worth surfacing when it is carrying real load; the
+                // busiest one is the only one that can become a problem.
+                const busiest = (d.interfaces ?? [])
+                  .filter((i) => i.utilizationPct != null)
+                  .sort((a, b) => (b.utilizationPct ?? 0) - (a.utilizationPct ?? 0))[0];
+                const down = (d.interfaces ?? []).filter((i) => i.linkUp === false).length;
+                return (
+                  <div key={String(d.id)} className="flex items-center gap-3 px-2 py-1.5 rounded-[2px]"
+                    style={{ background: gf.bg, border: `1px solid ${gf.divider}` }}>
+                    <StatusDot ok={!offline} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] truncate" style={{ color: gf.textPrimary }}>{d.name ?? `Device ${d.id}`}</div>
+                      <div className="text-[11px] truncate" style={{ color: gf.textMuted }}>
+                        {offline ? "unreachable" : busiest
+                          ? `${busiest.locationLabel || busiest.name} · ${Math.round(busiest.utilizationPct ?? 0)}% busiest link`
+                          : `${(d.interfaces ?? []).length} ports`}
+                        {down > 0 && <span style={{ color: ORANGE }}> · {down} down</span>}
+                      </div>
+                    </div>
+                    {/* CPU/mem/clients exist only on MikroTik — the SNMP poller cannot
+                        read them, so they are omitted rather than shown as 0. */}
+                    <div className="flex items-center gap-3 text-[12px] shrink-0">
+                      {d.cpuPercent != null && <MiniStat label="CPU" value={`${Math.round(d.cpuPercent)}%`} warn={d.cpuPercent >= 80} />}
+                      {d.memPercent != null && <MiniStat label="MEM" value={`${Math.round(d.memPercent)}%`} warn={d.memPercent >= 80} />}
+                      {d.connectedClients != null && <MiniStat label="DEV" value={String(d.connectedClients)} warn={false} />}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="UPS Power" right={
+          <span className="text-[12px]" style={{ color: upsOnBattery > 0 ? RED : gf.textMuted }}>
+            {upsDevices.length ? (upsOnBattery > 0 ? `${upsOnBattery} on battery` : `${upsOnline}/${upsDevices.length} online`) : "none registered"}
+          </span>
+        }>
+          {upsDevices.length === 0 ? (
+            <EmptyRow>No UPS registered yet.</EmptyRow>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {upsDevices.map((u) => {
+                const offline = u.status !== "Online";
+                const charge = u.batteryChargePct;
+                // On battery outranks a healthy charge: mains is gone and the clock is
+                // running, however full the battery currently reads.
+                const bad = u.onBattery === true || (charge != null && charge <= 20);
+                const warn = !bad && charge != null && charge <= 50;
+                return (
+                  <div key={String(u.id)} className="flex items-center gap-3 px-2 py-1.5 rounded-[2px]"
+                    style={{ background: gf.bg, border: `1px solid ${gf.divider}` }}>
+                    <StatusDot ok={!offline && !bad} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] truncate" style={{ color: gf.textPrimary }}>{u.name ?? `UPS ${u.id}`}</div>
+                      <div className="text-[11px] truncate" style={{ color: u.onBattery ? RED : gf.textMuted }}>
+                        {offline ? "unreachable"
+                          : u.onBattery ? "ON BATTERY — running on stored power"
+                            : u.runtimeRemainingMin != null ? `${Math.round(u.runtimeRemainingMin)} min backup` : "on mains"}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      {u.loadPct != null && <MiniStat label="LOAD" value={`${Math.round(u.loadPct)}%`} warn={u.loadPct >= 80} />}
+                      {charge != null && (
+                        <div className="flex items-center gap-1.5">
+                          <div className="h-1.5 w-12 rounded-full overflow-hidden" style={{ background: gf.hover }}>
+                            <div style={{ width: `${Math.min(100, charge)}%`, height: "100%", background: bad ? RED : warn ? ORANGE : GREEN }} />
+                          </div>
+                          <span className="text-[12px] font-semibold tabular-nums" style={{ color: bad ? RED : warn ? ORANGE : GREEN }}>
+                            {Math.round(charge)}%
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      {/* ── Row 6: Air conditioner units ── */}
       <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
         {aircons.length === 0 ? (
           <div className="text-[12px] text-center py-4" style={{ color: gf.textDim }}>
