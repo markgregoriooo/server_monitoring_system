@@ -159,6 +159,61 @@
     box-shadow: none;
   }
 
+  /* ── Sidebar ──────────────────────────────────────────────────────────────
+     The rail was a flat panel of flat rows: the only cue for "you are here" was
+     a 2px accent bar and a faint tint, which disappears on a bright screen and
+     is invisible to anyone who can't rely on the blue.
+
+     Same language as the rest of the UI: the RAIL is a recessed surface, and the
+     ACTIVE row is a raised key sitting in it. Depth carries the state, colour
+     only reinforces it. In CSS rather than inline styles because it depends on
+     :hover — which is also what lets the JS mouse handlers this replaces go away. */
+  .gf-rail {
+    /* Inner edge highlight + a shadow along the seam, so the rail reads as a
+       separate plane from the page rather than a differently-coloured rectangle. */
+    box-shadow: inset -1px 0 0 var(--gf-panel-border), 2px 0 8px rgba(0, 0, 0, 0.28);
+  }
+
+  .gf-nav {
+    border-radius: 3px;
+    border: 1px solid transparent;
+    transition: background-color .12s ease, color .12s ease,
+                box-shadow .12s ease, transform .06s ease;
+  }
+  .gf-nav:hover {
+    background-color: var(--gf-hover);
+    color: var(--gf-text-primary);
+  }
+  .gf-nav:active {
+    transform: translateY(1px);
+  }
+  /* Active row: the same raised face as a button, plus the accent edge kept as a
+     second, redundant cue. Overrides :hover so hovering the current page doesn't
+     flatten it back down. */
+  .gf-nav-active,
+  .gf-nav-active:hover {
+    background-color: var(--gf-btn-face);
+    background-image: var(--gf-btn-sheen);
+    border-color: var(--gf-btn-border);
+    box-shadow: var(--gf-btn-shadow);
+    color: var(--gf-text-primary);
+    font-weight: 600;
+  }
+  .gf-nav-active:active {
+    transform: none; /* the current page isn't going anywhere — don't fake a press */
+  }
+
+  /* Collapsible group header: recessed, so a group reads as a container for the
+     rows beneath it rather than as another item at the same level. */
+  .gf-nav-group {
+    border-radius: 3px;
+    transition: background-color .12s ease, color .12s ease;
+  }
+  .gf-nav-group:hover {
+    background-color: var(--gf-hover);
+    color: var(--gf-text-primary);
+  }
+
   /* Depth ONLY — no face, no border, no colour. For buttons that already carry their
      own background (accent CTAs, coloured confirms): they keep exactly the colour they
      had and just gain the lift + press. Use this instead of .gf-btn when the button is

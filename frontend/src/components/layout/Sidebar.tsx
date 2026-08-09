@@ -281,12 +281,16 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
           fixed lg:static inset-y-0 left-0 z-30
           w-52 ${collapsed ? "lg:w-0" : "lg:w-52"}
           flex flex-col h-full flex-shrink-0 overflow-hidden
+          ${collapsed ? "" : "gf-rail"}
           transition-[transform,width] duration-300 ease-in-out
           ${mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
         `}
         style={{
           background:  "var(--gf-sidebar)",
-          borderRight: collapsed ? "none" : "1px solid var(--gf-panel-border)",
+          // .gf-rail supplies the seam edge + drop shadow, so the rail reads as its
+          // own plane. Dropped while collapsed — a 0-width rail casting a shadow is
+          // just a dark stripe down the page.
+          ...(collapsed ? { borderRight: "none" } : {}),
           fontFamily:  "'JetBrains Mono', monospace",
         }}
       >
@@ -347,23 +351,19 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
             const rolled = groupBadge(group.items);
             return (
               <div key={group.id}>
+                {/* Hover is CSS now (.gf-nav-group), replacing the mouse handlers that
+                    had to re-derive `isOpen` on every mouse-out to restore the colour. */}
                 <button
                   type="button"
                   onClick={() => toggleGroup(group.id)}
                   aria-expanded={isOpen}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-[13px] transition-colors"
+                  className="gf-nav-group w-full flex items-center gap-2 px-2 py-2 text-[13px]"
                   style={{
-                    borderLeft: "2px solid transparent",
+                    marginLeft: 6,
+                    marginRight: 6,
+                    width: "calc(100% - 12px)",
                     color: isOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)",
-                    background: "transparent",
-                  }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.background = "var(--gf-hover)";
-                    e.currentTarget.style.color = "var(--gf-text-primary)";
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.background = "transparent";
-                    e.currentTarget.style.color = isOpen ? "var(--gf-text-primary)" : "var(--gf-text-muted)";
+                    fontWeight: isOpen ? 600 : 500,
                   }}
                 >
                   <svg
@@ -445,11 +445,11 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
           {/* User */}
           {user && (
             <div className="px-3 py-3 flex flex-col gap-2">
+              {/* Raised like every other pressable surface — a flat tinted rectangle
+                  gave no hint the profile row could be clicked at all. */}
               <button onClick={() => setProfileOpen(true)}
-                className="flex items-center gap-2 w-full rounded px-2 py-1.5 text-left transition-colors"
-                style={{ background: "var(--gf-hover)" }}
-                onMouseEnter={e => (e.currentTarget.style.background = "var(--gf-hover-strong)")}
-                onMouseLeave={e => (e.currentTarget.style.background = "var(--gf-hover)")}>
+                className="gf-btn flex items-center gap-2 w-full px-2 py-1.5 text-left"
+                style={{ borderRadius: 3 }}>
                 <div className="w-6 h-6 rounded flex-shrink-0 overflow-hidden">
                   {user.profile_image ? (
                     <img src={avatarUrl(user.profile_image) ?? ""} alt={user.name}
@@ -529,34 +529,30 @@ function NavRow({
   indented?: boolean;
 }) {
   return (
+    // Hover and active depth live in CSS (.gf-nav / .gf-nav-active in index.css).
+    // The previous version drove hover from onMouseEnter/onMouseLeave and decided
+    // "am I the active row?" by string-matching the inline background — which broke
+    // the moment the active style stopped being a plain colour, and could never
+    // express :active at all.
     <NavLink
       to={item.path}
       end={item.path === "/"}
       onClick={onClose}
-      className="flex items-center gap-2.5 py-2 text-[13px] transition-colors"
+      className={({ isActive }) =>
+        `gf-nav flex items-center gap-2.5 py-2 text-[13px] ${isActive ? "gf-nav-active" : ""}`
+      }
       style={({ isActive }) => ({
-        paddingLeft:  indented ? 30 : 12,
-        paddingRight: 12,
-        borderLeft:  isActive ? "2px solid var(--gf-accent)" : "2px solid transparent",
-        background:  isActive ? "var(--gf-accent-dim)"       : "transparent",
-        color:       isActive ? "var(--gf-text-primary)"     : "var(--gf-text-muted)",
+        marginLeft: indented ? 18 : 6,
+        marginRight: 6,
+        paddingLeft: indented ? 10 : 8,
+        paddingRight: 8,
+        // Accent edge kept as a SECOND cue alongside the raised surface — colour
+        // alone fails on a bright screen and for anyone who can't rely on the blue.
+        boxShadow: isActive ? "inset 2px 0 0 var(--gf-accent), var(--gf-btn-shadow)" : undefined,
+        color: isActive ? undefined : "var(--gf-text-muted)",
       })}
-      onMouseEnter={e => {
-        const el = e.currentTarget;
-        if (!el.style.background.includes("var(--gf-accent")) {
-          el.style.background = "var(--gf-hover)";
-          el.style.color      = "var(--gf-text-primary)";
-        }
-      }}
-      onMouseLeave={e => {
-        const el = e.currentTarget;
-        if (!el.style.background.includes("var(--gf-accent")) {
-          el.style.background = "transparent";
-          el.style.color      = "var(--gf-text-muted)";
-        }
-      }}
     >
-      <span style={{ opacity: 0.75, flexShrink: 0 }}>{item.icon}</span>
+      <span style={{ opacity: 0.85, flexShrink: 0 }}>{item.icon}</span>
       <span className="truncate">{item.label}</span>
       {badge && <NavBadge count={badge.count} color={badge.color} title={badge.title} />}
     </NavLink>
