@@ -86,8 +86,10 @@ interface Aircon {
   mode: string;
   fanMode: string;
   setTemp: number;
-  roomTemp: number;
-  humidity: number;
+  // `last_trigger` from aircon_state: "manual" (a person), "auto" (the ESP32's IR zone
+  // logic) or null (registered, never triggered). NOT camelCase on the wire.
+  last_trigger?: string | null;
+  uptime?: string;
 }
 
 // ─── Grafana design tokens ──────────────────────────────────────────────────────
@@ -1043,11 +1045,19 @@ export default function Dashboard() {
                     {ac.enabled ? "ONLINE" : "OFFLINE"}
                   </span>
                 </div>
+                <div className="px-3 pb-1.5 -mt-1">
+                  <span className="text-[10px]" style={{ color: gf.textDim }}>
+                    {ac.last_trigger === "manual" ? "set manually"
+                      : ac.last_trigger === "auto" ? "set by auto-cooling"
+                        : "not yet triggered"}
+                    {ac.enabled && ac.uptime && ac.uptime !== "offline" ? ` · on for ${ac.uptime}` : ""}
+                  </span>
+                </div>
                 <div className="grid grid-cols-3 gap-px" style={{ background: gf.divider }}>
                   {[
                     ["Mode", ac.mode],
                     ["Set", `${ac.setTemp}°`],
-                    ["Room", ac.roomTemp != null ? `${ac.roomTemp}°` : "--"],
+                    ["Fan", ac.fanMode || "--"],
                   ].map(([lbl, val]) => (
                     <div
                       key={lbl}
