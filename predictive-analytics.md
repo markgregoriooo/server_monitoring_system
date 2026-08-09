@@ -821,7 +821,21 @@ earlier than promised. The two look identical in `mae`.
 the same claim as one from eight, and presenting them alike would be the dishonest version
 of this feature.
 
-### 17.3 What it can't tell you
+### 17.3 It grades the volume the forecast actually headlines
+
+`forecastDiskFull` regresses every volume and headlines the fastest-filling one (§ the
+worst-volume fix). Backtesting root `disk_percent` would therefore score `C:` while the
+forecast directly above it projected `D:` — two different series presented as though one
+explained the other, which is the same mistake the worst-volume fix existed to correct,
+one layer up.
+
+Accuracy now picks its series through the **same** `worstVolumeForecast()` call the
+forecast uses, so the graded series is the projected series. The mount is returned and
+shown under the server name, so the two panels can be seen to agree rather than taken on
+trust. Servers with no per-volume history fall back to the root series, matching the
+forecast's own fallback.
+
+### 17.4 What it can't tell you
 
 It measures the model against **the past it was trained near**. A metric that behaves
 differently in future (semester start, a new workload) will beat the backtest — which is

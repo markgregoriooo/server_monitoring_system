@@ -612,11 +612,56 @@ async function forecastAccuracy({ metric = "disk", deviceId = null, lookbackDays
   const horizonMs = horizon * 86_400_000;
 
   const results = [];
-  if (meta.source === "env") {
+  if (metric === "disk") {
+    // Grade the SAME SERIES the disk forecast headlines. forecastDiskFull regresses every
+    // volume and headlines the fastest-filling one, so backtesting root `disk_percent`
+    // would silently score C: while the forecast above it projected D: — two different
+    // series presented as though one explained the other. The headline volume is chosen
+    // by the same worstVolumeForecast() call, so the graded series IS the projected one.
+    const [byDevice, volGrouped] = await Promise.all([
+      fetchDiskSeries(days, deviceId),
+      fetchSeriesGrouped("server_volumes", "percent", { deviceId, days, keys: ["mount"] }),
+    ]);
+    const identities = await fetchDeviceIdentities([...byDevice.values()].map((e) => e.deviceId));
+    const cutoff = Date.now() - ACTIVE_WITHIN_MS;
+
+    const volsByDevice = new Map();
+    for (const v of volGrouped.values()) {
+      if (!v.sub) continue;
+      if (!volsByDevice.has(v.deviceId)) volsByDevice.set(v.deviceId, []);
+      volsByDevice.get(v.deviceId).push(v);
+    }
+
+    for (const entry of byDevice.values()) {
+      if (deviceId == null && !isCurrentDevice(entry, identities, cutoff)) continue;
+      const ident = identify(entry, identities);
+      const vols = volsByDevice.get(Number(entry.deviceId)) ?? [];
+
+      // No per-volume history (pre-`server_volumes` data) → root series, the same
+      // fallback forecastDiskFull uses.
+      let series = entry.raw;
+      let mount = null;
+      if (vols.length) {
+        const perVolume = vols.map((v) => ({
+          ...forecastSeries({ deviceId: entry.deviceId, name: ident.name, raw: v.raw }, 100),
+          mount: v.sub,
+          raw: v.raw,
+        }));
+        const headline = worstVolumeForecast(perVolume);
+        if (headline) { series = headline.raw; mount = headline.mount; }
+      }
+
+      const bt = backtestSeries(series, { horizonMs, folds: foldCount });
+      results.push({
+        deviceId: entry.deviceId, name: ident.name, typeLabel: ident.typeLabel,
+        mount, ...bt,
+      });
+    }
+  } else if (meta.source === "env") {
     // Room-level: one series, no device.
     const series = await fetchMetricSeries(metric, { rangeExpr: `-${days}d`, every: bucketForDays(days) });
     const bt = backtestSeries(series, { horizonMs, folds: foldCount });
-    results.push({ deviceId: null, name: "Server room", typeLabel: null, ...bt });
+    results.push({ deviceId: null, name: "Server room", typeLabel: null, mount: null, ...bt });
   } else {
     const measurement = meta.source === "router" ? "router_metrics" : "server_metrics";
     const grouped = await fetchSeriesGrouped(measurement, meta.field, { deviceId, days });
@@ -626,7 +671,7 @@ async function forecastAccuracy({ metric = "disk", deviceId = null, lookbackDays
       if (deviceId == null && !isCurrentDevice(entry, identities, cutoff)) continue;
       const ident = identify(entry, identities);
       const bt = backtestSeries(entry.raw, { horizonMs, folds: foldCount });
-      results.push({ deviceId: entry.deviceId, name: ident.name, typeLabel: ident.typeLabel, ...bt });
+      results.push({ deviceId: entry.deviceId, name: ident.name, typeLabel: ident.typeLabel, mount: null, ...bt });
     }
   }
 

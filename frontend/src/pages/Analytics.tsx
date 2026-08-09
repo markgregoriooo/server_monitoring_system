@@ -155,6 +155,8 @@ interface AccuracyResult {
     deviceId: number | null;
     name: string;
     typeLabel: string | null;
+    // Which volume was graded — the same one the disk forecast headlines.
+    mount: string | null;
     folds: number;
     mae: number | null;
     bias: number | null;
@@ -816,7 +818,7 @@ export default function Analytics() {
           {accuracy && accuracy.status === "ok" && (
             <Panel
               title="Forecast Accuracy"
-              subtitle={`Backtested on real history · ${accuracy.horizonDays}-day-ahead predictions · ${accuracy.totalFolds} checked`}
+              subtitle={`How wrong the disk forecast above has been · ${accuracy.horizonDays}-day-ahead predictions · ${accuracy.totalFolds} checked`}
             >
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
                 <Stat
@@ -841,7 +843,9 @@ export default function Analytics() {
                   <tbody>
                     {accuracy.devices.filter((d) => d.folds > 0).map((d) => (
                       <tr key={`${d.deviceId}-${d.name}`} style={{ borderTop: `1px solid ${gf.divider}` }}>
-                        <Td><DeviceLabel name={d.name} typeLabel={d.typeLabel} sub={null} /></Td>
+                        {/* Naming the volume is what lets you see this row grades the
+                            SAME series the forecast above headlines. */}
+                        <Td><DeviceLabel name={d.name} typeLabel={d.typeLabel} sub={d.mount} /></Td>
                         <Td><span style={{ color: gf.textPrimary }}>±{d.mae}{accuracy.unit}</span></Td>
                         <Td>
                           {/* Direction matters more than size here: consistently
