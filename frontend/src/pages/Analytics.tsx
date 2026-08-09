@@ -128,11 +128,12 @@ interface AnomalyResult {
   deviceId: number | null;
   days: number;
   z: number;
-  baseline: { hour: number; n: number; mean: number | null; std: number }[];
+  baseline: { hour: number; dayType: "weekday" | "weekend"; n: number; mean: number | null; std: number }[];
   iqr: { q1: number; q3: number; lowerFence: number; upperFence: number } | null;
   anomalies: {
     t: string; value: number; expected: number; z: number;
-    hour: number; direction: "high" | "low"; iqrOutlier: boolean;
+    hour: number; dayType: "weekday" | "weekend";
+    direction: "high" | "low"; iqrOutlier: boolean;
   }[];
   totalPoints: number;
   anomalyCount: number;
@@ -959,7 +960,7 @@ export default function Analytics() {
           {/* ── Anomaly detection ── */}
           <Panel
             title="Anomaly Detection"
-            subtitle={anom ? `Per-hour-of-day baseline · |z| > ${anom.z} over ${anom.days} days` : "Per-hour-of-day z-score + IQR"}
+            subtitle={anom ? `Baseline per hour × weekday/weekend · |z| > ${anom.z} over ${anom.days} days` : "Hour × day-type z-score + IQR"}
             action={<LookbackPicker value={anomDays} options={ANOMALY_LOOKBACKS} onChange={setAnomDays} />}
           >
             {anomLoading && !anom ? (
@@ -983,7 +984,7 @@ export default function Analytics() {
                     <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ color: gf.textDim, textAlign: "left" }}>
-                          <Th>When</Th><Th>Reading</Th><Th>Expected (that hour)</Th><Th>z-score</Th><Th>Flags</Th>
+                          <Th>When</Th><Th>Reading</Th><Th title="Normal for that hour on that kind of day — a campus weekend is nothing like a weekday">Expected (same hour &amp; day type)</Th><Th>z-score</Th><Th>Flags</Th>
                         </tr>
                       </thead>
                       <tbody>
@@ -995,7 +996,12 @@ export default function Analytics() {
                                 {a.direction === "high" ? "▲" : "▼"} {a.value}{anom.unit}
                               </span>
                             </Td>
-                            <Td><span style={{ color: gf.textMuted }}>{a.expected}{anom.unit} <span style={{ color: gf.textDim }}>@ {fmtHour(a.hour)}</span></span></Td>
+                            <Td>
+                              <span style={{ color: gf.textMuted }}>
+                                {a.expected}{anom.unit}{" "}
+                                <span style={{ color: gf.textDim }}>@ {fmtHour(a.hour)} {a.dayType}</span>
+                              </span>
+                            </Td>
                             <Td><span style={{ color: gf.textPrimary }}>{a.z > 0 ? "+" : ""}{a.z}σ</span></Td>
                             <Td>{a.iqrOutlier && <Badge color={ORANGE} label="IQR" />}</Td>
                           </tr>

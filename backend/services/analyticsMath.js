@@ -59,6 +59,36 @@ export const TZ_OFFSET_H = 8;
 export const localHour = (ms, offsetH = TZ_OFFSET_H) =>
   (new Date(ms).getUTCHours() + offsetH) % 24;
 
+// Local day-of-week (0 = Sunday), offset the same way as localHour — a UTC timestamp late
+// on a Sunday evening is already Monday in Naga, and bucketing it as Sunday would file
+// Monday's traffic under the weekend.
+export const localDay = (ms, offsetH = TZ_OFFSET_H) => {
+  const d = new Date(ms);
+  const shifted = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours() + offsetH);
+  return new Date(shifted).getUTCDay();
+};
+
+export const isWeekend = (ms, offsetH = TZ_OFFSET_H) => {
+  const day = localDay(ms, offsetH);
+  return day === 0 || day === 6;
+};
+
+// Baseline bucket index. The detector compares a reading against "normal for this hour",
+// but on a campus a Saturday 2 PM and a Tuesday 2 PM are nothing alike: pooling all seven
+// days pulls the mean down and inflates the deviation, which BLINDS the detector on
+// weekdays (a real spike falls inside a σ widened by quiet weekends) and can flag a
+// perfectly normal Sunday as anomalous. Splitting day-type doubles the buckets to 48 and
+// compares like with like.
+export const BASELINE_BUCKETS = 48;
+export const baselineBucket = (ms, offsetH = TZ_OFFSET_H) =>
+  localHour(ms, offsetH) + (isWeekend(ms, offsetH) ? 24 : 0);
+
+// Human label for a bucket index, for the API/UI ("Tue 14:00" style grouping).
+export const bucketLabel = (idx) => ({
+  hour: idx % 24,
+  dayType: idx >= 24 ? "weekend" : "weekday",
+});
+
 // Window helper: pick an aggregate bucket appropriate to the lookback length.
 export const everyForHours = (h) => (h <= 24 ? "15m" : h <= 72 ? "30m" : "1h");
 

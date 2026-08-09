@@ -7,7 +7,8 @@ import {
   ewma, holtLinear,
   forecastSeries, projectToBound, worstVolumeForecast, byEtaAsc,
   round1, round2, clampInt, clampNum, confidenceLabel, mean, stddev,
-  localHour, everyForHours, parseEveryMs, bucketForDays, spanDays,
+  everyForHours, parseEveryMs, bucketForDays, spanDays,
+  BASELINE_BUCKETS, baselineBucket, bucketLabel,
   actionFor,
 } from "./analyticsMath.js";
 
@@ -457,7 +458,10 @@ async function trendAdvice(metric, deviceId, values, projection, lastT) {
 // Flags readings abnormal FOR THEIR HOUR — a 2 AM CPU spike that's still under a static
 // threshold is caught here. Baseline = mean/σ per local hour bucket; |z| > zThresh ⇒
 // anomaly. Global IQR fences are returned alongside for context. Statistics, not ML.
-const ANOM_MIN_BUCKET = 5; // need ≥5 samples in an hour before its baseline is trusted
+// Need this many samples in a bucket before its baseline is trusted. At the 14-day
+// default and 15m sampling that is ~40 weekday and ~16 weekend samples per hour bucket,
+// comfortably clear of it even after the day-type split.
+const ANOM_MIN_BUCKET = 5;
 
 async function detectAnomalies({ metric, deviceId = null, lookbackDays = 14, z = 3 } = {}) {
   const meta = METRICS[metric];
@@ -473,12 +477,20 @@ async function detectAnomalies({ metric, deviceId = null, lookbackDays = 14, z =
   };
   if (series.length < MIN_POINTS * 2) return base;
 
-  // per-hour-of-day baseline
-  const buckets = Array.from({ length: 24 }, () => []);
-  for (const p of series) buckets[localHour(p.t)].push(p.y);
-  const stats = buckets.map((vals, hour) => {
+  // Baseline per (day-type, hour): 48 buckets, weekday 0-23 then weekend 24-47. Pooling
+  // all seven days made a campus weekend drag the mean down and widen the deviation,
+  // which blinded the detector on weekdays and could flag a normal Sunday. See
+  // analyticsMath.baselineBucket.
+  const buckets = Array.from({ length: BASELINE_BUCKETS }, () => []);
+  for (const p of series) buckets[baselineBucket(p.t)].push(p.y);
+  const stats = buckets.map((vals, idx) => {
     const m = vals.length ? mean(vals) : null;
-    return { hour, n: vals.length, mean: m == null ? null : round2(m), std: round2(stddev(vals, m ?? 0)) };
+    const { hour, dayType } = bucketLabel(idx);
+    return {
+      hour, dayType, n: vals.length,
+      mean: m == null ? null : round2(m),
+      std: round2(stddev(vals, m ?? 0)),
+    };
   });
 
   // global IQR fences (Tukey, 1.5·IQR)
@@ -489,8 +501,8 @@ async function detectAnomalies({ metric, deviceId = null, lookbackDays = 14, z =
 
   const anomalies = [];
   for (const p of series) {
-    const b = stats[localHour(p.t)];
-    if (b.mean == null || b.n < ANOM_MIN_BUCKET || b.std <= 0) continue;
+    const b = stats[baselineBucket(p.t)];
+    if (!b || b.mean == null || b.n < ANOM_MIN_BUCKET || b.std <= 0) continue;
     const zv = (p.y - b.mean) / b.std;
     if (Math.abs(zv) <= zThresh) continue;
     anomalies.push({
@@ -499,6 +511,7 @@ async function detectAnomalies({ metric, deviceId = null, lookbackDays = 14, z =
       expected: b.mean,
       z: round2(zv),
       hour: b.hour,
+      dayType: b.dayType,
       direction: zv > 0 ? "high" : "low",
       iqrOutlier: p.y > fences.upperFence || p.y < fences.lowerFence,
     });

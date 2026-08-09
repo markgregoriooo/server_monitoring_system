@@ -19,6 +19,11 @@ import {
   parseEveryMs,
   bucketForDays,
   spanDays,
+  localDay,
+  isWeekend,
+  baselineBucket,
+  bucketLabel,
+  BASELINE_BUCKETS,
   clampInt,
   clampNum,
   MIN_POINTS,
@@ -453,6 +458,50 @@ test("spanDays reports the ACTUAL history covered, not the window requested", ()
 test("spanDays is order-independent", () => {
   const pts = [{ t: 5 * 86_400_000, y: 1 }, { t: 0, y: 1 }, { t: 2 * 86_400_000, y: 1 }];
   assert.equal(spanDays(pts), 5);
+});
+
+// ─── anomaly baseline buckets (weekday vs weekend) ────────────────────────────
+
+test("localDay shifts into local time before reading the weekday", () => {
+  // 2026-01-03 is a Saturday. 17:00 UTC on Saturday is already Sunday 01:00 in Naga,
+  // so filing it as Saturday would put Sunday's data in the wrong day entirely.
+  assert.equal(localDay(Date.UTC(2026, 0, 3, 2, 0)), 6, "Sat morning UTC is still Sat");
+  assert.equal(localDay(Date.UTC(2026, 0, 3, 17, 0)), 0, "Sat 17:00 UTC is Sun in UTC+8");
+});
+
+test("isWeekend covers Saturday and Sunday only", () => {
+  assert.equal(isWeekend(Date.UTC(2026, 0, 3, 2, 0)), true, "Saturday");
+  assert.equal(isWeekend(Date.UTC(2026, 0, 4, 2, 0)), true, "Sunday");
+  assert.equal(isWeekend(Date.UTC(2026, 0, 5, 2, 0)), false, "Monday");
+  assert.equal(isWeekend(Date.UTC(2026, 0, 9, 2, 0)), false, "Friday");
+});
+
+test("baselineBucket separates the same hour on a weekday from a weekend", () => {
+  // Monday 2 PM vs Saturday 2 PM: same hour, different bucket. This is the whole point —
+  // on a campus those two are nothing alike, and pooling them hides real weekday spikes.
+  const monday2pm = Date.UTC(2026, 0, 5, 6, 0);   // 14:00 local
+  const saturday2pm = Date.UTC(2026, 0, 10, 6, 0); // 14:00 local
+  assert.equal(localHour(monday2pm), 14);
+  assert.equal(localHour(saturday2pm), 14);
+  assert.notEqual(baselineBucket(monday2pm), baselineBucket(saturday2pm));
+  assert.equal(baselineBucket(monday2pm), 14, "weekday buckets are 0-23");
+  assert.equal(baselineBucket(saturday2pm), 38, "weekend buckets are 24-47");
+});
+
+test("baselineBucket groups two weekdays at the same hour together", () => {
+  const tue = Date.UTC(2026, 0, 6, 6, 0);
+  const thu = Date.UTC(2026, 0, 8, 6, 0);
+  assert.equal(baselineBucket(tue), baselineBucket(thu));
+});
+
+test("every bucket index is in range and round-trips through its label", () => {
+  for (const ms of [Date.UTC(2026, 0, 5, 0, 0), Date.UTC(2026, 0, 10, 23, 0), Date.UTC(2026, 0, 11, 16, 0)]) {
+    const idx = baselineBucket(ms);
+    assert.ok(idx >= 0 && idx < BASELINE_BUCKETS, `bucket ${idx} out of range`);
+    const { hour, dayType } = bucketLabel(idx);
+    assert.equal(hour, localHour(ms));
+    assert.equal(dayType, isWeekend(ms) ? "weekend" : "weekday");
+  }
 });
 
 // ─── input clamping (the Flux-injection guarantee) ────────────────────────────
