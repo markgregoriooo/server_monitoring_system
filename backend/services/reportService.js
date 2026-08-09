@@ -12,8 +12,17 @@ import analyticsService from "./analyticsService.js";
 // router_metrics + network_traffic / ups_metrics) and MySQL (alerts / aircon_logs) —
 // then frozen into the saved files. Replaces the old data/db.js mock array.
 //
-// Every monitored stream has a report type. The six match the `reports.type` ENUM
-// already in the schema, so adding network + ups needed no migration.
+// Every monitored stream has a report type. Six of the seven were already in the
+// `reports.type` ENUM, which is why adding network + ups needed no migration; `forecast`
+// was NOT, so it ships with migrations/2026-08-09_report_forecast_type.sql. Adding a type
+// here without extending that ENUM does not fail loudly — MySQL in non-strict mode
+// silently coerces the unknown value to '' and the report later fails to build with no
+// obvious cause.
+//
+// Device names resolve through COALESCE(NULLIF(display_name, ''), device_name) — the same
+// effective-name rule as agentService and the analytics engine — so a server renamed from
+// the dashboard reads the same in a PDF as it does on screen. Aliased back to
+// `device_name` so every consumer below is unchanged.
 
 const REPORTS_DIR = path.resolve(process.cwd(), "reports");
 fs.mkdirSync(REPORTS_DIR, { recursive: true });
@@ -181,7 +190,7 @@ async function buildServer(start, stop, deviceId) {
 
   // Resolve device_id → name from MySQL.
   const [devices] = await db.query(
-    "SELECT device_id, device_name FROM devices WHERE device_type = 'server'",
+    "SELECT device_id, COALESCE(NULLIF(display_name, ''), device_name) AS device_name FROM devices WHERE device_type = 'server'",
   );
   const nameOf = new Map(devices.map((d) => [String(d.device_id), d.device_name]));
 
@@ -281,7 +290,7 @@ async function buildNetwork(start, stop, deviceId) {
   // when the report is device-scoped (bound param, not interpolated).
   const scoped = deviceId != null;
   const [devices] = await db.query(
-    `SELECT device_id, device_name, device_type, location
+    `SELECT device_id, COALESCE(NULLIF(display_name, ''), device_name) AS device_name, device_type, location
        FROM devices
       WHERE device_type IN ('router', 'mikrotik')${scoped ? " AND device_id = ?" : ""}`,
     scoped ? [deviceId] : [],
@@ -432,7 +441,7 @@ async function buildUps(start, stop, deviceId) {
 
   const scoped = deviceId != null;
   const [devices] = await db.query(
-    `SELECT device_id, device_name, location FROM devices
+    `SELECT device_id, COALESCE(NULLIF(display_name, ''), device_name) AS device_name, location FROM devices
       WHERE device_type = 'ups'${scoped ? " AND device_id = ?" : ""}`,
     scoped ? [deviceId] : [],
   );
@@ -523,7 +532,8 @@ async function buildUps(start, stop, deviceId) {
 async function buildAlerts(start, stop, deviceId) {
   const scoped = deviceId != null;
   const [rows] = await db.query(
-    `SELECT a.created_at, a.type, a.title, a.severity, a.status, a.metric_value, d.device_name
+    `SELECT a.created_at, a.type, a.title, a.severity, a.status, a.metric_value,
+            COALESCE(NULLIF(d.display_name, ''), d.device_name) AS device_name
        FROM alerts a
        LEFT JOIN devices d ON d.device_id = a.device_id
       WHERE a.created_at BETWEEN ? AND ?
@@ -556,7 +566,8 @@ async function buildAlerts(start, stop, deviceId) {
 async function buildAircon(start, stop, deviceId) {
   const scoped = deviceId != null;
   const [rows] = await db.query(
-    `SELECT l.created_at, l.action, l.reason, l.trigger_type, d.device_name, u.name AS user_name
+    `SELECT l.created_at, l.action, l.reason, l.trigger_type, u.name AS user_name,
+            COALESCE(NULLIF(d.display_name, ''), d.device_name) AS device_name
        FROM aircon_logs l
        LEFT JOIN devices d ON d.device_id = l.device_id
        LEFT JOIN users u   ON u.user_id   = l.user_id
@@ -722,7 +733,7 @@ function toClient(r) {
 const BASE_SELECT = `
   SELECT r.report_id, r.title, r.type, r.device_id, r.status, r.generated_by, r.file_path,
          r.period_start, r.period_end, r.created_at,
-         u.name AS generated_by_name, d.device_name
+         u.name AS generated_by_name, COALESCE(NULLIF(d.display_name, ''), d.device_name) AS device_name
     FROM reports r
     LEFT JOIN users u   ON u.user_id   = r.generated_by
     LEFT JOIN devices d ON d.device_id = r.device_id`;
@@ -734,7 +745,7 @@ async function scopeOptions(type) {
   const allowed = SCOPE_TYPES[type];
   if (!allowed?.length) return [];
   const [rows] = await db.query(
-    `SELECT device_id, device_name, device_type, location
+    `SELECT device_id, COALESCE(NULLIF(display_name, ''), device_name) AS device_name, device_type, location
        FROM devices
       WHERE device_type IN (${allowed.map(() => "?").join(", ")})
       ORDER BY device_type, device_name`,
@@ -799,7 +810,7 @@ async function create({ userId, type, title, periodStart, periodEnd, deviceId })
     const allowed = SCOPE_TYPES[type];
     if (!allowed) throw badRequest(`A ${TYPE_LABEL[type]} report covers the whole server room and cannot be scoped to one device.`);
     const [[dev]] = await db.query(
-      "SELECT device_id, device_name, device_type FROM devices WHERE device_id = ? LIMIT 1",
+      "SELECT device_id, COALESCE(NULLIF(display_name, ''), device_name) AS device_name, device_type FROM devices WHERE device_id = ? LIMIT 1",
       [id],
     );
     if (!dev) throw badRequest("Device not found.");

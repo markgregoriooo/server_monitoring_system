@@ -40,6 +40,20 @@ interface ScopeDevice {
   location: string | null;
 }
 
+// Device CLASS, shown beside each name in the scope picker. It answers the question the
+// list actually raises — "which of these is the router?" — where a location does not: most
+// devices here share one server room, so the location repeated on every row distinguished
+// nothing while making the names harder to scan.
+const DEVICE_TYPE_LABEL: Record<string, string> = {
+  server: "Server",
+  router: "Router",
+  mikrotik: "MikroTik",
+  ups: "UPS",
+  aircon: "Aircon",
+  esp32: "Sensor",
+};
+const deviceTypeLabel = (t: string): string => DEVICE_TYPE_LABEL[t] ?? t;
+
 const TYPES: TypeMeta[] = [
   { value: "environment", label: "Environment", desc: "Temperature, humidity & gas — daily min / max / avg from the sensor.", color: "#FF6B6B" },
   { value: "server", label: "Server Metrics", desc: "CPU, memory & disk per server — average & peak over the period.", color: "#5794F2" },
@@ -580,8 +594,14 @@ export default function Reports() {
                       key={t.value}
                       type="button"
                       onClick={() => setGenType(t.value)}
-                      className="flex items-start gap-2.5 text-left px-3 py-2.5 rounded-[2px] transition-colors"
-                      style={{ background: on ? `${t.color}14` : gf.bg, border: `1px solid ${on ? t.color : gf.border}` }}
+                      className={`flex items-start gap-2.5 text-left px-3 py-2.5 rounded-[3px] transition-all ${on ? "gf-btn" : ""}`}
+                      style={
+                        on
+                          // The type's own colour still tints the chosen card, but the
+                          // RAISED surface is what makes the selection legible without it.
+                          ? { borderColor: t.color, boxShadow: `var(--gf-btn-shadow), inset 0 0 0 1px ${t.color}55` }
+                          : { background: gf.bg, border: `1px solid ${gf.border}`, boxShadow: "var(--gf-btn-shadow-active)" }
+                      }
                     >
                       <span className="grid place-items-center rounded-md shrink-0 mt-0.5" style={{ width: 30, height: 30, background: `${t.color}1f`, color: t.color }}>
                         <TypeIcon type={t.value} />
@@ -610,8 +630,7 @@ export default function Reports() {
                       <option value="">All devices</option>
                       {scopeDevices.map((d) => (
                         <option key={d.id} value={String(d.id)}>
-                          {d.name}
-                          {d.location ? ` — ${d.location}` : ""}
+                          {d.name} — {deviceTypeLabel(d.type)}
                         </option>
                       ))}
                     </select>
@@ -643,8 +662,14 @@ export default function Reports() {
                         key={r.value}
                         type="button"
                         onClick={() => setRangeMode(r.value)}
-                        className="text-[12px] px-2.5 py-1.5 rounded-[2px] transition-colors"
-                        style={{ color: on ? "#fff" : gf.textMuted, background: on ? ACCENT : gf.bg, border: `1px solid ${on ? ACCENT : gf.border}` }}
+                        className={`text-[12px] px-3 py-1.5 rounded-[3px] transition-all ${on ? "gf-btn" : ""}`}
+                        style={
+                          on
+                            // Neutral, not accent: a period is a filter, not an action, and
+                            // it should not compete with Generate for the eye.
+                            ? { color: gf.textPrimary, fontWeight: 700 }
+                            : { color: gf.textMuted, background: gf.bg, border: `1px solid ${gf.border}`, boxShadow: "var(--gf-btn-shadow-active)" }
+                        }
                       >
                         {r.label}
                       </button>
@@ -668,7 +693,19 @@ export default function Reports() {
               )}
 
               <div className="flex gap-2 mt-4">
-                <button onClick={handleGenerate} disabled={generating} className="gf-raise inline-flex items-center gap-2 text-[13px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: gf.accent }}>
+                <button
+                  onClick={handleGenerate}
+                  disabled={generating}
+                  className="gf-raise inline-flex items-center gap-2 text-[13px] font-bold px-5 py-2.5 rounded-[3px] transition-all active:scale-95 disabled:opacity-50"
+                  // The one primary action on the page, so it keeps the accent AND the
+                  // strongest lift — everything around it is now neutral by design.
+                  style={{
+                    color: "#fff",
+                    background: gf.accent,
+                    border: `1px solid ${gf.accent}`,
+                    boxShadow: "0 2px 6px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.25)",
+                  }}
+                >
                   {generating && (
                     <svg width="13" height="13" viewBox="0 0 24 24" className="animate-spin" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
                       <path d="M12 3a9 9 0 1 0 9 9" />
@@ -676,7 +713,18 @@ export default function Reports() {
                   )}
                   {generating ? "Generating…" : "Generate"}
                 </button>
-                <button onClick={() => setModalOpen(false)} className="text-[13px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
+                <button
+                  onClick={() => setModalOpen(false)}
+                  className="text-[13px] font-medium px-5 py-2.5 rounded-[3px] transition-all active:scale-95"
+                  // Recessed on purpose: the way out, not a peer of the action that does
+                  // the work. Raising both would make the pair ambiguous.
+                  style={{
+                    color: gf.textMuted,
+                    border: `1px solid ${gf.border}`,
+                    background: gf.bg,
+                    boxShadow: "var(--gf-btn-shadow-active)",
+                  }}
+                >
                   Cancel
                 </button>
               </div>
