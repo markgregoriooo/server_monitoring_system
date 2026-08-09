@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
 import { socket } from "../socket/socket";
@@ -166,6 +166,7 @@ const gf = {
   textMuted: "var(--gf-text-muted)",
   textDim: "var(--gf-text-dim)",
   hover: "var(--gf-hover)",
+  hoverStrong: "var(--gf-hover-strong)",
   accent: "var(--gf-accent)",
 } as const;
 
@@ -248,6 +249,14 @@ const METRIC_OPTIONS = [
   { key: "router_mem", label: "Router Memory", scope: "router" },
   { key: "router_clients", label: "Connected Devices", scope: "router" },
 ] as const;
+const METRIC_GROUP: Record<string, string> = {
+  env: "Server Room", server: "Servers", router: "Network / MikroTik",
+};
+const METRIC_SELECT_OPTIONS: SelectOption[] = METRIC_OPTIONS.map((m) => ({
+  value: m.key,
+  label: m.label,
+  group: METRIC_GROUP[m.scope] ?? null,
+}));
 const SERVER_METRICS = new Set<string>(["cpu", "mem", "disk"]);
 const ROUTER_METRICS = new Set<string>(["router_cpu", "router_mem", "router_clients"]);
 
@@ -477,6 +486,17 @@ export default function Analytics() {
 
   const needsDevice = SERVER_METRICS.has(selMetric) || ROUTER_METRICS.has(selMetric);
   const deviceOptions = ROUTER_METRICS.has(selMetric) ? routers : servers;
+  // Grouped by device class, so two similarly-named devices stay distinguishable and the
+  // list reads as "these are the servers, these are the routers".
+  const deviceSelectOptions: SelectOption[] = useMemo(
+    () => deviceOptions.map((s) => ({
+      value: String(s.id),
+      label: s.name,
+      group: s.typeLabel,
+    })),
+    [deviceOptions],
+  );
+
   const selDeviceName = useMemo(
     () => deviceOptions.find((s) => s.id === selDevice)?.name ?? null,
     [deviceOptions, selDevice],
@@ -863,39 +883,22 @@ export default function Analytics() {
             {/* Changing the metric deliberately does NOT clear the device: CPU → Memory
                 should keep you on the same server. The repair effect above swaps it only
                 when the new metric belongs to the other device class. */}
-            <Select value={selMetric} onChange={(e) => setSelMetric(e.target.value)} title="Metric to trend and baseline">
-              <optgroup label="Server Room" style={OPTION_STYLE}>
-                {METRIC_OPTIONS.filter((m) => m.scope === "env").map((m) => (
-                  <option key={m.key} value={m.key} style={OPTION_STYLE}>{m.label}</option>
-                ))}
-              </optgroup>
-              <optgroup label="Servers" style={OPTION_STYLE}>
-                {METRIC_OPTIONS.filter((m) => m.scope === "server").map((m) => (
-                  <option key={m.key} value={m.key} style={OPTION_STYLE}>{m.label}</option>
-                ))}
-              </optgroup>
-              <optgroup label="Network / MikroTik" style={OPTION_STYLE}>
-                {METRIC_OPTIONS.filter((m) => m.scope === "router").map((m) => (
-                  <option key={m.key} value={m.key} style={OPTION_STYLE}>{m.label}</option>
-                ))}
-              </optgroup>
-            </Select>
+            <Select
+              value={selMetric}
+              options={METRIC_SELECT_OPTIONS}
+              onChange={setSelMetric}
+              title="Metric to trend and baseline"
+            />
             {needsDevice && (
               deviceOptions.length === 0 ? (
                 <span className="text-[0.9em]" style={{ color: gf.textDim }}>no devices with data yet</span>
               ) : (
                 <Select
-                  value={selDevice ?? ""}
-                  onChange={(e) => setSelDevice(e.target.value ? Number(e.target.value) : null)}
+                  value={selDevice == null ? "" : String(selDevice)}
+                  options={deviceSelectOptions}
+                  onChange={(v) => setSelDevice(v ? Number(v) : null)}
                   title="Device this metric is read from"
-                >
-                  {/* Class prefix keeps two devices with similar names apart in the list. */}
-                  {deviceOptions.map((s) => (
-                    <option key={s.id} value={s.id} style={OPTION_STYLE}>
-                      {s.typeLabel ? `${s.typeLabel} · ${s.name}` : s.name}
-                    </option>
-                  ))}
-                </Select>
+                />
               )
             )}
             {!needsDevice && (
@@ -1204,39 +1207,150 @@ function DeviceLabel({ name, typeLabel, sub }: { name: string; typeLabel: string
 // Native <select> loses its arrow under appearance:none, so a chevron is drawn back in.
 // The <option> list is rendered by the OS, so its styling is best-effort and only some
 // browsers honour it — the control itself carries the design either way.
-const OPTION_STYLE = { background: "var(--gf-panel)", color: "var(--gf-text-primary)" } as const;
+interface SelectOption { value: string; label: string; group: string | null }
 
-function Select({ value, onChange, title, children }: {
-  value: string | number;
-  onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+// A CUSTOM listbox, not a native <select>. A native select's option list is drawn by the
+// operating system, so it takes no shadow, radius or elevation no matter what CSS says —
+// styling the popup at all requires owning it. This renders its own panel, which can then
+// be given the raised treatment the rest of the page uses.
+//
+// Owning it also means owning the behaviour a native select gave us for free, so: click
+// outside and Escape close it, Up/Down move, Enter/Space select, Home/End jump, the
+// trigger keeps proper listbox ARIA, and the active option is scrolled into view.
+function Select({ value, options, onChange, title }: {
+  value: string;
+  options: readonly SelectOption[];
+  onChange: (v: string) => void;
   title?: string;
-  children: React.ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  const selectedIdx = options.findIndex((o) => o.value === value);
+  const current = selectedIdx >= 0 ? options[selectedIdx] : undefined;
+
+  // Open at the current selection rather than the top of the list.
+  useEffect(() => {
+    if (open) setActiveIdx(selectedIdx >= 0 ? selectedIdx : 0);
+  }, [open, selectedIdx]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  // Keep the keyboard-highlighted row visible in a scrolling list.
+  useEffect(() => {
+    if (!open || !listRef.current) return;
+    const el = listRef.current.querySelector<HTMLElement>(`[data-idx="${activeIdx}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [open, activeIdx]);
+
+  const commit = (i: number) => {
+    const opt = options[i];
+    if (opt) onChange(opt.value);
+    setOpen(false);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (!open) {
+      if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") { e.preventDefault(); setOpen(true); }
+      return;
+    }
+    if (e.key === "Escape") { e.preventDefault(); setOpen(false); return; }
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); commit(activeIdx); return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); setActiveIdx((i) => Math.min(options.length - 1, i + 1)); }
+    if (e.key === "ArrowUp") { e.preventDefault(); setActiveIdx((i) => Math.max(0, i - 1)); }
+    if (e.key === "Home") { e.preventDefault(); setActiveIdx(0); }
+    if (e.key === "End") { e.preventDefault(); setActiveIdx(options.length - 1); }
+  };
+
+  let lastGroup: string | null = null;
+
   return (
-    <span className="relative inline-flex items-center">
-      <select
-        value={value}
-        onChange={onChange}
+    <span ref={wrapRef} className="relative inline-flex items-center">
+      <button
+        type="button"
         title={title}
-        className="appearance-none pl-3 pr-8 py-1.5 text-[0.9em] rounded-[3px] outline-none cursor-pointer transition-shadow"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={onKeyDown}
+        className="flex items-center gap-2 pl-3 pr-2.5 py-1.5 text-[0.9em] rounded-[3px] outline-none cursor-pointer transition-all"
         style={{
           background: gf.bg,
           color: gf.textPrimary,
           fontFamily: mono,
           fontWeight: 600,
           border: `1px solid ${gf.border}`,
-          boxShadow: "inset 0 2px 4px rgba(0,0,0,0.38)",
+          // Recessed while closed (a field), raised while open (an active surface).
+          boxShadow: open
+            ? "0 2px 8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.16)"
+            : "inset 0 2px 4px rgba(0,0,0,0.38)",
         }}
       >
-        {children}
-      </select>
-      <span
-        aria-hidden
-        className="pointer-events-none absolute right-2.5 text-[0.8em]"
-        style={{ color: gf.textMuted }}
-      >
-        ▼
-      </span>
+        <span>{current?.label ?? "—"}</span>
+        <span aria-hidden className="text-[0.75em]" style={{ color: gf.textMuted }}>
+          {open ? "▲" : "▼"}
+        </span>
+      </button>
+
+      {open && (
+        <div
+          ref={listRef}
+          role="listbox"
+          tabIndex={-1}
+          className="absolute left-0 top-full mt-1.5 z-50 min-w-full max-h-72 overflow-y-auto rounded-[3px] py-1"
+          style={{
+            background: gf.panel,
+            border: `1px solid ${gf.border}`,
+            // Deep elevation — this is what a native option list cannot be given.
+            boxShadow: "0 12px 32px rgba(0,0,0,0.6), 0 3px 8px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.10)",
+          }}
+        >
+          {options.map((o, i) => {
+            const header = o.group && o.group !== lastGroup ? o.group : null;
+            lastGroup = o.group;
+            const selected = o.value === value;
+            const active = i === activeIdx;
+            return (
+              <div key={o.value}>
+                {header && (
+                  <div
+                    className="px-3 pt-2 pb-1 text-[0.78em] uppercase tracking-widest"
+                    style={{ color: gf.textDim }}
+                  >
+                    {header}
+                  </div>
+                )}
+                <div
+                  role="option"
+                  aria-selected={selected}
+                  data-idx={i}
+                  onMouseEnter={() => setActiveIdx(i)}
+                  onClick={() => commit(i)}
+                  className="flex items-center justify-between gap-3 px-3 py-1.5 text-[0.9em] cursor-pointer"
+                  style={{
+                    background: active ? gf.hoverStrong : "transparent",
+                    color: selected ? gf.textPrimary : gf.textMuted,
+                    fontWeight: selected ? 700 : 500,
+                    boxShadow: selected ? "inset 3px 0 0 rgba(255,255,255,0.30)" : "none",
+                  }}
+                >
+                  <span className="whitespace-nowrap">{o.label}</span>
+                  {selected && <span aria-hidden style={{ color: gf.textPrimary }}>✓</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </span>
   );
 }
@@ -1270,8 +1384,12 @@ function LookbackPicker({ value, options, onChange }: {
               aria-pressed={active}
               className="px-3 py-1.5 text-[0.9em] transition-all"
               style={{
-                background: active ? gf.accent : "transparent",
-                color: active ? "#fff" : gf.textMuted,
+                // No accent colour here on purpose: this is a view filter, not an action,
+                // and three of them stacked in blue competed with the alert severities and
+                // the Apply button for attention. The raised surface plus the weight carry
+                // the active state instead — which was always the more robust signal.
+                background: active ? gf.panel : "transparent",
+                color: active ? gf.textPrimary : gf.textMuted,
                 fontWeight: active ? 700 : 500,
                 letterSpacing: active ? "0.02em" : undefined,
                 // Left divider between segments (not before the first) keeps the group
