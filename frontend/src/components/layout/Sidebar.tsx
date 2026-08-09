@@ -477,13 +477,17 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
                 </div>
               </button>
 
-              {/* Raised, matching the theme button above it — the footer reads as two
-                  pressable controls rather than one button and one outline. Colour is set
-                  to primary up front rather than on hover, because an inline colour beats
-                  .gf-btn's :hover rule on specificity. */}
               <button onClick={logout}
-                className="gf-btn w-full py-1.5 text-[12px] tracking-wider"
-                style={{ color: "var(--gf-text-primary)", borderRadius: 3, fontWeight: 600 }}>
+                className="w-full py-1.5 rounded text-[12px] tracking-wider transition-colors"
+                style={{ color: "var(--gf-text-muted)", border: "1px solid var(--gf-panel-border)" }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.color      = "var(--gf-text-primary)";
+                  e.currentTarget.style.background = "var(--gf-hover)";
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.color      = "var(--gf-text-muted)";
+                  e.currentTarget.style.background = "transparent";
+                }}>
                 Sign Out
               </button>
             </div>
