@@ -13,6 +13,9 @@ npm install
 nodemon src/server.js   # dev (watch mode)
 node src/server.js      # production
 npm test                # node --test — pure unit tests, no MySQL/InfluxDB needed
+npm run analytics:check # DRY RUN of the predictive-alerting job — prints what it WOULD raise, raises nothing.
+                        # The job runs every 6h and correctly raises nothing on a healthy system, which makes
+                        # "alerting is broken" and "nothing to alert about" look identical. This tells them apart.
 ```
 > Entry point is `backend/src/server.js`. The root-level `server.js` was deleted.
 
