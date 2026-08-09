@@ -301,6 +301,49 @@ const LINK_STATUS_LABEL: Record<LinkForecast["status"], string> = {
   rising: "Rising", stable: "Stable", reached: "Saturated", insufficient_data: "Need more data",
 };
 
+// ─── View state that survives navigation ──────────────────────────────────────
+// React Router unmounts this page when you leave it, so without persistence every visit
+// reset the tab, the metric, the device and every lookback. That is a real cost here:
+// getting to "Memory on WEB-PROD" takes two controls, and an operator checking the
+// Dashboard mid-investigation would come back to a blank slate.
+//
+// localStorage (not sessionStorage) matches the sidebar's collapse/group prefs and the
+// theme, so the view also survives a refresh. `isValid` guards the restored value — a
+// stale tab key or a metric that no longer exists would otherwise render an empty page
+// or send a 400 to the API on mount.
+const VIEW_KEY = "cspc_analytics_view";
+
+function usePersistedState<T>(
+  key: string,
+  initial: T,
+  isValid?: (v: unknown) => boolean,
+): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(`${VIEW_KEY}.${key}`);
+      if (raw == null) return initial;
+      const parsed: unknown = JSON.parse(raw);
+      if (isValid && !isValid(parsed)) return initial;
+      return parsed as T;
+    } catch {
+      return initial; // corrupt JSON or storage disabled must never break the page
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(`${VIEW_KEY}.${key}`, JSON.stringify(value));
+    } catch {
+      /* private mode / quota — persistence is a convenience, not a requirement */
+    }
+  }, [key, value]);
+  return [value, setValue];
+}
+
+const isTabKey = (v: unknown): boolean => TABS.some((t) => t.key === v);
+const isMetricKey = (v: unknown): boolean => METRIC_OPTIONS.some((m) => m.key === v);
+const isOneOf = (opts: readonly LookbackOption[]) => (v: unknown): boolean =>
+  typeof v === "number" && opts.some((o) => o.value === v);
+
 // ─── One row of any capacity forecast ─────────────────────────────────────────
 // Disk, UPS battery and link saturation are the same question asked three ways —
 // "how long until this crosses a line?" — so they render through one table instead of
@@ -332,12 +375,12 @@ export default function Analytics() {
   const isAdmin = user?.role === "admin";
 
   // One window per forecast, defaulted to that phenomenon's own timescale.
-  const [diskDays, setDiskDays] = useState<number>(30);
-  const [linkDays, setLinkDays] = useState<number>(90);
-  const [upsDays, setUpsDays] = useState<number>(180);
-  const [anomDays, setAnomDays] = useState<number>(14);
-  const [alertDays, setAlertDays] = useState<number>(30);
-  const [tab, setTab] = useState<TabKey>("forecasts");
+  const [diskDays, setDiskDays] = usePersistedState<number>("diskDays", 30, isOneOf(DISK_LOOKBACKS));
+  const [linkDays, setLinkDays] = usePersistedState<number>("linkDays", 90, isOneOf(LINK_LOOKBACKS));
+  const [upsDays, setUpsDays] = usePersistedState<number>("upsDays", 180, isOneOf(UPS_LOOKBACKS));
+  const [anomDays, setAnomDays] = usePersistedState<number>("anomDays", 14, isOneOf(ANOMALY_LOOKBACKS));
+  const [alertDays, setAlertDays] = usePersistedState<number>("alertDays", 30, isOneOf(ALERT_LOOKBACKS));
+  const [tab, setTab] = usePersistedState<TabKey>("tab", "forecasts", isTabKey);
   const [forecasts, setForecasts] = useState<DiskForecast[]>([]);
   const [upsForecasts, setUpsForecasts] = useState<UpsBatteryForecast[]>([]);
   const [linkForecasts, setLinkForecasts] = useState<LinkForecast[]>([]);
@@ -346,8 +389,11 @@ export default function Analytics() {
   const [error, setError] = useState("");
 
   // Phase 2/3 — metric focus (one selector drives both Trend and Anomaly panels).
-  const [selMetric, setSelMetric] = useState<string>("temperature");
-  const [selDevice, setSelDevice] = useState<number | null>(null);
+  const [selMetric, setSelMetric] = usePersistedState<string>("metric", "temperature", isMetricKey);
+  // The device is persisted as a raw id and re-validated against the loaded options
+  // below — a remembered server that has since been decommissioned must not leave the
+  // panels silently empty.
+  const [selDevice, setSelDevice] = usePersistedState<number | null>("deviceId", null);
   const [trend, setTrend] = useState<MetricTrend | null>(null);
   const [anom, setAnom] = useState<AnomalyResult | null>(null);
   const [focusLoading, setFocusLoading] = useState(false);
@@ -419,10 +465,16 @@ export default function Analytics() {
     [deviceOptions, selDevice],
   );
 
-  // A device-scoped metric needs a device picked — default to the first once data loads.
+  // A device-scoped metric needs a device picked. This also REPAIRS a restored id: the
+  // remembered device may have been decommissioned since, or belong to the other class
+  // (a server id restored while a router metric is selected), in which case fall back to
+  // the first available rather than querying an id that yields nothing.
   useEffect(() => {
+    if (!needsDevice) return;
     const first = deviceOptions[0];
-    if (needsDevice && selDevice == null && first) setSelDevice(first.id);
+    if (!first) return; // options not loaded yet — keep what we have
+    const stillValid = selDevice != null && deviceOptions.some((o) => o.id === selDevice);
+    if (!stillValid) setSelDevice(first.id);
   }, [needsDevice, selDevice, deviceOptions]);
 
   const loadFocus = useCallback(async (silent = false) => {
@@ -777,9 +829,12 @@ export default function Analytics() {
           {/* ── Metric focus: selector drives Trend + Anomaly panels ── */}
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-[0.9em] uppercase tracking-widest" style={{ color: gf.textDim }}>Metric</span>
+            {/* Changing the metric deliberately does NOT clear the device: CPU → Memory
+                should keep you on the same server. The repair effect above swaps it only
+                when the new metric belongs to the other device class. */}
             <select
               value={selMetric}
-              onChange={(e) => { setSelMetric(e.target.value); setSelDevice(null); }}
+              onChange={(e) => setSelMetric(e.target.value)}
               className="px-2 py-1 text-[1em] rounded-[2px] outline-none"
               style={{ background: gf.panel, color: gf.textPrimary, border: `1px solid ${gf.border}` }}
             >
