@@ -74,19 +74,24 @@
 
 /* =========== IR CHANNEL ARRAY ===============
  * Each index = ir_channel value stored in DB (0-based here).
- * TWO IR transmitters are physically wired: GPIO 25 (AC unit 1) and
- * GPIO 33 (AC unit 2). Channels 3-4 (GPIO 32/15) were declared here
- * but never populated in hardware, so the DB and dashboard could
- * accept a channel that could never actuate anything — removed.
- * To add a third unit: wire its IR TX to a free GPIO, append the pin
- * to IR_CHANNEL_PINS, bump MAX_IR_CHANNELS, add an IRsend entry to
- * irChannels[] below, and widen the ir_channel guard in
- * backend/routes/aircon.js to match.
- * enabledChannels[] is updated at runtime via "irConfig" socket event.
+ *
+ * This is the POOL of pins this board can drive, not the number of AC
+ * units. Two transmitters are wired today (GPIO 25, 33); GPIO 32 and 15
+ * are declared and ready so a third or fourth can be added by SOLDERING
+ * ONLY — no reflash, no code. sendChannelMap() reports the whole pool to
+ * the backend, which sizes its own limit from it, and enabledChannels[]
+ * keeps an unwired pin dark until a unit is registered against it.
+ *
+ * Growing the pool beyond four is the only case that still needs an edit
+ * here: add the pin, bump MAX_IR_CHANNELS, add an IRsend entry below.
+ * enabledChannels[] is updated at runtime via the "irConfig" socket event.
  * ============================================ */
-#define MAX_IR_CHANNELS 2
-const uint8_t IR_CHANNEL_PINS[MAX_IR_CHANNELS] = { 25, 33 };
-bool enabledChannels[MAX_IR_CHANNELS] = { true, true };
+#define MAX_IR_CHANNELS 4
+const uint8_t IR_CHANNEL_PINS[MAX_IR_CHANNELS] = { 25, 33, 32, 15 };
+// Channels with no transmitter soldered start DISABLED, so an unwired pin cannot be
+// driven by a stale irConfig. The backend enables a channel only once a unit is
+// registered against it, so wiring GPIO 32 and registering AC Unit 3 is all it takes.
+bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
 
 /* =================== DHT ==================== */
 #define DHTTYPE DHT11
@@ -211,6 +216,8 @@ Adafruit_NeoPixel rgb(NUM_PIXELS, RGB_PIN, NEO_GRB + NEO_KHZ800);
 IRsend irChannels[MAX_IR_CHANNELS] = {
   IRsend(IR_CHANNEL_PINS[0]),
   IRsend(IR_CHANNEL_PINS[1]),
+  IRsend(IR_CHANNEL_PINS[2]),
+  IRsend(IR_CHANNEL_PINS[3]),
 };
 
 /* ================= GLOBALS ================== */

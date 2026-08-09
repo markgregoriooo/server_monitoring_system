@@ -447,26 +447,24 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
   const [error,   setError]   = useState("");
   const [saving,  setSaving]  = useState(false);
 
-  // Only 2 IR transmitters are physically wired (GPIO 25 / 33), so the fallback list
-  // when the ESP32 is offline must match MAX_IR_CHANNELS in the firmware — offering 8
-  // let you register a unit on a channel that could never actuate anything.
-  const MAX_IR_CHANNELS = 2;
-  // GPIOs the firmware previously declared for channels 3-4 and which are still free on
-  // the board (iot/esp32/env_monitor_v2.ino header). They are NOT selectable — nothing is
-  // soldered to them — but a technician standing at the rack needs to know where the next
-  // IR transmitter goes, and that fact lived only in a firmware comment.
-  const SPARE_GPIOS = [32, 15];
+  // The channel list comes from the DEVICE. The ESP32 reports its pin pool on connect,
+  // so adding an AC unit means wiring a transmitter and registering it — no constant to
+  // edit here, in the backend, or in the firmware.
+  //
+  // FALLBACK_CHANNELS is used only while the ESP32 has never connected, so the form is
+  // still usable on a cold start.
+  const FALLBACK_CHANNELS = 2;
   const esp32Online  = channelMap.length > 0;
   const allChannels  = esp32Online
     ? channelMap
-    : Array.from({ length: MAX_IR_CHANNELS }, (_, i) => ({ channel: i + 1, gpio: 0 }));
+    : Array.from({ length: FALLBACK_CHANNELS }, (_, i) => ({ channel: i + 1, gpio: 0 }));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     const ch = parseInt(channel);
     if (!name.trim())              return setError("Name is required.");
-    if (!ch || ch < 1 || ch > MAX_IR_CHANNELS) return setError("Select a valid IR channel.");
+    if (!ch || ch < 1 || ch > allChannels.length) return setError("Select a valid IR channel.");
     if (usedChannels.includes(ch)) return setError(`Channel ${ch} is already assigned.`);
     // Names must be unique so two cards can't look identical; server enforces it too.
     if (usedNames.some(u => u.toLowerCase() === name.trim().toLowerCase()))
@@ -597,30 +595,15 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
             </div>
           </div>
 
-          {/* Every wired channel taken. Without this the modal just shows two greyed-out
-              rows and no way forward — the reason (only two IR transmitters exist) and the
-              fix (wire one to a spare GPIO) were buried in a firmware comment. */}
-          {usedChannels.length >= MAX_IR_CHANNELS && (
+          {allChannels.every((c) => usedChannels.includes(c.channel)) && (
             <div className="flex flex-col gap-1.5 px-3 py-2.5 rounded-[2px]"
               style={{ background: "rgba(87,148,242,0.06)", border: `1px solid ${GF.divider}` }}>
               <p className="text-[12px] font-semibold" style={{ color: GF.textPrimary }}>
-                All {MAX_IR_CHANNELS} wired channels are in use
+                All {allChannels.length} IR channels are in use
               </p>
               <p className="text-[12px] leading-relaxed" style={{ color: GF.textMuted }}>
-                Only {MAX_IR_CHANNELS} IR transmitters are physically connected. To control
-                another unit, wire an IR TX to a free pin —{" "}
-                {SPARE_GPIOS.map((g, i) => (
-                  <span key={g}>
-                    {i > 0 && " or "}
-                    <span className="font-bold" style={{ color: GF.accent }}>GPIO {g}</span>
-                  </span>
-                ))}
-                {" "}— then re-flash the ESP32 with a higher <span className="font-bold">MAX_IR_CHANNELS</span>{" "}
-                and raise the matching limit in the backend.
-              </p>
-              <p className="text-[11px]" style={{ color: GF.textDim }}>
-                Registering a unit on an unwired channel would look like it worked and
-                control nothing, so the limit stops at what the hardware can actually do.
+                Every channel this ESP32 exposes already has a unit. Free one by removing
+                an AC unit, or add more transmitter pins to the firmware's channel pool.
               </p>
             </div>
           )}

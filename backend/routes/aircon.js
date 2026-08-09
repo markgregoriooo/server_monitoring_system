@@ -68,9 +68,18 @@ router.post("/", authMiddleware, requireRole("admin", "it_staff"), async (req, r
   
   if (!name?.trim())                    return res.status(400).json({ error: "name is required" });
   const ch = parseInt(ir_channel);
-  // F-07: cap at the firmware's MAX_IR_CHANNELS (env_monitor_v2.ino) — channels above
-  // this are accepted by the DB but never actuate hardware.
-  if (!ch || ch < 1 || ch > 2)          return res.status(400).json({ error: "ir_channel must be 1–2" });
+  // The limit comes from the DEVICE, not from a constant here. The ESP32 reports its pin
+  // pool on every connect (sendChannelMap → airconService.setChannelMap), so adding an AC
+  // unit is wiring plus registering — no code edit, which is what a hardcoded cap forced.
+  //
+  // Falls back to AIRCON_MAX_IR_CHANNELS (blank = 2, today's wired pair) only while the
+  // ESP32 has never connected, so a cold backend can still be configured.
+  const maxChannels = airconService.getChannelMap().length
+    || Number(process.env.AIRCON_MAX_IR_CHANNELS)
+    || 2;
+  if (!ch || ch < 1 || ch > maxChannels) {
+    return res.status(400).json({ error: `ir_channel must be 1–${maxChannels}` });
+  }
 
   try {
     const { deviceId } = await airconService.addUnit({

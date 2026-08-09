@@ -78,6 +78,7 @@ ANALYTICS_ALERT_LINK_DAYS=     # lookback for link saturation; blank = 90
 ANALYTICS_ALERT_UPS_DAYS=      # lookback for UPS battery; blank = 180 (battery ageing needs months — see predictive-analytics.md §16.1)
 ANALYTICS_ANOMALY_ALERTS=      # false disables anomaly ALERTS (the Analytics page still shows them); blank = enabled
 ANALYTICS_ANOMALY_DAYS=        # baseline window for the alerting job's anomaly scan; blank = 14
+AIRCON_MAX_IR_CHANNELS= # fallback IR-channel count used ONLY while the ESP32 has never connected; blank = 2. Normally the limit comes from the device itself — the ESP32 reports its pin pool on connect (sendChannelMap), so adding an AC unit is wiring a transmitter + registering it, with no constant to edit
 NOTIFY_RETENTION_DAYS=  # alerts older than this are purged daily (feed rows cascade); blank = 30
 REPORT_RETENTION_DAYS=  # generated reports older than this are purged daily — MySQL row AND both files under backend/reports/; blank = 90. Longer than the alerts default on purpose: a report is an artifact someone deliberately generated. See report-page.md
 ```
