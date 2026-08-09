@@ -1030,7 +1030,11 @@ export default function Analytics() {
           {/* ── Trend & short-term projection ── */}
           <Panel
             title="Trend & Short-Term Projection"
-            subtitle={`EWMA-smoothed history + Holt's linear (double-exponential) projection — last ${trend?.lookbackHours ?? TREND_LOOKBACK_HOURS}h of history, next ~${trend?.horizonHours ?? TREND_HORIZON_HOURS}h`}
+            // Says WINDOW, not "history". The window is what we ask InfluxDB for; how much
+            // history actually came back is a different number the chart footer reports
+            // ("30h history"). Wording it as history here contradicted that footer on the
+            // same panel whenever a device had less data than the window.
+            subtitle={`EWMA + Holt's linear · ${trend?.lookbackHours ?? TREND_LOOKBACK_HOURS}h window → ${trend?.horizonHours ?? TREND_HORIZON_HOURS}h projection`}
           >
             {trendLoading && !trend ? (
               <Empty>Loading trend…</Empty>
