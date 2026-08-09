@@ -526,14 +526,24 @@ export default function Reports() {
                               <DownloadBtn label="PDF" disabled={!ready || !!busy[`${r.id}-pdf`]} onClick={() => download(r, "pdf")} />
                               {/* Mails the PDF to the signed-in user. Disabled until
                                   the background build has produced a file. */}
+                              {/* Same raised/recessed rule as the download buttons beside
+                                  it — a mixed row would read as three unrelated controls. */}
                               <button
                                 onClick={() => emailReport(r)}
                                 disabled={!ready || !!busy[`mail-${r.id}`]}
-                                className="grid place-items-center w-7 h-7 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                style={{ color: gf.textMuted }}
-                                title="Email this report to me (PDF)"
-                                onMouseEnter={(e) => { if (ready) { e.currentTarget.style.background = gf.accentDim; e.currentTarget.style.color = gf.accent; } }}
-                                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = gf.textMuted; }}
+                                className={`grid place-items-center w-8 h-8 rounded-[3px] transition-all disabled:cursor-not-allowed ${ready ? "gf-btn" : ""}`}
+                                style={
+                                  ready
+                                    ? { color: gf.textPrimary }
+                                    : {
+                                        color: gf.textDim,
+                                        background: gf.bg,
+                                        border: `1px solid ${gf.border}`,
+                                        boxShadow: "var(--gf-btn-shadow-active)",
+                                        opacity: 0.6,
+                                      }
+                                }
+                                title={ready ? "Email this report to me (PDF)" : "Not ready to email yet"}
                               >
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                                   <path d="M3 6.5h18v11H3zM3 7l9 6 9-6" />
@@ -771,16 +781,31 @@ function StatCard({ label, value, text, color, sub }: { label: string; value?: n
   );
 }
 
+// Raised while the file exists, recessed while it does not — the same rule the rest of the
+// UI follows: a raised surface means "this will do something". A report still building has
+// nothing to download, and a flat, sunken button says that before the cursor gets there.
+//
+// The hover/press states come from .gf-btn's own CSS (already scoped to :not(:disabled)),
+// which replaces the hand-rolled onMouseEnter/onMouseLeave handlers this had — those also
+// hardcoded the accent, so they fought the theme in light mode.
 function DownloadBtn({ label, disabled, onClick }: { label: string; disabled?: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-      style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}
-      onMouseEnter={(e) => { if (!disabled) { e.currentTarget.style.color = gf.accent; e.currentTarget.style.borderColor = gf.accent; } }}
-      onMouseLeave={(e) => { e.currentTarget.style.color = gf.textMuted; e.currentTarget.style.borderColor = "var(--gf-panel-border)"; }}
-      title={`Download ${label}`}
+      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[3px] text-[12px] font-semibold transition-all disabled:cursor-not-allowed ${disabled ? "" : "gf-btn"}`}
+      style={
+        disabled
+          ? {
+              color: gf.textDim,
+              background: gf.bg,
+              border: `1px solid ${gf.border}`,
+              boxShadow: "var(--gf-btn-shadow-active)",
+              opacity: 0.6,
+            }
+          : { color: gf.textPrimary }
+      }
+      title={disabled ? `${label} not ready yet` : `Download ${label}`}
     >
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
