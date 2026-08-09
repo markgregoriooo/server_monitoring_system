@@ -50,16 +50,37 @@ const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
 const MUTED = "#6B7280";
+// ACCEPTABLE sits between NORMAL green and NEAR-CRIT orange — a distinct step, not a
+// shade of either, so the five zones stay countable at a glance.
+const TEAL = "#3CC8E8";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Room temperature mapped to the CLAUDE.md IR comfort zones.
-function tempColor(t: number | string): string {
+// The auto-cooling zone boundaries the ESP32 actually uses (aircon_ir_config, pushed to
+// the device as `acConfig`). Admin-editable, so nothing here may assume the defaults.
+interface IRZones { coldBelow: number; normalMax: number; acceptableMax: number; nearCritMax: number; }
+
+// Firmware-compiled defaults. Used ONLY until the saved config loads — the boundaries
+// below are admin-editable and have already been retuned in practice.
+const ZONE_DEFAULTS: IRZones = { coldBelow: 22, normalMax: 24, acceptableMax: 27, nearCritMax: 29 };
+
+// Which zone a room temperature falls in, per the SAVED thresholds. Previously these
+// numbers were hardcoded (22/27/29) while the real boundaries lived in aircon_ir_config —
+// so once an admin moved near_crit_max to 30.5, the box showed CRITICAL red from 29 while
+// the ESP32 was still in NEAR_CRIT and cooling to 22 rather than 20.
+function tempZone(t: number, z: IRZones): { label: string; color: string } {
+  if (t < z.coldBelow) return { label: "TOO COLD", color: BLUE };
+  if (t <= z.normalMax) return { label: "NORMAL", color: GREEN };
+  // ACCEPTABLE is its own zone, not a shade of NORMAL: it drives a different IR target
+  // (24°C vs 26°C), so collapsing the two hid which one the cooling was actually in.
+  if (t <= z.acceptableMax) return { label: "ACCEPTABLE", color: TEAL };
+  if (t <= z.nearCritMax) return { label: "NEAR CRITICAL", color: ORANGE };
+  return { label: "CRITICAL", color: RED };
+}
+
+function tempColor(t: number | string, z: IRZones = ZONE_DEFAULTS): string {
   if (typeof t !== "number") return MUTED;
-  if (t < 22) return BLUE; // TOO_COLD
-  if (t <= 27) return GREEN; // NORMAL / ACCEPTABLE
-  if (t <= 29) return ORANGE; // NEAR_CRIT
-  return RED; // CRITICAL
+  return tempZone(t, z).color;
 }
 
 function humColor(h: number | string): string {
@@ -644,9 +665,16 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
 // re-pushes "acConfig" to the device live. Kept separate from Alert Rules on purpose:
 // cooling should ramp BEFORE the alarm thresholds, so its thresholds sit at/below them.
 
-function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: number | string }) {
+function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
+  isAdmin: boolean; roomTemp: number | string; onZones?: (z: IRZones) => void;
+}) {
   // Firmware-compiled defaults (CLAUDE.md IR Zone table): <22 / 22–24 / 25–27 / 28–29 / >29.
-  const DEFAULTS = { coldBelow: "22", normalMax: "24", acceptableMax: "27", nearCritMax: "29" };
+  // Mirrors ZONE_DEFAULTS above, which mirrors the firmware's compiled values — kept as
+  // one definition so the "Reset to defaults" button and the Room Temp colours cannot
+  // drift apart.
+  const DEFAULTS = Object.fromEntries(
+    Object.entries(ZONE_DEFAULTS).map(([k, v]) => [k, String(v)]),
+  ) as Record<keyof IRZones, string>;
 
   const [form, setForm]       = useState({ coldBelow: "", normalMax: "", acceptableMax: "", nearCritMax: "" });
   const [initial, setInitial] = useState(form); // last saved/loaded snapshot → drives dirty tracking
@@ -675,6 +703,12 @@ function IRZoneConfig({ isAdmin, roomTemp }: { isAdmin: boolean; roomTemp: numbe
     setForm(next);
     setInitial(next);
     setMeta({ updatedByName: c.updatedByName ?? null, updatedAt: c.updatedAt ?? null });
+    // Publish upward on both load AND save, so the Room Temp box re-colours the moment a
+    // boundary changes instead of waiting for the next page load.
+    onZones?.({
+      coldBelow: c.coldBelow, normalMax: c.normalMax,
+      acceptableMax: c.acceptableMax, nearCritMax: c.nearCritMax,
+    });
   };
 
   useEffect(() => {
@@ -1073,6 +1107,9 @@ export default function AirConditioner() {
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const [loading,    setLoading]    = useState(true);
   const [roomTemp,   setRoomTemp]   = useState<number | string>("--");
+  // Lifted out of IRZoneConfig so the Room Temp box colours by the SAME boundaries the
+  // ESP32 was given, and follows an admin edit immediately rather than after a reload.
+  const [zones, setZones] = useState<IRZones>(ZONE_DEFAULTS);
   const [humidity,   setHumidity]   = useState<number | string>("--");
   const [tempHist,   setTempHist]   = useState<number[]>([]);
   const [humHist,    setHumHist]    = useState<number[]>([]);
@@ -1241,8 +1278,10 @@ export default function AirConditioner() {
               label="Room Temp"
               value={typeof roomTemp === "number" ? roomTemp.toFixed(1) : "--"}
               unit="°C"
-              color={tempColor(roomTemp)}
-              sub="DHT11 · LIVE"
+              color={tempColor(roomTemp, zones)}
+              // States the zone outright — a colour alone cannot say whether 27.5°C is
+              // ACCEPTABLE or NEAR CRITICAL, and those cool to different temperatures.
+              sub={typeof roomTemp === "number" ? `${tempZone(roomTemp, zones).label} · LIVE` : "DHT11 · LIVE"}
               spark={tempHist}
             />
             <StatPanel
@@ -1268,7 +1307,7 @@ export default function AirConditioner() {
           </div>
 
           {/* ── Auto-cooling thresholds ── */}
-          <IRZoneConfig isAdmin={isAdmin} roomTemp={roomTemp} />
+          <IRZoneConfig isAdmin={isAdmin} roomTemp={roomTemp} onZones={setZones} />
 
           {/* ── AC unit cards ── */}
           {total === 0 ? (
