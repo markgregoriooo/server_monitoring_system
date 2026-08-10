@@ -234,7 +234,7 @@ async function loadInterfaceLabels(deviceId) {
 //
 // Deliberately preserves location_label on conflict: the label is human-authored and
 // must survive every re-poll. Needs the unique key from
-// the UNIQUE(device_id, interface_name) key that ships in v12cspc-ictu-monitoring-system.sql —
+// the UNIQUE(device_id, interface_name) key that ships in v13_cspc-ictu-monitoring-system.sql —
 // without it ON DUPLICATE KEY
 // never matches and this would append a row per interface per cycle, so the whole
 // thing is skipped (and warned once) when the key is missing.
@@ -261,7 +261,7 @@ async function syncInterfaces(deviceId, interfaces) {
     ifaceUpsertBroken = true;
     console.error(
       "[SNMP_POLLER] interface sync disabled — is the UNIQUE(device_id, interface_name) key on "
-      + "network_interfaces present? It ships in v12cspc-ictu-monitoring-system.sql.",
+      + "network_interfaces present? It ships in v13_cspc-ictu-monitoring-system.sql.",
       err.message,
     );
   }

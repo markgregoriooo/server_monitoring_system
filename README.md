@@ -53,7 +53,7 @@ Three ingest paths converge on one alerting pipeline:
 ├── iot/esp32/env_monitor_v2.ino      ← firmware (active)
 ├── ops/                              ← db-backup + offsite-backup (rclone) scripts
 ├── dev-snmpsim/                      ← SNMP simulator for local router/UPS testing
-└── v12cspc-ictu-monitoring-system.sql ← full schema (single file, no migration chain)
+└── v13_cspc-ictu-monitoring-system.sql ← full schema (single file, no migration chain)
 ```
 
 ### Key services
@@ -80,7 +80,7 @@ OAuth web client. Go 1.21+ only if building the agent.
 
 ```bash
 # 1. Database — load the schema
-mysql -u root -p < v12cspc-ictu-monitoring-system.sql
+mysql -u root -p < v13_cspc-ictu-monitoring-system.sql
 ```
 
 ```bash
@@ -330,10 +330,12 @@ with a live preview. Layout persists per user.
 The branch also carries an admin-settable **server display name** (a friendly label separate
 from the agent-reported hostname, for racks where several boxes report `unknown-server`).
 
-> ⚠️ **Two schema changes not in `v12cspc-ictu-monitoring-system.sql`** — run both before
-> merging: `migrations/2026-06-17_widget_prefs.sql` (new `widget_prefs` table) and
-> `migrations/2026-06-18_server_display_name.sql` (`devices.display_name` column). Without
-> the first, layouts fall back to a localStorage cache and don't sync across devices.
+> **Both schema changes now ship in `v13_cspc-ictu-monitoring-system.sql`** — the
+> `widget_prefs` table (`migrations/2026-06-17_widget_prefs.sql`) and the
+> `devices.display_name` column (`migrations/2026-06-18_server_display_name.sql`). A fresh
+> install needs neither migration run by hand. Only an *existing* database created before
+> those dates does; without `widget_prefs`, layouts fall back to a localStorage cache and
+> don't sync across devices.
 
 ---
 

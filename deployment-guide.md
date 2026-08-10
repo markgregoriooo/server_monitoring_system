@@ -2,7 +2,7 @@
 
 End-to-end runbook for standing up the system on a fresh host. Grounded in the real
 entry point (`backend/src/server.js`), config (`backend/config/*`), schema
-(`v12cspc-ictu-monitoring-system.sql`), Go agent, and ESP32 firmware. For *how each
+(`v13_cspc-ictu-monitoring-system.sql`), Go agent, and ESP32 firmware. For *how each
 part works internally* see `CLAUDE.md`, `server-metrics.md`, `google-oauth.md`, and
 `email-popup-notifications.md`.
 
@@ -11,7 +11,7 @@ part works internally* see `CLAUDE.md`, `server-metrics.md`, `google-oauth.md`, 
 > merge — **router / UPS (SNMP)** and **MikroTik (RouterOS)** monitoring. All of it
 > deploys from this one branch.
 
-> **Schema:** there is no longer a migration chain. `v12cspc-ictu-monitoring-system.sql`
+> **Schema:** there is no longer a migration chain. `v13_cspc-ictu-monitoring-system.sql`
 > is a single full export that already contains every change the old `migrations/` folder
 > applied, plus the seed rows the app needs to function. See [§2.1](#21-mysql).
 
@@ -81,7 +81,7 @@ agents and firmware cache the address, and ICTU's proxy needs a fixed target.
 
 ### 2.1 MySQL
 
-**One file, no migrations.** `v12cspc-ictu-monitoring-system.sql` is a phpMyAdmin export
+**One file, no migrations.** `v13_cspc-ictu-monitoring-system.sql` is a phpMyAdmin export
 of the full schema (24 tables) and already includes everything the old `migrations/`
 folder used to apply.
 
@@ -106,7 +106,7 @@ folder used to apply.
 mysql -u root -p -e "CREATE DATABASE cspc_ictu_monitoring CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
 
 # 2) Load the schema INTO it
-mysql -u root -p cspc_ictu_monitoring < v12cspc-ictu-monitoring-system.sql
+mysql -u root -p cspc_ictu_monitoring < v13_cspc-ictu-monitoring-system.sql
 ```
 
 The export ships **two tables pre-populated**, and both matter:
@@ -135,6 +135,21 @@ FLUSH PRIVILEGES;
 > **structure for all tables** but **data for `alert_rules` + `aircon_ir_config` only** —
 > a full data export would carry agent bearer tokens, SNMP community strings, the
 > encrypted MikroTik password and real user accounts into the repo.
+>
+> **Then sanitize the exported file — never the live database.** The seeded rows carry
+> foreign keys into tables that ship empty, so a straight export does not import into a
+> fresh database. Fix these in the `.sql` file only (the live values are real audit data
+> and must stay):
+>
+> - every non-NULL `updated_by` → `NULL`. It points at `users.user_id`, and `users` ships
+>   empty, so `ADD CONSTRAINT` fails with errno 1452 when it validates the seeded rows.
+> - every `alert_rules` row with a non-NULL `device_id` → **delete the row**. It is a
+>   per-device override for a device that will not exist, and nulling it instead would
+>   turn it into a second global rule competing with the existing one for that metric.
+>
+> Verify by importing into a throwaway database before committing — `CREATE DATABASE
+> zz_test`, load, confirm 24 tables and 31 foreign keys, `DROP DATABASE zz_test`. Static
+> inspection missed this twice; the import is the only real proof.
 
 ### 2.2 InfluxDB 2.x
 

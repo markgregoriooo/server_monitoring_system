@@ -65,7 +65,7 @@ const METRICS: MetricMeta[] = [
   { value: "gas", label: "Gas / smoke", unit: "ppm", color: "#9AA0A6", env: true },
   { value: "humidity", label: "Humidity", unit: "%", color: "#3CC8E8", env: true },
   // Router / UPS metrics (SNMP + MikroTik pollers → services/deviceAlerts.js). Global
-  // defaults ship seeded in the base schema (v12cspc-ictu-monitoring-system.sql); per-device
+  // defaults ship seeded in the base schema (v13_cspc-ictu-monitoring-system.sql); per-device
   // overrides are now selectable here too.
   { value: "router_cpu", label: "Router CPU", unit: "%", color: "#5794F2", scope: "network" },
   { value: "router_mem", label: "Router memory", unit: "%", color: "#B877D9", scope: "network" },

@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Aug 04, 2026 at 10:21 AM
+-- Generation Time: Aug 10, 2026 at 04:01 AM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -59,7 +59,7 @@ CREATE TABLE `aircon_ir_config` (
 --
 
 INSERT INTO `aircon_ir_config` (`id`, `cold_below`, `normal_max`, `acceptable_max`, `near_crit_max`, `updated_by`, `updated_at`) VALUES
-(1, 22.0, 24.0, 27.0, 29.0, 1, '2026-07-31 04:51:42');
+(1, 22.0, 24.0, 27.0, 29.0, NULL, '2026-08-09 12:46:11');
 
 -- --------------------------------------------------------
 
@@ -164,15 +164,15 @@ INSERT INTO `alert_rules` (`alert_rule_id`, `device_id`, `interface_name`, `metr
 (1, NULL, NULL, 'cpu', 80, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
 (2, NULL, NULL, 'cpu', 90, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
 (3, NULL, NULL, 'mem', 80, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
-(4, NULL, NULL, 'mem', 95, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-06-14 14:10:26', 1),
+(4, NULL, NULL, 'mem', 95, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-06-14 14:10:26', NULL),
 (5, NULL, NULL, 'disk', 80, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
 (6, NULL, NULL, 'disk', 90, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
-(8, NULL, NULL, 'temperature', 34, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:23:05', 1),
-(9, NULL, NULL, 'gas', 150, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-07-23 10:20:16', 1),
-(10, NULL, NULL, 'gas', 300, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:21:50', 1),
-(11, NULL, NULL, 'humidity', 60, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-07-31 04:55:21', 1),
-(12, NULL, NULL, 'humidity', 70, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-31 04:55:29', 1),
-(16, NULL, NULL, 'temperature', 30, '>=', 'warning', 1, '2026-06-15 03:42:28', '2026-07-23 10:20:29', 1),
+(8, NULL, NULL, 'temperature', 34, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:23:05', NULL),
+(9, NULL, NULL, 'gas', 150, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-07-23 10:20:16', NULL),
+(10, NULL, NULL, 'gas', 300, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:21:50', NULL),
+(11, NULL, NULL, 'humidity', 60, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-07-31 04:55:21', NULL),
+(12, NULL, NULL, 'humidity', 70, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-31 04:55:29', NULL),
+(16, NULL, NULL, 'temperature', 30, '>=', 'warning', 1, '2026-06-15 03:42:28', '2026-07-23 10:20:29', NULL),
 (17, NULL, NULL, 'router_cpu', 85, '>=', 'warning', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
 (18, NULL, NULL, 'router_cpu', 95, '>=', 'critical', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
 (19, NULL, NULL, 'router_mem', 85, '>=', 'warning', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
@@ -183,7 +183,6 @@ INSERT INTO `alert_rules` (`alert_rule_id`, `device_id`, `interface_name`, `metr
 (24, NULL, NULL, 'ups_charge', 20, '<=', 'critical', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
 (25, NULL, NULL, 'ups_runtime', 10, '<=', 'warning', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
 (26, NULL, NULL, 'ups_runtime', 5, '<=', 'critical', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
-(27, 48, NULL, 'router_cpu', 90, '>=', 'critical', 1, '2026-07-31 06:56:28', '2026-07-31 06:56:28', 1),
 (28, NULL, NULL, 'link_errors', 10, '>=', 'warning', 1, '2026-07-31 07:08:15', '2026-07-31 07:08:15', NULL),
 (29, NULL, NULL, 'link_errors', 100, '>=', 'critical', 1, '2026-07-31 07:08:15', '2026-07-31 07:08:15', NULL);
 
@@ -308,6 +307,8 @@ CREATE TABLE `network_interfaces` (
   `interface_name` varchar(50) DEFAULT NULL,
   `location_label` varchar(100) DEFAULT NULL,
   `is_active` tinyint(4) DEFAULT NULL,
+  `ever_up` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'Port has carried a link at least once — gates interface-down alerting',
+  `monitor_link` tinyint(1) NOT NULL DEFAULT 1 COMMENT 'Admin opt-out: 0 silences interface-down alerts for this port',
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
