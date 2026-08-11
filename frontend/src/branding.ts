@@ -17,4 +17,8 @@ export const BRAND = {
   logoText: env.VITE_LOGO_TEXT?.trim()    || "CC",
   /** Optional logo image served from public/ (e.g. "/logo.png"). Empty = use logoText. */
   logoSrc:  env.VITE_LOGO_SRC?.trim()     || "",
+  /** Release string in the login footer (Grafana puts its version there too). */
+  version:  env.VITE_APP_VERSION?.trim()  || "v1.0.0",
+  /** Support mailbox linked from the login footer. Empty = the link is omitted. */
+  supportEmail: env.VITE_SUPPORT_EMAIL?.trim() || "ictusupport@cspc.edu.ph",
 } as const;

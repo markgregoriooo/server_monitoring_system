@@ -322,8 +322,7 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
             onClick={onToggleCollapse}
             aria-label="Hide sidebar"
             title="Hide sidebar (Ctrl/⌘ B)"
-            className="gf-btn hidden lg:flex ml-auto flex-shrink-0 items-center justify-center w-7 h-7"
-            style={{ color: "var(--gf-text-muted)", borderRadius: 3 }}
+            className="gf-btn-quiet hidden lg:flex ml-auto flex-shrink-0 items-center justify-center w-7 h-7"
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M10 4L6 8l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
@@ -414,15 +413,12 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
               style={{ color: "var(--gf-text-dim)" }}>
               Theme
             </span>
-            {/* Raised like every other pressable control. It was a flat tint with JS
-                hover — the one button in the rail that gave no sign it could be pressed,
-                sitting directly under nav rows that now lift. Hover/press come from
-                .gf-btn, so it also gains the pressed state inline styles cannot express.
+            {/* .gf-btn-quiet — the same treatment as Sign Out below, so the rail's
+                secondary controls read as one family instead of three weights.
                 The label already names the theme you'll GET, not the one you're in. */}
             <button onClick={toggleTheme}
               title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-              className="gf-btn flex items-center gap-1.5 px-2.5 py-1 text-[12px]"
-              style={{ color: "var(--gf-text-primary)", borderRadius: 3, fontWeight: 600 }}>
+              className="gf-btn-quiet flex items-center gap-1.5 px-2.5 py-1 text-[12px]">
               {theme === "dark" ? (
                 <>
                   <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
@@ -447,11 +443,9 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
           {/* User */}
           {user && (
             <div className="px-3 py-3 flex flex-col gap-2">
-              {/* Raised like every other pressable surface — a flat tinted rectangle
-                  gave no hint the profile row could be clicked at all. */}
+              {/* Same .gf-btn-quiet as the Sign Out button it sits directly above */}
               <button onClick={() => setProfileOpen(true)}
-                className="gf-btn flex items-center gap-2 w-full px-2 py-1.5 text-left"
-                style={{ borderRadius: 3 }}>
+                className="gf-btn-quiet flex items-center gap-2 w-full px-2 py-1.5 text-left">
                 <div className="w-6 h-6 rounded flex-shrink-0 overflow-hidden">
                   {user.profile_image ? (
                     <img src={avatarUrl(user.profile_image) ?? ""} alt={user.name}
@@ -478,25 +472,14 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
                 </div>
               </button>
 
+              {/* This button's look is now the shared .gf-btn-quiet (index.css) — the
+                  inline styles and JS mouse handlers it used to carry are gone. They
+                  also disagreed with themselves: the initial background was
+                  --gf-hover but mouseLeave reset it to transparent, so the button
+                  quietly changed appearance after the first hover and never changed
+                  back. CSS :hover has no such state to get wrong. */}
               <button onClick={logout}
-                className="w-full py-1.5 rounded-[3px] text-[12px] tracking-wider transition-all active:translate-y-px"
-                style={{
-                  color: "var(--gf-text-muted)",
-                  background: "var(--gf-hover)",
-                  border: "1px solid var(--gf-panel-border)",
-                  // Token, not a literal rgba: a hand-picked black shadow reads as dirt
-                  // in light mode. Shadow only — the raised FACE and sheen are what would
-                  // make this shout, and it should not.
-                  boxShadow: "var(--gf-btn-shadow)",
-                }}
-                onMouseEnter={e => {
-                  e.currentTarget.style.color      = "var(--gf-text-primary)";
-                  e.currentTarget.style.background = "var(--gf-hover)";
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.color      = "var(--gf-text-muted)";
-                  e.currentTarget.style.background = "transparent";
-                }}>
+                className="gf-btn-quiet w-full py-1.5 text-[12px] tracking-wider">
                 Sign Out
               </button>
             </div>

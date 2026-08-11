@@ -25,6 +25,11 @@
   --gf-hover-strong:  rgba(255,255,255,0.10);
   --gf-accent:        #5794F2;
   --gf-accent-dim:    rgba(87,148,242,0.12);
+  /* Accent safe to put on TEXT. Same colour as --gf-accent on dark; the light
+     override darkens it, because #5794F2 measures only 2.76:1 on the light page
+     background — fine for a fill or a stroke, unreadable as a 11px label. Use
+     --gf-accent for surfaces and graphics, --gf-accent-text for type. */
+  --gf-accent-text:   #5794F2;  /* 6.40:1 on bg */
   --gf-seg-empty:     rgba(255,255,255,0.06);
   --gf-scroll-bg:     rgba(0,0,0,0.25);
   --gf-scrollbar:     rgba(255,255,255,0.10);
@@ -61,12 +66,17 @@
   --gf-sidebar:       #FFFFFF;
   --gf-divider:       rgba(0,0,0,0.08);
   /* Measured against the PAGE bg (#F4F5F5), which is the harder of the two
-     surfaces — passing there means it also passes on white panels. */
+     surfaces — passing there means it also passes on white panels.
+     AA (4.5:1) is the FLOOR here, not the target. This UI sets secondary text at
+     10-13px in JetBrains Mono, whose strokes are thin at that size, and light mode
+     is what gets used on a projector or a sunlit screen — grey that merely clears
+     AA still reads as washed out there. Hence the headroom on muted/dim. */
   --gf-text-primary:  #1F2937;  /* 13.44:1 on bg */
-  --gf-text-muted:    #5A6270;  /*  5.63:1 on bg (was 4.43:1) */
-  --gf-text-dim:      #646B78;  /*  4.91:1 on bg (was 2.32:1 — the worst of the four) */
+  --gf-text-muted:    #3F4753;  /*  8.59:1 on bg (was 5.63:1, and 4.43:1 before that) */
+  --gf-text-dim:      #4E5666;  /*  6.75:1 on bg (was 4.91:1, and 2.32:1 before that) */
   --gf-hover:         rgba(0,0,0,0.04);
   --gf-hover-strong:  rgba(0,0,0,0.08);
+  --gf-accent-text:   #1F62E0;  /* 4.92:1 on bg, 5.41:1 on panel (--gf-accent is 2.76:1 here) */
   --gf-seg-empty:     rgba(0,0,0,0.08);
   --gf-scroll-bg:     rgba(0,0,0,0.04);
   --gf-scrollbar:     rgba(0,0,0,0.15);
@@ -153,6 +163,43 @@
     outline-offset: 1px;
   }
   .gf-btn:disabled {
+    opacity: .5;
+    cursor: default;
+    transform: none;
+    box-shadow: none;
+  }
+
+  /* Quiet control — the Sign Out treatment, now shared.
+     Same DEPTH as .gf-btn (identical shadow token, same 1px press) but no raised
+     face and no sheen. .gf-btn lifts a control up off the panel, which is right
+     for a toolbar where buttons sit next to each other and need to read as a row
+     of keys; in the sidebar rail the same treatment makes every secondary control
+     shout over the nav it sits beside. This keeps the affordance and drops the
+     volume. Replaces the inline styles + JS mouse handlers Sign Out used to
+     carry — :hover and :active belong in CSS, and a class is the only way four
+     buttons can be guaranteed to match. */
+  .gf-btn-quiet {
+    background-color: transparent;
+    border: 1px solid var(--gf-panel-border);
+    border-radius: 3px;
+    color: var(--gf-text-muted);
+    box-shadow: var(--gf-btn-shadow);
+    transition: background-color .12s ease, color .12s ease,
+                box-shadow .12s ease, transform .06s ease;
+  }
+  .gf-btn-quiet:hover:not(:disabled) {
+    background-color: var(--gf-hover);
+    color: var(--gf-text-primary);
+  }
+  .gf-btn-quiet:active:not(:disabled) {
+    transform: translateY(1px);
+    box-shadow: var(--gf-btn-shadow-active);
+  }
+  .gf-btn-quiet:focus-visible {
+    outline: 2px solid var(--gf-accent);
+    outline-offset: 1px;
+  }
+  .gf-btn-quiet:disabled {
     opacity: .5;
     cursor: default;
     transform: none;
