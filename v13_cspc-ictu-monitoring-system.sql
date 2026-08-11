@@ -477,6 +477,8 @@ CREATE TABLE `users` (
   `profile_image` varchar(255) DEFAULT NULL,
   `status` enum('pending','active','inactive','rejected') DEFAULT 'pending',
   `token_version` int(11) NOT NULL DEFAULT 0,
+  `policy_version` varchar(20) DEFAULT NULL,
+  `policy_accepted_at` timestamp NULL DEFAULT NULL,
   `last_login` timestamp NULL DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp()

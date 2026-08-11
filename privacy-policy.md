@@ -6,14 +6,21 @@ as the personal information controller.
 
 ---
 
-## Setup (run once)
+## Setup
+
+Adds two columns to `users`: `policy_version`, `policy_accepted_at`.
+
+**Fresh install** — nothing to do. Both are in `v13_cspc-ictu-monitoring-system.sql`.
+
+**Database created before 2026-08-11** — run the migration once:
 
 ```bash
 mysql -u root -p cspc-ictu-monitoring-system < migrations/2026-08-11_policy_acceptance.sql
 ```
 
-⚠️ **Without this the app breaks** — `GET /api/auth/me` selects the new columns and will
-throw `Unknown column 'policy_version'`.
+⚠️ **Without the columns the app breaks** — `GET /api/auth/me` selects them and throws
+`Unknown column 'policy_version'`. Running the migration on a fresh v13 import fails the
+other way, with `Duplicate column name`.
 
 ---
 

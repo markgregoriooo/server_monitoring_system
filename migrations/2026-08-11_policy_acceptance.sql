@@ -1,5 +1,9 @@
 -- Privacy Notice & Terms of Use acceptance (RA 10173 / Data Privacy Act of 2012).
 --
+-- ⚠️ Already folded into v13_cspc-ictu-monitoring-system.sql. Run this ONLY against a
+-- database created before 2026-08-11; a fresh import of v13 already has both columns
+-- and re-running it fails with "Duplicate column name".
+--
 -- Two columns rather than a separate acceptances table: `system_logs` already
 -- records ip_address + user_agent per row, so writing an audit entry on every
 -- acceptance gives the full history (who / which version / when / from where)
