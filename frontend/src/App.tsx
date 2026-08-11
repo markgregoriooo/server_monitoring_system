@@ -40,7 +40,7 @@ import Alerts from "./pages/Alerts";
 import Analytics from "./pages/Analytics";
 
 const pageTitles: Record<string, string> = {
-  "/": "Server Environment Monitoring & Control System",
+  "/": "Server Infrastructure Monitoring System",
   "/server-metrics": "Server Metrics",
   "/network": "Network Monitoring",
   "/mikrotik": "MikroTik Network",

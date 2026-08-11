@@ -12,7 +12,7 @@ export const BRAND = {
   /** Small line under the name in the sidebar brand block. */
   subtitle: env.VITE_APP_SUBTITLE?.trim() || "MONITORING",
   /** Long descriptive line on the login screen. */
-  tagline:  env.VITE_APP_TAGLINE?.trim()  || "SERVER ENVIRONMENT MONITORING & CONTROL SYSTEM",
+  tagline:  env.VITE_APP_TAGLINE?.trim()  || "SERVER INFRASTRUCTURE MONITORING SYSTEM",
   /** Initials shown in the small square logo mark when no image is used. */
   logoText: env.VITE_LOGO_TEXT?.trim()    || "CC",
   /** Optional logo image served from public/ (e.g. "/logo.png"). Empty = use logoText. */

@@ -1,7 +1,7 @@
 {
-  "name": "server-environment-monitoring-and-control-system-backend",
+  "name": "server-infrastructure-monitoring-system-backend",
   "version": "1.0.0",
-  "description": "CSPC-ICTU Server Environment Monitoring - Backend API",
+  "description": "CSPC-ICTU Server Infrastructure Monitoring - Backend API",
   "main": "server.js",
   "type": "module",
   "scripts": {
