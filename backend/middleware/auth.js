@@ -40,6 +40,31 @@ async function authMiddleware(req, res, next) {
   try {
     decoded = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
   } catch (err) {
+    // The CLIENT is told only "Invalid or expired token." — deliberately vague, an
+    // attacker learns nothing from it. But that one string collapses three failures
+    // that need completely different fixes:
+    //   TokenExpiredError                  → the token really is old (see expiredBy)
+    //   JsonWebTokenError: invalid signature → signed with a different JWT_SECRET
+    //   JsonWebTokenError: jwt malformed   → the stored string is truncated/corrupt
+    // Swallowing that difference is what makes a spurious logout so hard to chase,
+    // so the SERVER log spells it out. jwt.decode does NOT verify, so reading the
+    // claims of a token we have already rejected is safe.
+    const claims = jwt.decode(token) || {};
+    const now = Math.floor(Date.now() / 1000);
+    // WHO sent it matters as much as what was wrong with it. The server listens on
+    // 0.0.0.0, so a rejected token can come from any machine on the LAN — a phone, a
+    // second PC, another browser — not necessarily the one in front of you. Without
+    // the origin you cannot tell "my session is broken" from "some other device left
+    // a tab open". The UA is trimmed to the part that identifies the browser.
+    const ua = (req.get("user-agent") ?? "?").slice(0, 60);
+    console.warn(
+      `[AUTH] rejected ${req.method} ${req.originalUrl} — ${err.name}: ${err.message} ` +
+        `(len=${token.length} user=${claims.id ?? "?"} iat=${claims.iat ?? "?"} ` +
+        `exp=${claims.exp ?? "?"} now=${now} ` +
+        `ageSec=${claims.iat ? now - claims.iat : "?"} ` +
+        `expiredBySec=${claims.exp ? now - claims.exp : "?"} ` +
+        `from=${req.ip} ua="${ua}")`,
+    );
     return res.status(403).json({ error: "Invalid or expired token." });
   }
 

@@ -17,9 +17,12 @@ import snmpPollerService from "../services/snmpPollerService.js";
 import mikrotikPollerService from "../services/mikrotikPollerService.js";
 import backupService from "../services/backupService.js";
 import reportService from "../services/reportService.js";
+import auditService from "../services/auditService.js";
+import socketSessions from "../services/socketSessions.js";
 
 // import routes
 import authRoutes from "../routes/auth.js";
+import policyRoutes from "../routes/policy.js";
 import serverRoutes from "../routes/servers.js";
 import agentRoutes from "../routes/agents.js";
 import networkRoutes from "../routes/network.js";
@@ -137,13 +140,22 @@ io.use(async (socket, next) => {
     socket.user = decoded;
     socket.isDevice = false;
     next();
-  } catch {
+  } catch (err) {
+    // Same reasoning as middleware/auth.js: the client gets a bare "Invalid token",
+    // the log gets the actual cause. A rejected handshake surfaces in the browser as
+    // an opaque 403 on /socket.io/, which says nothing about why.
+    console.warn(`[AUTH] socket handshake rejected — ${err.name}: ${err.message}`);
     next(new Error("Invalid token"));
   }
 });
 
 // expose io so routes can emit to the ESP32
 app.set("io", io);
+
+// Live-socket session revocation. `io.use` above authenticates ONCE, at the
+// handshake, and never re-checks — so without this a socket opened with a valid
+// token keeps streaming after the account is disabled or its tokens revoked.
+socketSessions.init(io);
 
 // Hand the notification service the live Socket.IO server once, so any trigger
 // (offline sweep, threshold checks, …) can raise + push notifications without
@@ -176,6 +188,7 @@ io.on("connection", (socket) => {
 
 // routes
 app.use("/api/auth", authRoutes);
+app.use("/api/policy", policyRoutes);
 app.use("/api/servers", serverRoutes);
 app.use("/api/agents", agentRoutes);
 app.use("/api/network", networkRoutes);
@@ -303,6 +316,23 @@ const runReportPurge = async () => {
 };
 runReportPurge();
 setInterval(runReportPurge, PURGE_INTERVAL_MS);
+
+// Audit-trail retention — system_logs is the table with ip_address + user_agent in
+// it, i.e. the most personal data the schema holds, and it was the one table with
+// no purge at all. The Privacy Notice commits to a retention period; this is what
+// makes that commitment true. Longer default than alerts/reports on purpose: an
+// audit trail is what you go looking for months after an incident.
+const SYSTEM_LOG_RETENTION_DAYS = Number(process.env.SYSTEM_LOG_RETENTION_DAYS) || 365;
+const runAuditPurge = async () => {
+  try {
+    const purged = await auditService.purgeOld(SYSTEM_LOG_RETENTION_DAYS);
+    if (purged) console.log(`[audit] purged ${purged} log row(s) older than ${SYSTEM_LOG_RETENTION_DAYS}d`);
+  } catch (err) {
+    console.error("[audit] purge error:", err.message);
+  }
+};
+runAuditPurge();
+setInterval(runAuditPurge, PURGE_INTERVAL_MS);
 
 // SNMP poller — pulls metrics from routers (IF-MIB) + UPS units (UPS-MIB) on a
 // timer (the pull mirror of the push-based Go agents). Self-gating: pollAll loads

@@ -18,9 +18,12 @@ import { roleConfig } from "./data/users";
 
 import Login from "./pages/auth/Login";
 import Unauthorized from "./pages/auth/Unauthorized";
+import PrivacyTerms from "./pages/legal/PrivacyTerms";
+import PolicyGate from "./components/legal/PolicyGate";
 import Sidebar from "./components/layout/Sidebar";
 import Header from "./components/layout/Header";
 import ToastHost from "./components/notifications/ToastHost";
+import IdleLogoutModal from "./components/session/IdleLogoutModal";
 import Dashboard from "./pages/Dashboard";
 import ServerMetrics from "./pages/ServerMetrics";
 import NetworkMonitoring from "./pages/NetworkMonitoring";
@@ -73,7 +76,7 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
 }
 
 function AppShell() {
-  const { user } = useAuth();
+  const { user, idleLogout, confirmIdleLogout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState<boolean>(false);
   const [collapsed, setCollapsed] = useState<boolean>(
     () => localStorage.getItem("cspc_sidebar_collapsed") === "1",
@@ -99,6 +102,18 @@ function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [toggleCollapsed]);
   const isLoginPage = location.pathname === "/login";
+  // The Privacy Notice is PUBLIC. It has to render for a signed-out visitor — a
+  // notice you can only read once you have an account and have already agreed to
+  // it is not a notice — so it is checked before the redirect below, not after.
+  const isPolicyPage = location.pathname === "/privacy";
+
+  if (isPolicyPage) {
+    return (
+      <Routes>
+        <Route path="/privacy" element={<PrivacyTerms />} />
+      </Routes>
+    );
+  }
 
   if (!user && !isLoginPage) {
     return <Navigate to="/login" />;
@@ -110,6 +125,17 @@ function AppShell() {
         <Route path="/login" element={<Login />} />
       </Routes>
     );
+  }
+
+  // Signed in, but has not accepted the version of the Privacy Notice currently in
+  // force (never accepted, or it was revised since). Nothing else renders until
+  // they do — no sidebar, no routes, no socket-fed pages. `policy_current` comes
+  // from the server, so bumping the version re-gates everyone with no frontend
+  // change. If the field is absent (an older cached session object), don't gate:
+  // failing open here beats locking every user out of the dashboard over a
+  // missing field, and their next sign-in supplies it.
+  if (user?.policy_current && user.policy_version !== user.policy_current) {
+    return <PolicyGate />;
   }
 
   return (
@@ -226,6 +252,11 @@ function AppShell() {
 
       {/* Live notification toasts — overlay, independent of the current route */}
       <ToastHost />
+
+      {/* Idle timeout notice. The session is already gone; this explains why, and OK
+          completes the sign-out. Rendered here rather than per-page so it covers
+          whatever the user was last looking at. */}
+      {idleLogout && <IdleLogoutModal onConfirm={confirmIdleLogout} />}
 
       {/* Picture-in-Picture live widget — portals into its own window when open */}
       <PipHost />

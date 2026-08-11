@@ -12,6 +12,9 @@ interface LoginUser {
   permissions: string[];
   created_at?: string;
   last_login?: string;
+  policy_version?: string | null;
+  policy_accepted_at?: string | null;
+  policy_current?: string;
 }
 
 interface LoginResponse {
@@ -103,6 +106,30 @@ export const api = {
   logout: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.post("/auth/logout");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Privacy Notice & Terms — record acceptance of the version currently in force.
+  // Sends no version: the server records its own constant, so a client cannot
+  // claim to have accepted a document it was never shown.
+  acceptPolicy: async (): Promise<ApiResult<{ policy_version: string; policy_current: string }>> => {
+    try {
+      const res = await apiClient.post("/policy/accept");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Version in force, readable WITHOUT a session — the public /privacy page stamps
+  // itself with this. apiClient attaches a token when there is one and the route
+  // ignores it either way.
+  policyVersion: async (): Promise<ApiResult<{ version: string }>> => {
+    try {
+      const res = await apiClient.get("/policy/version");
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

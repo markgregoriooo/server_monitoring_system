@@ -1,6 +1,7 @@
 import db from "../config/mysql.js";
 import jwt from "jsonwebtoken";
 import permissionService from "./permissionService.js";
+import policyService from "./policyService.js";
 import { JWT_SECRET } from "../middleware/auth.js";
 
 const authService = {
@@ -23,6 +24,12 @@ const authService = {
 
     const token = jwt.sign(payload, JWT_SECRET, { algorithm: "HS256", expiresIn: "1h" });
 
+    // Deliberately NOT in the signed payload. The token lives an hour, so a version
+    // baked into it would still read "not accepted" for the rest of that hour after
+    // the user accepts — the gate would refuse to go away. It rides on the user
+    // OBJECT instead, which the client replaces the moment acceptance succeeds.
+    const policy = await policyService.getAcceptance(user.user_id);
+
     await db.query(`UPDATE users SET last_login = NOW() WHERE user_id = ?`, [user.user_id]);
     await db.query(
       `INSERT INTO system_logs
@@ -31,7 +38,7 @@ const authService = {
       [user.user_id, `User ${user.username} logged in via Google`, ip, userAgent],
     );
 
-    return { token, user: { ...payload, permissions } };
+    return { token, user: { ...payload, permissions, ...policy } };
   },
 
   // Record a DENIED sign-in attempt. issueSession above logs every SUCCESS, so
@@ -68,7 +75,8 @@ const authService = {
   async getMe(userId) {
     const [rows] = await db.query(
       `SELECT user_id, name, username, email, role, status,
-              profile_image, avatar, last_login, created_at
+              profile_image, avatar, last_login, created_at,
+              policy_version, policy_accepted_at
        FROM users WHERE user_id = ? LIMIT 1`,
       [userId],
     );
@@ -93,6 +101,12 @@ const authService = {
       last_login: user.last_login,
       created_at: user.created_at,
       permissions,
+      // Drives the acceptance gate. `policy_current` is what is in force NOW, so a
+      // bumped POLICY_VERSION re-prompts every user at their next sign-in — which
+      // is at most an hour away, since that is the JWT's lifetime.
+      policy_version: user.policy_version ?? null,
+      policy_accepted_at: user.policy_accepted_at ?? null,
+      policy_current: policyService.POLICY_VERSION,
     };
   },
   async logout(userId, { ip = null, userAgent = null } = {}) {

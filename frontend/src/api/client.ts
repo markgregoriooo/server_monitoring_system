@@ -7,12 +7,64 @@ import { API_URL } from "../config";
 
 const baseURL = `${API_URL}/api`;
 
+// Which session a request was sent under. Read back in the error interceptor to
+// tell a genuine expiry from the reply to a session that has already been replaced.
+declare module "axios" {
+  export interface InternalAxiosRequestConfig {
+    __cspcToken?: string | null;
+  }
+}
+
 function getToken(): string | null {
   try {
     return JSON.parse(sessionStorage.getItem("cspc_token") || "null");
   } catch {
     return null;
   }
+}
+
+// Read a JWT's time claims without a library. Null if missing/unparseable.
+//
+// JWTs are base64URL, which `atob` does not accept: base64url writes `-` and `_`
+// where base64 writes `+` and `/`, and drops the `=` padding. Feed one straight to
+// `atob` and it THROWS — but only for tokens whose payload happens to encode those
+// characters, so it fails for some sessions and not others. That is exactly the kind
+// of intermittency that let a dead token live in a tab for a day and a half.
+function decodeJwtTimes(token: string | null): { iat?: number; exp?: number } | null {
+  if (!token) return null;
+  try {
+    const raw = (token.split(".")[1] ?? "").replace(/-/g, "+").replace(/_/g, "/");
+    const padded = raw + "=".repeat((4 - (raw.length % 4)) % 4);
+    const p = JSON.parse(atob(padded));
+    return {
+      iat: typeof p?.iat === "number" ? p.iat : undefined,
+      exp: typeof p?.exp === "number" ? p.exp : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Milliseconds until the stored token dies, measured on ONE clock.
+ *
+ * `exp * 1000 - Date.now()` mixes two: `exp` is stamped by the BACKEND, `Date.now()`
+ * is this machine. Machines whose time drifts would read a freshly minted token as
+ * long dead. `exp - iat` is the token's LIFETIME — both claims from the same server
+ * clock, so the difference is skew-free — added to when WE received it (our clock).
+ *
+ * Exported so AuthContext measures expiry the same way; two copies of this rule
+ * drifting apart is how a session ends up trusted in one place and not the other.
+ */
+export function msUntilTokenExpiry(): number | null {
+  const times = decodeJwtTimes(getToken());
+  if (!times?.exp) return null;
+
+  const receivedAt = Number(sessionStorage.getItem("cspc_token_at"));
+  if (times.iat && Number.isFinite(receivedAt) && receivedAt > 0) {
+    return receivedAt + (times.exp - times.iat) * 1000 - Date.now();
+  }
+  return times.exp * 1000 - Date.now(); // no arrival stamp (older session)
 }
 
 const apiClient: AxiosInstance = axios.create({
@@ -24,9 +76,35 @@ apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     const token = getToken();
 
+    // Never send a token we can already see is dead.
+    //
+    // This is the last line of defence, and the only one that protects a tab which
+    // is ALREADY RUNNING. Every other expiry check happens when a session is created
+    // or restored — none of which a tab that has been open for a day and a half ever
+    // executes again. Such a tab kept firing its heartbeat and its socket re-seeds
+    // with a token that died hours earlier, producing a wall of 403s that looked, on
+    // the screen, exactly like being kicked out right after signing in.
+    //
+    // This runs per request, so it catches that tab on its very next call regardless
+    // of when it loaded. The session teardown then happens once, in order, instead of
+    // once per rejected request.
+    const msLeft = token ? msUntilTokenExpiry() : null;
+    if (token && msLeft !== null && msLeft <= 0) {
+      notifySessionExpired({
+        url: config.url,
+        serverError: `stored token expired ${Math.round(-msLeft / 1000)}s ago — not sent`,
+      });
+      config.__cspcToken = null; // no Authorization header: the request goes out bare
+      return config;
+    }
+
     if (token) {
       config.headers.set("Authorization", `Bearer ${token}`);
     }
+    // Stamp the request with the session it belongs to, even when that is null —
+    // the error interceptor compares this against the token in storage at the time
+    // the FAILURE lands, which may be a different session entirely.
+    config.__cspcToken = token;
 
     return config;
   }
@@ -49,10 +127,20 @@ export function resetSessionExpiredGuard() {
   sessionExpiredNotified = false;
 }
 
-function notifySessionExpired() {
+export interface SessionEndInfo {
+  status?: number | undefined;
+  url?: string | undefined;
+  serverError?: string | undefined;
+}
+
+function notifySessionExpired(info: SessionEndInfo) {
   if (sessionExpiredNotified) return; // collapse a burst of parallel failures into one
   sessionExpiredNotified = true;
-  window.dispatchEvent(new Event("cspc:session-expired"));
+  // Carry WHICH request killed the session. A session that ends without saying why
+  // is the hardest kind of bug to chase — it looks identical whether the token was
+  // rejected, never sent, or timed out on the client.
+  console.warn("[session] ended by an API auth failure:", info);
+  window.dispatchEvent(new CustomEvent("cspc:session-expired", { detail: info }));
 }
 
 apiClient.interceptors.response.use(
@@ -65,6 +153,10 @@ apiClient.interceptors.response.use(
     if (renewed && typeof renewed === "string") {
       try {
         sessionStorage.setItem("cspc_token", JSON.stringify(renewed));
+        // Arrival time on OUR clock. AuthContext measures the token's remaining life
+        // as (exp - iat) from here, which keeps the whole calculation on one clock
+        // instead of comparing a server-stamped exp against this machine's time.
+        sessionStorage.setItem("cspc_token_at", String(Date.now()));
         window.dispatchEvent(new Event("cspc:token-renewed"));
       } catch {
         /* storage unavailable — ignore */
@@ -83,7 +175,38 @@ apiClient.interceptors.response.use(
         (status === 403 && serverError === "Invalid or expired token.")) &&
       !isAuthEndpoint;
 
-    if (isAuthFailure) notifySessionExpired();
+    // A response can outlive the session that produced it, and an auth failure
+    // belonging to a DEAD session must never log out the LIVE one.
+    //
+    // The race this fixes: a request leaves under token T1 (say the 10-minute /me
+    // heartbeat). Before it comes back, the session ends — the token expires, or
+    // the user signs out, which bumps token_version and invalidates T1 server-side.
+    // They sign in again seconds later and the app is now running on T2. Only then
+    // does the old request fail with 401 — and the interceptor, seeing nothing but
+    // "401, not an auth endpoint", tore down the brand-new session. Symptom: signed
+    // out moments after signing in, "Your session expired", plus a socket killed
+    // mid-upgrade ("WebSocket is closed before the connection is established") and a
+    // 403 from the reconnect that follows with no token.
+    //
+    // Comparing the token the request was SENT with against the one in storage NOW
+    // tells the two apart. A mismatch means a newer session replaced this one, so
+    // the failure is about a session nobody is using any more — drop it.
+    //
+    // This cannot mask a real revocation: if the current token is also invalid, the
+    // next request made with it fails too, and that one matches and does log out.
+    const sentUnder = error?.config?.__cspcToken ?? null;
+    const belongsToCurrentSession = sentUnder === getToken();
+
+    if (isAuthFailure && !belongsToCurrentSession) {
+      console.warn(
+        "[session] ignored an auth failure from a replaced session:",
+        { status, url, serverError },
+      );
+    }
+
+    if (isAuthFailure && belongsToCurrentSession) {
+      notifySessionExpired({ status, url, serverError });
+    }
     return Promise.reject(error);
   },
 );
