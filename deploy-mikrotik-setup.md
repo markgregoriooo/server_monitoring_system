@@ -101,39 +101,83 @@ API-SSL will not start without one. This is where people get stuck, so follow th
 
 ### 3.1 The simple route — self-signed (recommended first)
 
-**System → Certificates → +**
+**System → Certificates**
 
-- **Name:** `api-cert`
-- **Common Name:** the router's IP or DNS name — **must match what the backend connects to**
-- **Key Size:** `2048`
-- **Days Valid:** e.g. `3650`
-- **Key Usage:** tick **digital signature**, **key encipherment**, **tls server**
-- **OK**
+If a half-made `api-cert` is left over from an earlier attempt, select it and click **–** (Remove)
+first. A duplicate name is one of the ways this step fails.
 
-Then select `api-cert` and click **Sign** in the toolbar:
+**Click + (Add New)** and fill in the **General** tab:
 
-- **Leave the CA field EMPTY** ← this is the step people get wrong
+| Field | Value |
+|---|---|
+| **Name** | `api-cert` |
+| **Common Name** | the router's IP or DNS name — **must match what the backend connects to** |
+| **Key Size** | `2048` |
+| **Days Valid** | `3650` |
+
+**Key Usage** tab — untick everything, then tick exactly these four:
+
+- **digital signature**
+- **key encipherment**
+- **tls server**
+- **key cert. sign** ← the one everybody misses
+
+Click **OK**.
+
+> ⚠️ **`key cert. sign` is not optional here.** A self-signed certificate signs *itself*, so it has
+> to be a certificate authority. Leave that box unticked and RouterOS has no signing capability to
+> apply, so **Sign** fails with **`Starting error: CA not found`** — a misleading message for a
+> missing *capability*, not a missing certificate. An empty CA field is correct and is never the
+> cause. (§3.2's CA template ticks the same box for the same reason.)
+>
+> **tls client** is harmless if you tick it too, but unnecessary — for API-SSL the router is the
+> TLS *server*.
+
+**Now sign it.** Select the `api-cert` row → click **Sign** in the toolbar:
+
+- **CA:** leave **empty** — that means "sign it with itself"
 - **Start**
 
 Wait for it to finish — a minute or two on a small board is normal.
 
-✅ The certificate row should now show a **`K`** flag (it has a private key) and **`T`** (trusted).
+✅ The row now shows flags **`KAT`**:
 
-> An empty CA field means "sign it with itself". Filling it in makes RouterOS look for a certificate
-> authority that doesn't exist yet, and you get **`CA not found`**.
+| Flag | Meaning |
+|---|---|
+| **K** | has a private key — API-SSL is useless without one |
+| **A** | it's a certificate authority — expected, it signed itself |
+| **T** | trusted |
 
 ### 3.2 The thorough route — your own CA (optional)
 
 Only needed if you want the backend to *verify* the router's identity, not merely encrypt. It's a
 two-stage chain and each stage must **finish** before the next.
 
-1. **System → Certificates → +** — Name `cspc-ictu-ca`, Common Name `cspc-ictu-ca`,
-   **Key Usage:** tick **key cert. sign** and **crl sign** → **OK**
-2. Select it → **Sign** → CA field **empty** → **Start** → **wait until it completes**
-3. **+** again — Name `api-cert`, Common Name = the router's IP/DNS, usage as in §3.1 → **OK**
-4. Select `api-cert` → **Sign** → **CA:** `cspc-ictu-ca` → **Start**
+**Stage 1 — build the CA.** **System → Certificates → +**
 
-> Signing the second one before the first has finished is the other way to get `CA not found`.
+- **Name:** `cspc-ictu-ca`
+- **Common Name:** `cspc-ictu-ca`
+- **Key Size:** `2048`, **Days Valid:** `3650`
+- **Key Usage** tab — tick **key cert. sign** and **crl sign** only
+- **OK**
+
+Select `cspc-ictu-ca` → **Sign** → **CA** field **empty** → **Start** → **wait until it completes.**
+
+**Stage 2 — build the server certificate.** **+** again
+
+- **Name:** `api-cert`
+- **Common Name:** the router's IP or DNS name
+- **Key Size:** `2048`, **Days Valid:** `3650`
+- **Key Usage** tab — tick **digital signature**, **key encipherment**, **tls server**
+- **OK**
+
+Select `api-cert` → **Sign** → **CA:** `cspc-ictu-ca` → **Start**.
+
+> Here `api-cert` does **not** need **key cert. sign** — a real CA is doing the signing, so it isn't
+> signing itself. Starting stage 2 before stage 1 has finished is the other way to get
+> `CA not found`: at that moment the CA genuinely doesn't exist yet.
+
+The backend needs a copy of `cspc-ictu-ca` to verify against — that's **§6**.
 
 ---
 
@@ -190,6 +234,19 @@ In the Filter Rules list, **drag the `accept` rule above the `drop` rule**. Conf
 first, drop second.
 
 > This drag-and-drop replaces the `place-before` you'd use in a terminal.
+
+⚠️ **Check the rules that were already there, not just your two.** A campus router has an existing
+input chain, and RouterOS's own default config ends it with a **drop** that catches anything not
+explicitly allowed. If that drop sits **above** your accept, your accept never runs and the poller
+is blocked — with both of your new rules in the correct order relative to each other.
+
+Read the whole `input` chain top to bottom and make sure **`monitoring API-SSL` is above every
+`drop` in it**, not merely above the one you just added. Drag it up until it is.
+
+> A rule that never runs shows **0 B / 0 packets** in the **Bytes** and **Packets** columns. After
+> the poller has been running a minute, your accept rule must show a non-zero count. Zero means
+> something above it is matching first — that column is the fastest way to prove the ordering is
+> right, and it's how you tell "firewall is blocking me" apart from "the API is misconfigured".
 
 ---
 
