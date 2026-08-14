@@ -5,11 +5,18 @@ import { useState, useEffect, useRef } from "react";
 // Keep the two in step: an unknown preset silently falls back to -1h server-side,
 // which would look like the button simply didn't work.
 //
-// TWO VISUAL VARIANTS on purpose. This codebase runs two design systems side by
-// side (see CLAUDE.md "Page Style Status"): most pages use the Grafana `--gf-*`
-// tokens, while ServerDetail is `slate-*` + `dark:` overrides. Rather than force one
-// look into the wrong page, the picker renders either. `slate` is the default
-// because ServerDetail is the first consumer; pass variant="gf" on a Grafana page.
+// TWO VISUAL VARIANTS exist because this codebase runs two design systems side by side
+// (see CLAUDE.md "Page Style Status"): most pages use the Grafana `--gf-*` tokens, while
+// ServerDetail is `slate-*` + `dark:` overrides.
+//
+// ⚠️ EVERY consumer now uses the default `slate`, including the Grafana pages, so `gf` is
+// currently unreferenced. That is deliberate and specifically about the POPOVER: the `gf`
+// popover paints `--gf-panel` — the same colour as the panel behind it — with a
+// rgba(255,255,255,0.07) border, so it barely separated from the page it floated over. The
+// slate popover is slate-800 on a white/10 border and reads as a layer above. A floating
+// surface should not be the same colour as what it covers. `gf` is kept rather than
+// deleted because the token-based look is still the house style for anything that sits
+// INSIDE a panel; if nothing ever needs it again it should go.
 
 export const PRESETS = ["-1h", "-6h", "-24h", "-7d", "-30d"] as const;
 export type Preset = (typeof PRESETS)[number];
@@ -77,6 +84,11 @@ export default function RangePicker({
   const [startInput, setStartInput] = useState("");
   const [stopInput, setStopInput] = useState("");
   const [localError, setLocalError] = useState("");
+  // Which "last N" chip filled the fields, purely so the pressed one can look pressed.
+  // Held as state rather than derived by comparing the inputs to what a chip WOULD
+  // produce, because those windows end at `now` — the comparison would stop matching a
+  // second after the click and the highlight would flicker off on its own.
+  const [quickPick, setQuickPick] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const isCustom = value.kind === "custom";
@@ -117,9 +129,16 @@ export default function RangePicker({
   const inputCls = gf
     ? "text-[13px] px-2 py-1 rounded-[2px] outline-none bg-[var(--gf-bg)] border border-[var(--gf-panel-border)] text-[var(--gf-text-primary)]"
     : "text-[13px] px-2 py-1 rounded outline-none bg-slate-50 dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white";
-  const chipCls = gf
-    ? "text-[11px] px-1.5 py-0.5 rounded-[2px] text-[var(--gf-text-muted)] border border-[var(--gf-panel-border)]"
-    : "text-[11px] px-1.5 py-0.5 rounded text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10";
+  // Whole literal strings per state — Tailwind's scanner cannot see a class built by
+  // concatenation, so an interpolated colour would never be emitted.
+  const chipCls = (active: boolean) =>
+    gf
+      ? active
+        ? "text-[11px] px-1.5 py-0.5 rounded-[2px] transition-colors font-semibold text-[var(--gf-accent)] bg-[var(--gf-accent-dim)] border border-[var(--gf-accent)]"
+        : "text-[11px] px-1.5 py-0.5 rounded-[2px] transition-colors text-[var(--gf-text-muted)] border border-[var(--gf-panel-border)]"
+      : active
+        ? "text-[11px] px-1.5 py-0.5 rounded transition-colors font-semibold text-[#5794F2] bg-[#5794F2]/10 border border-[#5794F2]"
+        : "text-[11px] px-1.5 py-0.5 rounded transition-colors text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10";
   const activeWindowCls = gf
     ? "text-[12px] tabular-nums hidden md:inline text-[var(--gf-text-muted)]"
     : "text-[13px] tabular-nums hidden md:inline text-slate-500 dark:text-slate-400";
@@ -136,6 +155,7 @@ export default function RangePicker({
       setStopInput(isoToLocalInput(now.toISOString()));
     }
     setLocalError("");
+    setQuickPick(null); // reopening starts from the charted window, which no chip set
     setOpen(true);
   };
 
@@ -213,7 +233,10 @@ export default function RangePicker({
             <input
               type="datetime-local"
               value={startInput}
-              onChange={(e) => setStartInput(e.target.value)}
+              // Typing a date by hand means the fields no longer describe the chip that
+              // filled them, so the highlight must drop — a stale one would claim the
+              // window is "last 6h" when it is not.
+              onChange={(e) => { setStartInput(e.target.value); setQuickPick(null); }}
               className={inputCls}
               style={{ colorScheme: "dark light" }}
             />
@@ -223,7 +246,7 @@ export default function RangePicker({
             <input
               type="datetime-local"
               value={stopInput}
-              onChange={(e) => setStopInput(e.target.value)}
+              onChange={(e) => { setStopInput(e.target.value); setQuickPick(null); }}
               onKeyDown={(e) => e.key === "Enter" && apply()}
               className={inputCls}
               style={{ colorScheme: "dark light" }}
@@ -235,13 +258,15 @@ export default function RangePicker({
             {([["6h", 6], ["12h", 12], ["2d", 48], ["90d", 2160]] as [string, number][]).map(([lbl, hrs]) => (
               <button
                 key={lbl}
+                aria-pressed={quickPick === lbl}
                 onClick={() => {
                   const now = new Date();
                   setStartInput(isoToLocalInput(new Date(now.getTime() - hrs * 3600_000).toISOString()));
                   setStopInput(isoToLocalInput(now.toISOString()));
                   setLocalError("");
+                  setQuickPick(lbl);
                 }}
-                className={chipCls}
+                className={chipCls(quickPick === lbl)}
               >
                 last {lbl}
               </button>

@@ -1100,12 +1100,11 @@ export default function Environment() {
       <div className="flex items-center justify-end px-4 py-2.5 flex-wrap gap-3"
         style={{ background: GF.header, borderBottom: `1px solid ${GF.panelBorder}` }}>
         <RecalibrateGas isDark={isDark} />
-        {/* Same shared picker the Server Metrics / detail pages use, so the range
-            control is identical everywhere. No refresh button: `sensorData` streams in
-            live every ~3s, so the view is never stale enough to need one. */}
-        {/* size="md" so the presets match the Recalibrate gas button beside them —
-            this page gives the picker a toolbar of its own rather than a panel header. */}
-        <RangePicker value={range} onChange={setRange} variant="gf" size="md" />
+        {/* Same shared picker the Server Metrics / detail pages use, on its DEFAULT
+            variant so the control — and the custom-range popover in particular — is
+            identical everywhere. No refresh button: `sensorData` streams in live every
+            ~3s, so the view is never stale enough to need one. */}
+        <RangePicker value={range} onChange={setRange} />
       </div>
 
       {/* ── Sensor-offline banner ──────────────────────────────────────────────

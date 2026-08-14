@@ -495,7 +495,7 @@ export default function NetworkDetail({
             </select>
             <span className="text-[12px]" style={{ color: BLUE }}>In {formatBps(latest?.rxBytesPerSec ?? null)}</span>
             <span className="text-[12px]" style={{ color: GREEN }}>Out {formatBps(latest?.txBytesPerSec ?? null)}</span>
-            <RangePicker value={range} onChange={setRange} error={rangeError || undefined} variant="gf" />
+            <RangePicker value={range} onChange={setRange} error={rangeError || undefined} />
           </div>
         }
       >

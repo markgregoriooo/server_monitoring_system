@@ -383,7 +383,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[12px]" style={{ color: GREEN }}>Battery {fmt(charge, "%")}</span>
             <span className="text-[12px]" style={{ color: ORANGE }}>Load {fmt(u.loadPct, "%")}</span>
-            <RangePicker value={range} onChange={setRange} error={rangeError || undefined} variant="gf" />
+            <RangePicker value={range} onChange={setRange} error={rangeError || undefined} />
           </div>
         }
       >
