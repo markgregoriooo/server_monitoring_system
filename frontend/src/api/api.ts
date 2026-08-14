@@ -357,6 +357,19 @@ export const api = {
     }
   },
 
+  // Room-level alert thresholds ({tempWarn,tempCrit,gasWarn,gasCrit,humWarn,humCrit}) —
+  // what the dashboards colour humidity and gas against, so a tile turns orange exactly
+  // when the system starts calling it a warning. Both roles; rule EDITING stays admin-only
+  // on /api/alert-rules. See hooks/useRoomThresholds.ts.
+  getRoomThresholds: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/environment/thresholds");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getNetworkLogs: async (id: number): Promise<ApiResult> => {
     try {
       const res = await apiClient.get(`/network/${id}/logs`);

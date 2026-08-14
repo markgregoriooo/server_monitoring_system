@@ -32,6 +32,12 @@ router.get("/channels", async (req, res, next) => {
 
 // Push the auto-cooling IR zone thresholds to the ESP32 (its getIRZone() boundaries) so
 // changing WHEN IR fires needs no reflash — mirrors envConfig in routes/alertRules.js.
+//
+// Device-only on purpose: no browser page colours anything by these boundaries. The
+// AirConditioner page reads them over REST and already re-renders from its own save, and
+// the Dashboard/Environment pages colour temperature by the ALERT RULES instead (see
+// GET /api/environment/thresholds + `envConfigUpdated`). A broadcast with no listener is
+// just a promise to keep something in sync that nothing is reading.
 async function pushACConfig(io) {
   if (!io) return;
   try {

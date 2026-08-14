@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
+import { tempZone, tempColor, zoneOf, zoneColor, ZONE_DEFAULTS } from "../utils/tempZone";
+import type { IRZones, TempZone } from "../utils/tempZone";
 
 interface Aircon {
   id: number;
@@ -50,38 +52,18 @@ const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
 const MUTED = "#6B7280";
-// ACCEPTABLE sits between NORMAL green and NEAR-CRIT orange — a distinct step, not a
-// shade of either, so the five zones stay countable at a glance.
-const TEAL = "#3CC8E8";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// The auto-cooling zone boundaries the ESP32 actually uses (aircon_ir_config, pushed to
-// the device as `acConfig`). Admin-editable, so nothing here may assume the defaults.
-interface IRZones { coldBelow: number; normalMax: number; acceptableMax: number; nearCritMax: number; }
-
-// Firmware-compiled defaults. Used ONLY until the saved config loads — the boundaries
-// below are admin-editable and have already been retuned in practice.
-const ZONE_DEFAULTS: IRZones = { coldBelow: 22, normalMax: 24, acceptableMax: 27, nearCritMax: 29 };
-
-// Which zone a room temperature falls in, per the SAVED thresholds. Previously these
-// numbers were hardcoded (22/27/29) while the real boundaries lived in aircon_ir_config —
-// so once an admin moved near_crit_max to 30.5, the box showed CRITICAL red from 29 while
-// the ESP32 was still in NEAR_CRIT and cooling to 22 rather than 20.
-function tempZone(t: number, z: IRZones): { label: string; color: string } {
-  if (t < z.coldBelow) return { label: "TOO COLD", color: BLUE };
-  if (t <= z.normalMax) return { label: "NORMAL", color: GREEN };
-  // ACCEPTABLE is its own zone, not a shade of NORMAL: it drives a different IR target
-  // (24°C vs 26°C), so collapsing the two hid which one the cooling was actually in.
-  if (t <= z.acceptableMax) return { label: "ACCEPTABLE", color: TEAL };
-  if (t <= z.nearCritMax) return { label: "NEAR CRITICAL", color: ORANGE };
-  return { label: "CRITICAL", color: RED };
-}
-
-function tempColor(t: number | string, z: IRZones = ZONE_DEFAULTS): string {
-  if (typeof t !== "number") return MUTED;
-  return tempZone(t, z).color;
-}
+// `tempZone` / `tempColor` / `IRZones` / `ZONE_DEFAULTS` used to live here. They now come
+// from utils/tempZone.ts, because the Dashboard and Environment pages colour a room
+// temperature too and three private copies could not stay in agreement — the same reading
+// would have shown a different colour depending on which page you were on.
+//
+// One behaviour changed in the move: ACCEPTABLE is now GREEN rather than its own teal.
+// NORMAL and ACCEPTABLE both mean "the room is fine, nothing to do", and that is what a
+// colour is for; the zone LABEL beside the value is what distinguishes them (they cool to
+// 26°C and 24°C), and it was already printed there for exactly that reason.
 
 function humColor(h: number | string): string {
   if (typeof h !== "number") return MUTED;
@@ -669,9 +651,9 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
   isAdmin: boolean; roomTemp: number | string; onZones?: (z: IRZones) => void;
 }) {
   // Firmware-compiled defaults (CLAUDE.md IR Zone table): <22 / 22–24 / 25–27 / 28–29 / >29.
-  // Mirrors ZONE_DEFAULTS above, which mirrors the firmware's compiled values — kept as
-  // one definition so the "Reset to defaults" button and the Room Temp colours cannot
-  // drift apart.
+  // Comes from utils/tempZone.ts, which mirrors the firmware's compiled values — one
+  // definition, so the "Reset to defaults" button and the Room Temp colours cannot drift
+  // apart.
   const DEFAULTS = Object.fromEntries(
     Object.entries(ZONE_DEFAULTS).map(([k, v]) => [k, String(v)]),
   ) as Record<keyof IRZones, string>;
@@ -777,15 +759,23 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
   // ── zones (target temps are fixed = captured IR codes; only boundaries are editable) ──
   // `meaning` turns the internal zone name into something an operator can act on —
   // the names alone ("Acceptable", "Near Critical") don't say what the AC is doing.
+  // Zone order — indexes ZONES below and maps a `TempZone` back to a row.
+  const ZONE_ORDER: TempZone[] = ["TOO_COLD", "NORMAL", "ACCEPTABLE", "NEAR_CRIT", "CRITICAL"];
+  // Colours come from utils/tempZone.ts, not from the local GREEN/ORANGE/RED constants:
+  // this table and the Room Temp tile describe the same five zones, and when they held
+  // separate copies they drifted (the table said green where the tile said teal).
   const ZONES = [
-    { name: "Too Cold",      meaning: "over-cooled — ease off",     target: "28°C", fan: "Auto", color: BLUE },
-    { name: "Normal",        meaning: "comfortable — gentle cooling", target: "26°C", fan: "Auto", color: GREEN },
-    { name: "Acceptable",    meaning: "warming up — cool harder",   target: "24°C", fan: "Auto", color: GREEN },
-    { name: "Near Critical", meaning: "too warm — strong cooling",  target: "22°C", fan: "High", color: ORANGE },
-    { name: "Critical",      meaning: "overheating — max cooling",  target: "20°C", fan: "High", color: RED },
-  ];
-  const zoneForTemp = (t: number) =>
-    t < n.coldBelow ? 0 : t <= n.normalMax ? 1 : t <= n.acceptableMax ? 2 : t <= n.nearCritMax ? 3 : 4;
+    { name: "Too Cold",      meaning: "over-cooled — ease off",       target: "28°C", fan: "Auto" },
+    { name: "Normal",        meaning: "comfortable — gentle cooling", target: "26°C", fan: "Auto" },
+    { name: "Acceptable",    meaning: "warming up — cool harder",     target: "24°C", fan: "Auto" },
+    { name: "Near Critical", meaning: "too warm — strong cooling",    target: "22°C", fan: "High" },
+    { name: "Critical",      meaning: "overheating — max cooling",    target: "20°C", fan: "High" },
+  ].map((z, i) => ({ ...z, color: zoneColor(ZONE_ORDER[i]!) }));
+  // Indexes ZONES above, which is in zone order. Goes through the shared `zoneOf` rather
+  // than repeating the comparisons, so the row this highlights is the row the ESP32 is
+  // actually in — and note it resolves against `n`, the numbers currently IN THE FORM, so
+  // the preview follows an unsaved edit.
+  const zoneForTemp = (t: number) => ZONE_ORDER.indexOf(zoneOf(t, n));
 
   // ── threshold-bar geometry (pad each open-ended end zone with ~4°C of visual width) ──
   const lo  = (filled ? n.coldBelow : 22) - 4;

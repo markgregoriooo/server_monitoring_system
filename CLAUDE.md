@@ -156,7 +156,7 @@ backend/services/
 backend/tests/                  ← `npm test` (`node --test`, zero deps). `contract.test.js` PARSES `go-agent/internal/collector/metrics.go` and fails if its json tags drift from NUMERIC_FIELDS — the guard for the hand-duplicated Go↔Node metric contract. `analyticsMath.test.js` pins the regression/ETA behaviour, incl. the confidence gate (a noisy series must yield NO ETA)
 backend/handlers/
   sensorHandler.js              ← validates, writes InfluxDB, broadcasts to browsers + raises per-metric room-level alerts (temperature/gas/humidity) on band escalation, evaluated against `alert_rules` (alertRulesService) — replaces the old firmware-status escalation
-  querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory
+  querySensorHistoryHandler.js  ← Flux queries, emits sensorHistory. ⚠️ `sensor_environment` is written with three TAGS (smoke_status/temp_status/environment_status), so they sit in the Flux group key and split the result into **one table per status combination**. The numeric query therefore does `group(columns: ["_field"])` BEFORE `aggregateWindow` — without it (a) `sort()` only orders rows within each table while `queryRows` streams table by table, so a 30-day range came back Jul→Aug, Jul→Aug and the x-axis read "Jul, Aug, Jul, Aug"; and (b) `fn: mean` averaged each status subgroup separately, emitting several partial means at the same `_time` of which the dedupe map kept whichever streamed last. Short ranges hid both, because the statuses rarely change within an hour (one table). The result is also sorted by time in JS before emitting, since the array's order is really the map's insertion order
   offlineDataHandler.js         ← SD card batch flush from ESP32
   serverMetricsHandler.js       ← agent metric POST → InfluxDB (`server_metrics` + per-volume `server_volumes`) + broadcast `serverMetrics`; also routes the agent's hourly optional `host` object to agentService.refreshHostInfo and skips threshold alerting while the server is in maintenance. Exports `serverMetricsBatchHandler` too (POST /metrics/batch) — **backfill of samples the agent buffered during an outage: InfluxDB + backup ONLY, no heartbeat/status/alerting/broadcast**
   serverHistoryHandler.js       ← Flux query on `server_metrics` for GET /api/servers/:id/history. Range presets + the **custom absolute window** (`?start=&stop=` ISO) come from `services/historyRange.js`
@@ -171,6 +171,7 @@ backend/middleware/
 
 frontend/src/
   index.css                     ← Grafana --gf-* design tokens + JetBrains Mono
+  chart/ChartConfig.ts          ← one-time Chart.js registration, imported for side effects. **No zoom plugin**: `chartjs-plugin-zoom` + `hammerjs` backed the Environment page's scroll-to-zoom / drag-to-select and were removed with it (−38 kB from the bundle). The **RangePicker is the only way to change a chart's window.** ⚠️ Charts use a CATEGORY x-axis of preformatted label strings, so a tick callback's `index` argument is the position among the ticks Chart.js chose to DRAW (0…maxTicksLimit-1), NOT the data index — pass the callback's `value` (or `ticks[index].value`) to `getLabelForValue`. Using `index` labelled all seven ticks from the first seven samples, which is why a tick could read "Jun" while the tooltip on that same point read "Jul"
   App.tsx                       ← route tree + ProtectedRoute
   config.ts                     ← backend URL: auto-detects from page host:3000, VITE_API_URL override
   api/
@@ -184,6 +185,9 @@ frontend/src/
     ThemeContext.tsx            ← dark/light mode
   socket/socket.ts              ← shared Socket.IO client, autoConnect: false
   data/users.ts                 ← roleConfig: role → { label, color, allowed pages[] }
+  utils/envThresholds.ts        ← PURE (import-free) **temperature + humidity + gas colour**, driven by the room-level `alert_rules` — `temperatureColor`/`gasColor`/`humidityColor` (+ `*Label`), `bandFor`/`tempBand`, `alertTint`, `withAlpha`, `ROOM_THRESHOLD_FALLBACK`, `TEMP_COLD_BELOW`. Green normal / orange warning / red critical, changing at exactly the point the system raises the alert; temperature adds a blue TOO COLD below `TEMP_COLD_BELOW` (22 °C), which mirrors the firmware's `TEMP_COLD` — the one threshold `envConfig` does NOT overwrite, so there is no rule to read it from (⚠️ change one, change the other). Replaces Dashboard's hardcoded `GAS_WARN = 150`/`GAS_CRIT = 300`, which sat under a comment asking whoever retuned the rules to retune the constants too. `bandFor` is always HIGHER-IS-WORSE (`>=`), matching every seeded env rule, the firmware (`t >= TEMP_WARNING`) and `alertRulesService.compare`. ⚠️ It must NOT infer the direction from the bounds: an earlier version read `crit < warn` as lower-is-worse and flipped both comparisons, which broke precisely when someone TESTED a rule — dropping the critical threshold below the live reading leaves it under the untouched warning threshold, and every band came out scrambled. A lower-is-worse env rule needs `alert_rules.comparison` plumbed through `getRoomThresholds()`, deliberately not done because that flat shape is also the `envConfig` payload the ESP32 parses. **`alertTint`** keeps a reading's identity hue while normal and switches to orange/red only on breach — it is what **humidity and both MQ-2 sensors** use, on tiles and lines alike. `humidityColor`/`gasColor` are the full-band variants (green when normal); only the Dashboard's aggregate Air Quality tile still uses one
+  utils/tempZone.ts             ← PURE (import-free) auto-cooling ZONE resolution: `zoneOf`/`tempZone`/`tempColor`/`tempZoneLabel`/`zoneColor` + `ZONE_DEFAULTS`. Comparisons mirror the firmware's `getIRZone` exactly (`<` cold edge, `<=` the rest), so the page never names a zone the ESP32 is not in. ⚠️ **AirConditioner page ONLY** — that page is about the cooling zones, names the active one outright and lets an admin edit the boundaries, so colouring by zone is its subject matter. Dashboard + Environment colour temperature from the ALERT RULES instead (envThresholds.ts): cooling ramps before the alarm, so only the cooling PAGE paints with the cooling numbers
+  hooks/useRoomThresholds.ts    ← the room-level alert thresholds, kept current: GET /api/environment/thresholds once, then follows the `envConfigUpdated` broadcast. Starts on `ROOM_THRESHOLD_FALLBACK` (the v13 seed) — starting empty would mean "no rule, no colour", painting a smoke reading green for as long as the request takes
   pages/                        ← one file per page
 
 iot/esp32/env_monitor_v2.ino    ← current firmware (active)
@@ -237,7 +241,7 @@ SESSION_NOTES.md                ← per-session work log
 > **Profile editing is username-only.** `name`, `email` and `profile_image` belong to Google — `googleAuthService` re-syncs them from the ID token on **every** sign-in (`userService.syncGoogleProfile`), so an edit would silently revert at the next login, and `email` is the identity key the login matches on. Both the **My Profile** modal (`components/layout/ProfileModal.tsx`) and the admin **Edit User** modal show them read-only; the avatar **upload** path is gone (`PATCH /users/me` no longer takes multipart, and `middleware/upload.js` has been deleted). `userService.updateOwnProfile` accepts `username` only, and `updateUser` accepts `username`/`role`/`status` only — the latter now uses `COALESCE` so an omitted field can never blank a column.
 
 ### Formerly-mock endpoints (all now real)
-- `routes/environment.js` is **no longer mock.** GET `/history` + `/logs` (random data / five rows hardcoded to March 2025) are **removed**; `GET /daily` returns a real InfluxDB-backed per-day summary via `services/environmentService.js`, and live sensor history remains a Socket.IO concern (`changeRange` → `sensorHistory`). The file also serves `POST /calibrate-gas` and `GET /sensor-status` (see ESP32 Firmware Notes).
+- `routes/environment.js` is **no longer mock.** GET `/history` + `/logs` (random data / five rows hardcoded to March 2025) are **removed**; `GET /daily` returns a real InfluxDB-backed per-day summary via `services/environmentService.js`, and live sensor history remains a Socket.IO concern (`changeRange` → `sensorHistory`). The file also serves `POST /calibrate-gas`, `GET /sensor-status` (see ESP32 Firmware Notes) and **`GET /thresholds`** — the room-level alert thresholds (`alertRulesService.getRoomThresholds()`, the `envConfig` shape) that the dashboards colour humidity and gas against, admin + it_staff. It lives here and **not** on `routes/alertRules.js` deliberately: that router is `requireRole("admin")` from its first line down, and a both-roles route slipped in above the gate is exactly what a security read of the file would miss. Rule **mutation** stays admin-only where it was.
 - **`routes/reports.js` is now REAL** (the last mock, now gone): `services/reportService.js` persists to the `reports` table and writes a CSV **and** PDF per report under `backend/reports/` (git-ignored). `POST /api/reports` (admin + it_staff) builds the dataset **live** from the stores per `type` (environment → InfluxDB `sensor_environment`; server → InfluxDB `server_metrics`; **network → InfluxDB `router_metrics` + `network_traffic`, covering SNMP routers *and* the MikroTik**; **ups → InfluxDB `ups_metrics`**; alerts → MySQL `alerts`; aircon → MySQL `aircon_logs`) for the chosen `{periodStart, periodEnd}`, then `GET /api/reports/:id/download?format=csv|pdf` streams the saved file (download name = title + period) and `DELETE /api/reports/:id` (admin) removes the row + files. UI = **Reports** page (`pages/Reports.tsx`, Grafana-styled: type cards + range picker modal, per-row CSV/PDF download). Needs the `pdfkit` dep. Full guide: `report-page.md`. **Note:** the **notifications** feature (`routes/notifications.js` + `services/notificationService.js`) writes the **real** `alerts` + `alert_notifications` tables, and both the bell feed and the **Dashboard "Alerts" panel** render that real per-user feed (via `NotificationContext`). See `email-popup-notifications.md`.
 - **`routes/alerts.js` is now REAL** (no longer mock): `services/alertsService.js` backs the shared alert **lifecycle** — `GET /api/alerts` (history, `?status=` filter), `POST /api/alerts/:id/acknowledge`, `POST /api/alerts/:id/resolve`, `GET /api/alerts/count` (open-alert count → sidebar **Alerts badge**), all admin + it_staff. Sets `alerts.status` + `acknowledged_by`/`acknowledged_at`/`resolved_at`. **Auto-resolves** open alerts when the metric recovers to normal (wired into `checkThresholds` + `sensorHandler`). Broadcasts `alertUpdated`. UI = **Alerts** page (`pages/Alerts.tsx`) + live unresolved-count badge on the nav (`NotificationContext.openAlertCount`). Shared incident state, distinct from the per-user bell (`is_read`). **Resolve attribution:** single "by {acknowledger}" (resolve folds into `acknowledged_by`); a `resolved_by` column exists in the schema but is **DORMANT/unused** (separate-resolver UI was built then reverted — see `email-popup-notifications.md` §13.8).
 
@@ -296,6 +300,7 @@ SESSION_NOTES.md                ← per-session work log
 | `alertUpdated` | an alert's lifecycle changed (manual acknowledge/resolve, or auto-resolve on metric recovery) → Alerts page refreshes live |
 | `reportCreated` / `reportUpdated` / `reportDeleted` | report lifecycle → **broadcast to every dashboard** (the reports list is shared — `GET /api/reports` returns everyone's). A row appears as `pending`, flips to `generated`/`failed` when the background build ends, and disappears on delete — no refresh, on any open page. `POST /api/reports` returns 202 immediately; this is how the result arrives. The toast is creator-only (page compares `generatedBy`). See `report-page.md` §11–12 |
 | `airconStatus` | manual on/off toggle, or a **rename** (`{ aircon: { id, name }, entry }`) |
+| `envConfigUpdated` | admin changed an **Alert Rule** → `{ thresholds }` (the same room-level `{tempWarn,tempCrit,gasWarn,gasCrit,humWarn,humCrit}` pushed to the ESP32 as `envConfig`). Broadcast to every dashboard because Dashboard/Environment colour **temperature, humidity and gas** against these (`utils/envThresholds.ts` via `hooks/useRoomThresholds.ts`) — and the admin who just retuned them is on the Alert Rules page, so is the least likely person to notice a stale Dashboard |
 | `airconAutoUpdate` | ESP32 auto IR zone change |
 | `irChannelMap` | forwarded from ESP32 on connect |
 
@@ -338,6 +343,41 @@ Each AC unit is a row in `devices` (type=`'aircon'`) with a linked row in `airco
 > code). Table ships in `v13_cspc-ictu-monitoring-system.sql`. This is deliberately
 > separate from the Alert Rules temperature thresholds (cooling should ramp *before* the
 > alarm). Default boundaries match the firmware's original compiled values.
+
+> **These boundaries colour the room temperature on the AirConditioner page — and ONLY
+> there.** That page's Room Temp tile resolves its colour through
+> `frontend/src/utils/tempZone.ts` and names the active zone beside the value
+> ("ACCEPTABLE · LIVE"), which is the page's whole subject. **Dashboard and Environment
+> colour temperature from the ALERT RULES instead** (`utils/envThresholds.ts` —
+> `temperatureColor`): blue below 22 °C, green within the rules, orange at the `temperature`
+> warning rule, red at the critical one, so the reading changes at the same instant the
+> alert fires and agrees with the Environment page's **System Status** panel (firmware
+> `temp_status`, computed from the very thresholds `envConfig` pushes it). Cooling ramps
+> *before* the alarm, so the two sets of numbers still differ on purpose — what is scoped
+> is which page paints with which.
+>
+> **Colour rules that apply to every environment reading.** Hexes come from the **Status
+> Colors** table below, and CRITICAL is `#E02F44` — *not* `#F2495C`, which is DANGER.
+> **Chart lines are coloured per SEGMENT**, each taking the band of the point it ends on,
+> so history keeps its own colours instead of the whole line being repainted by the newest
+> reading. The **tooltip swatch** is resolved the same way, via a `labelColor` callback on
+> all three charts — Chart.js's default draws it from the dataset's static `borderColor`,
+> which here is only the pre-first-reading fallback, so the hover box stayed amber no
+> matter what the line under the cursor was doing.
+>
+> **Only temperature paints its NORMAL band.** Blue below 22 °C, green within the rules —
+> both carry meaning, and it is one series per axis so nothing collides. **Humidity and the
+> two MQ-2 sensors keep their identity hue while normal** — blue `#38BDF8`, violet
+> `#A78BFA`, pink `#F472B6` — and turn orange/red only on breach (`alertTint`), on the
+> tiles *and* the lines so a reading is the same colour in both places. That identity is
+> what lets you watch the two MQ-2 sensors disagree, which is the point of having two;
+> painting them both green when clean merged them into one indistinct band for the majority
+> of the time the chart is on screen. ⚠️ Two known convergences, both left as-is: the TOO
+> COLD blue `#5794F2` is a near neighbour of humidity's `#38BDF8`, and the two MQ-2 lines
+> land on the same red if both go critical at once. Legend labels and values separate them
+> in both cases; a `borderDash` on MQ2-2 is the fix if the latter ever needs reading at a
+> glance. The Dashboard's **Air Quality** tile is the exception that stays green/orange/red
+> — it aggregates both sensors ("higher of 2") and has no identity hue to return to.
 
 > **Power is manual-only.** `applyAutoIR` (on `irFired`) only re-targets the set
 > temperature of units that are **currently ON** — it never changes `is_on`. A unit a user

@@ -2,6 +2,7 @@ import express from "express";
 import asyncHandler from "../utils/asyncHandler.js";
 import environmentService from "../services/environmentService.js";
 import esp32Monitor from "../services/esp32Monitor.js";
+import alertRulesService from "../services/alertRulesService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -54,5 +55,27 @@ router.get(
 router.get("/sensor-status", authMiddleware, (_req, res) => {
   res.json(esp32Monitor.getStatus());
 });
+
+// ── GET /api/environment/thresholds ─ the room-level alert thresholds, for colouring ──
+// The same `{tempWarn,tempCrit,gasWarn,gasCrit,humWarn,humCrit}` shape pushed to the ESP32
+// as `envConfig`, so the dashboards can colour humidity and gas at exactly the points the
+// system raises an alert. Previously the Dashboard carried its own `GAS_WARN = 150` /
+// `GAS_CRIT = 300` copies with a comment asking whoever retuned the rules to retune the
+// constants too — a promise nothing enforced, and one an admin editing Alert Rules would
+// never see.
+//
+// Deliberately NOT mounted on routes/alertRules.js: that router is admin-only from its
+// first line down, and slipping a both-roles route in above the gate is the kind of thing
+// a security read of that file would miss. These are read-only numbers the pages already
+// express as colour, and IT staff can see the alerts they produce, so exposing them to
+// both roles here costs nothing. Rule MUTATION stays admin-only where it was.
+router.get(
+  "/thresholds",
+  authMiddleware,
+  requireRole("admin", "it_staff"),
+  asyncHandler(async (_req, res) => {
+    res.json({ thresholds: await alertRulesService.getRoomThresholds() });
+  }),
+);
 
 export default router;

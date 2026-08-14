@@ -6,6 +6,10 @@ import { Line } from "react-chartjs-2";
 import StatusBadge from "../components/ui/StatusBadge";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
+import { useRoomThresholds } from "../hooks/useRoomThresholds";
+import {
+  gasColor, gasLabel, temperatureColor, temperatureLabel, alertTint, withAlpha,
+} from "../utils/envThresholds";
 
 Chart.register(...registerables);
 
@@ -111,22 +115,27 @@ const GREEN = "#73BF69";
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
 const BLUE = "#5794F2";
-// Environment series palette — deliberately the SAME hexes as pages/Environment.tsx, so
-// the temperature line means the same thing on both pages. Reading one chart should not
-// require re-learning the colours on the other.
+// Environment series palette — deliberately the SAME hexes as pages/Environment.tsx, so a
+// series means the same thing on both pages. Reading one chart should not require
+// re-learning the colours on the other.
+//
+// ENV_TEMP is now only a FALLBACK: the temperature line, its fill, its axis and the Room
+// Temp tile are all coloured by the `temperature` ALERT RULES (utils/envThresholds.ts),
+// and this amber shows only until the first reading arrives.
+//
+// ENV_HUM is humidity's IDENTITY colour — the humidity line holds it while the room is
+// within the rules and switches to orange/red when it is not (`alertTint`), because it
+// shares this chart with temperature and two green lines would be unreadable. The
+// humidity TILE has no such neighbour and goes full green/orange/red.
+// ⚠️ ENV_HUM is a near neighbour of the TOO COLD blue (#5794F2), so on an over-cooled room
+// the two lines are told apart by the legend labels rather than by hue.
 const ENV_TEMP = "#F59E0B";
 const ENV_HUM  = "#38BDF8";
 
-// Matches the global gas rules in `alert_rules` (warning >= 150, critical >= 300), so
-// the tile changes colour at the same point the system raises an alert. If those rules
-// are retuned, retune these with them.
-const GAS_WARN = 150;
-const GAS_CRIT = 300;
-function gasColor(ppm: number) {
-  if (ppm >= GAS_CRIT) return RED;
-  if (ppm >= GAS_WARN) return ORANGE;
-  return GREEN;
-}
+// The gas thresholds used to be copied here as `GAS_WARN = 150` / `GAS_CRIT = 300` under a
+// comment asking whoever retuned `alert_rules` to retune them too. They now come from the
+// rules themselves via useRoomThresholds(), so an admin editing Alert Rules moves this
+// tile with them and no one has to remember.
 
 // A server parked for planned maintenance is not a fault — showing it red reads
 // as "down" and hides real outages in a sea of red.
@@ -486,6 +495,15 @@ export default function Dashboard() {
   const [clock, setClock] = useState(() => new Date());
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
+  // Room-level alert thresholds (`alert_rules`) — temperature, humidity and gas all colour
+  // against these, so a reading changes colour at exactly the point the system raises an
+  // alert. Follows an admin's Alert Rules edits live.
+  const thresholds = useRoomThresholds();
+  // Each series' colour right now, for the places where ONE colour has to stand for the
+  // whole line: the area fill, the axis, the legend.
+  const liveTempColor = temperatureColor(liveTemp, thresholds, ENV_TEMP);
+  const liveHumColor = alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, ENV_HUM, ENV_HUM);
+
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 
@@ -725,13 +743,25 @@ export default function Dashboard() {
       {
         label: "Temperature",
         data: smooth(chartTemps),
+        // Each SEGMENT takes the alert band of the point it ends on, so the line is blue
+        // where the room was too cold and red where it breached critical — the history
+        // keeps its own colours instead of the whole line being repainted by the newest
+        // reading, which would have claimed things about the past that were not true.
+        // `borderColor` below is the fallback Chart.js uses before segments resolve.
         borderColor: ENV_TEMP,
+        segment: {
+          borderColor: (ctx) => temperatureColor(ctx.p1.parsed.y, thresholds, ENV_TEMP),
+        },
+        // The area fill is one region and cannot be split per band, so it follows the
+        // CURRENT reading — it is decorative at this alpha, and tracking the live band
+        // keeps it from fighting the newest part of the line.
         backgroundColor: (ctx: ScriptableContext<"line">) =>
-          gradientFill(ctx, "rgba(245,158,11,0.18)", "rgba(245,158,11,0.01)"),
+          gradientFill(ctx, withAlpha(liveTempColor, 0.18), withAlpha(liveTempColor, 0.01)),
         borderWidth: 1.5,
         pointRadius: 0,
         pointHoverRadius: 4,
-        pointHoverBackgroundColor: ENV_TEMP,
+        pointHoverBackgroundColor: (ctx: ScriptableContext<"line">) =>
+          temperatureColor(ctx.parsed?.y, thresholds, ENV_TEMP),
         fill: true,
         tension: 0.4,
         yAxisID: "yTemp",
@@ -739,13 +769,21 @@ export default function Dashboard() {
       {
         label: "Humidity",
         data: smooth(chartHums),
+        // Keeps its own blue while the room is within the `humidity` rules, and turns
+        // orange/red per segment where it was not. It shares this chart with temperature,
+        // so it cannot go green when normal without becoming the same line.
         borderColor: ENV_HUM,
+        segment: {
+          borderColor: (ctx) =>
+            alertTint(ctx.p1.parsed.y, thresholds.humWarn, thresholds.humCrit, ENV_HUM, ENV_HUM),
+        },
         backgroundColor: (ctx: ScriptableContext<"line">) =>
-          gradientFill(ctx, "rgba(56,189,248,0.14)", "rgba(56,189,248,0.01)"),
+          gradientFill(ctx, withAlpha(liveHumColor, 0.14), withAlpha(liveHumColor, 0.01)),
         borderWidth: 1.5,
         pointRadius: 0,
         pointHoverRadius: 4,
-        pointHoverBackgroundColor: ENV_HUM,
+        pointHoverBackgroundColor: (ctx: ScriptableContext<"line">) =>
+          alertTint(ctx.parsed?.y, thresholds.humWarn, thresholds.humCrit, ENV_HUM, ENV_HUM),
         fill: true,
         tension: 0.4,
         yAxisID: "yHum",
@@ -779,6 +817,17 @@ export default function Dashboard() {
               ? ` ${y.toFixed(1)} °C`
               : ` ${y.toFixed(1)} %`;
           },
+          // Chart.js's default swatch reads the dataset's static `borderColor`, which here
+          // is only the pre-first-reading fallback — so the box stayed amber no matter
+          // what the line under the cursor was doing. Resolve it from the HOVERED point
+          // instead, the same way the segment beneath it is coloured.
+          labelColor: (ctx) => {
+            const y = ctx.parsed.y as number | null;
+            const color = ctx.datasetIndex === 0
+              ? temperatureColor(y, thresholds, ENV_TEMP)
+              : alertTint(y, thresholds.humWarn, thresholds.humCrit, ENV_HUM, ENV_HUM);
+            return { borderColor: color, backgroundColor: color, borderWidth: 0 };
+          },
         },
       },
     },
@@ -799,7 +848,10 @@ export default function Dashboard() {
         grid: { color: gridColor, drawTicks: false },
         border: { display: false },
         ticks: {
-          color: ENV_TEMP,
+          // Follows the live zone, not a fixed amber: the axis is how you tell which line
+          // belongs to which scale, and a multi-coloured line needs an axis that still
+          // matches some part of it.
+          color: liveTempColor,
           font: { size: 9, family: "monospace" },
           padding: 6,
           callback: (v) => `${v}°`,
@@ -813,7 +865,7 @@ export default function Dashboard() {
         grid: { display: false },
         border: { display: false },
         ticks: {
-          color: ENV_HUM,
+          color: liveHumColor,
           font: { size: 9, family: "monospace" },
           padding: 6,
           callback: (v) => `${v}%`,
@@ -862,19 +914,26 @@ export default function Dashboard() {
 
       {/* ── Row 1: Stat panels ── */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+        {/* Coloured by the `temperature` ALERT RULES: blue below the firmware's cold
+            constant, green while within the rules, orange at the warning rule and red at
+            the critical one — so the tile changes at the same instant the system raises
+            the alert. The band is named below the value; a colour alone cannot say which
+            threshold was crossed. */}
         <StatPanel
           label="Room Temp"
           value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : "--"}
           unit="°C"
-          color={typeof liveTemp === "number" ? ENV_TEMP : gf.textMuted}
-          sub="DHT11 · LIVE"
+          color={temperatureColor(liveTemp, thresholds, gf.textMuted)}
+          sub={`${temperatureLabel(liveTemp, thresholds) ?? "DHT11"} · LIVE`}
           spark={chartTemps}
         />
+        {/* Keeps its own blue while within the `humidity` rules, orange/red once past
+            them — same rule as the line below it, and as the Environment page. */}
         <StatPanel
           label="Humidity"
           value={typeof liveHum === "number" ? liveHum.toFixed(1) : "--"}
           unit="%"
-          color={typeof liveHum === "number" ? ENV_HUM : gf.textMuted}
+          color={alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, ENV_HUM, gf.textMuted)}
           sub="DHT11 · LIVE"
           spark={chartHums}
         />
@@ -902,12 +961,15 @@ export default function Dashboard() {
           label="Air Quality"
           value={typeof liveGas === "number" ? String(Math.round(liveGas)) : "--"}
           unit="ppm"
-          color={typeof liveGas === "number" ? gasColor(liveGas) : gf.textMuted}
+          color={gasColor(liveGas, thresholds, gf.textMuted)}
+          // The advice, like the colour, is keyed off the live `gas` rules rather than off
+          // numbers repeated here — so retuning a rule cannot leave the tile saying
+          // "clean" in orange.
           sub={
-            typeof liveGas !== "number" ? "MQ-2 · LIVE"
-              : liveGas >= GAS_CRIT ? "SMOKE / GAS — critical"
-                : liveGas >= GAS_WARN ? "elevated — ventilate"
-                  : "clean · higher of 2 sensors"
+            gasLabel(liveGas, thresholds) === "CRITICAL" ? "SMOKE / GAS — critical"
+              : gasLabel(liveGas, thresholds) === "WARNING" ? "elevated — ventilate"
+                : typeof liveGas === "number" ? "clean · higher of 2 sensors"
+                  : "MQ-2 · LIVE"
           }
           spark={chartGas}
         />
@@ -938,8 +1000,11 @@ export default function Dashboard() {
           right={
             <>
               {([
-                [ENV_TEMP, typeof liveTemp === "number" ? `${liveTemp.toFixed(1)}°C` : "--", "Temp"],
-                [ENV_HUM, typeof liveHum === "number" ? `${liveHum.toFixed(1)}%` : "--", "Hum"],
+                // Muted fallback, not the chart's amber: with no reading this shows "--",
+                // and a live-looking colour beside it would suggest one.
+                [temperatureColor(liveTemp, thresholds, gf.textMuted), typeof liveTemp === "number" ? `${liveTemp.toFixed(1)}°C` : "--", "Temp"],
+                [alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, ENV_HUM, gf.textMuted),
+                  typeof liveHum === "number" ? `${liveHum.toFixed(1)}%` : "--", "Hum"],
               ] as [string, string, string][]).map(([color, val, label]) => (
                 <span key={label} className="flex items-center gap-1.5 text-[13px]">
                   <span

@@ -32,6 +32,24 @@ export function sendSensorHistory(socket, range = "-1h") {
   }
 
   // ── Numeric fields query (aggregated) ─────────────────────────────
+  //
+  // `group(columns: ["_field"])` is load-bearing and must stay BEFORE aggregateWindow.
+  // sensor_environment is written with three TAGS (smoke_status / temp_status /
+  // environment_status — see handlers/sensorHandler.js), so they sit in the Flux group key
+  // and split the result into one table per status COMBINATION. Two things went wrong:
+  //
+  //   1. Ordering. `sort()` orders rows within each table, never across them, and
+  //      queryRows streams table by table — so the rows arrived Jul→Aug, then Jul→Aug
+  //      again for the next combination. On a 30-day range the room crosses status bands
+  //      often enough that the x-axis read "Jul, Aug, Jul, Aug, Jul". Short ranges looked
+  //      fine only because the statuses rarely change within an hour (one table).
+  //   2. Wrong means. `fn: mean` was averaging each status subgroup separately, producing
+  //      several partial means at the SAME _time, of which the map below kept whichever
+  //      streamed last. The plotted value was the mean of an arbitrary subset of the
+  //      window rather than of the window.
+  //
+  // Grouping by `_field` alone collapses the tags, so each field is one continuous series:
+  // one mean per window over all of it, one table out of pivot, and a global sort.
   const numericQuery = `
     from(bucket: "${bucket}")
       |> range(${safeRangeClause})
@@ -43,6 +61,7 @@ export function sendSensorHistory(socket, range = "-1h") {
           r._field == "mq2_2_ppm"  or
           r._field == "heat_index"
         )
+      |> group(columns: ["_field"])
       ${aggregateWindow}
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
       |> sort(columns: ["_time"], desc: false)
@@ -94,7 +113,13 @@ export function sendSensorHistory(socket, range = "-1h") {
           console.error("[HISTORY] Tag query error:", error.message);
         },
         complete() {
-          const history = Array.from(numericMap.values());
+          // Belt and braces on the Flux `sort` above: this array's order is really the
+          // MAP'S INSERTION order, which is whatever order rows streamed in. The chart
+          // plots it as given — a category axis, so it draws points in array order and
+          // cannot re-sort them — and every consumer reads "latest" as the last element.
+          // Sorting here means neither depends on how Flux happens to table the result.
+          const history = Array.from(numericMap.values())
+            .sort((a, b) => new Date(a.time) - new Date(b.time));
           console.log("[HISTORY] Sent:", history.length, "records");
           socket.emit("sensorHistory", history);
         },

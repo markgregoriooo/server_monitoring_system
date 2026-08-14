@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import React from "react";
 import { Line } from "react-chartjs-2";
 import { Chart, registerables } from "chart.js";
@@ -9,6 +9,10 @@ import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
 import RangePicker, { DEFAULT_RANGE } from "../components/ui/RangePicker";
 import type { RangeValue } from "../components/ui/RangePicker";
+import { useRoomThresholds } from "../hooks/useRoomThresholds";
+import {
+  gasLabel, humidityLabel, temperatureColor, temperatureLabel, alertTint, withAlpha,
+} from "../utils/envThresholds";
 
 Chart.register(...registerables);
 
@@ -130,6 +134,19 @@ const STATUS_COLOR: Record<string, string> = {
   CRITICAL: "#E02F44",
 };
 
+// Fallback for the temperature series — used only until a reading arrives, and as the
+// colour Chart.js falls back to before per-segment zone colours resolve.
+const TEMP_SERIES = "#F59E0B";
+
+// IDENTITY colours for the series that share a chart with another. Humidity sits beside
+// temperature; the two MQ-2 lines sit beside each other. Each holds its own hue while
+// within the alert rules and turns orange/red only where it breached them (`alertTint`) —
+// if every normal series went green, each of these charts would be drawing one line twice.
+// The stat TILES have no such neighbour and use the full green/orange/red band colour.
+const HUM_SERIES  = "#38BDF8";
+const MQ1_SERIES  = "#A78BFA";
+const MQ2_SERIES  = "#F472B6";
+
 const STATUS_BG: Record<string, string> = {
   NORMAL:   "rgba(115,191,105,0.15)",
   TOO_COLD: "rgba(87,148,242,0.15)",
@@ -188,16 +205,6 @@ function splitLabel(raw: string, isMobile = false): string[] {
   return [date, time];
 }
 
-// Parses "Jun 04 2026 14:30" back to ISO — used when applying a drag-zoom selection as a range
-function parseLabelToISO(label: string): string {
-  const months: Record<string, number> = {
-    Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11,
-  };
-  const [mon, day, year, time = "00:00"] = label.split(" ");
-  const [h = "0", m = "0"] = time.split(":");
-  return new Date(+(year ?? 0), months[mon ?? ""] ?? 0, +(day ?? 1), +h, +m).toISOString();
-}
-
 // ─── Chart helpers ────────────────────────────────────────────────────────────
 
 function makeCombinedOptions(
@@ -205,7 +212,16 @@ function makeCombinedOptions(
   isMobile: boolean,
   minTemp: number, maxTemp: number,
   minHum: number,  maxHum: number,
-  onZoom?: (start: string, end: string) => void,
+  /** Colours resolved from live data by the component, since this builder sits outside it.
+   *  `tempAxis`/`humAxis` are each series' colour RIGHT NOW (a multi-coloured line needs an
+   *  axis that still matches some part of it); `at` resolves the colour of one hovered
+   *  point, for the tooltip's swatch — Chart.js would otherwise draw it from the dataset's
+   *  static `borderColor`, which here is only the pre-first-reading fallback. */
+  colors: {
+    tempAxis: string;
+    humAxis: string;
+    at: (datasetIndex: number, y: number | null) => string;
+  },
 ): ChartOptions<"line"> {
   const gridColor = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.06)";
   const dateColor = isDark ? "#4B5563" : "#9CA3AF";
@@ -230,26 +246,12 @@ function makeCombinedOptions(
             if (y === null || y === undefined) return "";
             return ctx.datasetIndex === 0 ? ` ${y.toFixed(1)} °C` : ` ${y.toFixed(1)} %`;
           },
-        },
-      },
-      ...(({
-        zoom: {
-          zoom: {
-            wheel: { enabled: true },
-            drag: { enabled: true, backgroundColor: "rgba(87,148,242,0.08)", borderColor: "#5794F2", borderWidth: 1 },
-            pinch: { enabled: true },
-            mode: "x",
-            onZoomComplete: ({ chart }: any) => {
-              const labels = (chart.data.labels ?? []) as string[];
-              const xs = chart.scales.x;
-              if (!labels.length || !onZoom) return;
-              const lo = Math.max(0, Math.floor(xs.min));
-              const hi = Math.min(labels.length - 1, Math.ceil(xs.max));
-              onZoom(labels[lo] ?? "", labels[hi] ?? "");
-            },
+          labelColor: (ctx) => {
+            const c = colors.at(ctx.datasetIndex, ctx.parsed.y as number | null);
+            return { borderColor: c, backgroundColor: c, borderWidth: 0 };
           },
         },
-      }) as unknown as ChartOptions<"line">["plugins"]),
+      },
     },
     scales: {
       x: {
@@ -265,8 +267,14 @@ function makeCombinedOptions(
                   : timeColor)) as unknown as string,
           font: { size: isMobile ? 8 : 9, family: "monospace" },
           maxTicksLimit: isMobile ? 4 : 7, maxRotation: 0,
-          callback: function(_val, index): string[] {
-            const raw = (this.getLabelForValue as (i: number) => string)(index);
+          // ⚠️ `value` is the DATA index on a category scale. `index` is only the position
+          // among the ticks Chart.js decided to DRAW (0…maxTicksLimit-1), so passing it to
+          // getLabelForValue labelled all seven ticks from the first seven samples — which
+          // is why a tick could read "Jun" while the tooltip for that same point read
+          // "Jul", and why the months appeared to jump around.
+          callback: function(value, index, ticks): string[] {
+            const dataIndex = typeof value === "number" ? value : (ticks[index]?.value ?? index);
+            const raw = (this.getLabelForValue as (i: number) => string)(dataIndex);
             return splitLabel(raw, isMobile);
           },
         },
@@ -274,13 +282,13 @@ function makeCombinedOptions(
       yTemp: {
         type: "linear", position: "left",
         grid: { color: gridColor, drawTicks: false }, border: { display: false },
-        ticks: { color: "#F59E0B", font: { size: 9, family: "monospace" }, padding: 8, callback: (v) => `${v}°` },
+        ticks: { color: colors.tempAxis, font: { size: 9, family: "monospace" }, padding: 8, callback: (v) => `${v}°` },
         min: minTemp, max: maxTemp,
       },
       yHum: {
         type: "linear", position: "right",
         grid: { display: false }, border: { display: false },
-        ticks: { color: "#38BDF8", font: { size: 9, family: "monospace" }, padding: 8, callback: (v) => `${v}%` },
+        ticks: { color: colors.humAxis, font: { size: 9, family: "monospace" }, padding: 8, callback: (v) => `${v}%` },
         min: minHum, max: maxHum,
       },
     },
@@ -292,7 +300,12 @@ function makeSmokeOptions(
   isMobile: boolean,
   minPPM: number,
   maxPPM: number,
-  onZoom?: (start: string, end: string) => void,
+  /** `ppmAxis` = the WORSE of the two MQ-2 sensors, since one axis serves both lines.
+   *  `at` resolves one hovered point's colour for the tooltip swatch — see makeCombinedOptions. */
+  colors: {
+    ppmAxis: string;
+    at: (datasetIndex: number, y: number | null) => string;
+  },
 ): ChartOptions<"line"> {
   const gridColor = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.06)";
   const dateColor = isDark ? "#4B5563" : "#9CA3AF";
@@ -318,26 +331,12 @@ function makeSmokeOptions(
             const name = ctx.datasetIndex === 0 ? "MQ2-1" : "MQ2-2";
             return ` ${name}: ${y.toFixed(1)} ppm`;
           },
-        },
-      },
-      ...(({
-        zoom: {
-          zoom: {
-            wheel: { enabled: true },
-            drag: { enabled: true, backgroundColor: "rgba(87,148,242,0.08)", borderColor: "#5794F2", borderWidth: 1 },
-            pinch: { enabled: true },
-            mode: "x",
-            onZoomComplete: ({ chart }: any) => {
-              const labels = (chart.data.labels ?? []) as string[];
-              const xs = chart.scales.x;
-              if (!labels.length || !onZoom) return;
-              const lo = Math.max(0, Math.floor(xs.min));
-              const hi = Math.min(labels.length - 1, Math.ceil(xs.max));
-              onZoom(labels[lo] ?? "", labels[hi] ?? "");
-            },
+          labelColor: (ctx) => {
+            const c = colors.at(ctx.datasetIndex, ctx.parsed.y as number | null);
+            return { borderColor: c, backgroundColor: c, borderWidth: 0 };
           },
         },
-      }) as unknown as ChartOptions<"line">["plugins"]),
+      },
     },
     scales: {
       x: {
@@ -353,15 +352,23 @@ function makeSmokeOptions(
                   : timeColor)) as unknown as string,
           font: { size: isMobile ? 8 : 9, family: "monospace" },
           maxTicksLimit: isMobile ? 4 : 7, maxRotation: 0,
-          callback: function(_val, index): string[] {
-            const raw = (this.getLabelForValue as (i: number) => string)(index);
+          // ⚠️ `value` is the DATA index on a category scale. `index` is only the position
+          // among the ticks Chart.js decided to DRAW (0…maxTicksLimit-1), so passing it to
+          // getLabelForValue labelled all seven ticks from the first seven samples — which
+          // is why a tick could read "Jun" while the tooltip for that same point read
+          // "Jul", and why the months appeared to jump around.
+          callback: function(value, index, ticks): string[] {
+            const dataIndex = typeof value === "number" ? value : (ticks[index]?.value ?? index);
+            const raw = (this.getLabelForValue as (i: number) => string)(dataIndex);
             return splitLabel(raw, isMobile);
           },
         },
       },
       y: {
         grid: { color: gridColor, drawTicks: false }, border: { display: false },
-        ticks: { color: "#A78BFA", font: { size: 9, family: "monospace" }, padding: 8, callback: (v) => `${v}` },
+        // One axis serves BOTH MQ-2 lines, so it follows the WORSE of the two — the safe
+        // direction: it can over-state one sensor's band but never under-state the room.
+        ticks: { color: colors.ppmAxis, font: { size: 9, family: "monospace" }, padding: 8, callback: (v) => `${v}` },
         min: minPPM, max: maxPPM,
       },
     },
@@ -377,45 +384,6 @@ function gradientFill(ctx: ScriptableContext<"line">, colorTop: string, colorBot
   g.addColorStop(0, colorTop);
   g.addColorStop(1, colorBot);
   return g;
-}
-
-// ─── ZoomRangeBox ─────────────────────────────────────────────────────────────
-// Shown inside a GraphPanel after the user drag-selects or scroll-zooms a range.
-
-function ZoomRangeBox({ start, end, onClose, onApply }: {
-  start: string; end: string;
-  onClose: () => void;
-  onApply: (start: string, end: string) => void;
-}) {
-  return (
-    <div className="flex items-center gap-3 px-4 py-2 text-[13px] font-mono flex-wrap"
-      style={{ background: "rgba(87,148,242,0.07)", borderBottom: "1px solid rgba(87,148,242,0.22)" }}>
-      <svg width="10" height="10" viewBox="0 0 14 14" fill="none" style={{ color: "#5794F2", flexShrink: 0 }}>
-        <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.5" />
-        <path d="M7 4v3l2 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      </svg>
-      <span className="text-[11px] tracking-widest uppercase font-semibold" style={{ color: "#5794F2" }}>Selection</span>
-      <span className="flex-1" style={{ color: GF.textPrimary }}>{start} → {end}</span>
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => onApply(start, end)}
-          className="gf-raise px-2.5 py-1 rounded text-[12px] font-bold tracking-wider transition-colors"
-          style={{ background: "#5794F2", color: "#fff" }}
-          onMouseEnter={e => (e.currentTarget.style.background = "#4a82d8")}
-          onMouseLeave={e => (e.currentTarget.style.background = "#5794F2")}>
-          Apply range
-        </button>
-        <button
-          onClick={onClose}
-          className="px-1 text-[14px] transition-colors"
-          style={{ color: GF.textMuted }}
-          onMouseEnter={e => (e.currentTarget.style.color = GF.textPrimary)}
-          onMouseLeave={e => (e.currentTarget.style.color = GF.textMuted)}>
-          ✕
-        </button>
-      </div>
-    </div>
-  );
 }
 
 // ─── LiveDot ──────────────────────────────────────────────────────────────────
@@ -567,16 +535,24 @@ interface StatPanelProps {
   avg: string;
   min: string;
   isDark: boolean;
+  /** Optional word for what the colour MEANS, shown beside the status dot. A colour on its
+   *  own cannot say whether 27.5°C is ACCEPTABLE or NEAR CRITICAL. */
+  badge?: string | null;
 }
 
-function StatPanel({ title, value, unit, color, segPct, sparkData, max, avg, min, isDark }: StatPanelProps) {
+function StatPanel({ title, value, unit, color, segPct, sparkData, max, avg, min, isDark, badge }: StatPanelProps) {
   return (
     <div className="flex flex-col rounded" style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}` }}>
       {/* Panel title bar */}
       <div className="flex items-center justify-between px-3 pt-2.5 pb-1.5"
         style={{ borderBottom: `1px solid ${GF.divider}` }}>
         <span className="text-[12px] font-mono tracking-widest uppercase" style={{ color: GF.textMuted }}>{title}</span>
-        <span className="w-1.5 h-1.5 rounded-full" style={{ background: color, boxShadow: `0 0 5px ${color}` }} />
+        <span className="flex items-center gap-1.5">
+          {badge && (
+            <span className="text-[10px] font-mono tracking-wider uppercase" style={{ color }}>{badge}</span>
+          )}
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: color, boxShadow: `0 0 5px ${color}` }} />
+        </span>
       </div>
 
       {/* Arc gauge — shows live value + unit in centre */}
@@ -651,14 +627,15 @@ function StatePanel({
 
 // ─── GraphPanel (Grafana Graph style) ─────────────────────────────────────────
 
+// `toolbar` (the Reset zoom button) and `overlay` (the zoom selection bar) were dropped
+// with the zoom feature — nothing supplied them any more, and keeping optional slots for a
+// feature that no longer exists just invites someone to wire them back up.
 function GraphPanel({
-  title, legend, children, toolbar, overlay,
+  title, legend, children,
 }: {
   title: string;
   legend: React.ReactNode;
   children: React.ReactNode;
-  toolbar: React.ReactNode;
-  overlay?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col rounded" style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}` }}>
@@ -670,30 +647,10 @@ function GraphPanel({
         </div>
         <div className="flex items-center gap-3">
           <LiveDot />
-          {toolbar}
         </div>
       </div>
-      {overlay}
       {children}
     </div>
-  );
-}
-
-// ─── ResetZoomBtn ─────────────────────────────────────────────────────────────
-
-function ResetZoomBtn({ onClick }: { onClick: () => void }) {
-  return (
-    <button onClick={onClick}
-      className="gf-btn flex items-center gap-1 text-[12px] font-mono px-2.5 py-1"
-      style={{ color: GF.textMuted }}
-      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = GF.textPrimary; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = GF.textMuted; }}>
-      <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
-        <path d="M12 7A5 5 0 1 1 7 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        <path d="M12 2v5h-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      Reset zoom
-    </button>
   );
 }
 
@@ -829,6 +786,49 @@ export default function Environment() {
   const [liveTempStatus,        setLiveTempStatus]        = useState<TempLevel>("NORMAL");
   const [liveEnvironmentStatus, setLiveEnvironmentStatus] = useState<AlertLevel>("NORMAL");
 
+  // Room-level alert thresholds (`alert_rules`) — temperature, humidity and both MQ-2
+  // sensors colour against these, changing at exactly the point the system raises an
+  // alert. This is the same source as `liveTempStatus` in the System Status panel (the
+  // firmware computes that from the very thresholds `envConfig` pushes it), so the tile
+  // and the status row now agree instead of answering with different numbers. Follows an
+  // admin's Alert Rules edits live.
+  const thresholds = useRoomThresholds();
+  // Each series' colour right now, for the places where ONE colour has to stand for the
+  // whole line: the chart's area fill, its axis and its legend swatch.
+  const liveTempColor = temperatureColor(liveTemp, thresholds, TEMP_SERIES);
+  const liveHumColor = alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, HUM_SERIES, HUM_SERIES);
+  const livePPM1Color = alertTint(livePPM1, thresholds.gasWarn, thresholds.gasCrit, MQ1_SERIES, MQ1_SERIES);
+  const livePPM2Color = alertTint(livePPM2, thresholds.gasWarn, thresholds.gasCrit, MQ2_SERIES, MQ2_SERIES);
+  // The smoke chart's single ppm axis serves both sensors, so it takes the HIGHER reading's
+  // band — over-stating one sensor is safe, under-stating the room is not. It falls back to
+  // MQ2-1's violet while both are clean, since a "normal" band has no colour of its own here.
+  const ppmAxisColor = alertTint(
+    typeof livePPM1 === "number" && typeof livePPM2 === "number" ? Math.max(livePPM1, livePPM2)
+      : typeof livePPM1 === "number" ? livePPM1
+        : livePPM2,
+    thresholds.gasWarn, thresholds.gasCrit, MQ1_SERIES, MQ1_SERIES,
+  );
+
+  // Colour bundles handed to the module-level options builders. Memoised because the
+  // builders are themselves memoised on identity — a fresh object every render would
+  // rebuild both charts' options several times a second.
+  const combinedColors = useMemo(() => ({
+    tempAxis: liveTempColor,
+    humAxis: liveHumColor,
+    at: (datasetIndex: number, y: number | null) =>
+      datasetIndex === 0
+        ? temperatureColor(y, thresholds, TEMP_SERIES)
+        : alertTint(y, thresholds.humWarn, thresholds.humCrit, HUM_SERIES, HUM_SERIES),
+  }), [liveTempColor, liveHumColor, thresholds]);
+
+  const smokeColors = useMemo(() => ({
+    ppmAxis: ppmAxisColor,
+    at: (datasetIndex: number, y: number | null) =>
+      alertTint(y, thresholds.gasWarn, thresholds.gasCrit,
+        datasetIndex === 0 ? MQ1_SERIES : MQ2_SERIES,
+        datasetIndex === 0 ? MQ1_SERIES : MQ2_SERIES),
+  }), [ppmAxisColor, thresholds]);
+
   // Is the ESP32 actually reporting? Without this every reading below is the LAST one
   // received, with nothing to say how old it is — a dead sensor renders exactly like a
   // stable room. Seeded from REST (the socket only fires on a transition, which may
@@ -856,15 +856,6 @@ export default function Environment() {
   const chartRef      = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const smokeChartRef = useRef<any>(null);
-  const isZoomedRef   = useRef(false);
-  const [zoomInfo,     setZoomInfo]     = useState<{ start: string; end: string; chart: "combined" | "smoke" } | null>(null);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const resetZoom = useCallback((ref: React.RefObject<any>) => {
-    ref.current?.resetZoom?.();
-    isZoomedRef.current = false;
-    setZoomInfo(null);
-  }, []);
 
   useEffect(() => {
     const obs = new MutationObserver(() => setIsDark(document.documentElement.classList.contains("dark")));
@@ -944,14 +935,14 @@ export default function Environment() {
       setLiveTempStatus(data.temp_status);
       setLiveEnvironmentStatus(data.environment_status);
 
-      if (!isZoomedRef.current) {
-        setLabels(p      => [...p.slice(-999), time]);
-        setTemps(p       => [...p.slice(-999), data.temperature]);
-        setHums(p        => [...p.slice(-999), data.humidity]);
-        setSmokeLabels(p => [...p.slice(-999), time]);
-        setPpm1s(p       => [...p.slice(-999), data.mq2_1_ppm]);
-        setPpm2s(p       => [...p.slice(-999), data.mq2_2_ppm]);
-      }
+      // Previously gated on "is the user zoomed in?", so live points stopped appending
+      // while a selection was held. With zoom gone the charts always track live.
+      setLabels(p      => [...p.slice(-999), time]);
+      setTemps(p       => [...p.slice(-999), data.temperature]);
+      setHums(p        => [...p.slice(-999), data.humidity]);
+      setSmokeLabels(p => [...p.slice(-999), time]);
+      setPpm1s(p       => [...p.slice(-999), data.mq2_1_ppm]);
+      setPpm2s(p       => [...p.slice(-999), data.mq2_2_ppm]);
     };
 
     socket.on("sensorHistory", handleHistory);
@@ -962,13 +953,6 @@ export default function Environment() {
       socket.off("sensorData",    handleLive);
     };
   }, [range]);
-
-  // Drag-zoom on a chart applies its selection as a custom window. Setting state is
-  // enough — the effect above re-emits on every `range` change, so this no longer
-  // emits by hand (the old version did both, which sent the range twice).
-  const applyCustomRange = useCallback((start: string, stop: string) => {
-    setRange({ kind: "custom", start, stop });
-  }, []);
 
   // ── Derived ────────────────────────────────────────────────────────────────
 
@@ -992,33 +976,16 @@ export default function Environment() {
   const tempGaugePct = typeof liveTemp === "number" ? (liveTemp - 15) / 25 : 0;
   const humGaugePct  = typeof liveHum  === "number" ? (liveHum  - 30) / 70 : 0;
 
-  // Stable references — empty deps because they only write to refs or call stable setters
-  const handleCombinedZoom = useCallback((start: string, end: string) => {
-    isZoomedRef.current = true;
-    setZoomInfo({ start, end, chart: "combined" });
-  }, []);
-  const handleSmokeZoom = useCallback((start: string, end: string) => {
-    isZoomedRef.current = true;
-    setZoomInfo({ start, end, chart: "smoke" });
-  }, []);
-  const handleApplyZoomedRange = useCallback((startLabel: string, endLabel: string) => {
-    applyCustomRange(parseLabelToISO(startLabel), parseLabelToISO(endLabel));
-    isZoomedRef.current = false;
-    setZoomInfo(null);
-    chartRef.current?.resetZoom?.();
-    smokeChartRef.current?.resetZoom?.();
-  }, [applyCustomRange]);
-
-  // Memoized so the chart only receives new props when data actually changes.
-  // Without this, every live-stat re-render produces new object references →
-  // react-chartjs-2 calls chart.update() → zoom plugin resets.
+  // Memoized so the chart only receives new props when data actually changes — every
+  // live-stat re-render would otherwise produce new object references and make
+  // react-chartjs-2 call chart.update() on both charts several times a second.
   const combinedOpts = useMemo(
-    () => makeCombinedOptions(isDark, isMobile, minTempY, maxTempY, minHumY, maxHumY, handleCombinedZoom),
-    [isDark, isMobile, minTempY, maxTempY, minHumY, maxHumY, handleCombinedZoom],
+    () => makeCombinedOptions(isDark, isMobile, minTempY, maxTempY, minHumY, maxHumY, combinedColors),
+    [isDark, isMobile, minTempY, maxTempY, minHumY, maxHumY, combinedColors],
   );
   const smokeOpts = useMemo(
-    () => makeSmokeOptions(isDark, isMobile, minSmokeY, maxSmokeY, handleSmokeZoom),
-    [isDark, isMobile, minSmokeY, maxSmokeY, handleSmokeZoom],
+    () => makeSmokeOptions(isDark, isMobile, minSmokeY, maxSmokeY, smokeColors),
+    [isDark, isMobile, minSmokeY, maxSmokeY, smokeColors],
   );
 
   const combinedData: ChartData<"line"> = useMemo(() => ({
@@ -1026,40 +993,84 @@ export default function Environment() {
     datasets: [
       {
         label: "Temperature", data: smooth(temps), yAxisID: "yTemp",
-        borderColor: "#F59E0B",
-        backgroundColor: (ctx: ScriptableContext<"line">) => gradientFill(ctx, "rgba(245,158,11,0.16)", "rgba(245,158,11,0.01)"),
+        // Each SEGMENT takes the alert band of the point it ends on, so the line is blue
+        // where the room was too cold and red where it breached critical. History keeps
+        // its own colours — repainting the whole line by the newest reading would have
+        // made claims about the past that were not true. `borderColor` is the fallback.
+        borderColor: TEMP_SERIES,
+        segment: {
+          borderColor: (ctx) => temperatureColor(ctx.p1.parsed.y, thresholds, TEMP_SERIES),
+        },
+        // One fill region cannot be split per band, so it follows the CURRENT reading.
+        backgroundColor: (ctx: ScriptableContext<"line">) =>
+          gradientFill(ctx, withAlpha(liveTempColor, 0.16), withAlpha(liveTempColor, 0.01)),
         borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#F59E0B", fill: true, tension: 0.4,
+        pointHoverBackgroundColor: (ctx: ScriptableContext<"line">) =>
+          temperatureColor(ctx.parsed?.y, thresholds, TEMP_SERIES),
+        fill: true, tension: 0.4,
       },
       {
         label: "Humidity", data: smooth(hums), yAxisID: "yHum",
-        borderColor: "#38BDF8",
-        backgroundColor: (ctx: ScriptableContext<"line">) => gradientFill(ctx, "rgba(56,189,248,0.12)", "rgba(56,189,248,0.01)"),
+        // Holds its own blue while within the `humidity` rules, orange/red per segment
+        // where it breached them. It shares this chart with temperature, so going green
+        // when normal would draw the same line twice.
+        borderColor: HUM_SERIES,
+        segment: {
+          borderColor: (ctx) =>
+            alertTint(ctx.p1.parsed.y, thresholds.humWarn, thresholds.humCrit, HUM_SERIES, HUM_SERIES),
+        },
+        backgroundColor: (ctx: ScriptableContext<"line">) =>
+          gradientFill(ctx, withAlpha(liveHumColor, 0.12), withAlpha(liveHumColor, 0.01)),
         borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#38BDF8", fill: true, tension: 0.4,
+        pointHoverBackgroundColor: (ctx: ScriptableContext<"line">) =>
+          alertTint(ctx.parsed?.y, thresholds.humWarn, thresholds.humCrit, HUM_SERIES, HUM_SERIES),
+        fill: true, tension: 0.4,
       },
     ],
-  }), [labels, temps, hums]);
+  }), [labels, temps, hums, thresholds, liveTempColor, liveHumColor]);
 
   const smokeData: ChartData<"line"> = useMemo(() => ({
     labels: smokeLabels,
     datasets: [
+      // Each sensor keeps its OWN hue while clean — MQ2-1 violet, MQ2-2 pink — and turns
+      // orange/red per segment where it breached the `gas` rules (`alertTint`).
+      //
+      // That identity is what lets you watch the two disagree, which is the whole point of
+      // having two. Painting both green when clean merged them into one indistinct band
+      // for the majority of the time the chart is on screen. ⚠️ They DO converge on the
+      // same red if both go critical at once; the legend labels and values separate them
+      // there, and a `borderDash` on MQ2-2 is the fix if that case ever needs to be read at
+      // a glance.
       {
         label: "MQ2-1", data: smooth(ppm1s),
-        borderColor: "#A78BFA",
-        backgroundColor: (ctx: ScriptableContext<"line">) => gradientFill(ctx, "rgba(167,139,250,0.14)", "rgba(167,139,250,0.01)"),
+        borderColor: MQ1_SERIES,
+        segment: {
+          borderColor: (ctx) =>
+            alertTint(ctx.p1.parsed.y, thresholds.gasWarn, thresholds.gasCrit, MQ1_SERIES, MQ1_SERIES),
+        },
+        backgroundColor: (ctx: ScriptableContext<"line">) =>
+          gradientFill(ctx, withAlpha(livePPM1Color, 0.14), withAlpha(livePPM1Color, 0.01)),
         borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#A78BFA", fill: true, tension: 0.4,
+        pointHoverBackgroundColor: (ctx: ScriptableContext<"line">) =>
+          alertTint(ctx.parsed?.y, thresholds.gasWarn, thresholds.gasCrit, MQ1_SERIES, MQ1_SERIES),
+        fill: true, tension: 0.4,
       },
       {
         label: "MQ2-2", data: smooth(ppm2s),
-        borderColor: "#F472B6",
-        backgroundColor: (ctx: ScriptableContext<"line">) => gradientFill(ctx, "rgba(244,114,182,0.10)", "rgba(244,114,182,0.01)"),
+        borderColor: MQ2_SERIES,
+        segment: {
+          borderColor: (ctx) =>
+            alertTint(ctx.p1.parsed.y, thresholds.gasWarn, thresholds.gasCrit, MQ2_SERIES, MQ2_SERIES),
+        },
+        backgroundColor: (ctx: ScriptableContext<"line">) =>
+          gradientFill(ctx, withAlpha(livePPM2Color, 0.10), withAlpha(livePPM2Color, 0.01)),
         borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: "#F472B6", fill: true, tension: 0.4,
+        pointHoverBackgroundColor: (ctx: ScriptableContext<"line">) =>
+          alertTint(ctx.parsed?.y, thresholds.gasWarn, thresholds.gasCrit, MQ2_SERIES, MQ2_SERIES),
+        fill: true, tension: 0.4,
       },
     ],
-  }), [smokeLabels, ppm1s, ppm2s]);
+  }), [smokeLabels, ppm1s, ppm2s, thresholds, livePPM1Color, livePPM2Color]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1133,30 +1144,46 @@ export default function Environment() {
 
         {/* Row 1: Stat panels + Status */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          {/* Coloured by the `temperature` ALERT RULES (utils/envThresholds.ts), so the
+              gauge, the sparkline and the MAX/AVG/MIN row all read blue / green / orange /
+              red with the room rather than sitting on one fixed amber — and they change at
+              the same instant the alert fires. The band is named beside the dot. */}
           <StatPanel
             title="Temperature"
             value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : liveTemp}
-            unit="°C" color="#F59E0B" segPct={tempGaugePct}
+            unit="°C" color={temperatureColor(liveTemp, thresholds)} segPct={tempGaugePct}
+            badge={temperatureLabel(liveTemp, thresholds)}
             sparkData={temps.slice(-24)}
             max={peakTemp !== "--" ? `${peakTemp}°` : "--"}
             avg={avgTemp  !== "--" ? `${avgTemp}°`  : "--"}
             min={minTemp  !== "--" ? `${minTemp}°`  : "--"}
             isDark={isDark}
           />
+          {/* Keeps its own blue while within the `humidity` rules (seeded ≥60 warning,
+              ≥70 critical), orange/red once past them — the tile and the chart line
+              therefore always show the same colour for the same reading. The band is
+              named beside the dot, so "normal" is still stated outright. */}
           <StatPanel
             title="Humidity"
             value={typeof liveHum === "number" ? liveHum.toFixed(1) : liveHum}
-            unit="%" color="#38BDF8" segPct={humGaugePct}
+            unit="%" color={alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, HUM_SERIES)}
+            segPct={humGaugePct}
+            badge={humidityLabel(liveHum, thresholds)}
             sparkData={hums.slice(-24)}
             max={peakHum !== "--" ? `${peakHum}%` : "--"}
             avg={avgHum  !== "--" ? `${avgHum}%`  : "--"}
             min={minHum  !== "--" ? `${minHum}%`  : "--"}
             isDark={isDark}
           />
+          {/* Each MQ-2 tile keeps its own hue while clean — violet and pink, matching its
+              line on the chart below — and turns orange/red against the same global `gas`
+              rules the alerting uses (seeded ≥150 warning, ≥300 critical), so a sensor
+              going orange here and the alert arriving in the bell are the same event. */}
           <StatPanel
             title="MQ2 Sensor 1"
             value={typeof livePPM1 === "number" ? livePPM1.toFixed(1) : livePPM1}
-            unit="ppm" color="#A78BFA"
+            unit="ppm" color={alertTint(livePPM1, thresholds.gasWarn, thresholds.gasCrit, MQ1_SERIES)}
+            badge={gasLabel(livePPM1, thresholds)}
             segPct={typeof livePPM1 === "number" ? Math.min(livePPM1 / 600, 1) : 0}
             sparkData={ppm1s.slice(-24)}
             max={ppm1s.length > 0 ? `${Math.max(...ppm1s).toFixed(0)}` : "--"}
@@ -1167,7 +1194,8 @@ export default function Environment() {
           <StatPanel
             title="MQ2 Sensor 2"
             value={typeof livePPM2 === "number" ? livePPM2.toFixed(1) : livePPM2}
-            unit="ppm" color="#F472B6"
+            unit="ppm" color={alertTint(livePPM2, thresholds.gasWarn, thresholds.gasCrit, MQ2_SERIES)}
+            badge={gasLabel(livePPM2, thresholds)}
             segPct={typeof livePPM2 === "number" ? Math.min(livePPM2 / 600, 1) : 0}
             sparkData={ppm2s.slice(-24)}
             max={ppm2s.length > 0 ? `${Math.max(...ppm2s).toFixed(0)}` : "--"}
@@ -1188,20 +1216,15 @@ export default function Environment() {
           title="Temperature & Humidity"
           legend={
             <>
-              <LegendItem color="#F59E0B" label="Temperature"
+              {/* Muted fallback, not the chart's amber: with the ESP32 offline this reads
+                  "--", and a live-looking colour beside it would suggest a reading. */}
+              <LegendItem color={temperatureColor(liveTemp, thresholds)} label="Temperature"
                 value={typeof liveTemp === "number" ? `${liveTemp.toFixed(1)} °C` : "--"} />
-              <LegendItem color="#38BDF8" label="Humidity"
+              <LegendItem color={alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, HUM_SERIES)} label="Humidity"
                 value={typeof liveHum === "number" ? `${liveHum.toFixed(1)} %` : "--"} />
             </>
           }
-          toolbar={<ResetZoomBtn onClick={() => resetZoom(chartRef)} />}
-          overlay={zoomInfo?.chart === "combined" ? (
-            <ZoomRangeBox
-              start={zoomInfo.start} end={zoomInfo.end}
-              onClose={() => setZoomInfo(null)}
-              onApply={handleApplyZoomedRange}
-            />
-          ) : undefined}>
+          >
           <div style={{ height: 300, padding: "12px 12px 16px" }}>
             <Line ref={chartRef} data={combinedData} options={combinedOpts} />
           </div>
@@ -1212,41 +1235,36 @@ export default function Environment() {
           title="Smoke / Gas (MQ-2)"
           legend={
             <>
-              <LegendItem color="#A78BFA" label="MQ2-1"
+              <LegendItem color={alertTint(livePPM1, thresholds.gasWarn, thresholds.gasCrit, MQ1_SERIES)} label="MQ2-1"
                 value={typeof livePPM1 === "number" ? `${livePPM1.toFixed(1)} ppm` : "--"} />
-              <LegendItem color="#F472B6" label="MQ2-2"
+              <LegendItem color={alertTint(livePPM2, thresholds.gasWarn, thresholds.gasCrit, MQ2_SERIES)} label="MQ2-2"
                 value={typeof livePPM2 === "number" ? `${livePPM2.toFixed(1)} ppm` : "--"} />
               <StatusBadge status={liveSmokeStatus} />
             </>
           }
-          toolbar={<ResetZoomBtn onClick={() => resetZoom(smokeChartRef)} />}
-          overlay={zoomInfo?.chart === "smoke" ? (
-            <ZoomRangeBox
-              start={zoomInfo.start} end={zoomInfo.end}
-              onClose={() => setZoomInfo(null)}
-              onApply={handleApplyZoomedRange}
-            />
-          ) : undefined}>
-          {/* Threshold legend */}
+          >
+          {/* Threshold legend. Reads the LIVE `gas` rules — it used to print "150" and
+              "300" as literals, so editing the rule left the caption stating numbers the
+              chart was no longer using. A missing rule prints nothing rather than a
+              number that is not in force. */}
           <div className="flex gap-5 px-4 pt-2 text-[11px] font-mono">
-            <span className="flex items-center gap-1.5">
-              <span className="w-5 h-px inline-block" style={{ background: "#FF780A" }} />
-              <span style={{ color: GF.textDim }}>WARNING 150 ppm</span>
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-5 h-px inline-block" style={{ background: "#F2495C" }} />
-              <span style={{ color: GF.textDim }}>DANGER 300 ppm</span>
-            </span>
+            {thresholds.gasWarn != null && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-5 h-px inline-block" style={{ background: "#FF780A" }} />
+                <span style={{ color: GF.textDim }}>WARNING {thresholds.gasWarn} ppm</span>
+              </span>
+            )}
+            {thresholds.gasCrit != null && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-5 h-px inline-block" style={{ background: "#E02F44" }} />
+                <span style={{ color: GF.textDim }}>CRITICAL {thresholds.gasCrit} ppm</span>
+              </span>
+            )}
           </div>
           <div style={{ height: 300, padding: "8px 12px 16px" }}>
             <Line ref={smokeChartRef} data={smokeData} options={smokeOpts} />
           </div>
         </GraphPanel>
-
-        {/* Footer hint */}
-        <div className="text-center text-[11px] font-mono tracking-widest pb-2" style={{ color: GF.textDim }}>
-          SCROLL TO ZOOM · DRAG TO SELECT RANGE · CLICK RESET TO FIT
-        </div>
 
       </div>
     </div>
