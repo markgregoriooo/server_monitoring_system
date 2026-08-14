@@ -148,3 +148,6 @@ backend/reports/
 # Runtime data by definition: regenerated continuously, machine-specific, and the whole
 # point is that it lives outside git. See backup-storage.md.
 backend/backups/
+
+# MySQL Workbench auto-backup — rewritten on every save, pure churn
+*.mwb.bak

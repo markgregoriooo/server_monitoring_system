@@ -53,8 +53,16 @@ Three ingest paths converge on one alerting pipeline:
 ├── iot/esp32/env_monitor_v2.ino      ← firmware (active)
 ├── ops/                              ← db-backup + offsite-backup (rclone) scripts
 ├── dev-snmpsim/                      ← SNMP simulator for local router/UPS testing
-└── v13_cspc-ictu-monitoring-system.sql ← full schema (single file, no migration chain)
+├── v13_cspc-ictu-monitoring-system.sql ← full schema (single file, no migration chain)
+└── cspc-ictu-monitoring-system.mwb     ← MySQL Workbench EER model (the ER DIAGRAM)
 ```
+
+> ⚠️ **The `.mwb` is documentation, not the schema source of truth** — that is
+> `v13_cspc-ictu-monitoring-system.sql`. Never forward-engineer a deployment schema from
+> the model: it was untracked once (`dbc0177`) precisely because a stale copy was used that
+> way and produced a database missing eight migrations. It is current as of v13 (24 tables,
+> 24 figures, 30 relationships). **Apply every future schema change to the SQL first, then
+> back to the model**, or untrack it again rather than let it drift.
 
 ### Key services
 

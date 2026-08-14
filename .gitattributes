@@ -1,0 +1,5 @@
+# MySQL Workbench model. A zip archive — never let git treat it as text: a line-ending
+# rewrite or an auto-merge corrupts the file silently, and Workbench then refuses to open
+# it. Binary also means conflicts surface as "take mine / take theirs", which is the only
+# sane resolution for a model nobody can merge by hand.
+*.mwb binary
