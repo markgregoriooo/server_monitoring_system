@@ -9,6 +9,11 @@ things you type are on the backend PC (PowerShell checks and `.env`) — those a
 > ⚠️ This router carries **all building traffic**. A wrong firewall rule can cut the campus off, or
 > lock you out of the router itself. Read §0 before touching anything.
 
+> **The campus router is already configured and running** — bridges, addressing, DHCP and firewall
+> are ICTU's, already in place. **Never reset it**, and don't touch its L2/L3 config. Everything
+> below is *additive*: one read-only user, one certificate, one service, two firewall rules. That's
+> why there's no bridge step here — that's `mikrotik-dev-setup.md` Step 1b, for a wiped bench box.
+
 ---
 
 ## 0 · Before you start
