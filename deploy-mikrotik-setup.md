@@ -104,7 +104,13 @@ Same as the bench, and just as important here.
 
 API-SSL will not start without one. This is where people get stuck, so follow the order exactly.
 
-### 3.1 The simple route — self-signed (recommended first)
+The certificate is **self-signed**. That encrypts the connection but doesn't prove the router's
+identity — and proving identity would only matter against something impersonating the router on the
+wire between it and the backend, a path §4's `/32` *Available From* and §5's single-source firewall
+rule already narrow to one host on the management segment. A private CA buys that last increment for
+a two-stage chain, an exported `.crt` to keep in sync on the backend host, and a second certificate
+to keep alive. Not worth it here. If the backend and router ever end up on opposite sides of a
+building link, a shared VLAN or a WAN hop, revisit that.
 
 **System → Certificates**
 
@@ -133,7 +139,7 @@ Click **OK**.
 > to be a certificate authority. Leave that box unticked and RouterOS has no signing capability to
 > apply, so **Sign** fails with **`Starting error: CA not found`** — a misleading message for a
 > missing *capability*, not a missing certificate. An empty CA field is correct and is never the
-> cause. (§3.2's CA template ticks the same box for the same reason.)
+> cause.
 >
 > **tls client** is harmless if you tick it too, but unnecessary — for API-SSL the router is the
 > TLS *server*.
@@ -152,37 +158,6 @@ Wait for it to finish — a minute or two on a small board is normal.
 | **K** | has a private key — API-SSL is useless without one |
 | **A** | it's a certificate authority — expected, it signed itself |
 | **T** | trusted |
-
-### 3.2 The thorough route — your own CA (optional)
-
-Only needed if you want the backend to *verify* the router's identity, not merely encrypt. It's a
-two-stage chain and each stage must **finish** before the next.
-
-**Stage 1 — build the CA.** **System → Certificates → +**
-
-- **Name:** `cspc-ictu-ca`
-- **Common Name:** `cspc-ictu-ca`
-- **Key Size:** `2048`, **Days Valid:** `3650`
-- **Key Usage** tab — tick **key cert. sign** and **crl sign** only
-- **OK**
-
-Select `cspc-ictu-ca` → **Sign** → **CA** field **empty** → **Start** → **wait until it completes.**
-
-**Stage 2 — build the server certificate.** **+** again
-
-- **Name:** `api-cert`
-- **Common Name:** the router's IP or DNS name
-- **Key Size:** `2048`, **Days Valid:** `3650`
-- **Key Usage** tab — tick **digital signature**, **key encipherment**, **tls server**
-- **OK**
-
-Select `api-cert` → **Sign** → **CA:** `cspc-ictu-ca` → **Start**.
-
-> Here `api-cert` does **not** need **key cert. sign** — a real CA is doing the signing, so it isn't
-> signing itself. Starting stage 2 before stage 1 has finished is the other way to get
-> `CA not found`: at that moment the CA genuinely doesn't exist yet.
-
-The backend needs a copy of `cspc-ictu-ca` to verify against — that's **§6**.
 
 ---
 
@@ -255,21 +230,7 @@ Read the whole `input` chain top to bottom and make sure **`monitoring API-SSL` 
 
 ---
 
-## 6 · Export the CA (only if you did §3.2)
-
-Skip if you used the simple self-signed route.
-
-**System → Certificates** → select `cspc-ictu-ca` → **Export**
-
-- **Type:** `PEM`
-- **OK**
-
-**Files** — the exported `.crt` appears. Drag it out of the Files window onto your PC, then copy it
-to the backend host.
-
----
-
-## 7 · Configure the backend
+## 6 · Configure the backend
 
 `backend/.env`:
 
@@ -279,22 +240,15 @@ MIKROTIK_POLL_INTERVAL_MS=30000
 MIKROTIK_API_TIMEOUT_MS=5000
 ```
 
-**If you did the simple self-signed route (§3.1)** — that's all. Leave `MIKROTIK_TLS_VERIFY` unset.
-The connection is **encrypted**; it just can't prove the router's identity. That's a big improvement
-over clear text and is a perfectly reasonable place to stop.
-
-**If you did the CA route (§3.2)** — add:
-
-```
-MIKROTIK_TLS_VERIFY=true
-MIKROTIK_TLS_CA=/path/to/cspc-ictu-ca.crt
-```
+That's all three. **Leave `MIKROTIK_TLS_VERIFY` unset** — it defaults to off, which is what a
+self-signed certificate needs. Setting it to `true` makes the backend demand a chain the router
+can't present, and every poll fails on a certificate error.
 
 **Restart the backend** after editing `.env`.
 
 ---
 
-## 8 · Register it in the dashboard
+## 7 · Register it in the dashboard
 
 **MikroTik → + Add MikroTik**
 
@@ -321,7 +275,7 @@ link it serves. These labels show throughout the dashboard and in alert messages
 
 ---
 
-## 9 · Verify
+## 8 · Verify
 
 From the **backend host**:
 
@@ -346,11 +300,11 @@ If it doesn't, **read the backend console** — the reason is printed:
 |---|---|
 | `Timed out after 5 seconds` | Speaking TLS to a non-TLS port — check the port is 8729 |
 | `Username or password is invalid` | Wrong credentials **or** a changed `MIKROTIK_ENC_KEY` (§0.2) |
-| certificate error | `MIKROTIK_TLS_VERIFY=true` but the CA file or Common Name doesn't match |
+| certificate error | `MIKROTIK_TLS_VERIFY=true` is set somewhere — it must be unset for a self-signed certificate (§6) |
 
 ---
 
-## 10 · Tune the alert thresholds
+## 9 · Tune the alert thresholds
 
 Bench values were guesses against an idle network. Now they matter.
 
@@ -372,7 +326,7 @@ without them these metrics stay silent.
 
 ---
 
-## 11 · Go-live checklist
+## 10 · Go-live checklist
 
 **Router**
 - [ ] Dedicated `monitor-ro` user in a **read + api** group — no write, no policy
@@ -386,6 +340,7 @@ without them these metrics stay silent.
 
 **Backend**
 - [ ] `MIKROTIK_ENC_KEY` matches the one the password was saved with, **or** password re-entered
+- [ ] `MIKROTIK_TLS_VERIFY` **not set** — a self-signed certificate can't satisfy it (§6)
 - [ ] Both alert-rule migrations applied
 - [ ] Backend restarted after the `.env` change
 - [ ] Router shows **Online** and ports populate
