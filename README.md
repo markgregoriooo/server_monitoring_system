@@ -95,7 +95,7 @@ npm run dev                 # nodemon src/server.js → http://localhost:3000
 # 3. Frontend
 cd frontend
 npm install
-cp .env.example .env        # set VITE_GOOGLE_CLIENT_ID
+# create frontend/.env by hand — see "Environment variables" below
 npm run dev                 # → http://localhost:5173
 ```
 
@@ -121,8 +121,21 @@ npm run dev                 # → http://localhost:5173
 | `SMTP_*`, `MAIL_FROM` | alert/report email; blank disables email cleanly |
 | `WEB_ORIGIN` | allowed dashboard origins, or `*` for a roaming LAN |
 
-`frontend/.env` needs `VITE_GOOGLE_CLIENT_ID` (same client ID), and optionally
-`VITE_API_URL` to pin a backend.
+`frontend/.env`:
+
+| Variable | Purpose |
+|---|---|
+| `VITE_GOOGLE_CLIENT_ID` | **required for login** — same client ID as the backend's `GOOGLE_CLIENT_ID` |
+| `VITE_API_URL` | pin a backend (different host / HTTPS). Blank = auto-detect from the page host on port 3000 |
+| `VITE_APP_NAME` | short name in the UI; blank = `CSPC-ICTU` |
+| `VITE_APP_FULL_NAME` | full institution name; blank = `Camarines Sur Polytechnic Colleges …` |
+| `VITE_APP_SUBTITLE` | sidebar subtitle; blank = `MONITORING` |
+| `VITE_APP_TAGLINE` | system tagline; blank = `SERVER INFRASTRUCTURE MONITORING SYSTEM` |
+| `VITE_LOGO_TEXT` | logo initials; blank = `CC` |
+| `VITE_LOGO_SRC` | logo image in `frontend/public/`, e.g. `/logo.png`; blank = text initials |
+
+Defaults live in `frontend/src/branding.ts`. Vite inlines `VITE_*` at **build time** —
+restart `npm run dev` (or rebuild) after any change.
 
 ### Tests
 
