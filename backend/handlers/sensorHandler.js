@@ -5,8 +5,20 @@ import alertsService from "../services/alertsService.js";
 import alertBandState from "../services/alertBandState.js";
 import esp32Monitor from "../services/esp32Monitor.js";
 import backupService from "../services/backupService.js";
+import envPersistPolicy from "../services/envPersistPolicy.js";
 
 const SEV_RANK = alertRulesService.SEV_RANK;
+
+// How often a reading is STORED (see services/envPersistPolicy.js). Everything else in
+// this handler still runs at the ESP32's full 3s cadence — validation, the heartbeat, the
+// live broadcast and the alert evaluation are all untouched.
+const PERSIST_OPTS = envPersistPolicy.resolveOptions(process.env);
+
+// The last reading actually written. Module-level, NOT on the socket: the ESP32 gets a new
+// socket on every reconnect, and a per-socket baseline would make the first reading after
+// each brief drop look like a fresh start. (A long outage still stores immediately — the
+// heartbeat gate compares timestamps, so a gap longer than the interval always passes.)
+let lastPersisted = null;
 
 // Environment alerting is now rule-driven (alert_rules, device_id NULL = room-level),
 // replacing the firmware's fixed status bands. Each reported metric is evaluated
@@ -103,35 +115,14 @@ export async function sensorHandler(socket, data) {
 
   const timestamp = new Date();   // precision: ms (matches writeClient config)
 
-  console.log(
-    `[SENSOR] Temp: ${data.temperature}°C | Humidity: ${data.humidity}%` +
-      ` | MQ2-1: ${data.mq2_1_ppm} ppm | MQ2-2: ${data.mq2_2_ppm} ppm` +
-      ` | HI: ${data.heat_index}°C` +
-      ` | Smoke: ${data.smoke_status} | Env: ${data.environment_status}`,
-  );
-
-  // ---- Write to InfluxDB ----
-  const point = new Point("sensor_environment")
-    .floatField("temperature", data.temperature)
-    .floatField("humidity", data.humidity)
-    .floatField("mq2_1_ppm", data.mq2_1_ppm)
-    .floatField("mq2_2_ppm", data.mq2_2_ppm)
-    .floatField("heat_index", data.heat_index)
-    .tag("smoke_status", data.smoke_status)
-    .tag("temp_status", data.temp_status)
-    .tag("environment_status", data.environment_status)
-    .timestamp(timestamp);
-
-  try {
-    writeClient.writePoint(point);
-    await writeClient.flush();
-    console.log("[SENSOR] Saved to InfluxDB");
-  } catch (error) {
-    console.error("[SENSOR] InfluxDB Error:", error);
-  }
-
-  // ---- On-site backup copy (independent of InfluxDB) ----
-  backupService.record("env", {
+  // ---- Store, or not ----
+  // The DHT11 resolves 1°C and a server room does not move 1°C in three seconds, so most
+  // readings carry no information the last one didn't. Store on a slow heartbeat plus
+  // whenever something actually moved — a gas rise, a status transition, a real temperature
+  // excursion — which keeps a smoke event captured on the 3s tick that first sees it while
+  // a stable room costs one point per 30s instead of ten. See services/envPersistPolicy.js.
+  const sample = {
+    at: now,
     temperature: data.temperature,
     humidity: data.humidity,
     mq2_1_ppm: data.mq2_1_ppm,
@@ -140,7 +131,53 @@ export async function sensorHandler(socket, data) {
     smoke_status: data.smoke_status,
     temp_status: data.temp_status,
     environment_status: data.environment_status,
-  });
+  };
+  const { persist, reason } = envPersistPolicy.shouldPersist(sample, lastPersisted, PERSIST_OPTS);
+
+  if (persist) {
+    lastPersisted = sample;
+
+    console.log(
+      `[SENSOR] Temp: ${data.temperature}°C | Humidity: ${data.humidity}%` +
+        ` | MQ2-1: ${data.mq2_1_ppm} ppm | MQ2-2: ${data.mq2_2_ppm} ppm` +
+        ` | HI: ${data.heat_index}°C` +
+        ` | Smoke: ${data.smoke_status} | Env: ${data.environment_status}` +
+        ` | stored (${reason})`,
+    );
+
+    // ---- Write to InfluxDB ----
+    const point = new Point("sensor_environment")
+      .floatField("temperature", data.temperature)
+      .floatField("humidity", data.humidity)
+      .floatField("mq2_1_ppm", data.mq2_1_ppm)
+      .floatField("mq2_2_ppm", data.mq2_2_ppm)
+      .floatField("heat_index", data.heat_index)
+      .tag("smoke_status", data.smoke_status)
+      .tag("temp_status", data.temp_status)
+      .tag("environment_status", data.environment_status)
+      .timestamp(timestamp);
+
+    try {
+      writeClient.writePoint(point);
+      await writeClient.flush();
+    } catch (error) {
+      console.error("[SENSOR] InfluxDB Error:", error);
+    }
+
+    // ---- On-site backup copy (independent of InfluxDB) ----
+    // Deliberately inside the same gate: the backup is a second copy of what was stored,
+    // and letting the two diverge would make it useless for restoring the database.
+    backupService.record("env", {
+      temperature: data.temperature,
+      humidity: data.humidity,
+      mq2_1_ppm: data.mq2_1_ppm,
+      mq2_2_ppm: data.mq2_2_ppm,
+      heat_index: data.heat_index,
+      smoke_status: data.smoke_status,
+      temp_status: data.temp_status,
+      environment_status: data.environment_status,
+    });
+  }
 
   // ---- Broadcast to dashboard ----
   try {

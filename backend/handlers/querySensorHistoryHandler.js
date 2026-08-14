@@ -4,8 +4,14 @@ const VALID_QUICK_RANGES = new Set([
   "-30m", "-1h", "-3h", "-6h", "-12h", "-24h", "-2d", "-7d", "-30d",
 ]);
 
+// ⚠️ No window may be SMALLER than the store cadence in services/envPersistPolicy.js
+// (ENV_PERSIST_INTERVAL_MS, 30s default). A stable room now yields one point per 30s, so a
+// 10s or 20s window would mostly contain nothing, and `createEmpty: false` drops empty
+// windows — the chart would come back with two thirds of its points missing. -30m and -1h
+// were 10s/20s when every 3s reading was stored; they are now 30s/1m. Raising the store
+// interval means raising these to match.
 const WINDOW_MAP = {
-  "-30m": "10s", "-1h": "20s", "-3h":  "1m",  "-6h": "2m",
+  "-30m": "30s", "-1h": "1m",  "-3h":  "1m",  "-6h": "2m",
   "-12h": "5m",  "-24h": "10m", "-2d": "20m", "-7d": "1h", "-30d": "3h",
 };
 
