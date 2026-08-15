@@ -5,6 +5,7 @@ import { writeNetworkSample } from "../handlers/networkMetricsHandler.js";
 import { encrypt, decrypt } from "./mikrotikCrypto.js";
 import deviceAlerts from "./deviceAlerts.js";
 import alertBandState from "./alertBandState.js";
+import { computeUtilizationPct, counterDelta } from "./snmpUtils.js";
 
 // ─── MikroTik poller: ONE campus router via the RouterOS API, pull-based ───────
 //
@@ -66,6 +67,14 @@ const connFor = (d) => ({
 });
 
 // ─── Utilization (per-interface delta vs the previous cycle) ───────────────────
+//
+// Uses the SHARED computeUtilizationPct rather than its own arithmetic. This function
+// used to divide (dRx + dTx) by the link capacity — the sum of both directions — while
+// the SNMP poller takes the busier DIRECTION. Ethernet is full-duplex, so each direction
+// gets the full link speed: a 100 Mbit/s port carrying 60 Mbit/s each way is at 60%, not
+// 120%. Both pollers feed the SAME global `link_util` rule, so the MikroTik was reporting
+// up to twice an SNMP router's figure for identical load and tripping the 80% warning at
+// around 40% real utilisation.
 function withUtilization(deviceId, ifaces) {
   const now = Date.now();
   return ifaces.map((i) => {
@@ -75,13 +84,12 @@ function withUtilization(deviceId, ifaces) {
     const key = `${deviceId}:${i.name}`;
     const prev = prevIface.get(key);
     if (prev) {
-      const dt = (now - prev.t) / 1000;
-      const dRx = rx >= prev.rx ? Number(rx - prev.rx) : 0; // discard wrap/reboot
-      const dTx = tx >= prev.tx ? Number(tx - prev.tx) : 0;
-      if (dt > 0 && i.speedMbps > 0) {
-        const capacity = (i.speedMbps * 1e6) / 8; // Mbit/s → bytes/s
-        utilizationPct = Math.min(100, ((dRx + dTx) / dt / capacity) * 100);
-      }
+      utilizationPct = computeUtilizationPct({
+        dRxBytes: counterDelta(rx, prev.rx), // discards a wrap/reboot
+        dTxBytes: counterDelta(tx, prev.tx),
+        dtSec: (now - prev.t) / 1000,
+        speedMbps: i.speedMbps,
+      });
     }
     prevIface.set(key, { rx, tx, t: now });
     return { ...i, utilizationPct };

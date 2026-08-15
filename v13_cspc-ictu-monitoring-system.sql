@@ -213,7 +213,15 @@ INSERT INTO `alert_rules` (`alert_rule_id`, `device_id`, `interface_name`, `metr
 (25, NULL, NULL, 'ups_runtime', 10, '<=', 'warning', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
 (26, NULL, NULL, 'ups_runtime', 5, '<=', 'critical', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
 (28, NULL, NULL, 'link_errors', 10, '>=', 'warning', 1, '2026-07-31 07:08:15', '2026-07-31 07:08:15', NULL),
-(29, NULL, NULL, 'link_errors', 100, '>=', 'critical', 1, '2026-07-31 07:08:15', '2026-07-31 07:08:15', NULL);
+(29, NULL, NULL, 'link_errors', 100, '>=', 'critical', 1, '2026-07-31 07:08:15', '2026-07-31 07:08:15', NULL),
+-- ups_load and router_clients were evaluated by deviceAlerts from the start but never
+-- seeded, so both were silent forever (alerting is rules-only: no rule, no alert).
+-- router_clients ships INACTIVE — the right number is site-specific, so it is put in
+-- front of an admin to set rather than guessed. See migrations/2026-08-16_missing_alert_rules.sql
+(30, NULL, NULL, 'ups_load', 80, '>=', 'warning', 1, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
+(31, NULL, NULL, 'ups_load', 90, '>=', 'critical', 1, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
+(32, NULL, NULL, 'router_clients', 200, '>=', 'warning', 0, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
+(33, NULL, NULL, 'router_clients', 300, '>=', 'critical', 0, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL);
 
 -- --------------------------------------------------------
 
@@ -786,7 +794,7 @@ ALTER TABLE `alert_notifications`
 -- AUTO_INCREMENT for table `alert_rules`
 --
 ALTER TABLE `alert_rules`
-  MODIFY `alert_rule_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=30;
+  MODIFY `alert_rule_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=34;
 
 --
 -- AUTO_INCREMENT for table `devices`
@@ -927,7 +935,10 @@ ALTER TABLE `alerts`
   ADD CONSTRAINT `fk_alerts_alert_rules1` FOREIGN KEY (`alert_rule_id`) REFERENCES `alert_rules` (`alert_rule_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   ADD CONSTRAINT `fk_alerts_devices2` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE,
   ADD CONSTRAINT `fk_alerts_resolved_by` FOREIGN KEY (`resolved_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  ADD CONSTRAINT `fk_alerts_users1` FOREIGN KEY (`acknowledged_by`) REFERENCES `users` (`user_id`) ON DELETE CASCADE ON UPDATE CASCADE;
+  -- SET NULL, not CASCADE: this used to DELETE every alert a departing user had ever
+  -- acknowledged — erasing exactly the incidents someone took responsibility for, while
+  -- keeping the ones nobody touched. The name goes; the incident stays.
+  ADD CONSTRAINT `fk_alerts_users1` FOREIGN KEY (`acknowledged_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
 -- Constraints for table `alert_notifications`
@@ -1020,8 +1031,12 @@ ALTER TABLE `suggestions`
 --
 -- Constraints for table `system_logs`
 --
+-- SET NULL, not CASCADE: deleting a user used to take their whole audit trail with them,
+-- including the policy-acceptance evidence rows. The Privacy Notice commits to a 365-day
+-- retention for this table; a cascade made the real retention "until the account is
+-- deleted". user_id is documented as "null = system action", so readers already cope.
 ALTER TABLE `system_logs`
-  ADD CONSTRAINT `fk_system_logs_users` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE CASCADE ON UPDATE CASCADE;
+  ADD CONSTRAINT `fk_system_logs_users` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
 -- Constraints for table `ups_details`

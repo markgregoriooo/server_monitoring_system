@@ -1710,3 +1710,118 @@ has a trustworthy ETA.
   (RFC 1628 enum) as a second degradation signal, recommendations surfaced on the Alert
   Rules page, an `analytics` report type for PDF export.
 - No live end-to-end against real hardware in this session — build/typecheck/tests only.
+
+---
+
+## SESSION 21 — 2026-08-15 / 2026-08-16
+**Branch:** `feat/agent-install-keys` (off `feat/privacy-terms-and-session-fixes`)
+**Developer:** Mark Gregorio
+
+> Consultant review round. Two of his suggestions built, one deferred; his catch on the
+> forecast turned out to be a real modelling bug. Dashboard rebuilt around per-device
+> charts. Four commits, none pushed.
+
+### Consultant suggestion 1 — install keys (BUILT)
+`AGENT_INSTALL_KEY` moved out of `.env` into `agent_install_keys`: admin-minted, labelled,
+optional expiry, revocable, audited. Stored as a SHA-256 hash (enrollment lookup) **and**
+an AES-256-GCM ciphertext (so the install command can be re-opened later) — encrypted
+because `ops/db-backup` dumps MySQL onto the drive the offsite rclone job syncs.
+`agent_tokens.install_key_id` records which key enrolled each agent, so a revoke can
+optionally cut that fleet off (opt-in, never implicit, and reversible).
+
+Two installer bugs found while testing end to end: `install.ps1`/`install.sh` silently
+skipped registration when `agent.conf` existed (so a re-run ignored the `-InstallKey` it
+demanded), and `register()` never re-stamped the owning key on an existing enrollment —
+so `.env`-era servers could never be adopted. Both fixed; `-ReEnroll` / `--re-enroll` added.
+
+### Consultant suggestion 2 — multi-site (DEFERRED — decision needed)
+Per-branch admins seeing only their own campus. **The install-key half is done. The
+access-scoping half is designed but unbuilt** — `sites`, `devices.site_id`, `user_sites`,
+plus a site filter on ~15 device queries and a rule for who receives room-level alerts
+(`device_id = NULL` has no site).
+
+**Blocked on two answers from ICTU:**
+1. Is a second campus actually coming, or is this hypothetical?
+2. If real — is there a VPN / routed private network between campuses?
+
+Answer 2 decides the shape: **push crosses a WAN, pull does not.** Go agents POST outbound
+and work from anywhere; the SNMP and MikroTik pollers dial IN and need a routed link.
+
+Two things not to get wrong when it is built:
+- **Do not derive access from the install key.** The key is used once at enrollment;
+  access is checked every request. Keying access off it makes moving a server between
+  branches a reinstall.
+- **One backend with site scoping, not a backend per campus** — separate backends mean
+  separate `users` tables, so a head admin gets two logins and no combined view, which
+  defeats the whole request.
+
+⚠️ Scope limit: the environment/aircon half assumes exactly ONE server room (single
+`aircon_ir_config` row, globally-unique `aircon_state.ir_channel`, room-level alerts with
+`device_id = NULL`). Multi-site should cover **servers only** unless that is refactored.
+
+### Consultant suggestion 3 — the forecast was wrong (FIXED)
+He reported: 11 PM, room at 30 °C, projection opened at 32.44 °C then declined 0.17 °C/h
+for twelve hours — through dawn into midday, which is when that room is hottest. Both
+halves were real.
+
+The projector was Holt's **linear** method — one straight line, which cannot turn around.
+Reproduced on a synthetic room: by 11 AM it predicted 24.7 °C where the room reaches
+32.8 °C. ~8 °C out, in the *opposite* direction. Now full additive Holt-Winters (hour-of-
+day shape removed, Holt fits the remainder, shape added back): 12 h MAE **1.72 °C → 0.05 °C**.
+The opening jump was separate — EWMA was being fed to Holt, so the projection started from
+a doubly-lagged level. EWMA is display-only now, and the projection is anchored to the last
+observation with the correction fading over 3 h.
+
+**It also now refuses to forecast from unusable data.** The live DB had 53 readings over
+6.4 days with a 117-hour gap and only 12 of 24 hours ever recorded — the sensor had never
+observed a morning and was being asked to predict one. Four gates (span / hours covered /
+largest gap / coverage) withhold the projection and say which failed.
+
+### Dashboard rebuild
+2×2 grid of same-shaped panels (Servers | Network, MikroTik | UPS), all `PANEL_H` tall,
+each a picker + one chart. Average CPU/memory gauges removed (a mean across two hosts at
+10% and 90% describes neither); that space now holds **Active Alerts**, which the page
+never had. Dashboard now listens for `esp32Status` — a dead sensor used to leave the three
+environment tiles frozen and still labelled LIVE.
+
+### Charts break on gaps now (all 10)
+`utils/seriesGaps` — a gap is any interval > 2.5× the series' **median** spacing (median,
+because a mean would be dragged far enough by a long outage to hide it). Three bugs fell
+out: `UpsDetail` had `spanGaps: true` (bridging missing data on the one chart whose job is
+showing an outage); `?? 0` everywhere turned missing readings into a crash to 0% / 0 °C;
+and throughput derived across a gap collapsed hours of traffic onto one timestamp.
+
+### Bug sweep (2026-08-16)
+1. **MikroTik `link_util` summed rx+tx** while the SNMP poller takes the busier direction.
+   Both feed the same global rule, so the MikroTik tripped the 80% warning at ~40% real
+   load. Now uses the shared `computeUtilizationPct`.
+2. **`ups_load` and `router_clients` had no seeded rules** — evaluated by `deviceAlerts`,
+   listed in CLAUDE.md, silent forever (alerting is rules-only). `ups_load` seeded 80/90
+   active; `router_clients` seeded 200/300 **inactive**, because the right number is
+   site-specific and a guess would either page constantly or never.
+3. **Deleting a user destroyed history.** `alerts.acknowledged_by` and `system_logs.user_id`
+   were `ON DELETE CASCADE` — removing a user deleted every alert they had acknowledged
+   (i.e. exactly the ones someone took responsibility for) and their entire audit trail,
+   including policy-acceptance evidence. Both now `SET NULL`.
+
+### State
+- 179 backend tests pass; frontend typechecks and builds.
+- Migrations applied to the dev DB: `2026-08-15_agent_install_keys`,
+  `2026-08-15b_install_key_reveal`, `2026-08-16_missing_alert_rules`,
+  `2026-08-16_preserve_history_on_user_delete`. All folded into v13.
+- **Not pushed.** Four commits on `feat/agent-install-keys`, local only.
+- **Not verified on screen.** Everything this session is build/typecheck/test only —
+  the Dashboard layout, the chart gaps and the install-key flow have not been watched
+  running. That is the first job next session.
+
+### Next session
+1. **Verify the UI on screen** before building anything further.
+2. **Leave the ESP32 running 2–3 continuous days** (incl. overnight) so the forecast gate
+   opens — the caption should change from "Holt's linear" to "Holt + daily cycle".
+3. Get the two multi-site answers from ICTU (above); until then it stays Future Work.
+4. Remaining known issues: firmware has committed WiFi credentials + `DEVICE_SECRET`
+   and still sends the device key in the Socket.IO **URL query** (F-04, open since the
+   2026-06-05 threat model); `/api/agents/status` returns the permanent token via a query
+   string; README still describes Analytics and the PiP widget as unmerged branches.
+5. Not built, deliberately: Dashboard click-through beyond the alerts panel, and an
+   analytics "upcoming risks" strip on the Dashboard.
