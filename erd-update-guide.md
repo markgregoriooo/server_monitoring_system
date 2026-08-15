@@ -1,175 +1,156 @@
 # ERD Update Guide — bringing `cspc-ictu-monitoring-system.mwb` up to date
 
 **Target:** make the Workbench EER model match `v13_cspc-ictu-monitoring-system.sql`.
-**Date written:** 2026-08-10
+**Date written:** 2026-08-16
 
 ---
 
 ## Why this file exists
 
-The Workbench model `cspc-ictu-monitoring-system.mwb` was untracked from the repo on
-2026-08-04 (commit `dbc0177`, *"chore(repo): stop tracking the MySQL Workbench model"*) and
-went missing from disk with it. It was recovered from git's object database (blob
-`1ed2ca82`) and restored to the repo root.
+The model was last brought level with the schema on 2026-08-10 (the previous edition of
+this guide, deleted once its checklist was worked through) and re-tracked in commit
+`663253d` — *"chore(repo): track the Workbench model again, now that it is current"*.
 
-The recovered model is **byte-identical to the last version ever committed**, but that
-version's content dates from **2026-06-15** (commit `8e558dd`, *"Email + Popup Notifications
-+ configurable alerting"*). Roughly two months of schema work landed after it, so the model
-is behind `v13_cspc-ictu-monitoring-system.sql`.
+Four schema changes have landed since, all in Session 21:
 
-The model is worth repairing rather than regenerating: it carries a real EER diagram —
-**23 table figures and 28 relationship connections**. Reverse-engineering the SQL into a
-fresh model would produce a correct catalog but throw the layout away.
+| Migration | What it did |
+|---|---|
+| `2026-08-15_agent_install_keys.sql` | new `agent_install_keys` table; `agent_tokens` gains `install_key_id` and a `revoked` status |
+| `2026-08-15b_install_key_reveal.sql` | `agent_install_keys.key_cipher` |
+| `2026-08-16_missing_alert_rules.sql` | seed rows only — **no ERD impact** |
+| `2026-08-16_preserve_history_on_user_delete.sql` | two FK delete rules changed CASCADE → SET NULL |
+
+All four are already folded into `v13_cspc-ictu-monitoring-system.sql`, which was verified
+on 2026-08-16 by importing it into a clean database and diffing all 235 columns and every
+FK delete rule against the live one: **no differences**. The SQL is correct; only the model
+is behind.
+
+This matters more than usual because **the manuscript's ER diagram is generated from this
+model**. A stale model means a stale figure in the paper.
 
 ---
 
 ## Ignore this false alarm first
 
-A naive column-type diff flags **48 columns** as `timestamp_f` / `datetime_f` where the SQL
-says `timestamp` / `datetime`. **These are not differences.** `timestamp_f` and `datetime_f`
-are Workbench's internal ids for the fractional-second variants of those types. Every one of
-the 48 has `precision = -1`, so they forward-engineer as plain `TIMESTAMP` / `DATETIME`.
+The same one as last time. A naive column-type diff flags dozens of columns as
+`timestamp_f` / `datetime_f` where the SQL says `timestamp` / `datetime`. **These are not
+differences** — they are Workbench's internal ids for the fractional-second variants, all
+with `precision = -1`, and they forward-engineer as plain `TIMESTAMP` / `DATETIME`.
 
-Do not "fix" them. Changing them by hand risks introducing a real difference where none exists.
+Do not "fix" them.
 
 ---
 
 ## The changes
 
-14 items. Tick them off as you go.
+5 items.
 
-### 1. Add the missing table: `widget_prefs`
+### 1. Add the new table: `agent_install_keys`
 
 - [ ] Create the table
 
-The only table absent from the ERD entirely (added by `migrations/2026-06-17_widget_prefs.sql`).
-It stores the per-user PiP live-widget layout; one row per user, a missing row meaning
-"use the default layout".
+Dashboard-managed agent enrollment keys, replacing the single `AGENT_INSTALL_KEY` that
+used to live in `backend/.env`. One row per issued key.
 
-| Column | Type | Flags | Default |
-|---|---|---|---|
-| `user_id` | INT | **PK**, NN | — |
-| `layout_json` | JSON | NN | — |
-| `updated_at` | TIMESTAMP | — | `CURRENT_TIMESTAMP` ON UPDATE `CURRENT_TIMESTAMP` |
+| Column | Type | Flags | Default | Note |
+|---|---|---|---|---|
+| `install_key_id` | INT | **PK**, NN, AI | — | |
+| `key_hash` | CHAR(64) | NN, **UQ** | — | SHA-256 hex of the plaintext key — the key itself is never stored |
+| `key_cipher` | VARCHAR(255) | — | NULL | AES-256-GCM of the plaintext key, for re-displaying the install command; NULL = not recoverable |
+| `key_prefix` | VARCHAR(16) | NN | — | Leading chars, shown in the UI to identify a key that can no longer be read |
+| `label` | VARCHAR(100) | NN | — | |
+| `created_by` | INT | — | NULL | FK → users |
+| `revoked_by` | INT | — | NULL | FK → users |
+| `expires_at` | TIMESTAMP | — | NULL | NULL = never expires |
+| `revoked_at` | TIMESTAMP | — | NULL | NULL = still valid |
+| `last_used_at` | TIMESTAMP | — | NULL | |
+| `use_count` | INT | NN | `0` | How many agents enrolled with this key |
+| `created_at` | TIMESTAMP | NN | `CURRENT_TIMESTAMP` | |
 
-- [ ] Add FK `fk_widget_prefs_users1` → `users.user_id`, **ON DELETE CASCADE / ON UPDATE CASCADE**
+Indexes beyond the PK:
+
+- [ ] `uq_install_key_hash` — **UNIQUE** on (`key_hash`)
+- [ ] `idx_install_key_created_by` on (`created_by`)
+- [ ] `idx_install_key_revoked_by` on (`revoked_by`)
+
+Foreign keys — **both non-identifying, and both SET NULL**:
+
+- [ ] `fk_install_keys_created_by` → `users.user_id`, **ON DELETE SET NULL / ON UPDATE CASCADE**
+- [ ] `fk_install_keys_revoked_by` → `users.user_id`, **ON DELETE SET NULL / ON UPDATE CASCADE**
+
+> **Why SET NULL and not CASCADE:** deleting the admin who issued a key must not delete the
+> key. That would revoke enrolment for a whole branch as a side effect of an HR change, and
+> would erase the record that the key ever existed.
+
 - [ ] Drag the new table onto the EER canvas (new tables do **not** auto-place)
 
-Because `user_id` is both the PK and the FK, draw it as a **1:1 identifying** relationship —
-the same shape `notification_prefs` already uses.
+Place it near `agent_tokens` and `devices` — it belongs to the agent-enrollment cluster,
+not the user-admin cluster, even though both its FKs point at `users`.
 
-> **On the type:** v13 renders this column as `longtext CHARACTER SET utf8mb4 COLLATE
-> utf8mb4_bin NOT NULL CHECK (json_valid(...))`. That is MariaDB's way of *dumping* a `JSON`
-> column, not a different type. The migration file declares it `JSON`. Model it as **JSON**.
+### 2. Add the column `agent_tokens.install_key_id`
 
-### 2. Add these columns
+- [ ] Add the column
 
-- [ ] `devices.display_name`
-- [ ] `alert_rules.interface_name`
-- [ ] `mikrotik_devices.use_tls`
-- [ ] `server_specs.metric_interval_sec`
-- [ ] `reports.device_id`
+| Column | Type | Flags | Default | Note |
+|---|---|---|---|---|
+| `install_key_id` | INT | — | NULL | Which install key enrolled this agent; NULL = legacy/.env enrollment |
 
-| Table | Column | Type | Place after |
-|---|---|---|---|
-| `devices` | `display_name` | VARCHAR(100) NULL | `device_name` |
-| `alert_rules` | `interface_name` | VARCHAR(50) NULL | `device_id` |
-| `mikrotik_devices` | `use_tls` | TINYINT NOT NULL **DEFAULT 0** | `api_port` |
-| `server_specs` | `metric_interval_sec` | SMALLINT UNSIGNED NULL | `agent_version` |
-| `reports` | `device_id` | INT NULL | `type` |
+- [ ] Position it **third**, immediately after `device_id` (matches `AFTER device_id` in the migration)
+- [ ] Add index `idx_agent_tokens_install_key` on (`install_key_id`)
+- [ ] Add FK `fk_agent_tokens_install_key` → `agent_install_keys.install_key_id`,
+      **ON DELETE SET NULL / ON UPDATE CASCADE**, **non-identifying**
 
-Exact DDL from v13, for reference while typing:
+This is the relationship that makes a key *own* the servers it enrolled, so revoking a key
+can optionally cut that fleet off. NULL means the agent predates install keys or came in on
+the legacy `.env` key — those are unaffected by any revoke.
 
-```sql
-`display_name`        varchar(100) DEFAULT NULL,
-`interface_name`      varchar(50)  DEFAULT NULL,
-`use_tls`             tinyint(4)   NOT NULL DEFAULT 0,
-`metric_interval_sec` smallint(5) UNSIGNED DEFAULT NULL
-  COMMENT 'Agent posting cadence in seconds; NULL = unknown, readers assume 10',
-`device_id`           int(11)      DEFAULT NULL,
-```
+### 3. Extend the `agent_tokens.status` ENUM
 
-**`reports.device_id` needs more than the column** — it is the per-device report scope, so it
-also carries an index and a foreign key, and is the one item in this section with a visible
-effect on the diagram (a new relationship line):
+- [ ] `enum('pending','approved','rejected')` → **`enum('pending','approved','rejected','revoked')`**
 
-- [ ] Index `idx_reports_device` on `device_id`
-- [ ] FK `fk_reports_devices1` → `devices.device_id`, **ON DELETE SET NULL / ON UPDATE CASCADE**
+`revoked` = authorisation withdrawn wholesale by revoking the install key. Distinct from
+`rejected`, which means an admin declined a NEW enrollment (and which `agentService.reject`
+implements by deleting the device outright, so no such row survives). A `revoked` row is
+KEPT so the device, its logs and its history survive and the same machine can re-enrol onto
+the same `device_id`.
 
-### 3. Drop one column
+### 4. Change `alerts.acknowledged_by` FK to SET NULL
 
-- [ ] `mikrotik_devices.firmware_version` (VARCHAR(50)) — no longer in the schema
+- [ ] `fk_alerts_users1` — ON DELETE **CASCADE → SET NULL** (ON UPDATE stays CASCADE)
 
-### 4. Extend two ENUMs
+> Deleting a user used to delete every alert they had ever acknowledged — not their name on
+> it, the incident row itself, and via its own cascade the whole per-user feed for it.
 
-- [ ] `devices.device_type` — add `mikrotik`
+### 5. Change `system_logs.user_id` FK to SET NULL
 
-  ```sql
-  enum('aircon','server','ups','router','esp32','mikrotik')
-  ```
+- [ ] `fk_system_logs_users` — ON DELETE **CASCADE → SET NULL** (ON UPDATE stays CASCADE)
 
-- [ ] `reports.type` — add `forecast`
+> Same problem: it took the whole audit trail with them, including the policy-acceptance
+> evidence rows. The Privacy Notice commits to a 365-day retention for that table.
 
-  ```sql
-  enum('environment','server','alerts','aircon','network','ups','forecast')
-  ```
+---
 
-`reports.type` is why `migrations/2026-08-09_report_forecast_type.sql` exists — the column is
-an ENUM, so generating a Capacity Forecast report without this value is rejected under strict
-mode (or silently stored as `''`).
+## Expected totals afterwards
 
-### 5. Fix two column types
+| | Before | After |
+|---|---|---|
+| Tables | 24 | **25** |
+| Table figures on the EER canvas | 24 | **25** |
+| Relationship connections | 30 | **33** |
 
-- [ ] `aircon_ir_config.id` — INT UNSIGNED → **TINYINT(3) UNSIGNED**
-- [ ] `aircon_state.ir_channel` — TINYINT → **TINYINT(3) UNSIGNED NOT NULL DEFAULT 1**
-
-`ir_channel` also carries a comment in v13: *"ESP32 IR transmitter slot (1-based). Must match
-IR_CHANNEL_PINS[] index in firmware."*
-
-### 6. Fix a real bug in the model
-
-- [ ] Rename `users." google_sub"` → `users.google_sub`
-
-The model's `users` table has a column whose name **begins with a space** — confirmed, the
-first character is code 32, and the name is 11 characters long instead of 10.
-
-This one is not cosmetic. Forward-engineering the model as it stands emits `` ` google_sub` ``,
-which would not match the column `userService.findByGoogleSub` queries — and `google_sub` is
-the immutable Google account id the whole login path matches on before falling back to email.
-
-### 7. Add the link-alert gate columns
-
-- [ ] `network_interfaces.ever_up` — `TINYINT(1) NOT NULL DEFAULT 0`, after `is_active`
-      *Comment: "Port has carried a link at least once — gates interface-down alerting"*
-- [ ] `network_interfaces.monitor_link` — `TINYINT(1) NOT NULL DEFAULT 1`, after `ever_up`
-      *Comment: "Admin opt-out: 0 silences interface-down alerts for this port"*
-
-These back `services/linkAlertPolicy.js` — the gate that stops empty and disabled ports
-raising interface-down alerts.
-
-They arrived via `migrations/2026-08-09_link_alert_gate.sql`, which was the one migration
-**not** folded into v12. It is now included in v13, so all four files in `migrations/` are
-part of the shipped schema and the ERD has a single source of truth again:
-
-| Migration | In v13 |
-|---|---|
-| `2026-06-17_widget_prefs.sql` | yes — table present |
-| `2026-06-18_server_display_name.sql` | yes — `devices.display_name` present |
-| `2026-08-09_report_forecast_type.sql` | yes — `forecast` in the ENUM |
-| `2026-08-09_link_alert_gate.sql` | yes — `ever_up` + `monitor_link` present |
+Three new relationships: two from `agent_install_keys` → `users`, one from `agent_tokens`
+→ `agent_install_keys`. Items 3–5 change existing objects and add no connections.
 
 ---
 
 ## Working notes
 
-- **Open it as a second model.** Workbench holds a per-model lock. If
-  `Server_monitoring_system(MySQL-Schema)` is already open, open
-  `cspc-ictu-monitoring-system.mwb` alongside it rather than over that session.
-- **`cspc-ictu-monitoring-system.mwb.bak`** in the repo root is Workbench's own auto-backup,
-  recovered alongside the model. Keep it until the edits are done and verified.
-- **The file is untracked** (`??` in `git status`). `.gitignore` has no `mwb` rule — it was
-  deliberately untracked in 2026-08-04, and restoring it did not re-stage it. Commit it
-  again only if you want the model back under version control.
+- **Open it as a second model.** Workbench holds a per-model lock — open
+  `cspc-ictu-monitoring-system.mwb` alongside any other session rather than over it.
+- **The model IS tracked now** (re-added in `663253d`), unlike last time. Commit it when the
+  edits are done.
+- **Update the README count** when finished — it currently reads *"current as of v13
+  (24 tables, 24 figures, 30 relationships)"*.
 
 ## Verifying afterwards
 
@@ -178,8 +159,41 @@ statements against `v13_cspc-ictu-monitoring-system.sql`. Expect these harmless 
 even when the model is correct:
 
 - integer **display widths** (`int` vs `int(11)`) — Workbench omits them, MariaDB dumps them
-- `AUTO_INCREMENT` / `PRIMARY KEY` expressed inline in the model vs as trailing
-  `ALTER TABLE` statements in the mysqldump-style v12 file
+- `AUTO_INCREMENT` / `PRIMARY KEY` inline in the model vs trailing `ALTER TABLE` statements
+  in the mysqldump-style v13 file
 - `JSON` vs `longtext … CHECK (json_valid(…))` on `widget_prefs.layout_json`
 
 Anything beyond those three categories is real drift worth a second look.
+
+**Faster check for these five items specifically** — run against a database that has the
+migrations applied and confirm it matches the model:
+
+```sql
+-- expect 12 rows
+SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+  FROM INFORMATION_SCHEMA.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_install_keys'
+ ORDER BY ORDINAL_POSITION;
+
+-- expect install_key_id present, and status carrying 'revoked'
+SELECT COLUMN_NAME, COLUMN_TYPE
+  FROM INFORMATION_SCHEMA.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_tokens'
+   AND COLUMN_NAME IN ('install_key_id', 'status');
+
+-- expect SET NULL on all five
+SELECT CONSTRAINT_NAME, TABLE_NAME, DELETE_RULE
+  FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+ WHERE CONSTRAINT_SCHEMA = DATABASE()
+   AND CONSTRAINT_NAME IN ('fk_install_keys_created_by', 'fk_install_keys_revoked_by',
+                           'fk_agent_tokens_install_key', 'fk_alerts_users1',
+                           'fk_system_logs_users');
+```
+
+---
+
+## Delete this file when the checklist is done
+
+The previous edition was deleted once worked through, which is the right habit: a
+half-applied guide left in the repo reads as outstanding work when it is not. Session 21's
+notes record that the model needed updating; that record is enough history.
