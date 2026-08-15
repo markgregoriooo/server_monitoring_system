@@ -1814,14 +1814,56 @@ and throughput derived across a gap collapsed hours of traffic onto one timestam
   the Dashboard layout, the chart gaps and the install-key flow have not been watched
   running. That is the first job next session.
 
-### Next session
-1. **Verify the UI on screen** before building anything further.
-2. **Leave the ESP32 running 2–3 continuous days** (incl. overnight) so the forecast gate
+### Next session — 2026-08-16
+
+**Main agenda item: PLAN MULTI-SITE.** Not build it — plan it. Agreed at the end of
+Session 21 to sit down and work the design through properly.
+
+What that session needs to settle, roughly in order:
+
+1. **Is it real?** Second campus confirmed, planned, or hypothetical? This decides whether
+   the outcome is a build or a Future Work chapter — and either is a fine answer, but the
+   design differs.
+2. **Is there a routed link between campuses?** Push crosses a WAN, pull does not: Go
+   agents POST outbound and work from anywhere, while the SNMP and MikroTik pollers dial
+   IN and need a VPN or a routed private network. Without one, multi-site covers **servers
+   only** and the other campus's routers/UPS/environment stay invisible centrally.
+3. **Scope: servers only, or everything?** Strong recommendation servers only. The
+   environment/aircon half assumes exactly ONE server room — single `aircon_ir_config`
+   row, globally-unique `aircon_state.ir_channel`, room-level alerts keyed on
+   `device_id = NULL`. Widening that is its own project.
+4. **Who receives a room-level alert?** The unsolved design question. Temperature, gas,
+   humidity, ESP32-offline, backup health and forecast alerts all carry `device_id = NULL`,
+   so they have no site to filter by. Either `alerts` gains a `site_id`, or site-less
+   alerts deliberately go to everyone. Needs a decision before any code.
+5. **How many admins does ICTU actually have?** If it is two or three people in one unit,
+   site scoping may be solving a problem they do not have — worth asking before spending
+   the effort. The install keys already solve the problem they *do* have today.
+
+Design constraints already settled (do not relitigate):
+- **Access is NOT derived from the install key.** The key is used once at enrollment;
+  access is checked every request. Keying access off it makes moving a server between
+  branches a reinstall.
+- **One backend with site scoping, not a backend per campus.** Separate backends mean
+  separate `users` tables, so a head admin gets two logins and no combined view — which
+  defeats the request that started this.
+- Shape: `sites` table, `devices.site_id`, `user_sites` join table, one shared "sites this
+  user may see" helper applied to ~15 device queries. `agent_install_keys.site_id` decides
+  where a newly enrolled server LANDS; ownership afterwards is editable.
+
+**Before the discussion, also:**
+
+6. **Verify the UI on screen** — everything in Session 21 is build/typecheck/test only.
+7. **Leave the ESP32 running 2–3 continuous days** (incl. overnight) so the forecast gate
    opens — the caption should change from "Holt's linear" to "Holt + daily cycle".
-3. Get the two multi-site answers from ICTU (above); until then it stays Future Work.
-4. Remaining known issues: firmware has committed WiFi credentials + `DEVICE_SECRET`
-   and still sends the device key in the Socket.IO **URL query** (F-04, open since the
-   2026-06-05 threat model); `/api/agents/status` returns the permanent token via a query
-   string; README still describes Analytics and the PiP widget as unmerged branches.
-5. Not built, deliberately: Dashboard click-through beyond the alerts panel, and an
-   analytics "upcoming risks" strip on the Dashboard.
+8. **Update the `.mwb` model** — see `erd-update-guide.md` (5 items). The manuscript's ER
+   diagram comes from it, and it is now behind the schema again.
+
+**Still open, unscheduled:**
+- Firmware has committed WiFi credentials + `DEVICE_SECRET`, and still sends the device key
+  in the Socket.IO **URL query** (F-04, open since the 2026-06-05 threat model).
+- `/api/agents/status` returns the permanent agent token via a query string.
+- README still describes Analytics and the PiP widget as unmerged branches, and still says
+  the model is "current as of v13 (24 tables, 24 figures, 30 relationships)".
+- Deliberately not built: Dashboard click-through beyond the alerts panel, and an analytics
+  "upcoming risks" strip on the Dashboard.
