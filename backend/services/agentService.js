@@ -82,17 +82,26 @@ function withLive(r) {
 
 // ─── Registration ─────────────────────────────────────────────────────────────
 
-// Find a prior pending/approved enrollment for a RETURNING machine. MAC first (most
-// specific, when the NIC is stable), else hostname. The hostname match is scoped to
-// server devices with a live token so it can't collide with manually-added devices.
-// Returns { pendingToken, deviceId } or null.
+// Find a prior enrollment for a RETURNING machine. MAC first (most specific, when the
+// NIC is stable), else hostname. The hostname match is scoped to server devices with a
+// token row so it can't collide with manually-added devices.
+//
+// 'revoked' is included alongside pending/approved: a machine whose install key was
+// revoked must be able to come back onto the SAME device_id when it re-enrols with a
+// new key. Excluding it would spawn a duplicate device and fork the server's InfluxDB
+// history, which is tagged by device_id. ('rejected' is NOT included — agentService.
+// reject deletes the device outright, so no such row survives to match.)
+//
+// Returns { pendingToken, deviceId, status, tokenId } or null.
 async function findExistingEnrollment(mac, hostname) {
+  const LIVE = "('pending', 'approved', 'revoked')";
   if (mac) {
     const [[byMac]] = await db.query(
-      `SELECT t.token AS pendingToken, t.device_id AS deviceId
+      `SELECT t.id AS tokenId, t.token AS pendingToken, t.device_id AS deviceId, t.status,
+              t.install_key_id AS installKeyId
          FROM device_network n
          JOIN agent_tokens t ON t.device_id = n.device_id
-        WHERE n.mac_address = ? AND t.status IN ('pending', 'approved')
+        WHERE n.mac_address = ? AND t.status IN ${LIVE}
         ORDER BY t.id DESC
         LIMIT 1`,
       [mac],
@@ -101,11 +110,12 @@ async function findExistingEnrollment(mac, hostname) {
   }
   if (hostname) {
     const [[byHost]] = await db.query(
-      `SELECT t.token AS pendingToken, t.device_id AS deviceId
+      `SELECT t.id AS tokenId, t.token AS pendingToken, t.device_id AS deviceId, t.status,
+              t.install_key_id AS installKeyId
          FROM devices d
          JOIN agent_tokens t ON t.device_id = d.device_id
         WHERE d.device_name = ? AND d.device_type = 'server'
-          AND t.status IN ('pending', 'approved')
+          AND t.status IN ${LIVE}
         ORDER BY t.id DESC
         LIMIT 1`,
       [hostname],
@@ -119,7 +129,7 @@ async function findExistingEnrollment(mac, hostname) {
 // agent_tokens rows in one transaction. Idempotent per MACHINE: a host that
 // re-registers reuses its existing enrollment (so an agent restart — or a NIC/MAC
 // change — before approval does not spawn duplicate pending devices).
-async function register(host) {
+async function register(host, installKeyId = null) {
   // Recognize a returning machine so it REUSES its enrollment instead of spawning a
   // duplicate device. Match by MAC first, then fall back to hostname: the agent's
   // "primary NIC" — and thus its MAC — can change between runs (Wi-Fi randomized MAC, a
@@ -127,10 +137,44 @@ async function register(host) {
   // server into many ghost device rows. Hostname is the stable identity the agent always
   // reports. refreshHostInfo() re-stamps the current MAC, so the next run matches on MAC.
   const existing = await findExistingEnrollment(host.mac_address || null, host.hostname || null);
+
+  // A machine coming back after its install key was revoked. Re-arm the SAME token row
+  // — new pending token, new owning key, approval required again — so the device keeps
+  // its id, its logs and its InfluxDB history instead of forking into a second server.
+  if (existing && existing.status === "revoked") {
+    const pendingToken = crypto.randomBytes(24).toString("hex");
+    await db.query(
+      `UPDATE agent_tokens
+          SET token = ?, approved_token = NULL, status = 'pending',
+              install_key_id = ?, created_at = NOW(), last_used_at = NOW(), approved_at = NULL
+        WHERE id = ?`,
+      [pendingToken, installKeyId, existing.tokenId],
+    );
+    await refreshHostInfo(existing.deviceId, host);
+    return { pendingToken, deviceId: existing.deviceId, reused: true, reEnrolled: true };
+  }
+
   if (existing) {
     // Re-registering machine: refresh specs + network info (IP/gateway/DNS/MAC may have
     // changed) without disturbing the token or approval state.
     await refreshHostInfo(existing.deviceId, host);
+
+    // ADOPT: re-attribute the enrollment to whichever key just re-registered it. This is
+    // the only way an already-approved server can be moved onto a managed key — and
+    // without it, every host enrolled before install keys existed (install_key_id NULL,
+    // i.e. via the legacy .env key) would be permanently unreachable by any key revoke,
+    // since register() short-circuits here and never touches the row again.
+    //
+    // It is also how a server MOVES between keys — hand it to another branch's key by
+    // re-running the installer with that key. Presenting a valid install key is already
+    // the authority to enrol a machine, so it is the right authority to re-file one; and
+    // this grants no data access on its own, because metrics still need the AGT- token.
+    if (installKeyId != null && existing.installKeyId !== installKeyId) {
+      await db.query(`UPDATE agent_tokens SET install_key_id = ? WHERE id = ?`, [
+        installKeyId,
+        existing.tokenId,
+      ]);
+    }
     return { pendingToken: existing.pendingToken, deviceId: existing.deviceId, reused: true };
   }
 
@@ -170,9 +214,9 @@ async function register(host) {
     );
 
     await conn.query(
-      `INSERT INTO agent_tokens (device_id, token, status, last_used_at)
-       VALUES (?, ?, 'pending', NOW())`,
-      [deviceId, pendingToken],
+      `INSERT INTO agent_tokens (device_id, install_key_id, token, status, last_used_at)
+       VALUES (?, ?, ?, 'pending', NOW())`,
+      [deviceId, installKeyId, pendingToken],
     );
 
     await conn.commit();

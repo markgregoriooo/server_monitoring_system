@@ -24,15 +24,44 @@ SET time_zone = "+00:00";
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `agent_install_keys`
+--
+-- Dashboard-managed enrollment keys, replacing the single AGENT_INSTALL_KEY in
+-- backend/.env. The plaintext key is never stored — only its SHA-256 hash (indexed
+-- lookup on the enrollment path) and a short prefix for display.
+--
+-- ⚠️ Revoking an install key does NOT revoke any already-enrolled agent: the runtime
+-- credential is agent_tokens.approved_token, a separate row with a separate lifecycle.
+--
+
+CREATE TABLE `agent_install_keys` (
+  `install_key_id` int(11) NOT NULL,
+  `key_hash` char(64) NOT NULL COMMENT 'SHA-256 hex of the plaintext key — the lookup path at enrollment',
+  `key_cipher` varchar(255) DEFAULT NULL COMMENT 'AES-256-GCM of the plaintext key, for re-displaying the install command; NULL = not recoverable',
+  `key_prefix` varchar(16) NOT NULL COMMENT 'Leading chars, shown in the UI to identify a key that can no longer be read',
+  `label` varchar(100) NOT NULL,
+  `created_by` int(11) DEFAULT NULL,
+  `revoked_by` int(11) DEFAULT NULL,
+  `expires_at` timestamp NULL DEFAULT NULL COMMENT 'NULL = never expires',
+  `revoked_at` timestamp NULL DEFAULT NULL COMMENT 'NULL = still valid',
+  `last_used_at` timestamp NULL DEFAULT NULL,
+  `use_count` int(11) NOT NULL DEFAULT 0 COMMENT 'How many agents enrolled with this key',
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `agent_tokens`
 --
 
 CREATE TABLE `agent_tokens` (
   `id` int(11) NOT NULL,
   `device_id` int(11) NOT NULL,
+  `install_key_id` int(11) DEFAULT NULL COMMENT 'Which install key enrolled this agent; NULL = legacy/.env enrollment',
   `token` varchar(255) NOT NULL,
   `approved_token` varchar(128) DEFAULT NULL,
-  `status` enum('pending','approved','rejected') DEFAULT NULL,
+  `status` enum('pending','approved','rejected','revoked') DEFAULT NULL COMMENT 'revoked = authorisation withdrawn by revoking the install key; row kept so the device and its history survive',
   `created_at` datetime NOT NULL DEFAULT current_timestamp(),
   `last_used_at` datetime NOT NULL,
   `approved_at` datetime DEFAULT NULL
@@ -501,13 +530,23 @@ CREATE TABLE `widget_prefs` (
 --
 
 --
+-- Indexes for table `agent_install_keys`
+--
+ALTER TABLE `agent_install_keys`
+  ADD PRIMARY KEY (`install_key_id`),
+  ADD UNIQUE KEY `uq_install_key_hash` (`key_hash`),
+  ADD KEY `idx_install_key_created_by` (`created_by`),
+  ADD KEY `idx_install_key_revoked_by` (`revoked_by`);
+
+--
 -- Indexes for table `agent_tokens`
 --
 ALTER TABLE `agent_tokens`
   ADD PRIMARY KEY (`id`),
   ADD UNIQUE KEY `token_UNIQUE` (`token`),
   ADD UNIQUE KEY `approved_token_UNIQUE` (`approved_token`),
-  ADD KEY `fk_agent_tokens_devices1_idx` (`device_id`);
+  ADD KEY `fk_agent_tokens_devices1_idx` (`device_id`),
+  ADD KEY `idx_agent_tokens_install_key` (`install_key_id`);
 
 --
 -- Indexes for table `aircon_ir_config`
@@ -708,6 +747,12 @@ ALTER TABLE `widget_prefs`
 --
 
 --
+-- AUTO_INCREMENT for table `agent_install_keys`
+--
+ALTER TABLE `agent_install_keys`
+  MODIFY `install_key_id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
 -- AUTO_INCREMENT for table `agent_tokens`
 --
 ALTER TABLE `agent_tokens`
@@ -838,10 +883,22 @@ ALTER TABLE `users`
 --
 
 --
+-- Constraints for table `agent_install_keys`
+--
+-- SET NULL, not CASCADE: deleting the admin who issued a key must not delete the key
+-- (that would revoke enrollment for a whole branch as a side effect of an HR change)
+-- and must not erase the record that the key existed.
+--
+ALTER TABLE `agent_install_keys`
+  ADD CONSTRAINT `fk_install_keys_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  ADD CONSTRAINT `fk_install_keys_revoked_by` FOREIGN KEY (`revoked_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+--
 -- Constraints for table `agent_tokens`
 --
 ALTER TABLE `agent_tokens`
-  ADD CONSTRAINT `fk_agent_tokens_devices1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE NO ACTION;
+  ADD CONSTRAINT `fk_agent_tokens_devices1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+  ADD CONSTRAINT `fk_agent_tokens_install_key` FOREIGN KEY (`install_key_id`) REFERENCES `agent_install_keys` (`install_key_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
 -- Constraints for table `aircon_ir_config`

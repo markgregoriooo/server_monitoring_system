@@ -289,6 +289,78 @@ export const api = {
     }
   },
 
+  // Agent install keys (admin) — the credential the installer presents at enrollment.
+  // Distinct from a server's agent token: revoking a key stops NEW enrollments and
+  // leaves every already-enrolled agent reporting.
+  getInstallKeys: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/agents/install-keys");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // The response carries the plaintext key. It is the ONLY time the server will ever
+  // return it — only a hash is stored — so the caller must show it before discarding.
+  createInstallKey: async (
+    label: string,
+    expiresInDays: number | null,
+  ): Promise<ApiResult<{ key: string; record: any }>> => {
+    try {
+      const res = await apiClient.post("/agents/install-keys", { label, expiresInDays });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Servers this key enrolled that are still reporting — the blast radius of revoking
+  // it with `revokeAgents`. Shown by name in the confirm dialog.
+  getInstallKeyServers: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get(`/agents/install-keys/${id}/servers`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // revokeAgents=false → block new enrolments only, running servers untouched.
+  // revokeAgents=true  → also de-authorise the servers this key enrolled; each agent
+  //                      gets a 403 on its next post, deletes its conf and exits.
+  revokeInstallKey: async (id: number, revokeAgents = false): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post(`/agents/install-keys/${id}/revoke`, { revokeAgents });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // The plaintext key again, so the install command can be re-opened. Admin-only, and
+  // the backend audits every call — this is the one path that returns a key after
+  // creation. 409 when the key predates recoverable storage.
+  revealInstallKey: async (id: number): Promise<ApiResult<{ key: string; label: string }>> => {
+    try {
+      const res = await apiClient.get(`/agents/install-keys/${id}/reveal`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Remove a revoked key from the list. Rejected by the backend while the key is still
+  // active — revoke first, so the "can this take servers down" decision is its own step.
+  deleteInstallKey: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/agents/install-keys/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   // Park / unpark a server for planned downtime (admin). While parked, offline
   // and threshold alerts are suppressed for it.
   setServerMaintenance: async (id: number, enabled: boolean): Promise<ApiResult> => {
@@ -980,7 +1052,7 @@ export const api = {
   },
 
   // ── Predictive analytics (Phases 2–4) ───────────────────────────────────────
-  // Trend + short-horizon projection (EWMA + Holt's linear) for one metric.
+  // Trend + projection (seasonal Holt-Winters; EWMA is the displayed smooth line) for one metric.
   getMetricTrend: async (
     metric: string,
     opts: { deviceId?: number | null; hours?: number; horizon?: number } = {},

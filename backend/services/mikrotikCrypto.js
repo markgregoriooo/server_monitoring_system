@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { createCipherSuite } from "./secretCrypto.js";
 
 // ─── AES-256-GCM for the RouterOS API password ────────────────────────────────
 //
@@ -10,44 +10,14 @@ import crypto from "crypto";
 //   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 //
 // Stored format (base64):  [ iv(12) | authTag(16) | ciphertext ]
+//
+// The algorithm now lives in secretCrypto.js, which install keys share. This module
+// stays because it pins MIKROTIK_ENC_KEY and ONLY that name: the general suite accepts
+// a SECRET_ENC_KEY fallback, and if someone set that here, every password already
+// encrypted under MIKROTIK_ENC_KEY would stop decrypting and the poller would silently
+// fail to log in. Passwords already in the database keep working exactly as before.
 
-const ALGO = "aes-256-gcm";
-const KEY_RE = /^[0-9a-fA-F]{64}$/;
+const suite = createCipherSuite(["MIKROTIK_ENC_KEY"]);
 
-function getKey() {
-  const hex = (process.env.MIKROTIK_ENC_KEY || "").trim();
-  if (!KEY_RE.test(hex)) {
-    throw new Error(
-      "MIKROTIK_ENC_KEY must be 64 hex chars (32 bytes). Generate: " +
-        "node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
-    );
-  }
-  return Buffer.from(hex, "hex");
-}
-
-export function isConfigured() {
-  return KEY_RE.test((process.env.MIKROTIK_ENC_KEY || "").trim());
-}
-
-export function encrypt(plaintext) {
-  const key = getKey();
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv(ALGO, key, iv);
-  const enc = Buffer.concat([cipher.update(String(plaintext), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, enc]).toString("base64");
-}
-
-export function decrypt(b64) {
-  const key = getKey();
-  const raw = Buffer.from(String(b64), "base64");
-  if (raw.length < 28) throw new Error("ciphertext too short");
-  const iv = raw.subarray(0, 12);
-  const tag = raw.subarray(12, 28);
-  const enc = raw.subarray(28);
-  const decipher = crypto.createDecipheriv(ALGO, key, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
-}
-
-export default { isConfigured, encrypt, decrypt };
+export const { isConfigured, encrypt, decrypt } = suite;
+export default suite;

@@ -822,18 +822,28 @@ make all        # → dist/go-agent-windows-amd64.exe, dist/go-agent-linux-amd64
 Install on a target server as a background service (enrolls, waits for your approval,
 then runs). Point `-api-url` at the campus server's **LAN address** (not the public hostname):
 
+**Get the install key from the dashboard first.** As admin: **Server Metrics → Agent
+install keys → + New key**. Label it (e.g. "Main server room — Aug 2026"), optionally set
+an expiry, and copy the ready-made command it prints — the key is shown **once**.
+
 ```powershell
 # Windows — elevated PowerShell, binary in same folder
-.\install.ps1 -ApiUrl "http://<campus-server-ip>:3000" -InstallKey "<AGENT_INSTALL_KEY>"
+.\install.ps1 -ApiUrl "http://<campus-server-ip>:3000" -InstallKey "AIK-<key>"
 ```
 ```bash
 # Linux — systemd
-sudo bash install.sh http://<campus-server-ip>:3000 <AGENT_INSTALL_KEY>
+sudo bash install.sh http://<campus-server-ip>:3000 AIK-<key>
 ```
 
 Then in the dashboard (as admin): **Server Metrics → approve** the pending agent. It
-streams CPU/mem/disk/net every ~10 s thereafter. (`AGENT_INSTALL_KEY` here must equal the
-backend `.env` value.)
+streams CPU/mem/disk/net every ~10 s thereafter.
+
+> Revoke the key from the same panel once the rollout is done. The dialog lists the
+> servers that key enrolled and offers two outcomes: **revoke key only** (blocks new
+> installs, running servers untouched) or **revoke key and stop its servers** (those
+> agents get a 403 on their next post and shut themselves down). The second is reversible
+> — history is kept, and re-installing with a live key brings the machine back as the same
+> server, pending approval.
 
 ---
 

@@ -56,9 +56,39 @@ sets `status='online'`, `last_seen=now` → `checkThresholds` evaluates the conf
 
 ## 2. Enrollment & auth
 
-Two different secrets: a **shared install key** (`AGENT_INSTALL_KEY` in `backend/.env`) gets
-an agent in the door; a **per-device token** is what it runs on. Rotating the install key
-never disturbs approved agents.
+Two different secrets: an **install key** (`AIK-…`, minted by an admin on **Server Metrics →
+Agent install keys**, stored hashed in `agent_install_keys`) gets an agent in the door; a
+**per-device token** (`AGT-…`, `agent_tokens.approved_token`) is what it runs on.
+
+Keys are revocable, carry an optional expiry, and record who issued them and how many agents
+enrolled with each. `agent_tokens.install_key_id` records which key let each machine in, so a
+key also owns its fleet — the branch model, one key per office.
+
+A key is stored **twice, for two different questions**: `key_hash` (SHA-256) is what the
+enrollment path matches on — one indexed lookup, one-way — while `key_cipher` (AES-256-GCM,
+`services/secretCrypto.js`) is what lets an admin re-open the install command later, which a
+hash can never do. Encrypted rather than plaintext because `ops/db-backup` dumps MySQL onto the
+same drive the offsite rclone job syncs: a plaintext column would put every install key into a
+file that leaves the building, while the encryption key lives in `backend/.env`, which does not.
+`GET /install-keys/:id/reveal` is the only endpoint that returns a key after creation — admin
+only, and **audited on every call**.
+
+**Revoking a key offers two outcomes**, and the dialog names the affected servers first:
+
+| | Effect |
+|---|---|
+| *Revoke key only* | New installs are blocked. Every server already reporting is untouched — it runs on its own `AGT-…` token. |
+| *Revoke key and stop its servers* | Those enrolments go to `status='revoked'`; each agent's next POST 403s, and it deletes its own `agent.conf` and exits. |
+
+Stopping servers is **reversible**: the device row, `device_logs` and the InfluxDB history all
+survive, and `register()` re-arms a `revoked` enrolment onto the *same* `device_id`, so
+re-installing with a live key brings the machine back as itself (pending approval) rather than
+forking its time-series into a second server.
+
+The legacy `AGENT_INSTALL_KEY` in `backend/.env` still works as a deprecated bootstrap fallback
+(a fresh database has neither a key nor an admin to mint one), is only consulted after the table
+misses, and warns on every use. Agents enrolled through it have `install_key_id = NULL` and are
+therefore unaffected by any key revoke — there is no key to attribute them to.
 
 1. **Register** — agent POSTs the install key + host info. Backend creates, in one
    transaction: `devices` (`device_type='server'`, `status='pending'`), `server_specs`,

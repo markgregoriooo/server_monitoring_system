@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api/api";
 import ServerDetail from "./ServerDetail";
+import InstallKeysPanel from "../components/servers/InstallKeysPanel";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 
@@ -762,6 +763,11 @@ export default function ServerMetrics() {
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN, boxShadow: `0 0 6px ${GREEN}` }} /> Live
         </span>
       </div>
+
+      {/* Install keys (admin) — sits directly above Pending approvals because that is
+          the order the work happens in: mint a key, run the command it gives you, then
+          approve the server when it shows up below. */}
+      {isAdmin && <InstallKeysPanel />}
 
       {/* Pending approvals */}
       {pending.length > 0 && (

@@ -2,14 +2,21 @@
 # Linux installer — installs the CSPC-ICTU monitoring agent as a systemd service.
 # Run the matching binary (go-agent-linux-amd64 / -arm64) from the same folder.
 #
-# Usage: sudo bash install.sh <API_URL> <INSTALL_KEY>
-#   e.g. sudo bash install.sh http://192.168.100.9:3000 my-shared-install-key
+# Usage: sudo bash install.sh <API_URL> <INSTALL_KEY> [--re-enroll]
+#   e.g. sudo bash install.sh http://192.168.100.9:3000 AIK-...
+#
+# Get the key from the dashboard: Server Metrics -> Agent install keys -> + New key.
+#
+# --re-enroll discards the existing agent.conf and registers again. Needed when moving a
+# machine onto a different install key (e.g. off the legacy .env key, or to another
+# branch's key) — a plain re-run does NOT re-register, because agent.conf already exists.
 set -euo pipefail
 
 API_URL="${1:-}"
 INSTALL_KEY="${2:-}"
+RE_ENROLL="${3:-}"
 if [[ -z "$API_URL" || -z "$INSTALL_KEY" ]]; then
-  echo "Usage: sudo bash install.sh <API_URL> <INSTALL_KEY>"
+  echo "Usage: sudo bash install.sh <API_URL> <INSTALL_KEY> [--re-enroll]"
   exit 1
 fi
 
@@ -31,10 +38,26 @@ fi
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$BINARY_SRC" "$INSTALL_DIR/go-agent"
 
+# --re-enroll: drop the existing enrollment so the key below is actually presented.
+if [[ "$RE_ENROLL" == "--re-enroll" && -f "$CONF" ]]; then
+  echo "--re-enroll: removing $CONF to register again."
+  rm -f "$CONF"
+fi
+
 # First run: register and block until an admin approves (writes agent.conf).
 if [[ ! -f "$CONF" ]]; then
   echo "Registering with backend; waiting for admin approval (Ctrl-C to abort)..."
   "$INSTALL_DIR/go-agent" --register-only -api-url "$API_URL" -install-key "$INSTALL_KEY" -conf "$CONF"
+else
+  # Say so LOUDLY. The install key is a required argument, so silently ignoring it reads
+  # as "the key was applied" — which is how a machine ends up still attributed to an old
+  # key (or to none at all) while the operator believes they moved it onto the new one.
+  echo "WARNING: $CONF already exists - this machine is ALREADY ENROLLED." >&2
+  echo "WARNING: the install key you passed was NOT used and this server is NOT attributed to it." >&2
+  # A machine that is still approved keeps its approval and its AGT- token through a
+  # re-enroll — it is only re-filed under the new key. One whose key was revoked comes
+  # back as pending and does need approving again.
+  echo "WARNING: to move it onto that key, re-run with --re-enroll." >&2
 fi
 
 cat > "$SERVICE" <<EOF

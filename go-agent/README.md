@@ -176,7 +176,7 @@ Everything is driven by command-line flags parsed in `main.go`:
 | `--register` | Enroll if not already enrolled, **wait** for admin approval, then **start the metric loop** (one command does it all). |
 | `--register-only` | Enroll and **exit** after approval. Used by the installers — the service then runs the loop separately. |
 | `-api-url URL` | Backend base URL, e.g. `http://192.168.100.9:3000`. Required for enrollment. |
-| `-install-key KEY` | The shared secret (`AGENT_INSTALL_KEY` from the backend `.env`). Required for enrollment. |
+| `-install-key KEY` | The enrollment key (`AIK-…`), minted by an admin on **Server Metrics → Agent install keys**. Required for enrollment. Used once — the agent then runs on the `AGT-…` token it gets at approval. Revoking the install key blocks new installs; the admin can *also* choose to de-authorise the servers it enrolled, in which case this agent gets a 403, deletes its `agent.conf` and exits (re-run with a live key to come back). |
 | `-conf PATH` | Path to `agent.conf`. Defaults to **next to the executable** so the installed service finds it regardless of working directory. |
 | `-interval N` | Seconds between metric posts (default **10**). Saved into `agent.conf` at enrollment. |
 
