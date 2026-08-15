@@ -2,9 +2,10 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
 import { socket } from "../socket/socket";
+import { pathWithGaps } from "../utils/seriesGaps";
 
 // Predictive Analytics: disk-full ETA (linear regression) + alert analytics
-// (Phase 1), trend/projection (EWMA + Holt's linear, Phase 2), anomaly detection
+// (Phase 1), trend/projection (seasonal Holt-Winters, Phase 2), anomaly detection
 // (per-hour z-score + IQR, Phase 3), threshold recommendations (percentiles,
 // Phase 4) and the UPS-battery / link-saturation ETAs (Phase 2b). Backend:
 // services/analyticsService.js → /api/analytics. See predictive-analytics.md.
@@ -113,6 +114,22 @@ interface MetricTrend {
   series: { t: string; value: number; ewma: number }[];
   projection: { t: string; value: number }[];
   trendPerHour: number | null;
+  // Whether the projection carries the daily hour-of-day shape. The caption says which,
+  // so a flat-looking forecast is explainable rather than just suspicious.
+  seasonal?: boolean;
+  profileHours?: number;
+  profileCycles?: number;
+  // Why a projection was withheld, when status === "insufficient_history".
+  dataQuality?: {
+    ok: boolean;
+    reason: "no_data" | "too_short" | "hours_missing" | "gaps" | "sparse" | "ok";
+    message: string;
+    points: number;
+    spanDays: number;
+    hoursCovered: number;
+    coverage: number;
+    largestGapHours: number;
+  } | null;
   advice: {
     level: "critical" | "warning";
     severity: "warning" | "critical";
@@ -121,7 +138,10 @@ interface MetricTrend {
     etaHours: number;
     action: string;
   } | null;
-  status: "ok" | "insufficient_data";
+  // "insufficient_history" = there IS history, but not enough of it (or too gappy) to
+  // project from — distinct from "insufficient_data", which means barely any points at
+  // all. The first shows the quality notice; the second is just an empty panel.
+  status: "ok" | "insufficient_data" | "insufficient_history";
 }
 
 interface AnomalyResult {
@@ -236,19 +256,26 @@ const ALERT_LOOKBACKS = [D(7), D(30), D(90)];
 // point of a data-driven suggestion. 30 days is a representative period: long enough not
 // to tune to a quiet week, short enough not to bake in load the hardware has outgrown.
 const REC_WINDOW_DAYS = 30;
-// Trend has NO lookback control, deliberately. Its projector is exponential smoothing
-// (EWMA a=0.3 then Holt's a=0.5), which by design forgets: at 15-minute buckets a point
-// five hours old carries a weight near 0.0008, so feeding it 7 days instead of 48 hours
-// barely moves the projection. A control that cannot meaningfully change the output
-// should not imply that it can — it would be a chart-zoom wearing a model-parameter
-// label. Fixed at 48h, which is ample history for the fit. See predictive-analytics.md
-// section 16.7. (The ANOMALY window below IS a real model parameter and stays adjustable.)
-const TREND_LOOKBACK_HOURS = 48;
+// Trend has NO lookback control, deliberately — but the reasoning changed with the model.
+// It used to be "exponential smoothing forgets, so a wider window barely moves the
+// projection". That is still true of the LEVEL and TREND terms, and is no longer true of
+// the whole forecast: the daily hour-of-day profile is an AVERAGE over the window, so more
+// days genuinely sharpen it. The window is fixed because it is now a correctness input
+// rather than a preference — too short and the profile collapses and the projection
+// silently degrades to a straight line. Chosen here, not exposed.
+// (The ANOMALY window below IS a real model parameter and stays adjustable.)
+// 7 days, not 2. The projection now removes the daily cycle before fitting and puts it
+// back on afterwards, and the quality of that hour-of-day profile is set by how many
+// cycles it was averaged over. On a synthetic room, widening 48h → 168h took the 12h
+// mean absolute error from 0.14 °C to 0.05 °C; two days is the bare minimum the backend
+// will accept before it falls back to a straight line.
+const TREND_LOOKBACK_HOURS = 168;
 // How far AHEAD the projection runs, deliberately independent of the lookback. Deriving
 // it from the lookback coupled two unrelated questions — picking a 24h window to steady
 // the trend line also silently shortened the forecast to 6h, which is not what "look back
 // further" means to anyone. 12h is the operational horizon: far enough to act on before
-// the next shift, short enough that a straight-line projection is still defensible.
+// the next shift, and now safe to run across a daily cycle because the projection carries
+// the hour-of-day shape rather than extrapolating one straight line through it.
 const TREND_HORIZON_HOURS = 12;
 // Live updates: server metrics (~10s/host), SNMP/MikroTik polls (~30-60s) and environment
 // readings (~3s) all stream in over the socket. We coalesce that firehose to at most one
@@ -1034,10 +1061,25 @@ export default function Analytics() {
             // history actually came back is a different number the chart footer reports
             // ("30h history"). Wording it as history here contradicted that footer on the
             // same panel whenever a device had less data than the window.
-            subtitle={`EWMA + Holt's linear · ${trend?.lookbackHours ?? TREND_LOOKBACK_HOURS}h window → ${trend?.horizonHours ?? TREND_HORIZON_HOURS}h projection`}
+            subtitle={
+              trend?.status === "insufficient_history"
+                ? `${trend.lookbackHours}h window · projection withheld`
+                : `${trend?.seasonal ? "Holt + daily cycle" : "Holt's linear"} · ${trend?.lookbackHours ?? TREND_LOOKBACK_HOURS}h window → ${trend?.horizonHours ?? TREND_HORIZON_HOURS}h projection`
+            }
           >
             {trendLoading && !trend ? (
               <Empty>Loading trend…</Empty>
+            ) : trend?.status === "insufficient_history" ? (
+              // The data cannot support a projection, so there ISN'T one — and the panel
+              // says which check failed rather than showing an empty chart. The HISTORY is
+              // still drawn: it is real, and seeing where the gaps are is the fastest way
+              // to understand why the forecast is being withheld.
+              <div className="space-y-3">
+                <DataQualityNotice quality={trend.dataQuality} />
+                {trend.series.length >= 2 && (
+                  <TrendChart series={trend.series} projection={[]} unit={trend.unit} />
+                )}
+              </div>
             ) : !trend || trend.status !== "ok" ? (
               <Empty>Not enough history for this metric yet.</Empty>
             ) : (
@@ -1826,6 +1868,49 @@ function Dim({ children }: { children: React.ReactNode }) {
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="py-6 text-center text-[1em]" style={{ color: gf.textDim }}>{children}</div>;
 }
+
+// Why no projection is being shown. Deliberately specific: "not enough data" alone leaves
+// an operator with nothing to act on, while "12 of 24 hours have ever been recorded" says
+// exactly what to fix — leave the sensor running overnight.
+function DataQualityNotice({ quality }: { quality: MetricTrend["dataQuality"] }) {
+  if (!quality) return <Empty>Not enough history for this metric yet.</Empty>;
+
+  // One short fix per reason. The backend message already states WHAT is wrong, so this
+  // only says what to do about it — saying both at length made the notice repeat itself.
+  const FIX: Record<string, string> = {
+    no_data: "Check the sensor is reporting.",
+    too_short: "Keep it running.",
+    hours_missing: "Leave it running overnight.",
+    gaps: "Check for dropouts.",
+    sparse: "Check readings arrive steadily.",
+  };
+
+  return (
+    <div
+      className="flex flex-col gap-1 px-3 py-2.5 rounded-[2px]"
+      style={{ background: "rgba(255,120,10,0.06)", border: "1px solid rgba(255,120,10,0.3)" }}
+    >
+      <div className="font-semibold" style={{ color: ORANGE }}>
+        ⚠ Not enough data to forecast
+      </div>
+      <div style={{ color: gf.textPrimary }}>
+        {quality.message} {FIX[quality.reason] ?? ""}
+      </div>
+      {/* The raw figures, so the verdict is checkable rather than taken on trust. */}
+      <div style={{ color: gf.textDim }}>
+        {quality.points} readings · {quality.spanDays}d ·{" "}
+        <span style={{ color: quality.hoursCovered < 18 ? ORANGE : gf.textDim }}>
+          {quality.hoursCovered}/24 hours
+        </span>{" "}
+        ·{" "}
+        <span style={{ color: quality.largestGapHours > 6 ? ORANGE : gf.textDim }}>
+          {quality.largestGapHours}h gap
+        </span>{" "}
+        · {Math.round(quality.coverage * 100)}%
+      </div>
+    </div>
+  );
+}
 function BarRow({ label, count, max, color, typeLabel }: {
   label: string; count: number; max: number; color: string; typeLabel?: string | null;
 }) {
@@ -1892,7 +1977,7 @@ function LegendDot({ color, label, dashed }: { color: string; label: string; das
 }
 
 // Lightweight inline-SVG line chart (no chart lib — matches this page's hand-rolled
-// style). Plots actual + EWMA history and the dashed Holt's-linear projection, with the
+// style). Plots actual + EWMA history and the dashed seasonal projection, with the
 // forecast region shaded. Strokes use non-scaling-stroke so width stays uniform under
 // the non-uniform viewBox scaling.
 function TrendChart({
@@ -1916,12 +2001,20 @@ function TrendChart({
 
   const x = (t: number) => ((t - tMin) / (tMax - tMin || 1)) * W;
   const y = (v: number) => H - padY - ((v - vMin) / (vMax - vMin || 1)) * (H - 2 * padY);
+  // Lifts the pen wherever the readings stopped, instead of drawing one straight segment
+  // across the outage — which is how a five-day sensor dropout came to look identical to
+  // five calm minutes. A single `d` can hold several `M` subpaths, so this is still one
+  // <path> per series.
   const path = (pts: { t: number; v: number }[]) =>
-    pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ");
+    pathWithGaps(pts.map((p) => ({ t: p.t, x: x(p.t), y: y(p.v) })));
 
   const lastE = hist[hist.length - 1];
   if (!lastE) return <Empty>Not enough points to chart.</Empty>;
-  const projLine = [{ t: lastE.t, v: lastE.e }, ...proj]; // connect EWMA tail → projection
+  // Connect from the ACTUAL last reading, not the EWMA tail. The projection is now
+  // anchored to the observation (analyticsMath.forecastSeasonal), so joining it to the
+  // smoothed line would draw a visible kink at the boundary — and undo the whole point
+  // of anchoring, which is that the forecast starts where the data visibly ended.
+  const projLine = [{ t: lastE.t, v: lastE.v }, ...proj];
   const boundary = x(lastE.t);
 
   // Value scale on the LEFT EDGE, where a vertical axis belongs. It used to be printed as
@@ -1950,7 +2043,8 @@ function TrendChart({
         </div>
 
         <div className="flex-1 min-w-0">
-          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: H, display: "block" }}>
+          <div className="relative">
+            <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: H, display: "block" }}>
             {/* Forecast region, shaded so past and projected are never confused. */}
             <rect x={boundary} y={0} width={W - boundary} height={H} fill="var(--gf-hover)" opacity={0.5} />
             {/* Gridlines share the tick positions, giving the labels something to sit on. */}
@@ -1965,17 +2059,37 @@ function TrendChart({
             <path d={path(hist.map((h) => ({ t: h.t, v: h.e })))} fill="none" stroke="var(--gf-accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
             <path d={path(projLine)} fill="none" stroke={ORANGE} strokeWidth={2} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
           </svg>
+            {/* "now" rides the boundary line ABOVE the axis, not inside it.
+                All three labels used to share one 16px absolutely-positioned row, and the
+                boundary is not near the middle: a 168h window with a 12h projection puts
+                it at ~93%, so "now" printed straight over the right-hand time and the row
+                read "Sun 2:00 PMnowSun 12:29 A". Lifting it out removes the collision by
+                construction rather than by tuning offsets.
 
-          {/* X axis, aligned to the plot only. "now" sits at the history/forecast boundary
-              rather than at the midpoint, so the split is readable off the axis itself. */}
+                It is HTML rather than SVG <text> deliberately — the chart is drawn with
+                preserveAspectRatio="none", which stretches the viewBox horizontally and
+                would distort any glyphs inside it. */}
+            {proj.length > 0 && (
+              <span
+                className="absolute whitespace-nowrap px-1 rounded-[2px] text-[0.82em] pointer-events-none"
+                style={{
+                  left: `${nowLeftPct}%`,
+                  top: 2,
+                  // Sits to the LEFT of the line once the boundary is near the right edge,
+                  // so the label stays adjacent to what it marks instead of overflowing.
+                  transform: nowLeftPct > 80 ? "translateX(calc(-100% - 4px))" : "translateX(-50%)",
+                  color: gf.textMuted,
+                  background: gf.panel,
+                }}
+              >
+                now
+              </span>
+            )}
+          </div>
+
+          {/* X axis — start and end only, so the two can never overlap. */}
           <div className="relative mt-1 text-[0.82em]" style={{ height: 16, color: gf.textDim }}>
             <span className="absolute left-0">{fmtClock(tMin)}</span>
-            <span
-              className="absolute -translate-x-1/2 whitespace-nowrap"
-              style={{ left: `${nowLeftPct}%`, color: gf.textMuted }}
-            >
-              now
-            </span>
             <span className="absolute right-0">{fmtClock(proj.at(-1)?.t ?? lastE.t)}</span>
           </div>
         </div>

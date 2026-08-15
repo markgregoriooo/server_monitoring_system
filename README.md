@@ -134,7 +134,7 @@ npm run dev                 # → http://localhost:5173
 | `DB_*`, `INFLUX_*` | MySQL and InfluxDB connections |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | OAuth — login fails for everyone without these |
 | `DEVICE_SECRET` | ESP32 socket auth — must match the firmware constant |
-| `AGENT_INSTALL_KEY` | shared key Go agents present at enrollment |
+| `AGENT_INSTALL_KEY` | *deprecated* — bootstrap fallback only. Enrollment keys are minted on **Server Metrics → Agent install keys**; blank this once you have one |
 | `MIKROTIK_ENC_KEY` | **required for MikroTik** — 64 hex chars, AES-256-GCM |
 | `SMTP_*`, `MAIL_FROM` | alert/report email; blank disables email cleanly |
 | `WEB_ORIGIN` | allowed dashboard origins, or `*` for a roaming LAN |
@@ -209,10 +209,16 @@ All routes require a Bearer JWT unless marked otherwise. Roles: **A** = admin,
 ### Servers & agents
 | Method | Endpoint | Role | Description |
 |--------|----------|------|-------------|
-| POST | `/api/agents/register` | install key | First-run agent enrollment |
+| POST | `/api/agents/register` | install key | First-run agent enrollment (rate-limited) |
 | GET | `/api/agents/status` | pending token | Agent polls until approved |
 | GET | `/api/agents/pending` | A | Enrollments awaiting approval |
 | POST | `/api/agents/:id/approve` \| `/reject` | A | Approve / reject an agent |
+| GET | `/api/agents/install-keys` | A | List enrollment keys (prefix only — the key itself is hashed) |
+| POST | `/api/agents/install-keys` | A | Mint a key; the plaintext is returned **once** |
+| GET | `/api/agents/install-keys/:id/reveal` | A | Show a key again (decrypts `key_cipher`; **audited**) |
+| GET | `/api/agents/install-keys/:id/servers` | A | Servers this key enrolled that are still reporting |
+| POST | `/api/agents/install-keys/:id/revoke` | A | Withdraw a key; `{revokeAgents:true}` also stops the servers it enrolled |
+| DELETE | `/api/agents/install-keys/:id` | A | Remove a **revoked** key from the list (400 while still active) |
 | POST | `/api/servers/metrics` | agent token | Live metric ingest |
 | POST | `/api/servers/metrics/batch` | agent token | Backfill of buffered samples |
 | GET | `/api/servers` | A S | All servers with live metrics |

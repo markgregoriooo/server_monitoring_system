@@ -85,14 +85,35 @@ daily peaks.
 
 These are **statistics**, used for short-horizon projection — not for ETA.
 
-**In our code:** `analyticsMath.js` → `ewma()` and `holtLinear()`, combined by
-`analyticsService.js` in
-`forecastTrend()`; surfaced by `GET /api/analytics/trends/:metric` and the
-"Trend & Short-Term Projection" chart on the Analytics page. Note: we implement
-**Holt's linear method** (level + trend = the *non-seasonal* Holt-Winters); the
-daily *seasonality* term is handled separately by the per-hour baseline in §4.
-Watching the Holt-Winters video still teaches the full picture — our code is its
-trend half.
+**In our code:** `analyticsMath.js` → `ewma()`, `holtLinear()`, `hourlyProfile()` and
+`forecastSeasonal()`, combined by `analyticsService.js` in `forecastTrend()`; surfaced by
+`GET /api/analytics/trends/:metric` and the "Trend & Short-Term Projection" chart on the
+Analytics page. We implement **additive Holt-Winters** — all three terms:
+
+| Term | Where |
+|---|---|
+| level + trend | `holtLinear()`, fitted to the **deseasonalised** series |
+| seasonality | `hourlyProfile()` — mean deviation per local hour-of-day |
+
+**Worth knowing for a defence, because it is a good story.** This started as Holt's
+*linear* method alone, on the argument that seasonality was already handled by the
+per-hour baseline in §4. That argument was wrong, and the failure is instructive: a
+straight line has no way to turn around. Asked at 11 PM to project 12 hours, it picked up
+the evening's cooling and extrapolated it through dawn into midday — predicting the
+day's *coldest* figure for the hour the room is *hottest*, about 8 °C out and in the
+opposite direction. Two lessons: a non-seasonal model is only safe over a horizon short
+relative to the cycle, and "the seasonality is handled elsewhere" is not the same as the
+forecast knowing about it.
+
+Two smaller fixes went with it, both worth being able to explain:
+
+- **Fit the raw series, not the smoothed one.** EWMA was being fed to Holt, so the
+  projection started from a doubly-lagged level and opened ~2 °C away from the reading
+  displayed beside it. Smoothing is for the eye; the fit should see the data.
+- **Anchor to the last observation, then fade.** The model's value at the join rarely
+  equals the last reading, and a forecast that opens by contradicting the number on
+  screen is not believed. The gap is added to the whole projection and decays to zero
+  over 3 hours — continuous at the join, converging to the model after.
 
 **Watch / search** (ritvikmath's "Time Series Talk" playlist is the best here):
 - `ritvikmath exponential smoothing`

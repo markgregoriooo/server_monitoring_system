@@ -58,7 +58,7 @@ const parseDeviceId = (q) => {
 };
 
 // GET /api/analytics/trends/:metric?deviceId=&hours=48&horizon=12  (Phase 2)
-// EWMA-smoothed history + Holt's-linear short-horizon projection for one metric.
+// EWMA-smoothed history (display) + seasonal Holt-Winters projection for one metric.
 router.get(
   "/trends/:metric",
   asyncHandler(async (req, res) => {

@@ -4,7 +4,7 @@ import alertRulesService from "./alertRulesService.js";
 import {
   MIN_POINTS,
   linearRegression, score, splitTrainTest, percentile,
-  ewma, holtLinear,
+  ewma, holtLinear, forecastSeasonal, assessSeries,
   forecastSeries, projectToBound, worstVolumeForecast, byEtaAsc,
   round1, round2, clampInt, clampNum, confidenceLabel, mean, stddev,
   everyForHours, parseEveryMs, bucketForDays, spanDays,
@@ -380,13 +380,25 @@ async function fetchMetricSeries(metric, { deviceId = null, rangeExpr = "-14d", 
     .sort((a, b) => a.t - b.t);
 }
 
-// Short-horizon trend + projection for one metric (Phase 2). EWMA = smoothed history;
-// Holt's linear = the forward projection. Returns the recent series, the projection, and
-// the fitted trend so the UI can plot and caption it.
-async function forecastTrend({ metric, deviceId = null, lookbackHours = 48, horizonHours = 12 } = {}) {
+// Trend + projection for one metric (Phase 2). EWMA smooths the history for DISPLAY;
+// the projection is Holt's method on the DESEASONALISED series, with the daily shape put
+// back on afterwards (analyticsMath.forecastSeasonal).
+//
+// It used to be plain Holt's linear on the EWMA — a straight line — and over a 12 h
+// horizon on room temperature that was not a small error. A projection made at 11 PM
+// picked up the evening's falling limb and ran it through dawn into midday, predicting
+// the day's coolest figure for the hour the room is hottest: ~8 °C out, in the wrong
+// direction. Fitting the smoothed series compounded it, opening the projection ~2 °C
+// away from the reading shown beside it on the same page.
+//
+// The lookback is also wider by default now: a daily shape cannot be estimated from a
+// window that does not contain several days of it.
+async function forecastTrend({ metric, deviceId = null, lookbackHours = 168, horizonHours = 12 } = {}) {
   const meta = METRICS[metric];
   if (!meta) return null;
-  const hours = clampInt(lookbackHours, 6, 720, 48);
+  // Floor raised to 48 h: below two days there is no daily shape to estimate, and the
+  // projection silently degrades to the straight line this function exists to stop being.
+  const hours = clampInt(lookbackHours, 48, 720, 168);
   const horizon = clampInt(horizonHours, 1, 168, 12);
   const every = everyForHours(hours);
   const series = await fetchMetricSeries(metric, { deviceId, rangeExpr: `-${hours}h`, every });
@@ -395,29 +407,49 @@ async function forecastTrend({ metric, deviceId = null, lookbackHours = 48, hori
     metric, label: meta.label, unit: meta.unit, deviceId,
     lookbackHours: hours, horizonHours: horizon,
     alpha: 0.3, sampleCount: series.length,
-    series: [], projection: [], trendPerHour: null, advice: null, status: "insufficient_data",
+    series: [], projection: [], trendPerHour: null, advice: null,
+    seasonal: false, profileHours: 0, profileCycles: 0,
+    dataQuality: null,
+    status: "insufficient_data",
   };
   if (series.length < MIN_POINTS) return base;
 
   const values = series.map((p) => p.y);
-  const sm = ewma(values, base.alpha);
-  const holt = holtLinear(sm); // smooth first, then fit trend — steadier projection
+  const sm = ewma(values, base.alpha); // display only — never fed to the fit
   const points = series.map((p, i) => ({
     t: new Date(p.t).toISOString(), value: round2(p.y), ewma: round2(sm[i]),
   }));
 
+  const stepMs = parseEveryMs(every);
+
+  // REFUSE to project from a window that cannot support one. The history is still
+  // returned — it is real and worth looking at — but `projection` stays empty and
+  // `dataQuality` says exactly what is missing.
+  //
+  // The alternative, which this replaces, was to quietly fall back to a straight line.
+  // That is the worse failure: the page looked identical, the numbers looked confident,
+  // and nothing on screen distinguished "here is the daily cycle" from "the sensor has
+  // never seen a morning, so here is a guess". A forecast that admits it does not know
+  // is more useful than one that does not.
+  const quality = assessSeries(series, { stepMs });
+  if (!quality.ok) {
+    return { ...base, series: points, dataQuality: quality, status: "insufficient_history" };
+  }
+
+  const fc = forecastSeasonal(series, { horizonMs: horizon * 3_600_000, stepMs });
+
   const projection = [];
   let trendPerHour = null;
-  if (holt) {
-    const stepMs = parseEveryMs(every);
-    const steps = Math.min(200, Math.max(1, Math.round((horizon * 3_600_000) / stepMs)));
-    const lastT = series[series.length - 1].t;
-    trendPerHour = round2((holt.trend * 3_600_000) / stepMs);
-    for (let k = 1; k <= steps; k++) {
-      let v = holt.forecast(k);
+  if (fc) {
+    trendPerHour = round2(fc.trendPerHour);
+    for (const p of fc.points.slice(0, 200)) {
+      let v = p.value;
       if (meta.bounded != null) v = Math.min(meta.bounded, Math.max(0, v));
-      projection.push({ t: new Date(lastT + k * stepMs).toISOString(), value: round2(v) });
+      projection.push({ t: new Date(p.t).toISOString(), value: round2(v) });
     }
+    base.seasonal = fc.seasonal;
+    base.profileHours = fc.profile.hoursCovered;
+    base.profileCycles = fc.profile.cycles;
   }
 
   // Predictive advice: does the projection cross an alert threshold within the horizon?
@@ -425,7 +457,7 @@ async function forecastTrend({ metric, deviceId = null, lookbackHours = 48, hori
   // alarm on high), so the recommendation tracks the admin's own thresholds.
   const advice = await trendAdvice(metric, deviceId, values, projection, series[series.length - 1].t);
 
-  return { ...base, series: points, projection, trendPerHour, advice, status: "ok" };
+  return { ...base, series: points, projection, trendPerHour, advice, dataQuality: quality, status: "ok" };
 }
 
 // Build the threshold-crossing advisory for a metric's projection (or null). Looks at the

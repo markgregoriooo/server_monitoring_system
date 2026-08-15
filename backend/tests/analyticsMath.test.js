@@ -9,6 +9,9 @@ import {
   percentile,
   ewma,
   holtLinear,
+  hourlyProfile,
+  forecastSeasonal,
+  assessSeries,
   forecastSeries,
   projectToBound,
   worstVolumeForecast,
@@ -584,4 +587,179 @@ test("clampInt/clampNum coerce junk to the default and bound the range", () => {
   assert.equal(clampInt(undefined, 1, 90, 30), 30);
   assert.equal(clampNum("90.5", 50, 100, 90), 90.5);
   assert.equal(clampNum("abc", 50, 100, 90), 90);
+});
+
+// ─── daily seasonality in the trend projection ────────────────────────────────
+//
+// The regression these exist for: the Trends projection was plain Holt's linear, which
+// draws ONE STRAIGHT LINE. Asked at 11 PM for 12 hours, it picked up the evening's
+// falling limb and ran it through dawn into midday — forecasting the day's coolest
+// figure for the hour the room is hottest, ~8 °C out and in the wrong direction.
+
+const HR = 3_600_000;
+
+// A server room shaped like a real one: mean 31.5 °C, ±2.5, hottest ~15:00 local
+// (UTC+8), coolest ~03:00. Deterministic — no RNG in a test.
+function room(ms) {
+  const d = new Date(ms);
+  const localH = ((d.getUTCHours() + 8) % 24) + d.getUTCMinutes() / 60;
+  return 31.5 + 2.5 * Math.cos(((localH - 15) / 24) * 2 * Math.PI);
+}
+// `days` of history at 30-min steps ending 23:00 local.
+function roomSeries(days) {
+  const end = Date.UTC(2026, 7, 15, 15, 0, 0); // 23:00 +08
+  const step = HR / 2;
+  const out = [];
+  for (let t = end - days * 24 * HR; t <= end; t += step) out.push({ t, y: room(t) });
+  return out;
+}
+
+test("hourlyProfile recovers the daily shape and rates it usable", () => {
+  const p = hourlyProfile(roomSeries(7));
+  assert.equal(p.hoursCovered, 24);
+  assert.ok(p.cycles >= 7, `expected ~7 cycles, got ${p.cycles}`);
+  assert.equal(p.usable, true);
+  // Hottest hour must sit above the mean and coolest below — the shape, not just a number.
+  const hottest = p.deviations.indexOf(Math.max(...p.deviations));
+  const coolest = p.deviations.indexOf(Math.min(...p.deviations));
+  assert.ok(p.deviations[hottest] > 1.5, "afternoon should be well above the mean");
+  assert.ok(p.deviations[coolest] < -1.5, "pre-dawn should be well below the mean");
+  assert.ok(Math.abs(hottest - 15) <= 1, `peak hour ${hottest}, expected ~15`);
+  assert.ok(Math.abs(coolest - 3) <= 1, `trough hour ${coolest}, expected ~3`);
+});
+
+test("hourlyProfile refuses a window too short to hold a daily shape", () => {
+  // One cycle cannot separate "this is the daily shape" from "this is the trend".
+  assert.equal(hourlyProfile(roomSeries(1)).usable, false);
+});
+
+test("the projection starts where the data ended — no jump at the join", () => {
+  const s = roomSeries(7);
+  const fc = forecastSeasonal(s, { horizonMs: 12 * HR, stepMs: HR / 2 });
+  const lastY = s[s.length - 1].y;
+  // The OLD path opened ~1.5-2 °C away from the reading shown beside it on the page,
+  // because it projected from a doubly-smoothed level rather than from the observation.
+  assert.ok(
+    Math.abs(fc.points[0].value - lastY) < 0.35,
+    `first step ${fc.points[0].value.toFixed(2)} vs last actual ${lastY.toFixed(2)}`,
+  );
+});
+
+test("the projection turns with the daily cycle instead of running straight", () => {
+  const fc = forecastSeasonal(roomSeries(7), { horizonMs: 12 * HR, stepMs: HR / 2 });
+  assert.equal(fc.seasonal, true);
+
+  const at = (h) => fc.points[h * 2 - 1].value; // 30-min steps
+  // From 23:00: keeps cooling to ~03:00, then MUST climb again through the morning.
+  assert.ok(at(4) < at(1), "should still be cooling before dawn");
+  assert.ok(at(12) > at(4), "should be warming again by late morning");
+  // The specific failure: midday must not be forecast as the coolest point of the run.
+  const coldest = Math.min(...fc.points.map((p) => p.value));
+  assert.ok(at(12) > coldest + 2, "late morning must not be near the day's minimum");
+});
+
+test("the seasonal projection tracks the real cycle far better than a straight line", () => {
+  const s = roomSeries(7);
+  const stepMs = HR / 2;
+  const fc = forecastSeasonal(s, { horizonMs: 12 * HR, stepMs });
+
+  const holt = holtLinear(ewma(s.map((p) => p.y), 0.3)); // the old path, verbatim
+  const lastT = s[s.length - 1].t;
+
+  let oldErr = 0, newErr = 0;
+  for (let k = 1; k <= fc.points.length; k++) {
+    const truth = room(lastT + k * stepMs);
+    oldErr += Math.abs(holt.forecast(k) - truth);
+    newErr += Math.abs(fc.points[k - 1].value - truth);
+  }
+  const n = fc.points.length;
+  assert.ok(newErr / n < 0.4, `seasonal MAE ${(newErr / n).toFixed(2)} should be small`);
+  assert.ok(
+    newErr < oldErr / 4,
+    `seasonal MAE ${(newErr / n).toFixed(2)} should beat linear ${(oldErr / n).toFixed(2)} decisively`,
+  );
+});
+
+test("falls back to a straight line, and says so, when there is no usable cycle", () => {
+  const fc = forecastSeasonal(roomSeries(1), { horizonMs: 6 * HR, stepMs: HR / 2 });
+  assert.equal(fc.seasonal, false, "one day cannot support a daily profile");
+  assert.ok(fc.points.length > 0, "still projects — a short horizon is fine linear");
+});
+
+test("forecastSeasonal declines to guess from too little data", () => {
+  assert.equal(forecastSeasonal([], { horizonMs: HR, stepMs: HR }), null);
+  assert.equal(forecastSeasonal(roomSeries(7), { horizonMs: 0, stepMs: HR }), null);
+  assert.equal(forecastSeasonal(roomSeries(7), { horizonMs: HR, stepMs: 0 }), null);
+});
+
+// ─── refusing to forecast from a window that cannot support one ────────────────
+//
+// The real case: a sensor that only ran while someone was testing had NO readings
+// between 01:00 and 10:00 across six days. The projection was still drawn — a confident
+// straight line for hours the system had literally never observed.
+
+/** `days` of history at `stepMs`, keeping only the local hours in `hours`. */
+function partialSeries(days, hours, stepMs = HR) {
+  const end = Date.UTC(2026, 7, 15, 15, 0, 0); // 23:00 +08
+  const out = [];
+  for (let t = end - days * 24 * HR; t <= end; t += stepMs) {
+    if (hours.includes(((new Date(t).getUTCHours() + 8) % 24))) out.push({ t, y: room(t) });
+  }
+  return out;
+}
+const ALL_HOURS = Array.from({ length: 24 }, (_, i) => i);
+
+test("a complete week passes the quality gate", () => {
+  const q = assessSeries(roomSeries(7), { stepMs: HR / 2 });
+  assert.equal(q.ok, true, q.message);
+  assert.equal(q.hoursCovered, 24);
+  assert.ok(q.coverage > 0.9, `coverage ${q.coverage}`);
+});
+
+test("office-hours-only data is refused, and says which hours are missing", () => {
+  // The reported failure: readings only from 11:00-23:00.
+  const q = assessSeries(partialSeries(6, [11, 12, 14, 15, 16, 18, 19, 20, 21, 22, 23]), { stepMs: HR });
+  assert.equal(q.ok, false);
+  assert.equal(q.reason, "hours_missing");
+  assert.ok(q.hoursCovered < 18, `covered ${q.hoursCovered}`);
+  assert.match(q.message, /of 24 hours/, "message must name the shortfall");
+});
+
+test("a window shorter than two days is refused before anything else", () => {
+  const q = assessSeries(roomSeries(1), { stepMs: HR / 2 });
+  assert.equal(q.ok, false);
+  assert.equal(q.reason, "too_short", "span is the first thing checked");
+});
+
+test("a long dropout is refused even when every hour is eventually covered", () => {
+  // Two full days, then a 20-hour silence, then two more full days.
+  const s = roomSeries(5);
+  const cut = s[Math.floor(s.length / 2)].t;
+  const gapped = s.filter((p) => p.t < cut || p.t > cut + 20 * HR);
+  const q = assessSeries(gapped, { stepMs: HR / 2 });
+  assert.equal(q.ok, false);
+  assert.equal(q.reason, "gaps");
+  assert.ok(q.largestGapHours >= 20, `largest gap ${q.largestGapHours}h`);
+});
+
+test("patchy sampling across a good span is refused as sparse", () => {
+  // Every hour of the day is represented and no single gap is long, but only a fraction
+  // of the expected buckets are there.
+  const s = roomSeries(6).filter((_, i) => i % 5 === 0);
+  const q = assessSeries(s, { stepMs: HR / 2 });
+  assert.equal(q.ok, false);
+  assert.ok(["sparse", "gaps"].includes(q.reason), `reason ${q.reason}`);
+});
+
+test("an empty or near-empty series is refused without throwing", () => {
+  assert.equal(assessSeries([], { stepMs: HR }).ok, false);
+  assert.equal(assessSeries([], { stepMs: HR }).reason, "no_data");
+  assert.equal(assessSeries([{ t: 1, y: 1 }], { stepMs: HR }).ok, false);
+});
+
+test("coverage is judged against the span actually held, not the window requested", () => {
+  // A three-day-old install is not "missing" four days of a 7-day window.
+  const q = assessSeries(roomSeries(3), { stepMs: HR / 2 });
+  assert.equal(q.ok, true, q.message);
+  assert.ok(q.spanDays >= 3 && q.spanDays < 4, `span ${q.spanDays}`);
 });

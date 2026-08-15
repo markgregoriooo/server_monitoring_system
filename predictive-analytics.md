@@ -22,7 +22,7 @@ Say this exactly, and every word is defensible:
 | Technique | Used for | Is it ML? |
 |---|---|---|
 | **Linear regression** | disk-full ETA, UPS battery degradation, link saturation | ✅ Yes — textbook supervised ML (also "just statistics") |
-| Holt's linear / EWMA smoothing | temp/CPU + router CPU/mem/clients short-horizon projection | ⚠️ Time-series **statistics**, not ML by most definitions |
+| Holt-Winters (additive) / EWMA smoothing | temp/CPU + router CPU/mem/clients projection, daily cycle included | ⚠️ Time-series **statistics**, not ML by most definitions |
 | z-score / IQR | anomaly detection (servers, environment, router) | ❌ Statistics |
 | Percentiles (p50/p95/p99) | threshold recommendations | ❌ Descriptive statistics |
 
@@ -43,7 +43,7 @@ actually cost marks.
 | **UPS battery ETA** | InfluxDB `ups_metrics.runtime_remaining_min` + `battery_status` (RFC 1628 enum) | Regression → project **down** to a 5-min floor; the enum overrides when worse | ✅ |
 | **Link saturation ETA** | InfluxDB `network_traffic.utilization_pct`, per `interface_name` | Regression → project up to a 90% ceiling | ✅ |
 | **Forecast accuracy** | the same series, replayed | Rolling-origin backtest (walk-forward validation) | ✅ validation |
-| **Trend projection** | `server_metrics`, `sensor_environment`, `router_metrics` | EWMA (α=0.3) → Holt's linear (α=0.5, β=0.2) | ⚠️ statistics |
+| **Trend projection** | `server_metrics`, `sensor_environment`, `router_metrics` | hour-of-day profile removed → Holt (α=0.5, β=0.2) on the remainder → profile added back, anchored to the last reading. EWMA (α=0.3) is display-only | ⚠️ statistics |
 | **Anomaly detection** | same as trend | z-score per **(day-type, hour)** bucket, \|z\|>3, + Tukey IQR fences | ❌ statistics |
 | **Threshold recommendations** | same as trend | percentiles: warn = p95, crit = p99 | ❌ statistics |
 | **Alert analytics** | MySQL `alerts` | counts, MTTR, severity mix | ❌ statistics |
@@ -199,7 +199,7 @@ and channels are in **`predictive-analytics-study-guide.md`**.
 | **1** | **R²** and MAE | The confidence gate; know R² can go negative | `score()` |
 | **1** | Train/test split — **chronological** for time series | What makes it *validated* ML | `splitTrainTest()`, `validate()` |
 | 2 | EWMA / exponential smoothing | The smoothed trend line | `ewma()` |
-| 2 | Holt's linear (non-seasonal Holt-Winters) | The 12h projection | `holtLinear()` |
+| 2 | Additive Holt-Winters (level + trend + daily seasonality) | The 12h projection | `forecastSeasonal()` + `hourlyProfile()` + `holtLinear()` |
 | 2 | Normal distribution, σ, **z-score** (3-sigma rule) | Anomaly detection | `detectAnomalies()` |
 | 3 | IQR / boxplot outliers | Anomaly context tag | `percentile()` |
 | 3 | Percentiles p50/p95/p99 (SRE "tail latency" framing) | Threshold suggestions | `recommendThresholds()` |
