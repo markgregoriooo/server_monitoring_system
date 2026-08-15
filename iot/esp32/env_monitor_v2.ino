@@ -28,7 +28,7 @@
  *  Green  = NORMAL
  *  Blue   = TOO_COLD
  *  Yellow = WARNING
- *  Orange = DANGER
+ *  Orange = CRITICAL by humidity alone
  *  Red    = CRITICAL (Temp or Smoke)
  *
  *  ─── CALIBRATION (self-calibrating since 2026-07-31) ─────────
@@ -100,9 +100,9 @@ bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
 #define NUM_PIXELS 20
 
 /* ================ LEDC (Buzzer) ============= */
-#define FREQ_SMOKE_DANGER 2500
+#define FREQ_SMOKE_CRITICAL 2500
 #define FREQ_TEMP_CRITICAL 2200
-#define FREQ_ENV_DANGER 2000
+#define FREQ_ENV_CRITICAL 2000
 #define FREQ_SMOKE_WARN 1000
 #define FREQ_ENV_WARN 1200
 
@@ -176,19 +176,20 @@ float roClean2 = 7.28;
 // only the fallback defaults used until the first envConfig arrives. The status
 // calculators, RGB LED and buzzer all derive from these, so the device's alarms stay
 // in sync with the dashboard's alerts.
-//   NOTE: alert_rules has warning+critical per metric, while this firmware also has a
-//   middle "DANGER" temp band. On envConfig we set TEMP_DANGER = TEMP_CRITICAL so the
-//   temp bands collapse to warning→critical, matching the dashboard's two severities.
+//   NOTE: one WARNING + one CRITICAL bound per metric, matching alert_rules exactly —
+//   every threshold here is set from the rule of the same name (gasWarn/gasCrit/…), so
+//   the name says which rule fills it. There used to be a third, middle "DANGER" band;
+//   it was neutralised at runtime (TEMP_DANGER = TEMP_CRITICAL) rather than removed,
+//   which left the device reporting a band the dashboard had no severity for.
 //   TEMP_COLD has no alert_rules equivalent, so it keeps this default (LED "too cold").
 //   IR/AC comfort zones (getIRZone) are a separate concept and are NOT driven here.
 float WARNING_PPM   = 150.0;
-float DANGER_PPM    = 300.0;
+float CRITICAL_PPM  = 300.0;
 float TEMP_COLD     = 22.0;
 float TEMP_WARNING  = 29.0;
-float TEMP_DANGER   = 32.0;
 float TEMP_CRITICAL = 35.0;
-float HUM_DANGER    = 95.0;
 float HUM_WARNING   = 85.0;
+float HUM_CRITICAL  = 95.0;
 
 /* ================= IR ZONES ================= */
 // Zone IDs for change detection
@@ -449,10 +450,13 @@ void setRGB(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 void setStatusColor(const String& envStatus, const String& tempStatus, const String& smokeStatus) {
-  // Priority: Smoke DANGER or Temp CRITICAL → Red
-  if (smokeStatus == "DANGER" || tempStatus == "CRITICAL") {
+  // Priority: smoke or temperature CRITICAL → Red. Those two are the act-now conditions,
+  // so they are named individually rather than read off envStatus.
+  if (smokeStatus == "CRITICAL" || tempStatus == "CRITICAL") {
     setRGB(255, 0, 0);  // Red
-  } else if (envStatus == "DANGER") {
+  } else if (envStatus == "CRITICAL") {
+    // Reached by HUMIDITY alone — gas and temperature critical are caught above. Amber,
+    // not red: it is a real breach of the critical rule but not an evacuate-now one.
     setRGB(255, 60, 0);  // Orange
   } else if (envStatus == "WARNING") {
     if (tempStatus == "TOO_COLD") {
@@ -497,25 +501,29 @@ float calcHeatIndex(float t, float h) {
 }
 
 /* ---- Status calculators ---- */
+// All three report the SAME three-band vocabulary as alert_rules: NORMAL / WARNING /
+// CRITICAL. temp adds TOO_COLD, which is not a severity but a separate axis (there is no
+// alert_rules equivalent — see TEMP_COLD).
 String calcSmokeStatus(float ppm1, float ppm2) {
   float ppmMax = max(ppm1, ppm2);
-  if (ppmMax >= DANGER_PPM) return "DANGER";
+  if (ppmMax >= CRITICAL_PPM) return "CRITICAL";
   if (ppmMax >= WARNING_PPM) return "WARNING";
   return "NORMAL";
 }
 
 String calcTempStatus(float t) {
   if (t >= TEMP_CRITICAL) return "CRITICAL";
-  if (t >= TEMP_DANGER) return "DANGER";
   if (t >= TEMP_WARNING) return "WARNING";
   if (t < TEMP_COLD) return "TOO_COLD";
   return "NORMAL";
 }
 
+// The worst band any one metric is in. A metric at its CRITICAL rule makes the room
+// critical, whichever metric it is — previously temperature returned CRITICAL while gas
+// and humidity returned DANGER, which ranked a smoke event BELOW a hot room.
 String calcEnvironmentStatus(float ppm1, float ppm2, float t, float h) {
   float ppmMax = max(ppm1, ppm2);
-  if (t >= TEMP_CRITICAL) return "CRITICAL";
-  if (t >= TEMP_DANGER || ppmMax >= DANGER_PPM || h >= HUM_DANGER) return "DANGER";
+  if (t >= TEMP_CRITICAL || ppmMax >= CRITICAL_PPM || h >= HUM_CRITICAL) return "CRITICAL";
   if (t >= TEMP_WARNING || ppmMax >= WARNING_PPM || h >= HUM_WARNING
       || t < TEMP_COLD) return "WARNING";
   return "NORMAL";
@@ -649,10 +657,13 @@ String getTimestamp() {
  * ─────────────────────────────────────────────*/
 void handleBuzzer(const String& smokeStatus, const String& tempStatus,
                   const String& envStatus, unsigned long now_ms) {
+  // Ladder order is load-bearing: envStatus is CRITICAL whenever gas or temperature is,
+  // so the two specific conditions must be tested before the aggregate or every critical
+  // reading would collapse to priority 3.
   int priority = 0;
-  if (smokeStatus == "DANGER") priority = 5;
+  if (smokeStatus == "CRITICAL") priority = 5;
   else if (tempStatus == "CRITICAL") priority = 4;
-  else if (envStatus == "DANGER") priority = 3;
+  else if (envStatus == "CRITICAL") priority = 3;
   else if (smokeStatus == "WARNING") priority = 2;
   else if (envStatus == "WARNING") priority = 1;
 
@@ -665,7 +676,7 @@ void handleBuzzer(const String& smokeStatus, const String& tempStatus,
   }
 
   if (priority == 5) {
-    buzzerTone(FREQ_SMOKE_DANGER);
+    buzzerTone(FREQ_SMOKE_CRITICAL);
     return;
   }
 
@@ -689,7 +700,7 @@ void handleBuzzer(const String& smokeStatus, const String& tempStatus,
 
   if (priority == 3) {
     if (beepOn) {
-      buzzerTone(FREQ_ENV_DANGER);
+      buzzerTone(FREQ_ENV_CRITICAL);
       if (now_ms - lastBeepTime >= FAST_PULSE_ON) {
         buzzerOff();
         beepOn = false;
@@ -697,7 +708,7 @@ void handleBuzzer(const String& smokeStatus, const String& tempStatus,
       }
     } else {
       if (now_ms - lastBeepTime >= FAST_PULSE_OFF) {
-        buzzerTone(FREQ_ENV_DANGER);
+        buzzerTone(FREQ_ENV_CRITICAL);
         beepOn = true;
         lastBeepTime = now_ms;
       }
@@ -977,21 +988,17 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
 
       // Configurable alarm thresholds from the dashboard (Alert Rules → room-level
       // rules). Only present fields are applied, so unset metrics keep their default.
-      // tempCrit drives BOTH TEMP_DANGER and TEMP_CRITICAL → temp bands collapse to
-      // warning/critical, matching the dashboard's two severities.
+      // One rule → one threshold, no derived bands.
       if (strcmp(eventName, "envConfig") == 0) {
         JsonObject cfg = doc[1];
         if (cfg.containsKey("tempWarn")) TEMP_WARNING = cfg["tempWarn"].as<float>();
-        if (cfg.containsKey("tempCrit")) {
-          TEMP_CRITICAL = cfg["tempCrit"].as<float>();
-          TEMP_DANGER   = TEMP_CRITICAL;
-        }
-        if (cfg.containsKey("gasWarn")) WARNING_PPM = cfg["gasWarn"].as<float>();
-        if (cfg.containsKey("gasCrit")) DANGER_PPM  = cfg["gasCrit"].as<float>();
-        if (cfg.containsKey("humWarn")) HUM_WARNING = cfg["humWarn"].as<float>();
-        if (cfg.containsKey("humCrit")) HUM_DANGER  = cfg["humCrit"].as<float>();
+        if (cfg.containsKey("tempCrit")) TEMP_CRITICAL = cfg["tempCrit"].as<float>();
+        if (cfg.containsKey("gasWarn")) WARNING_PPM  = cfg["gasWarn"].as<float>();
+        if (cfg.containsKey("gasCrit")) CRITICAL_PPM = cfg["gasCrit"].as<float>();
+        if (cfg.containsKey("humWarn")) HUM_WARNING  = cfg["humWarn"].as<float>();
+        if (cfg.containsKey("humCrit")) HUM_CRITICAL = cfg["humCrit"].as<float>();
         Serial.printf("[ENV] Thresholds: tempW=%.1f tempC=%.1f gasW=%.1f gasC=%.1f humW=%.1f humC=%.1f\n",
-                      TEMP_WARNING, TEMP_CRITICAL, WARNING_PPM, DANGER_PPM, HUM_WARNING, HUM_DANGER);
+                      TEMP_WARNING, TEMP_CRITICAL, WARNING_PPM, CRITICAL_PPM, HUM_WARNING, HUM_CRITICAL);
       }
 
       // Auto-cooling IR zone boundaries from the dashboard (Aircon thresholds). Target

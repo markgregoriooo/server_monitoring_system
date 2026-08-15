@@ -86,11 +86,21 @@ Raw ADC → resistance → PPM using the calibrated curve:
   > edit `RO_CLEAN_AIR_1/2` by hand and reflash — the measurement was never applied.
 - Final smoke value = **max** of the two sensors.
 
+> **Vocabulary.** All three statuses report `NORMAL / WARNING / CRITICAL`, the same three
+> severities as `alert_rules`; `temp_status` adds `TOO_COLD`, which is an axis rather than a
+> severity (no rule backs it). The thresholds below are the *compiled fallbacks* — the live
+> numbers come from the Alert Rules page via `envConfig` (§ "Change a sensor threshold").
+>
+> ⚠️ Until **2026-08-15** there was a fourth, middle **`DANGER`** band. These statuses are
+> InfluxDB **tags**, so points written before that date keep it and any range reaching back
+> that far returns both spellings — permanently, not for a migration window. The dashboard
+> folds it forward with `utils/envThresholds.normalizeStatus`.
+
 | Smoke status | Condition |
 |--------------|-----------|
 | `NORMAL` | max PPM < 150 |
 | `WARNING` | 150 ≤ PPM < 300 |
-| `DANGER` | PPM ≥ 300 |
+| `CRITICAL` | PPM ≥ 300 |
 
 ### 3.2 Temperature (DHT11)
 | Temp status | Condition |
@@ -98,26 +108,35 @@ Raw ADC → resistance → PPM using the calibrated curve:
 | `TOO_COLD` | < 22 °C |
 | `NORMAL` | 22–28.9 °C |
 | `WARNING` | ≥ 29 °C |
-| `DANGER` | ≥ 32 °C |
 | `CRITICAL` | ≥ 35 °C |
 
 ### 3.3 Humidity (DHT11)
 Used only inside the combined environment status:
-- `WARNING` if ≥ 85 %, `DANGER` if ≥ 95 %.
+- `WARNING` if ≥ 85 %, `CRITICAL` if ≥ 95 %.
 
 ### 3.4 Heat index
 `calcHeatIndex()` (Steadman formula) — **display only**, not used for any threshold.
 
 ### 3.5 Combined environment status
 `calcEnvironmentStatus()` rolls temp + smoke + humidity into one of
-`NORMAL / WARNING / DANGER / CRITICAL` (worst-case wins).
+`NORMAL / WARNING / CRITICAL` (worst-case wins) — a metric at its critical threshold makes
+the room critical, whichever metric it is. It previously returned CRITICAL for a hot room
+but DANGER for critical gas or humidity, which ranked a smoke event *below* a warm room.
 
 ### 3.6 Local feedback (no server needed)
-- **Buzzer** (`handleBuzzer`): priority ladder — smoke DANGER (5) > temp CRITICAL (4)
-  > env DANGER (3) > smoke WARNING (2) > env WARNING (1). Each priority has a distinct
-  tone/pattern. `ledcWrite(pin, 0)` silences (not `ledcWriteTone(pin, 0)`).
-- **RGB LED** (`setStatusColor`): Red = smoke DANGER / temp CRITICAL, Orange = env DANGER,
-  Yellow = WARNING, Blue = TOO_COLD, Green = NORMAL.
+- **Buzzer** (`handleBuzzer`): priority ladder — smoke CRITICAL (5) > temp CRITICAL (4)
+  > env CRITICAL (3) > smoke WARNING (2) > env WARNING (1). Each priority has a distinct
+  tone/pattern. The order is load-bearing: `envStatus` is CRITICAL whenever gas or temp is,
+  so the specific conditions must be tested before the aggregate. `ledcWrite(pin, 0)`
+  silences (not `ledcWriteTone(pin, 0)`).
+- **RGB LED** (`setStatusColor`): Red = smoke / temp CRITICAL, Orange = env CRITICAL (which
+  at that point means **humidity** alone — gas and temp are caught above), Yellow = WARNING,
+  Blue = TOO_COLD, Green = NORMAL.
+  > ⚠️ **Byte order.** `RGB_COLOR_ORDER` (top of the sketch) is `NEO_RGB`. Genuine WS2812B
+  > is GRB, but RGB-ordered clones are physically identical and common. A mismatch swaps
+  > **red and green** and leaves **blue** correct — so a normal room glows red while the
+  > boot flash still looks right. `RGB_SELFTEST 1` flashes R/G/B at boot with a serial
+  > commentary to settle it; set it to 0 once confirmed.
 
 ---
 
@@ -337,7 +356,7 @@ cannot tell which entries are the intruders.
 **No reflash, and no code edit.** Both threshold families are runtime-configurable from the
 dashboard, and the firmware applies them live:
 - **Alarm thresholds** (LED / buzzer / reported status) — the admin **Alert Rules** page.
-  Saving pushes `envConfig` to the ESP32, which updates `WARNING_PPM`, `DANGER_PPM`, `TEMP_*`
+  Saving pushes `envConfig` to the ESP32, which updates `WARNING_PPM`, `CRITICAL_PPM`, `TEMP_*`
   and `HUM_*` — these are mutable globals now, not `#define`s. A metric with no rule keeps its
   compiled default on the device.
 - **Auto-cooling zone boundaries** (when IR fires) — the **Auto-Cooling Thresholds** card on

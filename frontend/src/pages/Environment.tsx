@@ -12,7 +12,9 @@ import type { RangeValue } from "../components/ui/RangePicker";
 import { useRoomThresholds } from "../hooks/useRoomThresholds";
 import {
   gasLabel, humidityLabel, temperatureColor, temperatureLabel, alertTint, withAlpha,
+  normalizeStatus,
 } from "../utils/envThresholds";
+import type { EnvStatus, TempStatus } from "../utils/envThresholds";
 
 Chart.register(...registerables);
 
@@ -97,8 +99,11 @@ function RecalibrateGas({ isDark }: { isDark: boolean }) {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type AlertLevel     = "NORMAL" | "WARNING" | "DANGER";
-type TempLevel      = "TOO_COLD" | "NORMAL" | "WARNING" | "DANGER" | "CRITICAL";
+// The device's three-band vocabulary, shared with the colour helpers. Every value that
+// reaches these types has been through `normalizeStatus`, so the legacy DANGER spelling
+// held by pre-2026-08-15 InfluxDB tags is already folded into CRITICAL.
+type AlertLevel     = EnvStatus;
+type TempLevel      = TempStatus;
 
 interface SensorData {
   temperature:        number;
@@ -126,6 +131,9 @@ interface HistoryData {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+// DANGER is no longer a band the device reports (see normalizeStatus) — the key is kept
+// only so a status that somehow skipped normalisation still resolves to a red rather than
+// to `undefined`, which these maps would render as no colour at all.
 const STATUS_COLOR: Record<string, string> = {
   NORMAL:   "#73BF69",
   TOO_COLD: "#5794F2",
@@ -587,9 +595,10 @@ function StatePanel({
   smokeStatus: string; environmentStatus: string;
   tempStatus: string; liveHeatIndex: number | string;
 }) {
+  // Both statuses arrive normalised, so CRITICAL is the only top band to test — it used to
+  // also check DANGER on each, which was the same two conditions under two spellings.
   const heatColor =
-    tempStatus === "CRITICAL" || tempStatus === "DANGER" || smokeStatus === "DANGER"
-      ? "#F2495C" : "#FF780A";
+    tempStatus === "CRITICAL" || smokeStatus === "CRITICAL" ? "#F2495C" : "#FF780A";
 
   return (
     <div className="flex flex-col rounded" style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}` }}>
@@ -915,9 +924,11 @@ export default function Environment() {
         setLivePPM1(last.mq2_1_ppm   ?? "--");
         setLivePPM2(last.mq2_2_ppm   ?? "--");
         setLiveHeatIndex(last.heat_index ?? "--");
-        setLiveSmokeStatus((last.smoke_status       as AlertLevel) || "NORMAL");
-        setLiveTempStatus((last.temp_status          as TempLevel)  || "NORMAL");
-        setLiveEnvironmentStatus((last.environment_status as AlertLevel) || "NORMAL");
+        // Normalised because this row can be OLD: a range reaching past the 2026-08-15
+        // reflash carries the legacy DANGER tag, and the newest row of it seeds these tiles.
+        setLiveSmokeStatus((normalizeStatus(last.smoke_status)       as AlertLevel) || "NORMAL");
+        setLiveTempStatus((normalizeStatus(last.temp_status)          as TempLevel)  || "NORMAL");
+        setLiveEnvironmentStatus((normalizeStatus(last.environment_status) as AlertLevel) || "NORMAL");
       }
     };
 
@@ -931,9 +942,11 @@ export default function Environment() {
       setLivePPM1(data.mq2_1_ppm);
       setLivePPM2(data.mq2_2_ppm);
       setLiveHeatIndex(data.heat_index);
-      setLiveSmokeStatus(data.smoke_status);
-      setLiveTempStatus(data.temp_status);
-      setLiveEnvironmentStatus(data.environment_status);
+      // Normalised for the same reason as the history path: an ESP32 still on the old
+      // sketch reports DANGER live.
+      setLiveSmokeStatus(normalizeStatus(data.smoke_status) as AlertLevel);
+      setLiveTempStatus(normalizeStatus(data.temp_status) as TempLevel);
+      setLiveEnvironmentStatus(normalizeStatus(data.environment_status) as AlertLevel);
 
       // Previously gated on "is the user zoomed in?", so live points stopped appending
       // while a selection was held. With zoom gone the charts always track live.

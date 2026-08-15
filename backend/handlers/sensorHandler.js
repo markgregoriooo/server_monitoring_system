@@ -66,8 +66,13 @@ async function maybeRaiseEnvAlert(data) {
 
       if (SEV_RANK[effectiveBand] <= SEV_RANK[prev]) continue; // only act on escalation
 
-      // Smoke = a gas reading the firmware flags DANGER — give it a clearer title.
-      const smoke = key === "gas" && data.smoke_status === "DANGER";
+      // Smoke = a gas reading the firmware flags CRITICAL — give it a clearer title.
+      // "DANGER" is what firmware before 2026-08-15 called that same band; accepted so
+      // the title doesn't quietly degrade to the generic one on an ESP32 that hasn't been
+      // reflashed yet. Safe to drop once every device is on the current sketch.
+      const smoke =
+        key === "gas" &&
+        (data.smoke_status === "CRITICAL" || data.smoke_status === "DANGER");
       const word = band === "critical" ? "critical" : band === "warning" ? "high" : band;
       await notificationService.raiseAlert({
         deviceId: null, // ESP32 isn't a devices row — this is a room-level (system) alert

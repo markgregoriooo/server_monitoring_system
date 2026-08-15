@@ -20,7 +20,10 @@ const T_DIM = "var(--gf-text-dim)";
 const tempColor = (t: number) => (t < 22 ? BLUE : t <= 27 ? GREEN : t <= 29 ? ORANGE : RED);
 const humColor = (h: number) => (h < 30 || h > 70 ? ORANGE : GREEN);
 const loadColor = (v: number) => (v >= 85 ? RED : v >= 65 ? ORANGE : GREEN);
-const gasColor = (smoke: string) => (smoke === "DANGER" ? RED : smoke === "WARNING" ? ORANGE : GREEN);
+// `smoke` is normalised upstream in LiveSummaryContext, so CRITICAL is the top band. The
+// fallthrough here is GREEN, which is why that normalisation is not cosmetic: an
+// unrecognised status would paint a smoke event as clean air.
+const gasColor = (smoke: string) => (smoke === "CRITICAL" ? RED : smoke === "WARNING" ? ORANGE : GREEN);
 
 export interface TileDef {
   id: string;

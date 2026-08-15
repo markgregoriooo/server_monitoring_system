@@ -43,6 +43,28 @@ export const ROOM_THRESHOLD_FALLBACK: RoomThresholds = {
 
 export type EnvBand = "normal" | "warning" | "critical";
 
+/** The status strings the ESP32 reports in `smoke_status` / `environment_status` — the
+ *  same three severities as `alert_rules`, upper-cased. `temp_status` adds TOO_COLD, which
+ *  is not a severity but a separate axis (there is no `alert_rules` rule behind it). */
+export type EnvStatus = "NORMAL" | "WARNING" | "CRITICAL";
+export type TempStatus = "TOO_COLD" | EnvStatus;
+
+/** Firmware before 2026-08-15 named the top band DANGER on `smoke_status` and
+ *  `environment_status`, and carried a fourth, middle DANGER band on `temp_status`.
+ *
+ *  ⚠️ Those strings are InfluxDB **TAGS**, so every point written before the change keeps
+ *  them — this is not a migration window that eventually closes, it is how history reads
+ *  forever. Any range that reaches back past the reflash returns both spellings, and the
+ *  most recent history row seeds the live tiles on page load.
+ *
+ *  Normalising on the way in is what keeps that a one-line concern: downstream comparisons
+ *  only ever see the three-value vocabulary, so a missed `=== "DANGER"` can't paint a
+ *  smoke reading green. */
+export function normalizeStatus(s: string | null | undefined): string | null {
+  if (s == null) return null;
+  return s === "DANGER" ? "CRITICAL" : s;
+}
+
 // The status palette from CLAUDE.md, shared with utils/tempZone.ts so "orange means
 // warning" holds across every panel in the app.
 //

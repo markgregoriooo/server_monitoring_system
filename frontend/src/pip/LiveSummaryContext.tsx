@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
+import { normalizeStatus } from "../utils/envThresholds";
 
 // One live summary, subscribed ONCE here and shared via context, so any number of
 // widget tiles read the same state without each opening its own socket listeners.
@@ -234,8 +235,10 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
         temperature: d.temperature,
         humidity: d.humidity,
         gas: Math.max(Number(d.mq2_1_ppm ?? 0), Number(d.mq2_2_ppm ?? 0)),
-        smokeStatus: d.smoke_status ?? "NORMAL",
-        envStatus: d.environment_status ?? "NORMAL",
+        // Folds the legacy DANGER spelling into CRITICAL — the tiles colour by an exact
+        // match and fall through to green, so an unmapped status reads as "all clear".
+        smokeStatus: normalizeStatus(d.smoke_status) ?? "NORMAL",
+        envStatus: normalizeStatus(d.environment_status) ?? "NORMAL",
         updatedAt: Date.now(),
       });
       mark("env");
