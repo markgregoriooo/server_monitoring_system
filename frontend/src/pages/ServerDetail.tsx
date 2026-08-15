@@ -5,6 +5,7 @@ import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useTheme } from "../context/ThemeContext";
 import RangePicker, { DEFAULT_RANGE, rangeSpanSec, presetLabel } from "../components/ui/RangePicker";
+import { withGaps, gapIndices } from "../utils/seriesGaps";
 import type { RangeValue } from "../components/ui/RangePicker";
 import type { Volume } from "./ServerMetrics";
 
@@ -414,26 +415,63 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   }, [s.id]);
 
   const spanSec  = rangeSpanSec(range);
-  const labels   = history.map((p) => fmtTime(p.time, spanSec));
-  const cpuData  = history.map((p) => p.cpu ?? 0);
-  const memData  = history.map((p) => p.mem ?? 0);
-  const diskData = history.map((p) => p.disk ?? 0);
-  const netIn    = history.map((p, i) => {
+  const times    = history.map((p) => Date.parse(p.time));
+
+  // Throughput between two CUMULATIVE counters — the rate only exists as a difference.
+  //
+  // Across a gap that difference is not a measurement. The counter kept climbing while
+  // the agent was down, so dividing by the gap's duration yields the AVERAGE rate over
+  // the whole outage — then plots it as a single point at the moment service returned,
+  // where it reads as an instantaneous reading. It is not: it is hours of traffic
+  // collapsed onto one timestamp, and on a busy host it is the tallest thing on the
+  // chart at precisely the moment nothing was being measured.
+  //
+  // So the first sample back is dropped from the network series. `gapPoints` is computed
+  // from the same rule the line breaks on, so the two cannot disagree.
+  const gapPoints = gapIndices(times);
+  const rateAt = (i: number, field: "netRecv" | "netSent") => {
+    if (gapPoints.has(i)) return null; // spans an outage — not a rate for this instant
+    const p = history[i]!;
     const prev = history[i - 1];
-    return prev ? rateMBs(p.netRecv, prev.netRecv, p.time, prev.time) : 0;
-  });
-  const netOut   = history.map((p, i) => {
-    const prev = history[i - 1];
-    return prev ? rateMBs(p.netSent, prev.netSent, p.time, prev.time) : 0;
-  });
-  const netTotal = netIn.map((v, i) => +(v + (netOut[i] ?? 0)).toFixed(2));
+    return prev ? rateMBs(p[field], prev[field], p.time, prev.time) : 0;
+  };
+  const rawNetIn  = history.map((_, i) => rateAt(i, "netRecv"));
+  const rawNetOut = history.map((_, i) => rateAt(i, "netSent"));
+
+  // Break every series where the agent stopped reporting, so an outage is a hole with a
+  // start and an end instead of a straight line drawn across it. `?? null`, not `?? 0`:
+  // a missing reading is not a zero, and drawing it as one invents a crash to 0% CPU.
+  const gapped = withGaps(
+    times,
+    history.map((p) => fmtTime(p.time, spanSec)),
+    [
+      history.map((p) => p.cpu ?? null),
+      history.map((p) => p.mem ?? null),
+      history.map((p) => p.disk ?? null),
+      rawNetIn,
+      rawNetOut,
+    ],
+  );
+  const labels   = gapped.labels;
+  const cpuData  = gapped.series[0]!;
+  const memData  = gapped.series[1]!;
+  const diskData = gapped.series[2]!;
+  const netIn    = gapped.series[3]!;
+  const netOut   = gapped.series[4]!;
+  // The headline figure and its sparkline read the ORIGINAL arrays — the gapped ones end
+  // in a null whenever the series happens to close on a break, and a sparkline is too
+  // small for a hole to read as anything but a rendering glitch.
+  const netTotal = rawNetIn.map((v, i) => +((v ?? 0) + (rawNetOut[i] ?? 0)).toFixed(2));
   const lastNet  = netTotal.at(-1) ?? 0;
+  const diskSpark = history.map((p) => p.disk ?? 0);
 
   const isLight = theme === "light";
   const AX = isLight ? "rgba(71,85,105,0.85)" : "rgba(160,170,190,0.5)";
   const GRID = isLight ? "rgba(15,23,42,0.08)" : "rgba(255,255,255,0.04)";
 
-  const lineChartOpts = (color: string, data: number[]) => ({
+  // `null` is meaningful here, not missing: Chart.js breaks the line at a null, which is
+  // how an outage is drawn as a hole rather than as a straight segment across it.
+  const lineChartOpts = (color: string, data: (number | null)[]) => ({
     type: "line" as const,
     data: {
       labels,
@@ -568,7 +606,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           title="Disk used"
           value={`${s.diskUsed}`}
           unit="%"
-          data={diskData.length ? diskData : [0]}
+          data={diskSpark.length ? diskSpark : [0]}
           color={barColor(s.diskUsed)}
         />
         <SparkStatPanel

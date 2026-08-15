@@ -10,6 +10,7 @@ import { useAuth } from "../context/AuthContext";
 import RangePicker, { DEFAULT_RANGE } from "../components/ui/RangePicker";
 import type { RangeValue } from "../components/ui/RangePicker";
 import { useRoomThresholds } from "../hooks/useRoomThresholds";
+import { withGaps } from "../utils/seriesGaps";
 import {
   gasLabel, humidityLabel, temperatureColor, temperatureLabel, alertTint, withAlpha,
   normalizeStatus,
@@ -496,14 +497,24 @@ function GaugeArc({ value, unit, pct, color, isDark }: {
 
 // Light moving-average so live raw readings render as a smooth, flowing curve
 // (matching the aggregated Server Detail charts). Window of 5 ≈ ~15s of samples.
-function smooth(data: number[], window = 5): number[] {
+// Null-aware: a missing reading STAYS missing rather than being averaged away. Feeding
+// it through as 0 (which is what `?? 0` upstream used to do) draws a plunge to zero that
+// never happened — and on temperature, 0 °C is both impossible and alarming.
+function smooth(data: (number | null)[], window = 5): (number | null)[] {
   if (data.length <= 2) return data;
-  return data.map((_, i) => {
+  return data.map((v, i) => {
+    if (v == null) return null;
     const start = Math.max(0, i - window + 1);
-    const slice = data.slice(start, i + 1);
+    const slice = data.slice(start, i + 1).filter((x): x is number => x != null);
+    if (!slice.length) return null;
     return +(slice.reduce((a, b) => a + b, 0) / slice.length).toFixed(2);
   });
 }
+
+// Drop the missing readings. For the stat tiles and sparklines, which state a single
+// number or draw a 40px line — neither can show a hole, and both would be wrong if a
+// missing reading counted as 0 in a min/avg.
+const nums = (a: (number | null)[]): number[] => a.filter((v): v is number => v != null);
 
 // ─── Sparkline ────────────────────────────────────────────────────────────────
 
@@ -779,14 +790,18 @@ const TimeScroll = React.memo(function TimeScroll({ hour, onHour, scrollRef }: {
 
 export default function Environment() {
   const [labels,   setLabels]   = useState<string[]>([]);
-  const [temps,    setTemps]    = useState<number[]>([]);
-  const [hums,     setHums]     = useState<number[]>([]);
+  // The points' real timestamps. Both charts plot the same instants, so one array serves
+  // them. The axis LABELS are formatted for reading and cannot be parsed back into times
+  // ("14:20" has no date), and finding an outage needs the actual instants.
+  const [times,    setTimes]    = useState<number[]>([]);
+  const [temps,    setTemps]    = useState<(number | null)[]>([]);
+  const [hums,     setHums]     = useState<(number | null)[]>([]);
   const [liveTemp, setLiveTemp] = useState<number | string>("--");
   const [liveHum,  setLiveHum]  = useState<number | string>("--");
 
   const [smokeLabels, setSmokeLabels] = useState<string[]>([]);
-  const [ppm1s,       setPpm1s]       = useState<number[]>([]);
-  const [ppm2s,       setPpm2s]       = useState<number[]>([]);
+  const [ppm1s,       setPpm1s]       = useState<(number | null)[]>([]);
+  const [ppm2s,       setPpm2s]       = useState<(number | null)[]>([]);
   const [livePPM1,    setLivePPM1]    = useState<number | string>("--");
   const [livePPM2,    setLivePPM2]    = useState<number | string>("--");
 
@@ -912,11 +927,12 @@ export default function Environment() {
       if (!history?.length) return;
       const lbls = history.map(r => fmtLabel(new Date(r.time)));
       setLabels(lbls);
-      setTemps(history.map(r => r.temperature ?? 0));
-      setHums(history.map(r => r.humidity     ?? 0));
+      setTimes(history.map(r => Date.parse(r.time)));
+      setTemps(history.map(r => r.temperature ?? null));
+      setHums(history.map(r => r.humidity     ?? null));
       setSmokeLabels(lbls);
-      setPpm1s(history.map(r => r.mq2_1_ppm  ?? 0));
-      setPpm2s(history.map(r => r.mq2_2_ppm  ?? 0));
+      setPpm1s(history.map(r => r.mq2_1_ppm  ?? null));
+      setPpm2s(history.map(r => r.mq2_2_ppm  ?? null));
       const last = history[history.length - 1];
       if (last) {
         setLiveTemp(last.temperature   ?? "--");
@@ -951,6 +967,7 @@ export default function Environment() {
       // Previously gated on "is the user zoomed in?", so live points stopped appending
       // while a selection was held. With zoom gone the charts always track live.
       setLabels(p      => [...p.slice(-999), time]);
+      setTimes(p       => [...p.slice(-999), ts.getTime()]);
       setTemps(p       => [...p.slice(-999), data.temperature]);
       setHums(p        => [...p.slice(-999), data.humidity]);
       setSmokeLabels(p => [...p.slice(-999), time]);
@@ -969,19 +986,27 @@ export default function Environment() {
 
   // ── Derived ────────────────────────────────────────────────────────────────
 
-  const peakTemp = temps.length > 0 ? Math.max(...temps).toFixed(1) : "--";
-  const minTemp  = temps.length > 0 ? Math.min(...temps).toFixed(1) : "--";
-  const avgTemp  = temps.length > 0 ? (temps.reduce((a,b) => a+b,0) / temps.length).toFixed(1) : "--";
-  const peakHum  = hums.length  > 0 ? Math.max(...hums).toFixed(1)  : "--";
-  const minHum   = hums.length  > 0 ? Math.min(...hums).toFixed(1)  : "--";
-  const avgHum   = hums.length  > 0 ? (hums.reduce((a,b) => a+b,0)  / hums.length).toFixed(1) : "--";
+  // Every figure below is computed over the readings that EXIST. A missing reading used
+  // to arrive here as 0, which dragged the average down and made the minimum 0 °C — a
+  // number the room has never been at and the sensor cannot report.
+  const tempNums = nums(temps);
+  const humNums  = nums(hums);
+  const ppm1Nums = nums(ppm1s);
+  const ppm2Nums = nums(ppm2s);
 
-  const maxTempY = temps.length > 0 ? Math.ceil(Math.max(...temps))  + 3  : 40;
-  const minTempY = temps.length > 0 ? Math.floor(Math.min(...temps)) - 2  : 15;
-  const maxHumY  = hums.length  > 0 ? Math.ceil(Math.max(...hums))   + 3  : 100;
-  const minHumY  = hums.length  > 0 ? Math.floor(Math.min(...hums))  - 3  : 30;
+  const peakTemp = tempNums.length > 0 ? Math.max(...tempNums).toFixed(1) : "--";
+  const minTemp  = tempNums.length > 0 ? Math.min(...tempNums).toFixed(1) : "--";
+  const avgTemp  = tempNums.length > 0 ? (tempNums.reduce((a,b) => a+b,0) / tempNums.length).toFixed(1) : "--";
+  const peakHum  = humNums.length  > 0 ? Math.max(...humNums).toFixed(1)  : "--";
+  const minHum   = humNums.length  > 0 ? Math.min(...humNums).toFixed(1)  : "--";
+  const avgHum   = humNums.length  > 0 ? (humNums.reduce((a,b) => a+b,0)  / humNums.length).toFixed(1) : "--";
 
-  const allPPMs   = [...ppm1s, ...ppm2s];
+  const maxTempY = tempNums.length > 0 ? Math.ceil(Math.max(...tempNums))  + 3  : 40;
+  const minTempY = tempNums.length > 0 ? Math.floor(Math.min(...tempNums)) - 2  : 15;
+  const maxHumY  = humNums.length  > 0 ? Math.ceil(Math.max(...humNums))   + 3  : 100;
+  const minHumY  = humNums.length  > 0 ? Math.floor(Math.min(...humNums))  - 3  : 30;
+
+  const allPPMs   = [...ppm1Nums, ...ppm2Nums];
   const allScale  = allPPMs.length > 0 ? allPPMs : [0];
   const maxSmokeY = Math.ceil(Math.max(...allScale))  + 50;
   const minSmokeY = Math.max(0, Math.floor(Math.min(...allScale)) - 10);
@@ -1001,11 +1026,24 @@ export default function Environment() {
     [isDark, isMobile, minSmokeY, maxSmokeY, smokeColors],
   );
 
+  // Both charts break their lines wherever the ESP32 stopped reporting, so a dropout is a
+  // visible hole with a start and an end rather than one straight segment drawn across
+  // it. Smoothing runs FIRST, on the dense arrays: `smooth()` averages a sliding window
+  // and would smear a null across its neighbours.
+  const envGaps = useMemo(
+    () => withGaps(times, labels, [smooth(temps), smooth(hums)]),
+    [times, labels, temps, hums],
+  );
+  const smokeGaps = useMemo(
+    () => withGaps(times, smokeLabels, [smooth(ppm1s), smooth(ppm2s)]),
+    [times, smokeLabels, ppm1s, ppm2s],
+  );
+
   const combinedData: ChartData<"line"> = useMemo(() => ({
-    labels,
+    labels: envGaps.labels,
     datasets: [
       {
-        label: "Temperature", data: smooth(temps), yAxisID: "yTemp",
+        label: "Temperature", data: envGaps.series[0]!, yAxisID: "yTemp",
         // Each SEGMENT takes the alert band of the point it ends on, so the line is blue
         // where the room was too cold and red where it breached critical. History keeps
         // its own colours — repainting the whole line by the newest reading would have
@@ -1023,7 +1061,7 @@ export default function Environment() {
         fill: true, tension: 0.4,
       },
       {
-        label: "Humidity", data: smooth(hums), yAxisID: "yHum",
+        label: "Humidity", data: envGaps.series[1]!, yAxisID: "yHum",
         // Holds its own blue while within the `humidity` rules, orange/red per segment
         // where it breached them. It shares this chart with temperature, so going green
         // when normal would draw the same line twice.
@@ -1040,10 +1078,10 @@ export default function Environment() {
         fill: true, tension: 0.4,
       },
     ],
-  }), [labels, temps, hums, thresholds, liveTempColor, liveHumColor]);
+  }), [envGaps, thresholds, liveTempColor, liveHumColor]);
 
   const smokeData: ChartData<"line"> = useMemo(() => ({
-    labels: smokeLabels,
+    labels: smokeGaps.labels,
     datasets: [
       // Each sensor keeps its OWN hue while clean — MQ2-1 violet, MQ2-2 pink — and turns
       // orange/red per segment where it breached the `gas` rules (`alertTint`).
@@ -1055,7 +1093,7 @@ export default function Environment() {
       // there, and a `borderDash` on MQ2-2 is the fix if that case ever needs to be read at
       // a glance.
       {
-        label: "MQ2-1", data: smooth(ppm1s),
+        label: "MQ2-1", data: smokeGaps.series[0]!,
         borderColor: MQ1_SERIES,
         segment: {
           borderColor: (ctx) =>
@@ -1069,7 +1107,7 @@ export default function Environment() {
         fill: true, tension: 0.4,
       },
       {
-        label: "MQ2-2", data: smooth(ppm2s),
+        label: "MQ2-2", data: smokeGaps.series[1]!,
         borderColor: MQ2_SERIES,
         segment: {
           borderColor: (ctx) =>
@@ -1083,7 +1121,7 @@ export default function Environment() {
         fill: true, tension: 0.4,
       },
     ],
-  }), [smokeLabels, ppm1s, ppm2s, thresholds, livePPM1Color, livePPM2Color]);
+  }), [smokeGaps, thresholds, livePPM1Color, livePPM2Color]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1165,7 +1203,7 @@ export default function Environment() {
             value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : liveTemp}
             unit="°C" color={temperatureColor(liveTemp, thresholds)} segPct={tempGaugePct}
             badge={temperatureLabel(liveTemp, thresholds)}
-            sparkData={temps.slice(-24)}
+            sparkData={tempNums.slice(-24)}
             max={peakTemp !== "--" ? `${peakTemp}°` : "--"}
             avg={avgTemp  !== "--" ? `${avgTemp}°`  : "--"}
             min={minTemp  !== "--" ? `${minTemp}°`  : "--"}
@@ -1181,7 +1219,7 @@ export default function Environment() {
             unit="%" color={alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, HUM_SERIES)}
             segPct={humGaugePct}
             badge={humidityLabel(liveHum, thresholds)}
-            sparkData={hums.slice(-24)}
+            sparkData={humNums.slice(-24)}
             max={peakHum !== "--" ? `${peakHum}%` : "--"}
             avg={avgHum  !== "--" ? `${avgHum}%`  : "--"}
             min={minHum  !== "--" ? `${minHum}%`  : "--"}
@@ -1197,10 +1235,10 @@ export default function Environment() {
             unit="ppm" color={alertTint(livePPM1, thresholds.gasWarn, thresholds.gasCrit, MQ1_SERIES)}
             badge={gasLabel(livePPM1, thresholds)}
             segPct={typeof livePPM1 === "number" ? Math.min(livePPM1 / 600, 1) : 0}
-            sparkData={ppm1s.slice(-24)}
-            max={ppm1s.length > 0 ? `${Math.max(...ppm1s).toFixed(0)}` : "--"}
-            avg={ppm1s.length > 0 ? `${(ppm1s.reduce((a,b)=>a+b,0)/ppm1s.length).toFixed(0)}` : "--"}
-            min={ppm1s.length > 0 ? `${Math.min(...ppm1s).toFixed(0)}` : "--"}
+            sparkData={ppm1Nums.slice(-24)}
+            max={ppm1Nums.length > 0 ? `${Math.max(...ppm1Nums).toFixed(0)}` : "--"}
+            avg={ppm1Nums.length > 0 ? `${(ppm1Nums.reduce((a,b)=>a+b,0)/ppm1Nums.length).toFixed(0)}` : "--"}
+            min={ppm1Nums.length > 0 ? `${Math.min(...ppm1Nums).toFixed(0)}` : "--"}
             isDark={isDark}
           />
           <StatPanel
@@ -1209,10 +1247,10 @@ export default function Environment() {
             unit="ppm" color={alertTint(livePPM2, thresholds.gasWarn, thresholds.gasCrit, MQ2_SERIES)}
             badge={gasLabel(livePPM2, thresholds)}
             segPct={typeof livePPM2 === "number" ? Math.min(livePPM2 / 600, 1) : 0}
-            sparkData={ppm2s.slice(-24)}
-            max={ppm2s.length > 0 ? `${Math.max(...ppm2s).toFixed(0)}` : "--"}
-            avg={ppm2s.length > 0 ? `${(ppm2s.reduce((a,b)=>a+b,0)/ppm2s.length).toFixed(0)}` : "--"}
-            min={ppm2s.length > 0 ? `${Math.min(...ppm2s).toFixed(0)}` : "--"}
+            sparkData={ppm2Nums.slice(-24)}
+            max={ppm2Nums.length > 0 ? `${Math.max(...ppm2Nums).toFixed(0)}` : "--"}
+            avg={ppm2Nums.length > 0 ? `${(ppm2Nums.reduce((a,b)=>a+b,0)/ppm2Nums.length).toFixed(0)}` : "--"}
+            min={ppm2Nums.length > 0 ? `${Math.min(...ppm2Nums).toFixed(0)}` : "--"}
             isDark={isDark}
           />
           <StatePanel

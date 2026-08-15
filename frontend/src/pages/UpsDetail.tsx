@@ -4,6 +4,7 @@ import { socket } from "../socket/socket";
 import Chart from "../chart/ChartConfig";
 import RangePicker from "../components/ui/RangePicker";
 import type { RangeValue } from "../components/ui/RangePicker";
+import { withGaps } from "../utils/seriesGaps";
 
 // ─── Per-UPS detail view (live values + discharge history + event log) ────────
 // Reached from UpsMonitoring via "View". In-page swap (Back button), and laid out
@@ -124,16 +125,28 @@ function UpsChart({ history }: { history: UpsHistPoint[] }) {
       return;
     }
     chartRef.current?.destroy();
-    const labels = history.map((p) =>
-      new Date(p.time).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false }),
+    // Break the line where the poller stopped. `spanGaps` was TRUE here, which does the
+    // opposite — it bridges a null so the line jumps the hole. On a UPS that is the worst
+    // possible default: the one thing you look at this chart to find is what the battery
+    // did during an outage, and spanning drew it as a steady hold through hours that were
+    // never measured.
+    const gapped = withGaps(
+      history.map((p) => Date.parse(p.time)),
+      history.map((p) =>
+        new Date(p.time).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false }),
+      ),
+      [
+        history.map((p) => p.batteryChargePct ?? null),
+        history.map((p) => p.loadPct ?? null),
+      ],
     );
     chartRef.current = new Chart(ref.current, {
       type: "line",
       data: {
-        labels,
+        labels: gapped.labels,
         datasets: [
-          { label: "Battery %", data: history.map((p) => p.batteryChargePct ?? null), borderColor: GREEN, backgroundColor: GREEN + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3, spanGaps: true },
-          { label: "Load %", data: history.map((p) => p.loadPct ?? null), borderColor: ORANGE, backgroundColor: ORANGE + "18", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3, spanGaps: true },
+          { label: "Battery %", data: gapped.series[0]!, borderColor: GREEN, backgroundColor: GREEN + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
+          { label: "Load %", data: gapped.series[1]!, borderColor: ORANGE, backgroundColor: ORANGE + "18", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
         ],
       },
       options: {
@@ -369,8 +382,8 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
 
       {/* Current values */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
-        <Stat label="Battery" value={fmt(charge)} unit={charge == null ? undefined : "%"} color={batteryColor(charge ?? 0)} sub="charge" />
-        <Stat label="Load" value={fmt(u.loadPct)} unit={u.loadPct == null ? undefined : "%"} color={loadColor(u.loadPct ?? 0)} sub="of capacity" />
+        <Stat label="Battery" value={fmt(charge)} unit={charge == null ? undefined : "%"} color={charge == null ? gf.textDim : batteryColor(charge)} sub="charge" />
+        <Stat label="Load" value={fmt(u.loadPct)} unit={u.loadPct == null ? undefined : "%"} color={u.loadPct == null ? gf.textDim : loadColor(u.loadPct)} sub="of capacity" />
         <Stat label="Runtime" value={fmt(u.runtimeRemainingMin)} unit={u.runtimeRemainingMin == null ? undefined : "min"} color={BLUE} sub="remaining" />
         <Stat label="Source" value={onBattery ? "Battery" : "Mains"} color={onBattery ? RED : GREEN} sub={onBattery ? "outage" : "on utility"} />
         <Stat label="Health" value={health.text} color={health.color} sub="battery pack" />
@@ -396,7 +409,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
           <span>Input <span style={{ color: onBattery ? RED : gf.textPrimary }}>{fmt(u.inputVoltage, " V")}</span></span>
           <span style={{ color: gf.textDim }}>→</span>
           <span>Output <span style={{ color: gf.textPrimary }}>{fmt(u.outputVoltage, " V")}</span></span>
-          <span>Load <span style={{ color: loadColor(u.loadPct ?? 0) }}>{fmt(u.loadPct, "%")}</span></span>
+          <span>Load <span style={{ color: u.loadPct == null ? gf.textDim : loadColor(u.loadPct) }}>{fmt(u.loadPct, "%")}</span></span>
           <span>Link <span style={{ color: gf.textPrimary }}>{u.commType ? `SNMP (${u.commType})` : "SNMP"}</span></span>
           <span>Host <span style={{ color: gf.textPrimary }}>{u.ip}</span></span>
         </div>

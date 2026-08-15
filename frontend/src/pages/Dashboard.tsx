@@ -1,9 +1,15 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import type { ChartOptions, ChartData, ScriptableContext } from "chart.js";
 import { Chart, registerables } from "chart.js";
 import "../chart/ChartConfig";
 import { Line } from "react-chartjs-2";
-import StatusBadge from "../components/ui/StatusBadge";
+import ServerFocus from "../components/dashboard/ServerFocus";
+import NetworkFocus from "../components/dashboard/NetworkFocus";
+import UpsFocus from "../components/dashboard/UpsFocus";
+import RangePicker, { DEFAULT_RANGE, rangeSpanSec } from "../components/ui/RangePicker";
+import { withGaps } from "../utils/seriesGaps";
+import type { RangeValue } from "../components/ui/RangePicker";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useRoomThresholds } from "../hooks/useRoomThresholds";
@@ -21,6 +27,10 @@ interface Server {
   status: string;
   cpu: number;
   memory: number;
+  // Carried for the focus panel's tiles. GET /api/servers already returns both; they
+  // were simply not declared here while the table only showed CPU and memory.
+  diskUsed: number;
+  ip?: string;
   uptime: string;
 }
 
@@ -53,6 +63,47 @@ const fmtClock = (t: string | Date) =>
     hour: "2-digit",
     minute: "2-digit",
   });
+
+// Environment x-axis label. Once this chart follows the shared range it can be asked for
+// 30 days, and "14:00" repeated across a month says nothing about WHEN — so anything
+// past two days carries the date. Same threshold the focus charts use, so the two never
+// disagree about what a long range looks like.
+const MULTI_DAY_SEC = 48 * 3600;
+const fmtEnvLabel = (t: string | Date, spanSec: number) =>
+  spanSec >= MULTI_DAY_SEC
+    ? new Date(t).toLocaleString("en-PH", {
+        timeZone: "Asia/Manila", month: "short", day: "2-digit", hour: "2-digit", hour12: false,
+      })
+    : fmtClock(t);
+
+// One open incident, as GET /api/alerts returns it (alertsService.toClient).
+interface DashAlert {
+  id: number;
+  deviceName: string | null;
+  type: string;
+  title: string;
+  severity: "info" | "warning" | "critical";
+  status: "active" | "acknowledged" | "resolved";
+  createdAt: string;
+}
+
+// Severity → the palette in CLAUDE.md. CRITICAL is #E02F44, NOT #F2495C (that is DANGER).
+const SEV_COLOR: Record<DashAlert["severity"], string> = {
+  critical: "#E02F44",
+  warning: "#FF780A",
+  info: "#5794F2",
+};
+
+// "just now" / "4m" / "3h" / "2d". An alert's age is most of its meaning — a critical
+// from 30 seconds ago and one from last Tuesday demand very different reactions, and an
+// absolute timestamp makes the reader do that subtraction themselves.
+function ago(iso: string): string {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
 
 // Router / MikroTik, as returned by GET /network and pushed on `networkMetrics`.
 interface NetIface {
@@ -114,7 +165,6 @@ const gf = {
 const GREEN = "#73BF69";
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
-const BLUE = "#5794F2";
 // Environment series palette — deliberately the SAME hexes as pages/Environment.tsx, so a
 // series means the same thing on both pages. Reading one chart should not require
 // re-learning the colours on the other.
@@ -137,20 +187,67 @@ const ENV_HUM  = "#38BDF8";
 // rules themselves via useRoomThresholds(), so an admin editing Alert Rules moves this
 // tile with them and no one has to remember.
 
-// A server parked for planned maintenance is not a fault — showing it red reads
-// as "down" and hides real outages in a sea of red.
-function hostDotColor(status: string) {
-  if (status === "Online") return GREEN;
-  if (status === "Maintenance") return BLUE;
-  return RED;
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// `loadColor`, `StatusBadge` and `BLUE` lived here for the fleet table's CPU/Memory
+// cells and its selected-row highlight. The table is gone; the focus panels colour
+// their own values through focusShared.loadColor.
 
-function loadColor(v: number) {
-  if (v >= 85) return RED;
-  if (v >= 65) return ORANGE;
-  return GREEN;
+// Body height of EVERY panel in the 2-column stack below the stat tiles — Environment,
+// Active Alerts, Servers, Network, MikroTik, UPS. One number so the page reads as a
+// single grid rather than as rows that each found their own height.
+//
+// It has to be explicit: CSS grid equalises items within a ROW, not across rows, so
+// leaving it to `stretch` would let each row settle wherever its own tallest panel
+// landed — which is exactly how six panels end up in four different sizes.
+//
+// Sized to fit a picker + status line + chart + legend without scrolling. Two panels
+// carry more than that and absorb it internally rather than growing: the Servers TABLE
+// scrolls (never the chart — that is what the panel is for), and the Active Alerts list
+// scrolls past about six incidents.
+const PANEL_H = 300;
+const PANEL_BODY: React.CSSProperties = {
+  height: PANEL_H,
+  padding: 0,
+  display: "flex",
+  flexDirection: "column",
+};
+
+// Device selector for the chart panels. A dropdown rather than a clickable list: once a
+// panel is "chart only" the list was spending most of the panel's height restating names
+// that the chart's own header can hold in one row.
+function DevicePicker({
+  devices, value, onChange, label,
+}: {
+  devices: { id: number | string; name?: string | undefined }[];
+  value: string | null;
+  onChange: (id: string) => void;
+  label: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 px-3 py-2">
+      <span className="text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textDim }}>
+        {label}
+      </span>
+      <select
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        className="flex-1 min-w-0 text-[12px] px-2 py-1 rounded-[2px] outline-none"
+        style={{
+          background: gf.bg,
+          border: `1px solid ${gf.border}`,
+          color: gf.textPrimary,
+          fontFamily: "'JetBrains Mono', monospace",
+        }}
+        aria-label={label}
+      >
+        {devices.map((d) => (
+          <option key={String(d.id)} value={String(d.id)}>
+            {d.name ?? `Device ${d.id}`}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
 }
 
 
@@ -288,29 +385,10 @@ function Sparkline({
 
 // ─── StatPanel (Grafana stat with sparkline background) ─────────────────────────
 
-// ── Small helpers for the Network / UPS rows ────────────────────────────────
-function StatusDot({ ok }: { ok: boolean }) {
-  return (
-    <span
-      className="w-2 h-2 rounded-full shrink-0"
-      style={{ background: ok ? GREEN : RED, boxShadow: `0 0 0 3px ${(ok ? GREEN : RED)}22` }}
-    />
-  );
-}
-
-// A labelled number that only exists when the device actually reports it. Kept narrow
-// and monospaced so a column of them stays aligned as values change.
-function MiniStat({ label, value, warn }: { label: string; value: string; warn: boolean }) {
-  return (
-    <span className="flex flex-col items-end leading-tight">
-      <span className="text-[9px] tracking-wider" style={{ color: gf.textDim }}>{label}</span>
-      <span className="text-[12px] font-semibold tabular-nums" style={{ color: warn ? ORANGE : gf.textPrimary }}>
-        {value}
-      </span>
-    </span>
-  );
-}
-
+// ── Small helper for the Network / UPS panels ───────────────────────────────
+// StatusDot and MiniStat lived here too, for the per-device rows those panels used to
+// list. Both panels are now a picker plus a chart, so the rows — and the two components
+// that drew them — are gone. They are in git history if a list is ever wanted back.
 function EmptyRow({ children }: { children: React.ReactNode }) {
   return (
     <div className="py-6 text-center text-[12px]" style={{ color: gf.textDim }}>
@@ -378,99 +456,25 @@ function StatPanel({
   );
 }
 
-// ─── RadialGauge ────────────────────────────────────────────────────────────────
-
-function GaugeCanvas({
-  value,
-  label,
-  pct,
-  color,
-  size = 120,
-  isDark,
-}: {
-  value: string | number;
-  label: string;
-  pct: number;
-  color: string;
-  size?: number;
-  isDark: boolean;
-}) {
-  const ref = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const c = ref.current;
-    if (!c) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    const cx = size / 2,
-      cy = size * 0.65,
-      r = size * 0.36;
-    const s = Math.PI * 0.8,
-      e = Math.PI * 2.2;
-    const f = s + (e - s) * Math.min(Math.max(pct, 0), 1);
-    const sw = e - s;
-
-    ctx.clearRect(0, 0, size, size);
-
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, s, e);
-    ctx.strokeStyle = isDark ? "rgba(128,128,128,0.15)" : "rgba(0,0,0,0.10)";
-    ctx.lineWidth = size * 0.07;
-    ctx.lineCap = "round";
-    ctx.stroke();
-
-    let prev = s;
-    for (const [end, col] of [
-      [0.65, "rgba(115,191,105,0.16)"],
-      [0.85, "rgba(255,120,10,0.16)"],
-      [1.0, "rgba(242,73,92,0.16)"],
-    ] as [number, string][]) {
-      const be = s + sw * end;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, prev, be);
-      ctx.strokeStyle = col;
-      ctx.lineWidth = size * 0.07;
-      ctx.lineCap = "butt";
-      ctx.stroke();
-      prev = be;
-    }
-
-    if (pct > 0) {
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, s, f);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = size * 0.07;
-      ctx.lineCap = "round";
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = color;
-    ctx.font = `bold ${Math.round(size * 0.18)}px 'JetBrains Mono', monospace`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(value), cx, cy - r * 0.08);
-
-    ctx.fillStyle = isDark ? "rgba(148,163,184,0.55)" : "rgba(71,85,105,0.8)";
-    ctx.font = `${Math.round(size * 0.1)}px 'JetBrains Mono', monospace`;
-    ctx.fillText(label, cx, cy + r * 0.35);
-  }, [pct, color, value, label, size, isDark]);
-
-  return (
-    <canvas
-      ref={ref}
-      width={size}
-      height={size * 0.92}
-      style={{ width: "100%", maxWidth: size, height: "auto" }}
-    />
-  );
-}
-
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [servers, setServers] = useState<Server[]>([]);
-  // Real notification feed (replaces the old mock /api/alerts panel).
   const [aircons, setAircons] = useState<Aircon[]>([]);
+
+  // Open incidents (active OR acknowledged) — the shared lifecycle view, the same set the
+  // sidebar badge counts. Until now the Dashboard showed NO alerts at all: after an
+  // incident it read as six green tiles, and the only trace was a number on the sidebar
+  // that could not say what had happened.
+  const [openAlerts, setOpenAlerts] = useState<DashAlert[]>([]);
+
+  // Is the ESP32 actually reporting? Without this the three sensor tiles show the LAST
+  // reading received, labelled "LIVE", with nothing to say how old it is — so a dead
+  // sensor renders exactly like a calm room. That is the specific failure esp32Monitor
+  // exists to prevent, and it was going unshown on the page most likely to be left open.
+  const [sensorOnline, setSensorOnline] = useState<boolean | null>(null);
+  const [sensorLastSeen, setSensorLastSeen] = useState<string | null>(null);
   // Routers + UPS (SNMP poller). The Dashboard summarised servers, environment and
   // aircon but not these two, so a router or UPS incident was invisible on the page
   // people actually leave open. Only the counts are needed here — the Network / UPS
@@ -488,6 +492,10 @@ export default function Dashboard() {
   const [chartGas, setChartGas] = useState<number[]>([]);
   const [liveGas, setLiveGas] = useState<number | string>("--");
   const [chartLabels, setChartLabels] = useState<string[]>([]);
+  // The same points' timestamps. The labels are formatted for the axis and cannot be
+  // parsed back into instants ("14:20" has no date), but detecting a gap needs the real
+  // times — so they are kept alongside rather than re-derived.
+  const [chartTimes, setChartTimes] = useState<number[]>([]);
   const [isDark, setIsDark] = useState(() =>
     document.documentElement.classList.contains("dark"),
   );
@@ -603,7 +611,8 @@ export default function Dashboard() {
       setLiveTemp(data.temperature);
       setLiveHum(data.humidity);
       setLastUpdate(new Date());
-      setChartLabels((p) => [...p.slice(-300), fmtClock(data.timestamp)]);
+      setChartLabels((p) => [...p.slice(-300), fmtEnvLabel(data.timestamp, envSpanRef.current)]);
+      setChartTimes((p) => [...p.slice(-300), Date.parse(data.timestamp)]);
       setChartTemps((p) => [...p.slice(-300), data.temperature]);
       setChartHums((p) => [...p.slice(-300), data.humidity]);
       const gas = Math.max(Number(data.mq2_1_ppm ?? 0), Number(data.mq2_2_ppm ?? 0));
@@ -622,6 +631,8 @@ export default function Dashboard() {
         status: sv.status ?? "Online",
         cpu: Math.round(sv.cpuPercent ?? 0),
         memory: Math.round(sv.memPercent ?? 0),
+        diskUsed: Math.round(sv.diskPercent ?? 0),
+        ip: sv.ip ?? undefined,
         uptime: sv.uptimeLabel ?? "—",
       };
       setServers((prev) => {
@@ -661,7 +672,7 @@ export default function Dashboard() {
         prev.map((s) =>
           s.id === Number(data?.id)
             ? data.status === "Offline"
-              ? { ...s, status: "Offline", cpu: 0, memory: 0, uptime: "—" }
+              ? { ...s, status: "Offline", cpu: 0, memory: 0, diskUsed: 0, uptime: "—" }
               : { ...s, status: data.status }
             : s,
         ),
@@ -671,12 +682,14 @@ export default function Dashboard() {
     // The chart used to start EMPTY on every mount and refill from live pushes at ~3s
     // intervals, so leaving the dashboard and coming back looked like the system had
     // just booted. Seed it from stored history instead: the same changeRange →
-    // sensorHistory round-trip the Environment page uses, asking for the last hour.
-    // Live readings then append to that tail rather than starting from nothing.
+    // sensorHistory round-trip the Environment page uses. Live readings then append to
+    // that tail rather than starting from nothing. WHICH range is requested lives in its
+    // own effect below, so changing the picker re-seeds without re-binding every listener.
     const handleHistory = (history: SensorHistoryRow[]) => {
       if (!history?.length) return;
       const rows = history.slice(-300);
-      setChartLabels(rows.map((r) => fmtClock(r.time)));
+      setChartLabels(rows.map((r) => fmtEnvLabel(r.time, envSpanRef.current)));
+      setChartTimes(rows.map((r) => Date.parse(r.time)));
       setChartTemps(rows.map((r) => r.temperature ?? 0));
       setChartHums(rows.map((r) => r.humidity ?? 0));
       setChartGas(rows.map((r) => Math.max(r.mq2_1_ppm ?? 0, r.mq2_2_ppm ?? 0)));
@@ -689,7 +702,6 @@ export default function Dashboard() {
     };
 
     socket.on("sensorHistory", handleHistory);
-    socket.emit("changeRange", "-1h");
     socket.on("sensorData", handleSensor);
     socket.on("serverMetrics", handleMetrics);
     socket.on("airconStatus", handleAircon);
@@ -708,12 +720,156 @@ export default function Dashboard() {
     };
   }, []);
 
-  const cpuAvg = servers.length
-    ? Math.round(servers.reduce((a, s) => a + s.cpu, 0) / servers.length)
-    : 0;
-  const memAvg = servers.length
-    ? Math.round(servers.reduce((a, s) => a + s.memory, 0) / servers.length)
-    : 0;
+  // Which server the focus panel is charting, and over what window. Kept here rather
+  // than inside ServerFocus so the table's selected-row highlight and the panel agree.
+  const [focusId, setFocusId] = useState<number | null>(null);
+  const [focusRange, setFocusRange] = useState<RangeValue>(DEFAULT_RANGE);
+
+  // Land on a server without a click, and never keep pointing at one that has been
+  // removed — a stale id would leave the panel empty with no clue why.
+  useEffect(() => {
+    if (!servers.length) {
+      if (focusId !== null) setFocusId(null);
+      return;
+    }
+    if (focusId === null || !servers.some((s) => s.id === focusId)) {
+      setFocusId(servers[0]!.id);
+    }
+  }, [servers, focusId]);
+
+  const focusServer = servers.find((s) => s.id === focusId) ?? null;
+
+  // The network and UPS panels follow the same select-then-chart pattern. One range is
+  // shared by all three: an incident is read ACROSS them — a CPU spike, the traffic that
+  // caused it and the UPS load at the same moment — and separate pickers would silently
+  // let two panels show different hours while looking directly comparable.
+  // The Network panel is split in two because the two device classes are not comparable:
+  // a MikroTik is polled over the RouterOS API and reports CPU, memory and client count,
+  // while an SNMP router reports none of those. One combined picker would silently change
+  // WHICH metrics are available depending on what you happened to select.
+  const routers = netDevices.filter((d) => d.type !== "mikrotik");
+  const mikrotiks = netDevices.filter((d) => d.type === "mikrotik");
+
+  const [routerFocusId, setRouterFocusId] = useState<string | null>(null);
+  const [mtFocusId, setMtFocusId] = useState<string | null>(null);
+  const [upsFocusId, setUpsFocusId] = useState<string | null>(null);
+
+  // Land on a device without a click, and never keep pointing at one that has been
+  // removed — a stale id leaves the chart empty with no clue why.
+  const useAutoPick = (
+    list: { id: number | string }[],
+    id: string | null,
+    set: (v: string | null) => void,
+  ) => {
+    useEffect(() => {
+      if (!list.length) { if (id !== null) set(null); return; }
+      if (id === null || !list.some((d) => String(d.id) === id)) set(String(list[0]!.id));
+    }, [list, id, set]);
+  };
+  useAutoPick(routers, routerFocusId, setRouterFocusId);
+  useAutoPick(mikrotiks, mtFocusId, setMtFocusId);
+  useAutoPick(upsDevices, upsFocusId, setUpsFocusId);
+
+  // The environment chart follows the shared range too, so the whole page is showing one
+  // period. Previously it was pinned to "-1h" while every other chart moved, which is the
+  // worst of both: the panels look directly comparable and silently are not.
+  //
+  // Requested in its OWN effect rather than by adding focusRange to the big socket effect
+  // below — that one binds seven listeners, and re-binding all of them on every range
+  // click would drop live readings during the swap.
+  useEffect(() => {
+    const ask = () =>
+      socket.emit(
+        "changeRange",
+        focusRange.kind === "custom"
+          ? { start: focusRange.start, stop: focusRange.stop }
+          : focusRange.preset,
+      );
+    ask();
+    // The reply is a one-shot answer to this emit, so a dropped connection loses it for
+    // good — after a backend restart the chart would sit on whatever it last received,
+    // with the live tail resuming on top of stale history. Re-ask on reconnect.
+    socket.on("connect", ask);
+    return () => { socket.off("connect", ask); };
+  }, [focusRange]);
+
+  // The span the labels should be formatted for, read by socket handlers that were bound
+  // once at mount. A ref rather than a dep: those handlers must not be re-created — but
+  // they must not format a 30-day point as a bare clock time either.
+  const envSpanRef = useRef(rangeSpanSec(DEFAULT_RANGE));
+  envSpanRef.current = rangeSpanSec(focusRange);
+
+  const focusRouter = routers.find((d) => String(d.id) === routerFocusId) ?? null;
+  const focusMt = mikrotiks.find((d) => String(d.id) === mtFocusId) ?? null;
+  const focusUps = upsDevices.find((d) => String(d.id) === upsFocusId) ?? null;
+
+  // ESP32 liveness: authoritative state over REST, then live transitions over the socket.
+  // Mirrors pages/Environment.tsx — including the re-pull on reconnect and on regaining
+  // focus, because `esp32Status` only fires on a TRANSITION. A tab that was backgrounded
+  // when the sensor died never receives that event, and would sit showing a stale reading
+  // as "LIVE" indefinitely.
+  useEffect(() => {
+    let cancelled = false;
+    const resync = () => {
+      api.getSensorStatus().then((res) => {
+        if (cancelled || !res.success || !res.data) return;
+        setSensorOnline(Boolean(res.data.online));
+        setSensorLastSeen(res.data.lastSeen ?? null);
+      });
+    };
+    resync();
+
+    const onStatus = (s: { online?: boolean; lastSeen?: string | null }) => {
+      setSensorOnline(Boolean(s?.online));
+      setSensorLastSeen(s?.lastSeen ?? null);
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") resync(); };
+
+    socket.on("esp32Status", onStatus);
+    socket.on("connect", resync);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      socket.off("esp32Status", onStatus);
+      socket.off("connect", resync);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  // Open incidents. Refetched rather than patched in place on each event: the panel shows
+  // a short list and the lifecycle has several transitions (raise, acknowledge, resolve,
+  // auto-resolve), so re-reading the authoritative list is both simpler and immune to a
+  // missed event leaving a resolved alert on screen for ever.
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      api.getAlerts().then((res) => {
+        if (cancelled || !res.success || !res.data) return;
+        const rows: DashAlert[] = res.data.alerts ?? [];
+        setOpenAlerts(rows.filter((a) => a.status !== "resolved"));
+      });
+    };
+    load();
+
+    socket.on("notification", load); // a new alert was raised
+    socket.on("alertUpdated", load); // acknowledged / resolved / auto-resolved
+    socket.on("connect", load);
+    return () => {
+      cancelled = true;
+      socket.off("notification", load);
+      socket.off("alertUpdated", load);
+      socket.off("connect", load);
+    };
+  }, []);
+
+  // The reading is only "LIVE" while the sensor is actually reporting. `null` means we
+  // have not heard back yet — treated as live, so the tiles don't flash a false offline
+  // warning on every page load.
+  const sensorDead = sensorOnline === false;
+  const sensorSub = sensorLastSeen
+    ? `SENSOR OFFLINE · last ${fmtClock(sensorLastSeen)}`
+    : "SENSOR OFFLINE";
+
   const online = servers.filter((s) => s.status === "Online").length;
   const netOnline = netDevices.filter((d) => d.status === "Online").length;
   const upsOnline = upsDevices.filter((d) => d.status === "Online").length;
@@ -737,12 +893,23 @@ export default function Dashboard() {
   const tickColor = isDark ? "rgba(140,160,200,0.4)" : "rgba(80,100,130,0.5)";
 
   // ── Combined temp + humidity chart ────────────────────────────────────────
+  // Break the line wherever the ESP32 stopped reporting. Smoothing runs FIRST, on the
+  // dense arrays — `smooth()` averages a sliding window and would spread a null across
+  // its neighbours — and the breaks are inserted into the result.
+  const envChart = useMemo(() => {
+    const { labels, series } = withGaps(chartTimes, chartLabels, [
+      smooth(chartTemps),
+      smooth(chartHums),
+    ]);
+    return { labels, temps: series[0]!, hums: series[1]! };
+  }, [chartTimes, chartLabels, chartTemps, chartHums]);
+
   const combinedData: ChartData<"line"> = {
-    labels: chartLabels,
+    labels: envChart.labels,
     datasets: [
       {
         label: "Temperature",
-        data: smooth(chartTemps),
+        data: envChart.temps,
         // Each SEGMENT takes the alert band of the point it ends on, so the line is blue
         // where the room was too cold and red where it breached critical — the history
         // keeps its own colours instead of the whole line being repainted by the newest
@@ -768,7 +935,7 @@ export default function Dashboard() {
       },
       {
         label: "Humidity",
-        data: smooth(chartHums),
+        data: envChart.hums,
         // Keeps its own blue while the room is within the `humidity` rules, and turns
         // orange/red per segment where it was not. It shares this chart with temperature,
         // so it cannot go green when normal without becoming the same line.
@@ -910,6 +1077,18 @@ export default function Dashboard() {
           </span>
         </div>
 
+        {/* One range for every chart below, and it lives HERE rather than inside a panel
+            for exactly that reason: a control that sits in the Server panel but silently
+            redraws Network and UPS too is a trap. Shared because an incident is read
+            ACROSS the three — a CPU spike, the traffic that caused it and the UPS load at
+            the same moment — and per-panel pickers would let two of them show different
+            hours while looking directly comparable. */}
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] tracking-widest uppercase hidden sm:inline" style={{ color: gf.textDim }}>
+            Charts
+          </span>
+          <RangePicker value={focusRange} onChange={setFocusRange} />
+        </div>
       </div>
 
       {/* ── Row 1: Stat panels ── */}
@@ -919,12 +1098,17 @@ export default function Dashboard() {
             the critical one — so the tile changes at the same instant the system raises
             the alert. The band is named below the value; a colour alone cannot say which
             threshold was crossed. */}
+        {/* When the ESP32 stops reporting, the value is GREYED rather than kept in its
+            alarm colour. A red 35 °C tile asserts the room is hot right now; once the
+            sensor is dead the only honest claim is "this was the last reading". The
+            reading itself stays visible — it is still the best evidence of what the room
+            was doing — and the `esp32_offline` alert appears in Active Alerts beside it. */}
         <StatPanel
           label="Room Temp"
           value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : "--"}
           unit="°C"
-          color={temperatureColor(liveTemp, thresholds, gf.textMuted)}
-          sub={`${temperatureLabel(liveTemp, thresholds) ?? "DHT11"} · LIVE`}
+          color={sensorDead ? gf.textMuted : temperatureColor(liveTemp, thresholds, gf.textMuted)}
+          sub={sensorDead ? sensorSub : `${temperatureLabel(liveTemp, thresholds) ?? "DHT11"} · LIVE`}
           spark={chartTemps}
         />
         {/* Keeps its own blue while within the `humidity` rules, orange/red once past
@@ -933,8 +1117,8 @@ export default function Dashboard() {
           label="Humidity"
           value={typeof liveHum === "number" ? liveHum.toFixed(1) : "--"}
           unit="%"
-          color={alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, ENV_HUM, gf.textMuted)}
-          sub="DHT11 · LIVE"
+          color={sensorDead ? gf.textMuted : alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, ENV_HUM, gf.textMuted)}
+          sub={sensorDead ? sensorSub : "DHT11 · LIVE"}
           spark={chartHums}
         />
         <StatPanel
@@ -961,15 +1145,17 @@ export default function Dashboard() {
           label="Air Quality"
           value={typeof liveGas === "number" ? String(Math.round(liveGas)) : "--"}
           unit="ppm"
-          color={gasColor(liveGas, thresholds, gf.textMuted)}
+          color={sensorDead ? gf.textMuted : gasColor(liveGas, thresholds, gf.textMuted)}
           // The advice, like the colour, is keyed off the live `gas` rules rather than off
           // numbers repeated here — so retuning a rule cannot leave the tile saying
-          // "clean" in orange.
+          // "clean" in orange. A dead sensor overrides all of it: "clean" is a claim about
+          // the room, and with nothing reporting there is no basis for making it.
           sub={
-            gasLabel(liveGas, thresholds) === "CRITICAL" ? "SMOKE / GAS — critical"
-              : gasLabel(liveGas, thresholds) === "WARNING" ? "elevated — ventilate"
-                : typeof liveGas === "number" ? "clean · higher of 2 sensors"
-                  : "MQ-2 · LIVE"
+            sensorDead ? sensorSub
+              : gasLabel(liveGas, thresholds) === "CRITICAL" ? "SMOKE / GAS — critical"
+                : gasLabel(liveGas, thresholds) === "WARNING" ? "elevated — ventilate"
+                  : typeof liveGas === "number" ? "clean · higher of 2 sensors"
+                    : "MQ-2 · LIVE"
           }
           spark={chartGas}
         />
@@ -992,10 +1178,13 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* ── Row 2: Time series + gauges ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      {/* ── Row 2: Environment trend + open incidents ── */}
+      {/* Two columns, matching the device rows below. The Environment chart used to span
+          two of three columns, which made it the one panel on the page at its own width —
+          and a chart that is wider than everything else quietly reads as more important
+          than everything else. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Panel
-          className="lg:col-span-2"
           title="Environment"
           right={
             <>
@@ -1019,314 +1208,274 @@ export default function Dashboard() {
               ))}
             </>
           }
-          bodyStyle={{ height: 248, padding: "10px 12px 14px" }}
+          // Row 2 is a GLANCE row — "is the room OK" and "is anything wrong" — so it is
+          // deliberately shorter than the server panel below it, which is the one you
+          // PANEL_H is shared with every other panel on the page, so changing one alone
+          // cannot leave a ragged row.
+          bodyStyle={{ height: PANEL_H, padding: "8px 12px 12px" }}
         >
           <Line data={combinedData} options={combinedOpts} />
         </Panel>
 
-        <div className="grid grid-cols-2 gap-3">
-          {/* "Avg" alone never said averaged over what — it is the mean across every
-              online server, which is not obvious next to room temperature and a UPS. */}
-          <Panel title="Avg CPU" right={
-            <span className="text-[11px]" style={{ color: gf.textDim }}>
-              {servers.length} server{servers.length === 1 ? "" : "s"}
-            </span>
-          }>
-            <div className="flex items-center justify-center h-full">
-              <GaugeCanvas
-                value={`${cpuAvg}%`}
-                label="load"
-                pct={cpuAvg / 100}
-                color={loadColor(cpuAvg)}
-                size={120}
-                isDark={isDark}
-              />
-            </div>
-          </Panel>
-          <Panel title="Avg Memory" right={
-            <span className="text-[11px]" style={{ color: gf.textDim }}>
-              {servers.length} server{servers.length === 1 ? "" : "s"}
-            </span>
-          }>
-            <div className="flex items-center justify-center h-full">
-              <GaugeCanvas
-                value={`${memAvg}%`}
-                label="used"
-                pct={memAvg / 100}
-                color={loadColor(memAvg)}
-                size={120}
-                isDark={isDark}
-              />
-            </div>
-          </Panel>
-        </div>
-      </div>
-
-      {/* ── Row 3: Air conditioner units ──
-          Sits with the environment chart above: these are what ACT on the room
-          temperature being plotted, so the reading and the response are read together
-          rather than a page apart. */}
-      <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
-        {aircons.length === 0 ? (
-          <div className="text-[12px] text-center py-4" style={{ color: gf.textDim }}>
-            No AC units registered
-          </div>
-        ) : (
-          // auto-FIT, not auto-fill, and not a fixed xl:grid-cols-4. The fixed grid always
-          // reserved four tracks, so two registered units sat beside two empty columns of
-          // dead space. auto-fit COLLAPSES the tracks it doesn't need, so two cards share
-          // the row; register two more and it becomes four columns on its own, with no
-          // breakpoint to keep in sync with the unit count.
-          //
-          // (auto-fill would keep the empty tracks — the exact behaviour being fixed.)
-          <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
-            {aircons.map((ac) => (
-              <div
-                key={ac.id}
-                className="flex flex-col rounded-[2px]"
-                style={{ background: gf.bg, border: `1px solid ${gf.border}` }}
-              >
-                <div
-                  className="flex items-center justify-between px-3 py-2"
-                  style={{ borderBottom: `1px solid ${gf.divider}` }}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="relative flex h-1.5 w-1.5">
-                      {ac.enabled && (
-                        <span
-                          className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
-                          style={{ background: GREEN }}
-                        />
-                      )}
-                      <span
-                        className="relative inline-flex rounded-full h-1.5 w-1.5"
-                        style={{ background: ac.enabled ? GREEN : gf.textMuted }}
-                      />
-                    </span>
-                    <span className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
-                      {ac.name}
-                    </span>
-                  </div>
-                  <span
-                    className="text-[11px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
-                    style={{
-                      color: ac.enabled ? GREEN : gf.textMuted,
-                      background: ac.enabled ? "rgba(115,191,105,0.12)" : gf.hover,
-                    }}
-                  >
-                    {ac.enabled ? "ONLINE" : "OFFLINE"}
-                  </span>
-                </div>
-                <div className="px-3 pb-1.5 -mt-1">
-                  <span className="text-[10px]" style={{ color: gf.textDim }}>
-                    {ac.last_trigger === "manual" ? "set manually"
-                      : ac.last_trigger === "auto" ? "set by auto-cooling"
-                        : "not yet triggered"}
-                    {ac.enabled && ac.uptime && ac.uptime !== "offline" ? ` · on for ${ac.uptime}` : ""}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-px" style={{ background: gf.divider }}>
-                  {[
-                    ["Mode", ac.mode],
-                    ["Set", `${ac.setTemp}°`],
-                    ["Fan", ac.fanMode || "--"],
-                  ].map(([lbl, val]) => (
-                    <div
-                      key={lbl}
-                      className="flex flex-col px-2 py-2 gap-0.5"
-                      style={{ background: gf.panel }}
-                    >
-                      <span className="text-[10px] tracking-widest uppercase" style={{ color: gf.textDim }}>
-                        {lbl}
-                      </span>
-                      <span className="text-[13px] font-bold" style={{ color: gf.textPrimary }}>
-                        {val}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Panel>
-      {/* ── Row 4: Server table ── */}
-      <div className="grid grid-cols-1 gap-3">
+        {/* Replaces the Avg CPU / Avg Memory gauges that used to sit here.
+            A mean across servers describes nothing real — two hosts at 10% and 90%
+            average to 50%, which is neither of them — and Row 3 now shows each server's
+            actual load with history. The space buys the thing the Dashboard genuinely
+            lacked: what is currently WRONG. */}
         <Panel
-          title="Server Metrics"
+          title="Active Alerts"
           noPad
           right={
-            <span
-              className="flex items-center gap-1.5 text-[12px]"
-              style={{ color: gf.textMuted }}
-            >
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: GREEN }} />
-              {online}/{servers.length} online
-            </span>
+            <div className="flex items-center gap-2">
+              <span
+                className="text-[11px] font-bold px-1.5 py-0.5 rounded-[2px]"
+                style={{
+                  color: openAlerts.length ? "#E02F44" : GREEN,
+                  background: openAlerts.length ? "rgba(224,47,68,0.12)" : "rgba(115,191,105,0.12)",
+                }}
+              >
+                {openAlerts.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => navigate("/alerts")}
+                className="text-[11px] tracking-wide"
+                style={{ color: gf.accent }}
+              >
+                View all →
+              </button>
+            </div>
           }
+          bodyStyle={{ height: PANEL_H, overflowY: "auto", padding: 0 }}
         >
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse">
-              <thead>
-                <tr style={{ borderBottom: `1px solid ${gf.divider}` }}>
-                  {["Server", "Status", "CPU", "Memory", "Uptime"].map((h) => (
-                    <th
-                      key={h}
-                      className="text-left px-3 py-2 text-[11px] tracking-widest uppercase"
-                      style={{ color: gf.textDim }}
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {servers.map((s, i) => (
-                  <tr
-                    key={s.id}
-                    style={{
-                      background: i % 2 === 0 ? "transparent" : gf.hover,
-                      borderBottom: `1px solid ${gf.divider}`,
-                    }}
-                  >
-                    <td
-                      className="px-3 py-2.5 text-[13px] font-semibold"
-                      style={{ color: gf.textPrimary }}
-                    >
-                      {s.name}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <StatusBadge status={s.status} />
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <span
-                        className="text-[13px] font-bold"
-                        style={{ color: loadColor(s.cpu) }}
-                      >
-                        {s.cpu}%
-                      </span>
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <span
-                        className="text-[13px] font-bold"
-                        style={{ color: loadColor(s.memory) }}
-                      >
-                        {s.memory}%
-                      </span>
-                    </td>
-                    <td className="px-3 py-2.5 text-[12px]" style={{ color: gf.textMuted }}>
-                      {s.uptime}
-                    </td>
-                  </tr>
-                ))}
-                {servers.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="text-center py-6 text-[12px]" style={{ color: gf.textDim }}>
-                      No data
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-
-      </div>
-
-      {/* ── Row 5: Network + UPS ──
-          Both were already fetched and kept live, but only ever surfaced as a count in
-          the tiles above. "3/3 routers online" cannot answer which port is saturating or
-          which UPS is on battery, which is the question you actually open a dashboard
-          with. */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <Panel title="Network" right={
-          <span className="text-[12px]" style={{ color: gf.textMuted }}>
-            {netDevices.length ? `${netOnline}/${netDevices.length} online` : "none registered"}
-          </span>
-        }>
-          {netDevices.length === 0 ? (
-            <EmptyRow>No routers or MikroTik registered yet.</EmptyRow>
+          {openAlerts.length === 0 ? (
+            // Good news should read as good, not as an empty container.
+            <div className="flex flex-col items-center justify-center h-full gap-1.5 px-4 text-center">
+              <span className="text-[20px]" style={{ color: GREEN }}>✓</span>
+              <span className="text-[13px]" style={{ color: gf.textMuted }}>
+                No active alerts
+              </span>
+              <span className="text-[11px]" style={{ color: gf.textDim }}>
+                Everything is within its thresholds.
+              </span>
+            </div>
           ) : (
-            <div className="flex flex-col gap-2">
-              {netDevices.map((d) => {
-                const offline = d.status !== "Online";
-                // An interface is worth surfacing when it is carrying real load; the
-                // busiest one is the only one that can become a problem.
-                const busiest = (d.interfaces ?? [])
-                  .filter((i) => i.utilizationPct != null)
-                  .sort((a, b) => (b.utilizationPct ?? 0) - (a.utilizationPct ?? 0))[0];
-                const down = (d.interfaces ?? []).filter((i) => i.linkUp === false).length;
-                return (
-                  <div key={String(d.id)} className="flex items-center gap-3 px-2 py-1.5 rounded-[2px]"
-                    style={{ background: gf.bg, border: `1px solid ${gf.divider}` }}>
-                    <StatusDot ok={!offline} />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] truncate" style={{ color: gf.textPrimary }}>{d.name ?? `Device ${d.id}`}</div>
-                      <div className="text-[11px] truncate" style={{ color: gf.textMuted }}>
-                        {offline ? "unreachable" : busiest
-                          ? `${busiest.locationLabel || busiest.name} · ${Math.round(busiest.utilizationPct ?? 0)}% busiest link`
-                          : `${(d.interfaces ?? []).length} ports`}
-                        {down > 0 && <span style={{ color: ORANGE }}> · {down} down</span>}
-                      </div>
-                    </div>
-                    {/* CPU/mem/clients exist only on MikroTik — the SNMP poller cannot
-                        read them, so they are omitted rather than shown as 0. */}
-                    <div className="flex items-center gap-3 text-[12px] shrink-0">
-                      {d.cpuPercent != null && <MiniStat label="CPU" value={`${Math.round(d.cpuPercent)}%`} warn={d.cpuPercent >= 80} />}
-                      {d.memPercent != null && <MiniStat label="MEM" value={`${Math.round(d.memPercent)}%`} warn={d.memPercent >= 80} />}
-                      {d.connectedClients != null && <MiniStat label="DEV" value={String(d.connectedClients)} warn={false} />}
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="flex flex-col">
+              {openAlerts.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => navigate("/alerts")}
+                  className="flex items-start gap-2 px-3 py-2 text-left transition-colors"
+                  style={{ borderBottom: `1px solid ${gf.divider}` }}
+                >
+                  {/* Severity as a bar rather than a dot: it survives being scanned
+                      quickly down a list, and doesn't rely on colour alone at a glance. */}
+                  <span
+                    className="w-1 self-stretch rounded-full shrink-0"
+                    style={{ background: SEV_COLOR[a.severity] }}
+                  />
+                  <span className="flex flex-col min-w-0 flex-1 gap-0.5">
+                    <span className="text-[13px] font-medium truncate" style={{ color: gf.textPrimary }}>
+                      {a.title}
+                    </span>
+                    <span className="text-[11px] truncate" style={{ color: gf.textDim }}>
+                      {a.deviceName ?? "Server room"} · {ago(a.createdAt)}
+                      {a.status === "acknowledged" ? " · acknowledged" : ""}
+                    </span>
+                  </span>
+                </button>
+              ))}
             </div>
           )}
         </Panel>
+      </div>
 
-        <Panel title="UPS Power" right={
+      {/* ── Rows 3-4: the four monitored device classes, as one 2x2 grid ──
+          Servers | Network        (row 3)
+          MikroTik | UPS Power     (row 4)
+          Every panel is the same shape — pick a device, read its chart — and the same
+          size (PANEL_H), so the block reads as a grid rather than four boxes that
+          happen to sit near each other. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {/* Same shape as the other three: pick a device, read its chart. The fleet TABLE
+            that used to sit here is gone — with a dropdown above it and per-metric values
+            on the legend below, it was presenting the same CPU and memory figures a third
+            time, and it was the only thing forcing this panel to scroll internally. The
+            full fleet view lives on the Server Metrics page. */}
+        <Panel
+          title="Server Metrics"
+          noPad
+          bodyStyle={PANEL_BODY}
+          right={
+            <span className="text-[12px]" style={{ color: gf.textMuted }}>
+              {servers.length ? `${online}/${servers.length} online` : "none registered"}
+            </span>
+          }
+        >
+          {servers.length === 0 ? (
+            <div style={{ padding: 12 }}>
+              <EmptyRow>No servers monitored yet.</EmptyRow>
+            </div>
+          ) : (
+            <>
+              <DevicePicker
+                devices={servers}
+                value={focusId == null ? null : String(focusId)}
+                onChange={(id) => setFocusId(Number(id))}
+                label="Server"
+              />
+              <ServerFocus server={focusServer} range={focusRange} isDark={isDark} />
+            </>
+          )}
+        </Panel>
+
+        {/* SNMP routers only. Separate from MikroTik rather than two halves of one panel:
+            the two are polled by different services and expose different metrics (a
+            MikroTik reports CPU, memory and client count; an SNMP router reports none of
+            them), so one picker spanning both would silently change which numbers exist
+            depending on what you selected. */}
+        <Panel title="Network" noPad bodyStyle={PANEL_BODY} right={
+          <span className="text-[12px]" style={{ color: gf.textMuted }}>
+            {routers.length ? `${routers.filter((d) => d.status === "Online").length}/${routers.length} online` : "none registered"}
+          </span>
+        }>
+          {routers.length === 0 ? (
+            <div style={{ padding: 12 }}>
+              <EmptyRow>No SNMP routers registered yet.</EmptyRow>
+            </div>
+          ) : (
+            <>
+              <DevicePicker devices={routers} value={routerFocusId} onChange={setRouterFocusId} label="Router" />
+              <NetworkFocus device={focusRouter} range={focusRange} isDark={isDark} />
+            </>
+          )}
+        </Panel>
+      </div>
+
+      {/* ── Row 4: MikroTik + UPS ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <Panel title="MikroTik" noPad bodyStyle={PANEL_BODY} right={
+          <span className="text-[12px]" style={{ color: gf.textMuted }}>
+            {mikrotiks.length ? `${mikrotiks.filter((d) => d.status === "Online").length}/${mikrotiks.length} online` : "none registered"}
+          </span>
+        }>
+          {mikrotiks.length === 0 ? (
+            <div style={{ padding: 12 }}>
+              <EmptyRow>No MikroTik registered yet.</EmptyRow>
+            </div>
+          ) : (
+            <>
+              <DevicePicker devices={mikrotiks} value={mtFocusId} onChange={setMtFocusId} label="MikroTik" />
+              <NetworkFocus device={focusMt} range={focusRange} isDark={isDark} />
+            </>
+          )}
+        </Panel>
+
+        <Panel title="UPS Power" noPad bodyStyle={PANEL_BODY} right={
           <span className="text-[12px]" style={{ color: upsOnBattery > 0 ? RED : gf.textMuted }}>
             {upsDevices.length ? (upsOnBattery > 0 ? `${upsOnBattery} on battery` : `${upsOnline}/${upsDevices.length} online`) : "none registered"}
           </span>
         }>
           {upsDevices.length === 0 ? (
-            <EmptyRow>No UPS registered yet.</EmptyRow>
+            <div style={{ padding: 12 }}>
+              <EmptyRow>No UPS registered yet.</EmptyRow>
+            </div>
           ) : (
-            <div className="flex flex-col gap-2">
-              {upsDevices.map((u) => {
-                const offline = u.status !== "Online";
-                const charge = u.batteryChargePct;
-                // On battery outranks a healthy charge: mains is gone and the clock is
-                // running, however full the battery currently reads.
-                const bad = u.onBattery === true || (charge != null && charge <= 20);
-                const warn = !bad && charge != null && charge <= 50;
-                return (
-                  <div key={String(u.id)} className="flex items-center gap-3 px-2 py-1.5 rounded-[2px]"
-                    style={{ background: gf.bg, border: `1px solid ${gf.divider}` }}>
-                    <StatusDot ok={!offline && !bad} />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] truncate" style={{ color: gf.textPrimary }}>{u.name ?? `UPS ${u.id}`}</div>
-                      <div className="text-[11px] truncate" style={{ color: u.onBattery ? RED : gf.textMuted }}>
-                        {offline ? "unreachable"
-                          : u.onBattery ? "ON BATTERY — running on stored power"
-                            : u.runtimeRemainingMin != null ? `${Math.round(u.runtimeRemainingMin)} min backup` : "on mains"}
-                      </div>
+            <>
+              <DevicePicker devices={upsDevices} value={upsFocusId} onChange={setUpsFocusId} label="UPS" />
+              <UpsFocus device={focusUps} range={focusRange} isDark={isDark} />
+            </>
+          )}
+        </Panel>
+      </div>
+
+      {/* ── Row 5: Air conditioner units ──
+          Full width, below the 2x2. They are what ACTS on the room temperature plotted in
+          Row 2, and their cards size themselves to the number of registered units — which
+          is why they don't join the fixed-height grid above. */}
+      <div className="grid grid-cols-1 gap-3">
+        <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
+          {aircons.length === 0 ? (
+            <div className="text-[12px] text-center py-4" style={{ color: gf.textDim }}>
+              No AC units registered
+            </div>
+          ) : (
+            // auto-FIT, not auto-fill, and not a fixed xl:grid-cols-4. The fixed grid always
+            // reserved four tracks, so two registered units sat beside two empty columns of
+            // dead space. auto-fit COLLAPSES the tracks it doesn't need, so two cards share
+            // the row; register two more and it becomes four columns on its own, with no
+            // breakpoint to keep in sync with the unit count.
+            //
+            // (auto-fill would keep the empty tracks — the exact behaviour being fixed.)
+            <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
+              {aircons.map((ac) => (
+                <div
+                  key={ac.id}
+                  className="flex flex-col rounded-[2px]"
+                  style={{ background: gf.bg, border: `1px solid ${gf.border}` }}
+                >
+                  <div
+                    className="flex items-center justify-between px-3 py-2"
+                    style={{ borderBottom: `1px solid ${gf.divider}` }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="relative flex h-1.5 w-1.5">
+                        {ac.enabled && (
+                          <span
+                            className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
+                            style={{ background: GREEN }}
+                          />
+                        )}
+                        <span
+                          className="relative inline-flex rounded-full h-1.5 w-1.5"
+                          style={{ background: ac.enabled ? GREEN : gf.textMuted }}
+                        />
+                      </span>
+                      <span className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
+                        {ac.name}
+                      </span>
                     </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      {u.loadPct != null && <MiniStat label="LOAD" value={`${Math.round(u.loadPct)}%`} warn={u.loadPct >= 80} />}
-                      {charge != null && (
-                        <div className="flex items-center gap-1.5">
-                          <div className="h-1.5 w-12 rounded-full overflow-hidden" style={{ background: gf.hover }}>
-                            <div style={{ width: `${Math.min(100, charge)}%`, height: "100%", background: bad ? RED : warn ? ORANGE : GREEN }} />
-                          </div>
-                          <span className="text-[12px] font-semibold tabular-nums" style={{ color: bad ? RED : warn ? ORANGE : GREEN }}>
-                            {Math.round(charge)}%
-                          </span>
-                        </div>
-                      )}
-                    </div>
+                    <span
+                      className="text-[11px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
+                      style={{
+                        color: ac.enabled ? GREEN : gf.textMuted,
+                        background: ac.enabled ? "rgba(115,191,105,0.12)" : gf.hover,
+                      }}
+                    >
+                      {ac.enabled ? "ONLINE" : "OFFLINE"}
+                    </span>
                   </div>
-                );
-              })}
+                  <div className="px-3 pb-1.5 -mt-1">
+                    <span className="text-[10px]" style={{ color: gf.textDim }}>
+                      {ac.last_trigger === "manual" ? "set manually"
+                        : ac.last_trigger === "auto" ? "set by auto-cooling"
+                          : "not yet triggered"}
+                      {ac.enabled && ac.uptime && ac.uptime !== "offline" ? ` · on for ${ac.uptime}` : ""}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-px" style={{ background: gf.divider }}>
+                    {[
+                      ["Mode", ac.mode],
+                      ["Set", `${ac.setTemp}°`],
+                      ["Fan", ac.fanMode || "--"],
+                    ].map(([lbl, val]) => (
+                      <div
+                        key={lbl}
+                        className="flex flex-col px-2 py-2 gap-0.5"
+                        style={{ background: gf.panel }}
+                      >
+                        <span className="text-[10px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                          {lbl}
+                        </span>
+                        <span className="text-[13px] font-bold" style={{ color: gf.textPrimary }}>
+                          {val}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </Panel>

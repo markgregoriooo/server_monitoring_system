@@ -4,6 +4,8 @@ import { socket } from "../socket/socket";
 import Chart from "../chart/ChartConfig";
 import RangePicker, { DEFAULT_RANGE } from "../components/ui/RangePicker";
 import type { RangeValue } from "../components/ui/RangePicker";
+import { withGaps } from "../utils/seriesGaps";
+import { formatBps } from "../utils/format";
 
 // ─── Per-router detail view (throughput + ports + log) ────────────────────────
 // Reached from NetworkMonitoring via "View". In-page swap (Back button), mirroring
@@ -62,14 +64,8 @@ const BLUE = "#5794F2";
 function loadColor(v: number) { if (v >= 85) return RED; if (v >= 65) return ORANGE; return GREEN; }
 function statusColor(s: string) { if (s === "Online") return GREEN; if (s === "Warning") return ORANGE; return RED; }
 function logColor(level: string) { if (level === "critical" || level === "error") return RED; if (level === "warning") return ORANGE; return BLUE; }
-function formatBps(n: number | null): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  const bits = n * 8;
-  if (bits >= 1e9) return `${(bits / 1e9).toFixed(2)} Gb/s`;
-  if (bits >= 1e6) return `${(bits / 1e6).toFixed(2)} Mb/s`;
-  if (bits >= 1e3) return `${(bits / 1e3).toFixed(1)} kb/s`;
-  return `${Math.round(bits)} b/s`;
-}
+// formatBps moved to utils/format.ts. The Dashboard's network panel needs the identical
+// scaling — three copies is how the same router starts reading differently per page.
 function formatUptime(sec: number | null): string {
   if (sec == null || !Number.isFinite(sec)) return "—";
   const s = Math.floor(sec), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
@@ -100,16 +96,26 @@ function ThroughputChart({ history }: { history: HistPoint[] }) {
       return;
     }
     chartRef.current?.destroy();
-    const labels = history.map((p) =>
-      new Date(p.time).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false }),
+    // Break the line where the poller stopped, so an unreachable router reads as a hole
+    // with a start and an end rather than as a straight segment drawn across the outage.
+    // `?? null`, not `?? 0`: no reading is not zero traffic.
+    const gapped = withGaps(
+      history.map((p) => Date.parse(p.time)),
+      history.map((p) =>
+        new Date(p.time).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false }),
+      ),
+      [
+        history.map((p) => p.rxBytesPerSec ?? null),
+        history.map((p) => p.txBytesPerSec ?? null),
+      ],
     );
     chartRef.current = new Chart(ref.current, {
       type: "line",
       data: {
-        labels,
+        labels: gapped.labels,
         datasets: [
-          { label: "In (Rx)", data: history.map((p) => p.rxBytesPerSec ?? 0), borderColor: BLUE, backgroundColor: BLUE + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
-          { label: "Out (Tx)", data: history.map((p) => p.txBytesPerSec ?? 0), borderColor: GREEN, backgroundColor: GREEN + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
+          { label: "In (Rx)", data: gapped.series[0]!, borderColor: BLUE, backgroundColor: BLUE + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
+          { label: "Out (Tx)", data: gapped.series[1]!, borderColor: GREEN, backgroundColor: GREEN + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
         ],
       },
       options: {
