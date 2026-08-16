@@ -82,6 +82,30 @@ Foreign keys — **both non-identifying, and both SET NULL**:
 > key. That would revoke enrolment for a whole branch as a side effect of an HR change, and
 > would erase the record that the key ever existed.
 
+**Cardinality — both are one-to-many (`users` 1 ──< `agent_install_keys` N):**
+
+| Relationship | Reads as | Workbench notation |
+|---|---|---|
+| `users` → `agent_install_keys` (`created_by`) | one admin issues **many** keys; a key has **at most one** issuer | 1:n, non-identifying, **optional** |
+| `users` → `agent_install_keys` (`revoked_by`) | one admin revokes **many** keys; a key has **at most one** revoker | 1:n, non-identifying, **optional** |
+
+Optional on both sides of the "one": the FK columns are nullable, and SET NULL can empty
+them later, so the minimum is 0 — a key with no issuer on record is a valid row, not a
+broken one. Non-identifying because a key is identified by its own `install_key_id` and
+exists perfectly well with neither user set; Workbench draws that as a **dashed** line.
+
+**Two FKs to the same table = two separate connection lines.** Draw it twice — this is
+normal, and it is why the totals below go from 30 to 33 rather than 32. The lines will
+land on top of each other; drag either one's midpoint to separate them so the figure is
+readable in the manuscript.
+
+> ⚠️ **Do not use the relationship *tool* in the toolbar to draw these.** The 1:n tool
+> CREATES a new FK column, so you would end up with `users_user_id` alongside the
+> `created_by` you already defined — twice over. `created_by` and `revoked_by` already
+> exist, so add the constraints in the table editor's **Foreign Keys** tab instead
+> (referenced table `users`, then tick the existing column). Workbench draws both lines
+> onto the canvas by itself. Same applies to `agent_tokens.install_key_id` in item 2.
+
 - [ ] Drag the new table onto the EER canvas (new tables do **not** auto-place)
 
 Place it near `agent_tokens` and `devices` — it belongs to the agent-enrollment cluster,
@@ -99,6 +123,10 @@ not the user-admin cluster, even though both its FKs point at `users`.
 - [ ] Add index `idx_agent_tokens_install_key` on (`install_key_id`)
 - [ ] Add FK `fk_agent_tokens_install_key` → `agent_install_keys.install_key_id`,
       **ON DELETE SET NULL / ON UPDATE CASCADE**, **non-identifying**
+
+**Cardinality — one-to-many (`agent_install_keys` 1 ──< `agent_tokens` N), optional:** one
+key enrols **many** agents; each agent was let in by **at most one** key. Optional because
+`install_key_id` is nullable — see the NULL case below.
 
 This is the relationship that makes a key *own* the servers it enrolled, so revoking a key
 can optionally cut that fleet off. NULL means the agent predates install keys or came in on
