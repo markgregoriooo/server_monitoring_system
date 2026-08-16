@@ -567,7 +567,7 @@ export default function AlertRules() {
             <circle cx="11" cy="11" r="7" />
             <path d="M21 21l-4.3-4.3" />
           </svg>
-          <input
+          <input name="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search rules, metric or server…"
@@ -575,7 +575,7 @@ export default function AlertRules() {
             style={inputStyle}
           />
         </div>
-        <select value={metricFilter} onChange={(e) => setMetricFilter(e.target.value)} className={selectCls} style={inputStyle}>
+        <select name="metricFilter" value={metricFilter} onChange={(e) => setMetricFilter(e.target.value)} className={selectCls} style={inputStyle}>
           <option value="all">All metrics</option>
           {METRICS.map((m) => (
             <option key={m.value} value={m.value}>
@@ -583,7 +583,7 @@ export default function AlertRules() {
             </option>
           ))}
         </select>
-        <select value={sevFilter} onChange={(e) => setSevFilter(e.target.value)} className={selectCls} style={inputStyle}>
+        <select name="sevFilter" value={sevFilter} onChange={(e) => setSevFilter(e.target.value)} className={selectCls} style={inputStyle}>
           <option value="all">All severities</option>
           {SEVERITIES.map((s) => (
             <option key={s} value={s}>
@@ -591,7 +591,7 @@ export default function AlertRules() {
             </option>
           ))}
         </select>
-        <select value={scopeFilter} onChange={(e) => setScopeFilter(e.target.value)} className={selectCls} style={inputStyle}>
+        <select name="scopeFilter" value={scopeFilter} onChange={(e) => setScopeFilter(e.target.value)} className={selectCls} style={inputStyle}>
           <option value="all">All scopes</option>
           <option value="global">Global only</option>
           <option value="override">Overrides only</option>
@@ -843,7 +843,7 @@ export default function AlertRules() {
             <div className="p-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Field label="Scope">
-                  <select
+                  <select name="deviceId"
                     value={form.deviceId}
                     onChange={(e) => {
                       const deviceId = e.target.value;
@@ -884,7 +884,7 @@ export default function AlertRules() {
                 </Field>
 
                 <Field label="Metric">
-                  <select value={form.metricName} onChange={(e) => setForm((f) => {
+                  <select name="metricName" value={form.metricName} onChange={(e) => setForm((f) => {
                     const metricName = e.target.value;
                     // Point the condition the sensible way for the chosen metric: lower-is-worse
                     // metrics (battery / runtime) want '<='; keep the user's operator if it
@@ -912,7 +912,7 @@ export default function AlertRules() {
                   && PER_PORT_METRICS.has(form.metricName)
                   && (selectedDevice.interfaces?.length ?? 0) > 0 && (
                   <Field label="Port">
-                    <select
+                    <select name="interfaceName"
                       value={form.interfaceName}
                       onChange={(e) => setForm((f) => ({ ...f, interfaceName: e.target.value }))}
                       className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none"
@@ -927,7 +927,7 @@ export default function AlertRules() {
                 )}
 
                 <Field label="Condition">
-                  <select value={form.comparison} onChange={(e) => setForm((f) => ({ ...f, comparison: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
+                  <select name="comparison" value={form.comparison} onChange={(e) => setForm((f) => ({ ...f, comparison: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle}>
                     {COMPARISONS.map((c) => (
                       <option key={c} value={c}>
                         {c}
@@ -937,7 +937,7 @@ export default function AlertRules() {
                 </Field>
 
                 <Field label={`Threshold (${metricMeta(form.metricName).unit})`}>
-                  <input
+                  <input name="thresholdValue"
                     type="number"
                     value={form.thresholdValue}
                     onChange={(e) => setForm((f) => ({ ...f, thresholdValue: e.target.value }))}
@@ -974,7 +974,7 @@ export default function AlertRules() {
 
                 <Field label="Status">
                   <label className="flex items-center gap-2 text-[13px] px-2 py-1.5 rounded-[2px] cursor-pointer" style={{ ...inputStyle, color: gf.textMuted }}>
-                    <input type="checkbox" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
+                    <input name="isActive" type="checkbox" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
                     {form.isActive ? "Active (rule will fire)" : "Paused (rule disabled)"}
                   </label>
                 </Field>

@@ -100,7 +100,7 @@ export default function NotificationPreferences() {
           {/* Min severity */}
           <div className="flex items-center justify-between gap-3" style={{ opacity: emailEnabled ? 1 : 0.5 }}>
             <span className="text-[14px]" style={label}>Email me when severity is at least</span>
-            <select
+            <select name="minSeverity"
               value={minSeverity}
               disabled={!emailEnabled}
               onChange={(e) => setMinSeverity(e.target.value as Severity)}

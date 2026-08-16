@@ -164,7 +164,7 @@ function SelectField({
 }) {
   return (
     <div className="relative">
-      <select
+      <select name="value"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className={`${inputCls} appearance-none cursor-pointer pr-8 ${className}`}
@@ -569,7 +569,7 @@ export default function UserManagement() {
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative flex-1 min-w-[180px]">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--gf-text-muted)] text-xs pointer-events-none">⌕</span>
-          <input
+          <input name="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search name, username, email…"
@@ -741,7 +741,7 @@ export default function UserManagement() {
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
               <label className={labelCls}>Username *</label>
-              <input value={editForm.username} onChange={(e) => setEditForm((p) => ({ ...p, username: e.target.value }))} className={inputCls} placeholder="Username" />
+              <input name="username" value={editForm.username} onChange={(e) => setEditForm((p) => ({ ...p, username: e.target.value }))} className={inputCls} placeholder="Username" />
             </div>
             <div>
               <label className={labelCls}>Role</label>

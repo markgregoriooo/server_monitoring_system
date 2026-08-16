@@ -152,7 +152,7 @@ export default function ProfileModal({ open, onClose, onSaved }: ProfileModalPro
             {/* The one field that is ours */}
             <div>
               <label className={labelCls}>Username *</label>
-              <input
+              <input name="username"
                 value={form.username}
                 onChange={(e) => setForm({ username: e.target.value })}
                 placeholder="e.g. jdelacruz"

@@ -590,21 +590,21 @@ export default function NetworkMonitoring() {
             </div>
             <div className="p-4 flex flex-col gap-3">
               <Field label="Name">
-                <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Core switch" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Core switch" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="IP address">
-                  <input value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.1" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="ip" value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.1" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
                 <Field label="SNMP port">
-                  <input value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="snmpPort" value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
               </div>
               <Field label="SNMP community (read-only, v2c)">
-                <input value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="community" value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <Field label="Location">
-                <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="location" value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <p className="text-[12px] leading-relaxed" style={{ color: gf.textDim }}>
                 Uses SNMP v2c with a read-only community. Confirm UDP {form.snmpPort || "161"} is reachable from the backend host. Polling begins on the next cycle (≤60s) — no restart needed.

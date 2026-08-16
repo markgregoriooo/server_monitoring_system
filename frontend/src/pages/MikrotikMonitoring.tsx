@@ -279,7 +279,7 @@ function PasswordField({
   const [show, setShow] = useState(false);
   return (
     <div className="relative">
-      <input
+      <input name="value"
         type={show ? "text" : "password"}
         className="w-full pl-2 pr-8 py-1.5 text-[14px] rounded-[2px] outline-none"
         style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
@@ -397,25 +397,25 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
         <div className="p-4 flex flex-col gap-3">
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Name</label>
-            <input className={inputCls} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} />
+            <input name="name" className={inputCls} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelCls} style={{ color: gf.textMuted }}>IP address</label>
-              <input className={inputCls} style={inputStyle} value={ip} onChange={(e) => setIp(e.target.value)} placeholder="192.168.88.1" />
+              <input name="ip" className={inputCls} style={inputStyle} value={ip} onChange={(e) => setIp(e.target.value)} placeholder="192.168.88.1" />
             </div>
             <div>
               <label className={labelCls} style={{ color: gf.textMuted }}>Location</label>
-              <input className={inputCls} style={inputStyle} value={location} onChange={(e) => setLocation(e.target.value)} />
+              <input name="location" className={inputCls} style={inputStyle} value={location} onChange={(e) => setLocation(e.target.value)} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelCls} style={{ color: gf.textMuted }}>API Port</label>
-              <input type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
+              <input name="apiPort" type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
             </div>
             <label className="flex items-center gap-2 text-[14px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
-              <input
+              <input name="useTls"
                 type="checkbox"
                 checked={useTls}
                 onChange={(e) => {
@@ -433,7 +433,7 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
           </div>
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Username (read-only RouterOS user)</label>
-            <input className={inputCls} style={inputStyle} value={apiUsername} onChange={(e) => setApiUsername(e.target.value)} placeholder="monitor-ro" autoComplete="off" />
+            <input name="apiUsername" className={inputCls} style={inputStyle} value={apiUsername} onChange={(e) => setApiUsername(e.target.value)} placeholder="monitor-ro" autoComplete="off" />
           </div>
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Password</label>
@@ -532,10 +532,10 @@ function ConnectionModal({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelCls} style={{ color: gf.textMuted }}>API Port</label>
-              <input type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
+              <input name="apiPort" type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
             </div>
             <label className="flex items-center gap-2 text-[14px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
-              <input
+              <input name="useTls"
                 type="checkbox"
                 checked={useTls}
                 onChange={(e) => {
@@ -553,7 +553,7 @@ function ConnectionModal({
           </div>
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Username (read-only RouterOS user)</label>
-            <input className={inputCls} style={inputStyle} value={apiUsername} onChange={(e) => setApiUsername(e.target.value)} placeholder="monitor-ro" autoComplete="off" />
+            <input name="apiUsername" className={inputCls} style={inputStyle} value={apiUsername} onChange={(e) => setApiUsername(e.target.value)} placeholder="monitor-ro" autoComplete="off" />
           </div>
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Password</label>

@@ -467,7 +467,7 @@ export default function History() {
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[180px]">
           <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] pointer-events-none" style={{ color: gf.textDim }}>⌕</span>
-          <input
+          <input name="searchInput"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder="Search events, actor or device…"
@@ -498,7 +498,7 @@ export default function History() {
         </div>
         {rangeMode === "custom" && (
           <div className="flex items-center gap-1">
-            <input
+            <input name="customStart"
               type="date"
               value={customStart}
               max={customEnd || undefined}
@@ -507,7 +507,7 @@ export default function History() {
               style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
             />
             <span className="text-[12px]" style={{ color: gf.textDim }}>→</span>
-            <input
+            <input name="customEnd"
               type="date"
               value={customEnd}
               min={customStart || undefined}
@@ -539,7 +539,7 @@ export default function History() {
         <div className="h-4 w-px" style={{ background: gf.border }} />
         <div className="flex flex-wrap items-center gap-1">
           <span className="text-[10px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Actor</span>
-          <select
+          <select name="actor"
             value={actor}
             onChange={(e) => { setActor(e.target.value); setPage(1); }}
             className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none"

@@ -387,7 +387,7 @@ export default function InstallKeysPanel() {
                 <span className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
                   Expires in (days)
                 </span>
-                <input
+                <input name="expiresInDays"
                   value={expiresInDays}
                   onChange={(e) => setExpiresInDays(e.target.value.replace(/[^0-9]/g, ""))}
                   onKeyDown={(e) => {

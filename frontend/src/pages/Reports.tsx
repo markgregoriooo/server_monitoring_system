@@ -417,7 +417,7 @@ export default function Reports() {
             <circle cx="11" cy="11" r="7" />
             <path d="M21 21l-4.3-4.3" />
           </svg>
-          <input
+          <input name="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by title, type or author…"
@@ -425,7 +425,7 @@ export default function Reports() {
             style={inputStyle}
           />
         </div>
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className={selectCls} style={inputStyle}>
+        <select name="typeFilter" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className={selectCls} style={inputStyle}>
           <option value="all">All types</option>
           {TYPES.map((t) => (
             <option key={t.value} value={t.value}>
@@ -631,7 +631,7 @@ export default function Reports() {
               {scopeDevices.length > 0 && (
                 <div className="mb-3">
                   <Field label="Device (optional)">
-                    <select
+                    <select name="genDevice"
                       value={genDevice}
                       onChange={(e) => setGenDevice(e.target.value)}
                       className={selectCls}
@@ -650,7 +650,7 @@ export default function Reports() {
 
               {/* Title */}
               <Field label="Title (optional)">
-                <input
+                <input name="genTitle"
                   value={genTitle}
                   onChange={(e) => setGenTitle(e.target.value)}
                   placeholder={`${typeMeta(genType).label} Report${
@@ -689,10 +689,10 @@ export default function Reports() {
                 {rangeMode === "custom" && (
                   <div className="grid grid-cols-2 gap-2 mt-2">
                     <Field label="Start">
-                      <input type="date" value={customStart} max={customEnd || todayStr()} onChange={(e) => setCustomStart(e.target.value)} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                      <input name="customStart" type="date" value={customStart} max={customEnd || todayStr()} onChange={(e) => setCustomStart(e.target.value)} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                     </Field>
                     <Field label="End">
-                      <input type="date" value={customEnd} min={customStart} max={todayStr()} onChange={(e) => setCustomEnd(e.target.value)} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                      <input name="customEnd" type="date" value={customEnd} min={customStart} max={todayStr()} onChange={(e) => setCustomEnd(e.target.value)} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                     </Field>
                   </div>
                 )}

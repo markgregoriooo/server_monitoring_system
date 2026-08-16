@@ -229,7 +229,7 @@ function DevicePicker({
       <span className="text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textDim }}>
         {label}
       </span>
-      <select
+      <select name="value"
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
         className="flex-1 min-w-0 text-[12px] px-2 py-1 rounded-[2px] outline-none"

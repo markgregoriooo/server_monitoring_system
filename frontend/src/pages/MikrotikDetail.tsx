@@ -539,7 +539,7 @@ export default function MikrotikDetail({
                 `max-w` + `truncate`: a long "ether1 — Uplink to admin building" option
                 would otherwise stretch the select past a phone's width and push the
                 range buttons off the row. */}
-            <select
+            <select name="chartPort"
               value={chartPort}
               onChange={(e) => setChartPort(e.target.value)}
               className="text-[12px] px-1.5 py-0.5 rounded-[2px] outline-none max-w-[45vw] sm:max-w-none truncate"
@@ -607,7 +607,7 @@ export default function MikrotikDetail({
                 <div key={i.name} className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
                   <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: i.linkUp ? GREEN : RED }} />
                   <span className="w-28 shrink-0 text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>{i.name}</span>
-                  <input
+                  <input name="labelDraft"
                     value={labelDraft[i.name] ?? ""}
                     maxLength={100}
                     onChange={(e) => setLabelDraft((p) => ({ ...p, [i.name]: e.target.value }))}
@@ -625,7 +625,7 @@ export default function MikrotikDetail({
                   </span>
                   <label className="flex items-center gap-1.5 shrink-0 text-[11px] cursor-pointer select-none"
                     title="Uncheck to never raise interface-down alerts for this port">
-                    <input
+                    <input name="muteLinkAlerts"
                       type="checkbox"
                       checked={!muted}
                       disabled={!gate}

@@ -398,7 +398,7 @@ function RenameModal({ server, onClose }: { server: Server; onClose: () => void 
         <p className="text-[11px] mb-3" style={{ color: gf.textMuted }}>
           Hostname <span className="font-mono" style={{ color: gf.textPrimary }}>{server.hostname}</span> · {server.ip}
         </p>
-        <input
+        <input name="value"
           autoFocus
           value={value}
           maxLength={100}

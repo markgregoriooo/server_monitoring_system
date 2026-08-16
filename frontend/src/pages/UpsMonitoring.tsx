@@ -704,22 +704,22 @@ export default function UpsMonitoring() {
             </div>
             <div className="p-4 flex flex-col gap-3">
               <Field label="Name">
-                <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Rack A UPS" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Rack A UPS" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="IP address">
-                  <input value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.50" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="ip" value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.50" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
                 <Field label="SNMP port">
-                  <input value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="snmpPort" value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="SNMP community (v2c)">
-                  <input value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="community" value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
                 <Field label="Comm. type">
-                  <select value={form.commType} onChange={(e) => setForm((f) => ({ ...f, commType: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer" style={inputStyle}>
+                  <select name="commType" value={form.commType} onChange={(e) => setForm((f) => ({ ...f, commType: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer" style={inputStyle}>
                     <option value="snmp">snmp</option>
                     <option value="network">network</option>
                   </select>
@@ -727,22 +727,22 @@ export default function UpsMonitoring() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Brand (optional)">
-                  <input value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} placeholder="APC" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="brand" value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} placeholder="APC" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
                 <Field label="Model (optional)">
-                  <input value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} placeholder="Smart-UPS 1500" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="model" value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} placeholder="Smart-UPS 1500" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Battery capacity (optional)">
-                  <input value={form.batteryCapacity} onChange={(e) => setForm((f) => ({ ...f, batteryCapacity: e.target.value }))} placeholder="1500 VA" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="batteryCapacity" value={form.batteryCapacity} onChange={(e) => setForm((f) => ({ ...f, batteryCapacity: e.target.value }))} placeholder="1500 VA" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
                 <Field label="Serial no. (optional)">
-                  <input value={form.serialNumber} onChange={(e) => setForm((f) => ({ ...f, serialNumber: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="serialNumber" value={form.serialNumber} onChange={(e) => setForm((f) => ({ ...f, serialNumber: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
               </div>
               <Field label="Location">
-                <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="location" value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <p className="text-[12px] leading-relaxed" style={{ color: gf.textDim }}>
                 UPS-MIB (RFC 1628) over SNMP v2c — the UPS must have a network/SNMP card. Confirm UDP {form.snmpPort || "161"} is reachable from the backend host. Polling begins on the next cycle (≤60s).

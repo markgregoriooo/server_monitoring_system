@@ -230,7 +230,7 @@ export default function RangePicker({
           <span className={labelCls}>Custom range · local time</span>
           <label className="flex flex-col gap-1">
             <span className={labelCls}>From</span>
-            <input
+            <input name="startInput"
               type="datetime-local"
               value={startInput}
               // Typing a date by hand means the fields no longer describe the chip that
@@ -243,7 +243,7 @@ export default function RangePicker({
           </label>
           <label className="flex flex-col gap-1">
             <span className={labelCls}>To</span>
-            <input
+            <input name="stopInput"
               type="datetime-local"
               value={stopInput}
               onChange={(e) => { setStopInput(e.target.value); setQuickPick(null); }}

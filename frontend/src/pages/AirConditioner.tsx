@@ -292,7 +292,7 @@ function AirconCard({
         <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: dotColor }} />
       </span>
       {editing ? (
-        <input
+        <input name="airconName"
           autoFocus
           value={draft}
           maxLength={100}
@@ -538,7 +538,7 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
             <label className="text-[11px] tracking-widest uppercase" style={{ color: GF.textMuted }}>
               Unit Name
             </label>
-            <input type="text" value={name} onChange={e => setName(e.target.value)}
+            <input name="name" type="text" value={name} onChange={e => setName(e.target.value)}
               placeholder="e.g. AC Unit 3"
               className="w-full px-3 py-2 rounded-[2px] text-[14px] focus:outline-none"
               style={{
@@ -855,7 +855,7 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
             onMouseEnter={(e) => (e.currentTarget.style.color = GF.accent)}
             onMouseLeave={(e) => (e.currentTarget.style.color = GF.textMuted)}>−</button>
         )}
-        <input
+        <input name={key}
           type="number" step="0.5" value={form[key]} disabled={!isAdmin}
           onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))}
           className="w-14 px-1 py-1 text-[14px] text-center focus:outline-none"

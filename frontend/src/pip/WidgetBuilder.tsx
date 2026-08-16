@@ -62,7 +62,7 @@ function DevicePicker({
 }) {
   const none = options.length === 0;
   return (
-    <select
+    <select name="addWidget"
       value=""
       disabled={none}
       aria-label={placeholder}
@@ -269,7 +269,7 @@ export default function WidgetBuilder() {
               </span>
             </div>
 
-            <input
+            <input name="query"
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}

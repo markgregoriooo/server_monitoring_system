@@ -12,31 +12,74 @@ import { audit, clientInfo } from "../services/auditService.js";
 
 const router = express.Router();
 
-// Dedicated limiter for agent metric ingestion. Agents POST every ~10s (≈90 per
-// 15-min window), so this is generous headroom even for several agents behind one
-// NAT IP plus retry bursts — while still capping an unauthenticated flood on this
-// route. The global browser limiter SKIPS this path (see src/server.js) so agent
-// traffic never eats into the dashboard's request budget.
-const metricsLimiter = rateLimit({
+// Agent metric ingestion gets TWO limiters, because one cannot do both jobs.
+//
+// This used to be a single IP-keyed limiter at 1000/15min, described as "generous
+// headroom even for several agents behind one NAT IP". The arithmetic says otherwise:
+// an agent at the default `-interval 10` posts 6/min = 90 per window, so the budget
+// ran out at ~11 agents sharing a public IP. Past that, agents 429 and metrics are
+// dropped SILENTLY — it looks like servers randomly stopping, not like a limit.
+//
+//   OUTER (metricsIpLimiter)  keyed by IP, runs BEFORE agentAuth. The only thing between
+//                             an unauthenticated flood and the token lookup, because the
+//                             global browser limiter deliberately skips this path
+//                             (src/server.js). Sized for the WHOLE fleet, since every
+//                             agent behind the campus NAT shares one IP.
+//   INNER (metricsAgentLimiter) keyed by DEVICE, runs AFTER agentAuth. The real quota:
+//                             one misconfigured agent hammering the endpoint is throttled
+//                             on its own without taking the rest of the fleet with it.
+//
+// Both tiers are needed. Device-keying alone would leave the pre-auth path unlimited;
+// IP-keying alone is the bug above.
+const AGENT_IP_MAX = Number(process.env.AGENT_RATE_IP_MAX) || 5000; // ≈55 agents @ 10s
+const AGENT_DEVICE_MAX = Number(process.env.AGENT_RATE_MAX) || 300; // one agent @ ≥3s
+
+const metricsIpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000,
+  max: AGENT_IP_MAX,
   standardHeaders: "draft-8",
   legacyHeaders: false,
   ipv6Subnet: 56,
   handler: (req, res) => {
+    console.warn(`[RATE] 429 agent ingest (ip) ${req.ip} — over ${AGENT_IP_MAX}/15min`);
+    res.status(429).json({ error: "Too many metric posts. Slow down." });
+  },
+});
+
+const metricsAgentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: AGENT_DEVICE_MAX,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  // Runs after agentAuthMiddleware, so req.device is set. It cannot be absent here —
+  // an unauthenticated request never reaches this middleware — but fall back to the IP
+  // rather than to a single shared `undefined` bucket if the order is ever changed.
+  keyGenerator: (req) =>
+    req.device?.device_id != null ? `agent:${req.device.device_id}` : `ip:${req.ip}`,
+  handler: (req, res) => {
+    console.warn(
+      `[RATE] 429 agent ingest device=${req.device?.device_id} — over ${AGENT_DEVICE_MAX}/15min. ` +
+        `Check that agent's -interval.`,
+    );
     res.status(429).json({ error: "Too many metric posts. Slow down." });
   },
 });
 
 // ── POST /api/servers/metrics ─ Go agent metric ingestion (agent bearer token) ─
 // Authenticated by the agent token, NOT a user JWT.
-router.post("/metrics", metricsLimiter, agentAuthMiddleware, serverMetricsHandler);
+router.post("/metrics", metricsIpLimiter, agentAuthMiddleware, metricsAgentLimiter, serverMetricsHandler);
 
 // ── POST /api/servers/metrics/batch ─ backfill of samples buffered during an
 // outage (agent bearer token). History only: writes InfluxDB + the on-site backup,
 // never touches status or alerting. Shares the metric limiter — a reconnecting
 // fleet sends a burst of these, and one batch replaces up to 60 live posts.
-router.post("/metrics/batch", metricsLimiter, agentAuthMiddleware, serverMetricsBatchHandler);
+router.post(
+  "/metrics/batch",
+  metricsIpLimiter,
+  agentAuthMiddleware,
+  metricsAgentLimiter,
+  serverMetricsBatchHandler,
+);
 
 // ── GET /api/servers ─ dashboard server list (JWT) ────────────────────────────
 router.get("/", authMiddleware, async (req, res, next) => {
