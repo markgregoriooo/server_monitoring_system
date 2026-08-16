@@ -2,7 +2,7 @@ import express from "express";
 import http from "http";
 import cors from "cors";
 import { Server } from "socket.io";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import jwt from "jsonwebtoken";
 import { handleConnection } from "../sockets/connectionHandler.js";
 import { JWT_SECRET } from "../middleware/auth.js";
@@ -57,18 +57,82 @@ if (missingAuthEnv.length > 0) {
   );
 }
 
+// ⚠️ Size this from what ONE DASHBOARD LOAD actually costs, not from a feel for what
+// "a lot of requests" is. The old value was 500/15min with a comment claiming headroom
+// for multi-panel page loads; it did not have it, and the failure mode is ugly — every
+// panel 429s at once and the Dashboard renders empty, which reads as a crash rather than
+// as a limit being hit.
+//
+// The real arithmetic, counted off the network log of a single Dashboard mount:
+//   ~19 requests   AuthContext (/auth/me), NotificationContext (notifications, alerts/
+//                  count, agents/pending, users/pending), useRoomThresholds, useWidget-
+//                  Layout, Dashboard (servers, ups, network, mikrotik, aircon, alerts,
+//                  sensor-status) and LiveSummaryContext — which re-fetches five of the
+//                  same endpoints for the PiP widget.
+//   x2             React StrictMode double-invokes effects IN DEV.
+//   + ~10          the socket `connect` handler re-runs several of those on every
+//                  (re)connect, including after each Vite HMR reload.
+// So one dev page load is 50-70 requests, and every file save reloads the page. 500 was
+// roughly eight loads — a few minutes of work — after which the whole UI went blank.
+//
+// This is a LAN dashboard for a handful of ICTU staff, so the limiter is here to stop a
+// script hammering the API, not to ration normal use. Override per deployment with
+// RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_MIN.
+const RATE_WINDOW_MIN = Number(process.env.RATE_LIMIT_WINDOW_MIN) || 15;
+const RATE_MAX = Number(process.env.RATE_LIMIT_MAX) || 3000;
+const RATE_IPV6_SUBNET = 56;
+
+// Budget per USER where we can tell who is asking, per IP only where we cannot.
+//
+// Keying on IP alone is a self-inflicted denial of service here: every ICTU staffer sits
+// behind the same campus NAT, so the dashboard would hand them ONE shared budget and the
+// first person to hard-refresh a few times would lock out everyone else — during a demo,
+// or during the incident they all opened the dashboard to look at.
+//
+// The token is VERIFIED, not merely decoded. `jwt.decode` would let anyone mint a token
+// claiming any `id`: either a fresh budget on demand, or someone else's budget deliberately
+// exhausted. Verification is an HMAC over a short string, so the cost is negligible next to
+// the query the request is about to make. authMiddleware verifies again per route — this
+// runs before it (the limiter is global, and some routes are public), and duplicating a
+// microsecond of HMAC is the right trade against threading auth state through the limiter.
+//
+// ⚠️ The IP fallback must go through `ipKeyGenerator`, not `req.ip`. Returning a raw IP
+// silently discards the ipv6Subnet setting below, and an attacker with any IPv6 /64 could
+// then rotate addresses for unlimited budget — which is the whole reason that option is set.
+function userOrIpKey(req) {
+  const header = req.headers["authorization"];
+  if (header?.startsWith("Bearer ")) {
+    try {
+      const { id } = jwt.verify(header.slice(7), JWT_SECRET, { algorithms: ["HS256"] });
+      if (id != null) return `u:${id}`;
+    } catch {
+      /* absent, expired or forged — fall through to the IP budget */
+    }
+  }
+  return `ip:${ipKeyGenerator(req.ip, RATE_IPV6_SUBNET)}`;
+}
+
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, //15 mins
-  max: 500, //~33 req/min per IP — headroom for multi-panel page loads (live data uses Socket.IO)
+  windowMs: RATE_WINDOW_MIN * 60 * 1000,
+  max: RATE_MAX,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-   ipv6Subnet: 56,
+  ipv6Subnet: RATE_IPV6_SUBNET,
+  keyGenerator: userOrIpKey,
   // Agent metric ingestion has its own (more generous) limiter in routes/servers.js.
   // Exempt it here so a busy fleet of agents never consumes the dashboard's budget.
   // Covers /metrics AND /metrics/batch — a fleet reconnecting after an outage
   // backfills in a burst, which is exactly when the dashboard is being watched.
   skip: (req) => req.method === "POST" && req.path.startsWith("/api/servers/metrics"),
+  // Log it. A 429 is invisible from the server side otherwise, and from the browser it
+  // looks like a broken page rather than a limit — every panel simply has no data.
   handler: (req, res) => {
+    // Log the KEY, not just the IP: `u:7` vs `ip:…` is the difference between one user
+    // burning their own budget and unauthenticated traffic burning a shared one.
+    console.warn(
+      `[RATE] 429 ${req.method} ${req.originalUrl} key=${userOrIpKey(req)} ip=${req.ip} ` +
+        `— over ${RATE_MAX} requests in ${RATE_WINDOW_MIN}min. Raise RATE_LIMIT_MAX if this is normal use.`,
+    );
     res.status(429).json({ error: "Too many requests. Please try again later." });
   },
 });

@@ -5,6 +5,7 @@ import ServerDetail from "./ServerDetail";
 import InstallKeysPanel from "../components/servers/InstallKeysPanel";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
+import { resolveColor, alphaColor } from "../utils/canvasColor";
 
 // One mounted fixed volume, as reported by the agent. Exported so ServerDetail
 // shares the shape instead of redeclaring it (type-only import — no runtime cycle).
@@ -220,9 +221,12 @@ function Sparkline({ data, color, height = 38 }: { data: number[]; color: string
     const span = max - min || 1;
     const x = (i: number) => (i / (pts.length - 1)) * W;
     const y = (v: number) => H - 4 - ((v - min) / span) * (H - 10);
+    // Resolved, not concatenated — see utils/canvasColor. A CSS custom property reaching
+    // addColorStop throws, and the throw escapes this effect and unmounts the page.
+    const stroke = resolveColor(color);
     const grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, color + "44");
-    grad.addColorStop(1, color + "00");
+    grad.addColorStop(0, alphaColor(stroke, 0.27));
+    grad.addColorStop(1, alphaColor(stroke, 0));
     ctx.beginPath();
     ctx.moveTo(0, H);
     pts.forEach((v, i) => ctx.lineTo(x(i), y(v)));
@@ -232,7 +236,7 @@ function Sparkline({ data, color, height = 38 }: { data: number[]; color: string
     ctx.fill();
     ctx.beginPath();
     pts.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = stroke;
     ctx.lineWidth = 1.5;
     ctx.lineJoin = "round";
     ctx.stroke();

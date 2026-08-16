@@ -9,6 +9,7 @@ import NetworkFocus from "../components/dashboard/NetworkFocus";
 import UpsFocus from "../components/dashboard/UpsFocus";
 import RangePicker, { DEFAULT_RANGE, rangeSpanSec } from "../components/ui/RangePicker";
 import { withGaps } from "../utils/seriesGaps";
+import { resolveColor, alphaColor } from "../utils/canvasColor";
 import type { RangeValue } from "../components/ui/RangePicker";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
@@ -366,10 +367,16 @@ function Sparkline({
     const x = (i: number) => (i / (pts.length - 1)) * W;
     const y = (v: number) => H - 4 - ((v - min) / span) * (H - 10);
 
+    // A tile's colour may be a CSS custom property — `var(--gf-text-muted)` is the
+    // fallback whenever a metric has no reading — which canvas cannot resolve. See
+    // utils/canvasColor: appending hex to it produced `var(--gf-text-muted)44`, and
+    // addColorStop THREW, unmounting the page from inside this effect.
+    const stroke = resolveColor(color);
+
     // area fill
     const grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, color + "44");
-    grad.addColorStop(1, color + "00");
+    grad.addColorStop(0, alphaColor(stroke, 0.27)); // was the 0x44 suffix
+    grad.addColorStop(1, alphaColor(stroke, 0));
     ctx.beginPath();
     ctx.moveTo(0, H);
     pts.forEach((v, i) => ctx.lineTo(x(i), y(v)));
@@ -381,7 +388,7 @@ function Sparkline({
     // line
     ctx.beginPath();
     pts.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = stroke;
     ctx.lineWidth = 1.5;
     ctx.lineJoin = "round";
     ctx.stroke();

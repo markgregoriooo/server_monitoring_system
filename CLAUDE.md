@@ -68,6 +68,21 @@ BACKUP_RETENTION_DAYS= # dated backup files older than this are purged daily; bl
 BACKUP_OFFSITE_ENABLED=      # true turns on the offsite-staleness check (reads a local marker only, no cloud dependency); blank = off
 BACKUP_OFFSITE_MARKER=       # path the rclone job stamps on each successful upload; blank = <BACKUP_DIR>/.last_offsite_sync
 BACKUP_OFFSITE_MAX_AGE_HOURS= # warn if no successful offsite sync within this many hours; blank = 26
+RATE_LIMIT_MAX=        # global request cap, **per USER** where the request carries a valid JWT and per IP otherwise
+                       # (`userOrIpKey` in src/server.js); blank = 3000. Keying on IP alone was a self-inflicted DoS:
+                       # every ICTU staffer sits behind the same campus NAT, so one person hard-refreshing would lock
+                       # out everyone else. The token is VERIFIED, not decoded — `jwt.decode` would let anyone claim
+                       # any `id` and either mint themselves a fresh budget or exhaust someone else's. ⚠️ The IP
+                       # fallback goes through `ipKeyGenerator`, never raw `req.ip`: returning a raw IP silently
+                       # discards `ipv6Subnet`, and any IPv6 /64 could then rotate addresses for unlimited budget. ⚠️ Size this from what ONE DASHBOARD LOAD costs, not
+                       # from intuition. A single Dashboard mount fires ~19 requests (AuthContext, NotificationContext,
+                       # useRoomThresholds, useWidgetLayout, the six panels, and LiveSummaryContext re-fetching five of
+                       # the same endpoints for the PiP widget) — DOUBLED by React StrictMode in dev, plus ~10 more from
+                       # the socket `connect` handler on every reconnect/HMR reload. So a dev page load is 50-70 requests.
+                       # The old 500 was ~8 loads, i.e. a few minutes of work, and then the whole UI went blank: every
+                       # panel 429s at once, which reads as a crash rather than as a limit. Agent metric POSTs are
+                       # exempt (they have their own limiter in routes/servers.js). A 429 now logs `[RATE]` server-side
+RATE_LIMIT_WINDOW_MIN= # the window those requests are counted over, in minutes; blank = 15
 WEB_ORIGIN=        # allowed dashboard origins, comma-separated — or * for any (roaming LAN); blank = localhost+LAN default
 GOOGLE_CLIENT_ID=       # Google OAuth web client ID (public). Login verifies ID tokens against it. Must match frontend VITE_GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=   # Google OAuth web client SECRET. Required: the auth-code flow exchanges the code server-side

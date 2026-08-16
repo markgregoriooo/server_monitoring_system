@@ -71,6 +71,65 @@ const apiClient: AxiosInstance = axios.create({
   baseURL,
 });
 
+// ─── In-flight GET coalescing ───────────────────────────────────────────────────
+//
+// Several independent consumers legitimately want the same list at the same moment,
+// and each was issuing its own HTTP request:
+//
+//   • Dashboard AND LiveSummaryContext (the PiP widget) both seed from /servers,
+//     /ups, /network, /mikrotik and /aircon on mount — five duplicated requests.
+//   • React StrictMode double-invokes every effect IN DEV, so each of those fires
+//     twice, in the same commit.
+//
+// One Dashboard load was therefore ~50-70 requests, most of them the same handful of
+// URLs. That is what exhausted the server's rate limiter and blanked the page.
+//
+// This shares the PROMISE of a request that is still in flight. Deliberately NOT a
+// response cache: the entry is dropped the moment the request settles, so a caller can
+// never be handed a stale body — the only thing suppressed is a duplicate that is
+// literally concurrent with one already on the wire. Both cases above are exactly that.
+// A later refetch (the socket `connect` resync) still goes out, because by then nothing
+// is in flight and the data genuinely may have moved.
+const inFlight = new Map<string, Promise<unknown>>();
+
+// Endpoints that must reach the server on EVERY call, even concurrently. Revealing an
+// install key is audited per view, so coalescing two of them would lose an audit row —
+// the record of who saw the key is the point of the endpoint.
+const NEVER_COALESCE = [/\/install-keys\/\d+\/reveal$/];
+
+function coalesceKey(config: InternalAxiosRequestConfig): string | null {
+  const method = (config.method ?? "get").toLowerCase();
+  if (method !== "get") return null; // only reads; a POST is never a duplicate
+  const url = config.url ?? "";
+  if (NEVER_COALESCE.some((re) => re.test(url))) return null;
+  // Params matter: /servers/1/history?range=-1h is not /servers/1/history?range=-7d.
+  return `${url}?${JSON.stringify(config.params ?? {})}`;
+}
+
+// `get` is wrapped rather than handled in an interceptor: an interceptor can only shape
+// the request that is about to go out, it cannot hand back a promise already running.
+const rawGet = apiClient.get.bind(apiClient);
+apiClient.get = ((url: string, config?: Parameters<typeof rawGet>[1]) => {
+  const key = coalesceKey({ ...(config ?? {}), url, method: "get" } as InternalAxiosRequestConfig);
+  if (!key) return rawGet(url, config);
+
+  // Callers share ONE AxiosResponse object. Nothing mutates a response body today —
+  // api.ts reads `res.data` and passes it on — but code that did would be writing into
+  // every other caller's copy, so keep responses treated as read-only.
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+
+  const p = rawGet(url, config);
+  inFlight.set(key, p);
+  // Drop on settle, success or failure. The identity check matters: a slow request that
+  // finishes after a newer one for the same URL started must not evict the newer entry.
+  const drop = () => {
+    if (inFlight.get(key) === p) inFlight.delete(key);
+  };
+  p.then(drop, drop);
+  return p;
+}) as typeof apiClient.get;
+
 // Attach token automatically
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
