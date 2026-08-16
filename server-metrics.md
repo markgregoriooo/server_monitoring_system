@@ -123,9 +123,20 @@ so it won't trip this. InfluxDB history is left intact.
 | `POST /api/servers/metrics` | agent Bearer | Metric ingestion |
 | `POST /api/servers/metrics/batch` | agent Bearer | Backfill (§4) — history only |
 | `GET /api/servers` \| `/:id` \| `/:id/logs` | JWT | List / detail / device event log |
-| `GET /api/servers/:id/history?range=` | JWT | InfluxDB history — `-1h`/`-6h`/`-24h`/`-7d`/`-30d` |
+| `GET /api/servers/:id/history?range=` | JWT | InfluxDB history — `-1h`/`-6h`/`-24h`/`-7d`/`-30d`, **or** an absolute window `?start=&stop=` (ISO; `stop` defaults to now). `services/historyRange.js` sizes a custom window's aggregate from its span so every range draws at the same density, and owns the Flux-injection guarantee — presets are whitelisted, custom bounds re-serialised from `Date` |
 | `POST /api/servers/:id/maintenance` | JWT admin | Park/unpark — `{ enabled: boolean }` |
 | `DELETE /api/servers/:id` | JWT admin | Remove + revoke token |
+
+**Install keys** — all `admin` only, all under `/api/agents`:
+
+| Method & path | Purpose |
+|---|---|
+| `GET /install-keys` | List. Never returns plaintext — only `key_prefix`, status, counts, dates |
+| `POST /install-keys` | Mint. **The response is the only time the plaintext exists** outside the reveal endpoint. Body is `{ expiresInDays }`; a `label` is optional and the server writes `Issued <date>` when it is absent |
+| `GET /install-keys/:id/reveal` | Re-open the install command (decrypts `key_cipher`). **Audited on every call** |
+| `GET /install-keys/:id/servers` | The blast radius — which servers this key enrolled, so the revoke dialog can name them first |
+| `POST /install-keys/:id/revoke` | `{ revokeAgents }` — see the table above. Soft: the row stays |
+| `DELETE /install-keys/:id` | Drop a **revoked** key's row entirely, losing its history |
 
 ---
 
@@ -232,12 +243,21 @@ recoveries are intentionally **not** logged, which keeps the table lean with no 
 | `devices` | one row per server (`device_type='server'`, status lifecycle incl. `maintenance`) |
 | `server_specs` | os, kernel, cores, arch, memory/disk totals, agent_version, `last_seen`, uptime, **`metric_interval_sec`** |
 | `device_network` | mac_address, gateway, dns, network_segment |
-| `agent_tokens` | pending `token`, permanent `approved_token`, `status`, `last_used_at` |
+| `agent_tokens` | pending `token`, permanent `approved_token`, `status` (`pending`\|`approved`\|`rejected`\|**`revoked`**), `last_used_at`, **`install_key_id`** — which key let this machine in (NULL = legacy/`.env` enrollment, so no revoke can reach it) |
+| `agent_install_keys` | one row per issued key: `key_hash` (SHA-256, the enrollment lookup) + `key_cipher` (AES-256-GCM, for re-display) + `key_prefix`, `label`, `expires_at`, `revoked_at`, `created_by`/`revoked_by`, `use_count` |
 
-> **Apply `migrations/2026-08-03_server_metric_interval.sql`** — adds
-> `server_specs.metric_interval_sec` (§4). Idempotent and behaviour-neutral until agents
-> report a cadence, but **not optional**: without it the sweep query errors on the unknown
-> column.
+> **Fresh install:** `v13_cspc-ictu-monitoring-system.sql` already contains all of this —
+> the migration files are only for upgrading a database that predates them.
+>
+> **Upgrading:** apply `migrations/2026-08-15_agent_install_keys.sql` and
+> `2026-08-15b_install_key_reveal.sql`. `server_specs.metric_interval_sec` (§4) is already
+> in v13 and its migration file no longer exists — if a database predates it, add the
+> column by hand from the v13 definition, because the offline sweep queries it by name and
+> errors on the unknown column.
+>
+> ⚠️ `created_by`/`revoked_by` are **ON DELETE SET NULL**, not CASCADE: deleting the admin
+> who issued a key must not delete the key, or an HR change would silently withdraw a whole
+> branch's enrollment and erase the record it ever existed.
 
 ---
 
@@ -250,12 +270,20 @@ recoveries are intentionally **not** logged, which keeps the table lean with no 
 | `backend/services/agentService.js` | register/approve/heartbeat/read DB logic |
 | `backend/handlers/serverMetricsHandler.js` | Validate + Influx write + heartbeat + emit, and the backfill batch handler |
 | `backend/services/serverMetricUtils.js` | Pure helpers (validation, volume sanitising, offline-window maths, backfill clamping). **No imports** — this is what lets tests run with no MySQL/InfluxDB |
-| `backend/routes/agents.js` \| `servers.js` | `/api/agents/*` \| `POST /metrics` + dashboard GETs |
+| `backend/services/installKeyUtils.js` | Pure key format + usability rules — `generateKey`, `hashKey`, `prefixOf`, `keyRejection`/`isUsable`. Also import-free |
+| `backend/services/installKeyService.js` | The DB half — `resolveKey` (enrollment lookup, with the deprecated `.env` fallback consulted **only after the table misses**), `noteUsed`, list/create/revoke/reveal |
+| `backend/services/secretCrypto.js` | General AES-256-GCM for secrets that must be read back rather than only verified — backs `agent_install_keys.key_cipher` |
+| `backend/handlers/serverHistoryHandler.js` | Flux query on `server_metrics` for `GET /:id/history` |
+| `backend/services/historyRange.js` | Pure range resolver — presets **and** the custom absolute window; also the Flux-injection boundary |
+| `backend/routes/agents.js` \| `servers.js` | `/api/agents/*` (incl. `/install-keys/*`) \| `POST /metrics` + dashboard GETs |
 | `frontend/src/pages/ServerMetrics.tsx` | Live list/gauges + admin pending-approval panel |
+| `frontend/src/components/servers/InstallKeysPanel.tsx` | Mint / reveal / revoke / delete keys, and the ready-made install command |
 
 **Tests** — `cd backend && npm test` (`node --test`, no dependency, no database).
 `serverMetricUtils.test.js` covers validation, volume sanitising, offline-window maths
 (including the `-interval 60` flapping regression) and backfill clamping.
+`installKeyUtils.test.js` pins the key format and the unknown/revoked/expired rejection
+rules; `historyRange.test.js` pins preset and custom-window resolution.
 `contract.test.js` parses the Go source to catch contract drift.
 
 ---

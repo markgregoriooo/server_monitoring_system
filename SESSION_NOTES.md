@@ -1867,3 +1867,153 @@ Design constraints already settled (do not relitigate):
   the model is "current as of v13 (24 tables, 24 figures, 30 relationships)".
 - Deliberately not built: Dashboard click-through beyond the alerts panel, and an analytics
   "upcoming risks" strip on the Dashboard.
+
+---
+
+## SESSION 22 — 2026-08-16
+**Branch:** `feat/agent-install-keys` → merged to `main`, branch deleted
+**Developer:** Mark Gregorio
+
+> Session 21's agenda was to PLAN multi-site. It got settled — as a "no", with a better
+> answer behind it. Then the three oldest security items were fixed, the model and the
+> DFDs were brought current, and everything on the branch was merged and pushed.
+
+### Multi-site — SETTLED. Separate deployment per campus, not site scoping.
+
+The missing fact arrived: CSPC has two campuses, the client is on the main one, and
+**campus 2 has no server room at all yet**. The consultant's question was "what if ICTU
+builds one there in a year?"
+
+That is not the hypothetical the Session 21 notes assumed, and it flips the answer:
+
+**The system is LAN-bound by design, so a second campus needs its own backend regardless.**
+The SNMP and MikroTik pollers dial *into* device IPs; the ESP32 holds a Socket.IO
+connection to a host on its own network. Neither crosses a WAN without a VPN. Go agents
+POST outbound and would work from anywhere, but they are one of four ingest paths.
+
+Once a backend exists at campus 2 — which it must — **the isolation the consultant asked
+for arrives for free, and in a stronger form.** Site scoping is isolation by *policy*: 50
+device-query sites across 12 service files (not the ~15 Session 21 estimated), each needing
+the filter, each a place to leak main campus's data. Separate deployment is isolation by
+*architecture*: campus 2's admin cannot see main campus because that data is not in their
+database. Nothing to bypass, nothing to get wrong.
+
+It is also the safer failure mode. Environment monitoring is the smoke and heat alarm; it
+must not depend on a link between campuses.
+
+**Cost, accepted:** two logins, no combined dashboard. If ICTU wants one view later that is
+a small read-only rollup, not a merge of the two systems.
+
+**Do not restart the `sites` / `user_sites` design.** It only makes sense with one backend
+holding both campuses, which is precisely what the LAN constraint rules out. The work is
+now a Future Work chapter, not a build.
+
+Two things that pushed the same way, worth keeping:
+- A "server room" at campus 2 means a second **ESP32**, and the environment half assumes
+  exactly ONE room: a single `aircon_ir_config` row, a globally-unique
+  `aircon_state.ir_channel`, one shared `DEVICE_SECRET`, no `devices` row for the ESP32,
+  and `sensor_environment` written with **no device or room tag at all** — only the three
+  status tags. Two rooms would merge into one indistinguishable series. Session 21 filed
+  the environment side as a corner case to dodge; under this scenario it was the main
+  problem. Separate deployments make it moot.
+- The consultant was picturing a **multi-tenant product** (Grafana Cloud, Datadog): many
+  customers, each bringing their own servers. This is single-tenant — one ICTU team, one
+  server room, and alerts fan out to every active user *on purpose* so whoever is on duty
+  responds. Per-user scoping would let an alert fire with nobody watching it.
+
+### Security — the three oldest open items, fixed (F-04 and the agent token)
+
+All three were the same shape: a secret sitting somewhere that gets copied or logged.
+
+1. **Firmware secrets were committed.** `env_monitor_v2.ino` carried a real WiFi password
+   and the real `DEVICE_SECRET` as literals, so every clone had them. Now in
+   `iot/esp32/env_monitor_v2/secrets.h` (gitignored) with `secrets.h.example` as the
+   template. The sketch also moved into `env_monitor_v2/` — the Arduino IDE relocates a
+   sketch into a folder named after it, and `secrets.h` must sit beside the `.ino` to
+   compile. ⚠️ **Both values remain in git history since `5f5a084`, and `main` is now
+   pushed to GitHub. The split stops new exposure; it does not undo the old one. ROTATE
+   BOTH** — the WiFi password, and `DEVICE_SECRET` in `backend/.env` + `secrets.h` +
+   a reflash.
+2. **The device key travelled in the Socket.IO URL** (`?deviceKey=…`), which a proxy or web
+   server writes verbatim into its access log on every reconnect. Now an `X-Device-Key`
+   header via `setExtraHeaders`. EIO3 has no `auth` payload — that arrived in Socket.IO v3
+   — so a header is the equivalent. The handshake reads `auth → x-device-key → query`; the
+   query fallback stays until every ESP32 is reflashed, then delete it.
+   ⚠️ **Not verified on hardware.** If the library version does not apply the header to the
+   upgrade request the box will fail auth. Rollback is one line.
+3. **`GET /api/agents/status` handed out the permanent token off a query string.** The
+   agent polls it every 10s while waiting for approval, so the pending token — which is
+   exchanged for the permanent `AGT-…` — landed in the access log dozens of times per
+   enrollment. Now `POST` with the token in the body. No rate limiter added: the token is
+   24 random bytes, so there is nothing to guess, and `enrollLimiter`'s budget would cut
+   off a legitimate agent long before an admin approved it. Only newly-installed agents
+   call `/status`, so rebuilding the binary is enough.
+
+### Install keys panel — label removed, light mode fixed
+
+The **label was dropped end to end.** It was a second name for something the key already
+had; a key is identified by its prefix and its dates, which are facts. Gone from the create
+form and the table (the prefix takes the first column and carries the `by <creator>` line); the
+revoke and delete dialogs name keys by prefix. `agent_install_keys.label` is NOT NULL and
+the audit trail reads through it, so the server writes `Issued <date>` when none is given —
+the API still accepts one, so it can come back with no backend change.
+
+**Light mode was broken, not merely untuned:** the code wells hardcoded
+`rgba(0,0,0,0.25)`, painting a near-black block onto a white panel. They use `--gf-bg` now.
+Type that sat on `--gf-accent` moved to `--gf-accent-text` — `#5794F2` is 2.76:1 on the
+light background, fine as a fill and unreadable as an 11px label.
+
+Green is gone from the panel except the `active` status badge, which is the design system's
+Online/NORMAL and shared with every other page. (Noted: that green measures ~2.2:1 on a
+white panel — weak in light mode, app-wide, not introduced here.) Copy buttons are now the
+two-sheets clipboard icon; failure still shows text, because the dashboard is served over
+plain HTTP on the LAN where `navigator.clipboard` does not exist.
+
+### ERD + DFDs
+
+- **`.mwb` brought level with v13** (the five changes in `erd-update-guide.md`). The guide
+  gained the cardinality each relationship is drawn with — all three new ones are
+  one-to-many and optional — plus the Workbench trap behind the count: the 1:n **toolbar
+  tool creates a column**, so using it would add a `users_user_id` beside the `created_by`
+  that already exists. Constraints go in the table editor's Foreign Keys tab; the lines
+  draw themselves. Two FKs to `users` = two lines, which is why connections go 30 → **33**.
+- **DFDs committed** (`docs/dfd/`, level 0 + level 1, Gane–Sarson). Install-key management
+  is drawn on process **1.0 Authenticate & Authorise**, not 2.0: minting a key grants a
+  machine the right to enrol, the same act as approving a person's registration, and 2.0 is
+  where the key is *spent* (already carried by the agent-token flow). Band 1.0 had no free
+  corridor, so it was reflowed — every existing flow keeps its exact absolute y. Balance is
+  now **26 boundary flows (8/8/4/2/3/1)** into 15 level-0 composites. Four superseded
+  drafts deleted.
+
+### State
+
+- 179 backend tests pass; frontend typechecks and builds.
+- **Merged to `main` as a fast-forward** (99 files, +9129/−2144) and **pushed** —
+  `9e64114..b86bcec`, 25 commits. `feat/agent-install-keys` deleted.
+- `feat/privacy-terms-and-session-fixes` still exists locally: fully merged into main, but
+  10 commits ahead of its own remote, so `git branch -d` refuses it. Needs `-D`.
+- `environment-monitoring` is genuinely NOT merged and its upstream is gone. It holds
+  commits that exist nowhere else, incl. the standalone SD-card test sketch. Look before
+  deleting.
+- **Ops note:** a login failure this session was `ECONNREFUSED` on MySQL — XAMPP's MySQL is
+  not registered as a Windows service here, so it does not survive a reboot and must be
+  started from the Control Panel. Nothing to do with the code. Worth installing it as a
+  service before the defense.
+
+### Next session
+
+1. **ROTATE the WiFi password and `DEVICE_SECRET`** (see above) — the one item with real
+   exposure behind it, now that `main` is on GitHub.
+2. **Reflash and watch the serial log** — the `X-Device-Key` header is the only change this
+   session that has not run on hardware.
+3. Write the multi-campus **Future Work** section into the manuscript while the reasoning
+   above is fresh.
+4. README is still stale: Analytics and the PiP widget described as unmerged branches, and
+   the model still called "current as of v13 (24 tables, 24 figures, 30 relationships)" —
+   now 25 tables and 33 relationships.
+
+**Still open, unscheduled:**
+- Firmware still ships WiFi credentials in a gitignored file rather than a provisioning
+  flow — fine for a capstone, worth naming as a limitation.
+- Deliberately not built: Dashboard click-through beyond the alerts panel, and an analytics
+  "upcoming risks" strip on the Dashboard.
