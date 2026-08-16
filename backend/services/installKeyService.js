@@ -157,8 +157,13 @@ export async function list() {
  * wants to add one server would be friction for no gain, so it stays opt-in.
  */
 export async function create({ label, expiresInDays = null, userId = null }) {
-  const name = String(label ?? "").trim();
-  if (!name) throw err(400, "A label is required — it is how you tell keys apart later.");
+  // A label is OPTIONAL. The dashboard stopped asking for one — a key is identified by
+  // its prefix and its dates, which are facts, where a typed label was a second name for
+  // the same thing that could disagree with it. The column stays NOT NULL and still gets
+  // a value because the audit trail names keys by it ("Revoked agent install key …"),
+  // and an empty string there would read as a lost record rather than a deliberate one.
+  // Still accepted from the API so an existing caller (or a future UI) can set one.
+  const name = String(label ?? "").trim() || `Issued ${new Date().toISOString().slice(0, 10)}`;
   if (name.length > 100) throw err(400, "Label must be 100 characters or fewer.");
 
   let expiresAt = null;

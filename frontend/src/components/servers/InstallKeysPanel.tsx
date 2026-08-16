@@ -21,9 +21,21 @@ const gf = {
   textDim: "var(--gf-text-dim)",
   hover: "var(--gf-hover)",
   accent: "var(--gf-accent)",
+  // Accent that is legible as TYPE. --gf-accent is a surface colour: it measures
+  // 2.76:1 on the light page background, so it must not be used for text.
+  accentText: "var(--gf-accent-text)",
+  accentDim: "var(--gf-accent-dim)",
+  // The page tone, one step BELOW --gf-panel in both themes. Used for the code wells,
+  // which previously hardcoded rgba(0,0,0,0.25) — a dark-mode assumption that painted
+  // a near-black block onto a white panel the moment the theme was switched.
+  well: "var(--gf-bg)",
 } as const;
 
-const GREEN = "#73BF69";
+// A translucent accent, so it tints whatever surface is under it rather than replacing
+// it — the reason one value works in both themes.
+const ACCENT_EDGE = "rgba(87,148,242,0.32)";
+
+const GREEN = "#73BF69"; // status badge only — the design system's Online/NORMAL
 const ORANGE = "#FF780A";
 const RED = "#F2495C";
 
@@ -96,6 +108,34 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+// Two sheets — the icon every docs site puts beside a snippet you are meant to run.
+const ICON_COPY = (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+    <rect x="5.5" y="5.5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+    <path
+      d="M10.5 5.5V3a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h2.5"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+const ICON_CHECK = (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+    <path d="M3 8.4l3.2 3.2L13 4.9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const ICON_ALERT = (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+    <circle cx="8" cy="8" r="6.3" stroke="currentColor" strokeWidth="1.4" />
+    <path d="M8 4.7v3.7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    <circle cx="8" cy="11.1" r="0.8" fill="currentColor" />
+  </svg>
+);
+
 function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
   const [state, setState] = useState<"idle" | "ok" | "fail">("idle");
 
@@ -105,17 +145,31 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
     setTimeout(() => setState("idle"), 2000);
   };
 
-  const color = state === "ok" ? GREEN : state === "fail" ? RED : gf.textMuted;
+  const color = state === "ok" ? gf.accentText : state === "fail" ? RED : gf.textMuted;
+  // FAILURE is the one state that cannot be icon-only. This dashboard is served over
+  // plain HTTP on the LAN, where navigator.clipboard does not exist and the execCommand
+  // fallback can still refuse — so the button has to say what to do instead, not just
+  // turn red and leave the user clicking it again.
+  const failed = state === "fail";
   return (
     <button
       type="button"
       onClick={onClick}
-      className="gf-btn shrink-0 text-[12px] px-2.5 py-1 rounded-[2px] transition-colors"
-      style={{ color, border: `1px solid ${state === "idle" ? gf.border : color}` }}
-      // A failed copy needs to say what to do instead, not just go red.
-      title={state === "fail" ? "Copy failed — select the text and press Ctrl+C" : "Copy to clipboard"}
+      className="gf-btn shrink-0 inline-flex items-center justify-center gap-1 rounded-[2px] transition-colors"
+      style={{
+        height: 26,
+        width: failed ? undefined : 26,
+        padding: failed ? "0 6px" : 0,
+        color,
+        border: `1px solid ${state === "idle" ? gf.border : color}`,
+      }}
+      title={failed ? "Copy failed — select the text and press Ctrl+C" : label}
+      // The icon carries no text, so the accessible name has to come from here — and it
+      // names WHAT is copied ("Copy key"), which a generic "Copy" would not.
+      aria-label={label}
     >
-      {state === "ok" ? "✓ Copied" : state === "fail" ? "Copy failed" : label}
+      {state === "ok" ? ICON_CHECK : failed ? ICON_ALERT : ICON_COPY}
+      {failed && <span className="text-[11px]">Ctrl+C</span>}
     </button>
   );
 }
@@ -158,20 +212,25 @@ const shCommand = (key: string) => `sudo bash install.sh "${COMMAND_URL}" "${key
 function CommandLine({ os, command }: { os: string; command: string }) {
   return (
     <div>
-      <div className="text-[11px] tracking-widest uppercase mb-1" style={{ color: gf.textDim }}>
+      <div className="text-[11px] tracking-widest uppercase mb-1.5" style={{ color: gf.textDim }}>
         {os}
       </div>
       <div
-        className="flex items-center gap-2 px-2.5 py-2 rounded-[2px]"
-        style={{ background: "rgba(0,0,0,0.25)", border: `1px solid ${gf.border}` }}
+        className="flex items-center gap-2 pl-2.5 pr-2 py-2 rounded-[2px]"
+        style={{ background: gf.well, border: `1px solid ${gf.border}` }}
       >
+        {/* The shell prompt marks this as something to RUN rather than to read. It is
+            decorative, so it must not land in a text selection the user then copies. */}
+        <span className="select-none shrink-0 text-[12px]" style={{ color: gf.textDim }} aria-hidden>
+          $
+        </span>
         <code
           className="flex-1 min-w-0 text-[12px] overflow-x-auto whitespace-pre"
           style={{ color: gf.textPrimary }}
         >
           {command}
         </code>
-        <CopyButton text={command} />
+        <CopyButton text={command} label={`Copy the ${os.split(" · ")[0]} command`} />
       </div>
     </div>
   );
@@ -181,7 +240,6 @@ export default function InstallKeysPanel() {
   const [keys, setKeys] = useState<InstallKey[]>([]);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [label, setLabel] = useState("");
   const [expiresInDays, setExpiresInDays] = useState("");
   const [error, setError] = useState("");
   // Plaintext keys we currently hold, by key id — either just minted, or fetched back
@@ -224,13 +282,10 @@ export default function InstallKeysPanel() {
 
   const handleCreate = async () => {
     setError("");
-    if (!label.trim()) {
-      setError("Give the key a label so you can tell it apart later.");
-      return;
-    }
     setCreating(true);
     const days = expiresInDays.trim() === "" ? null : Number(expiresInDays);
-    const res = await api.createInstallKey(label.trim(), days);
+    // No label is collected any more — the server names the row for the audit trail.
+    const res = await api.createInstallKey(days);
     setCreating(false);
     if (!res.success || !res.data?.key) {
       setError(res.error ?? "Could not create the key.");
@@ -242,7 +297,6 @@ export default function InstallKeysPanel() {
       setSessionKeys((m) => ({ ...m, [id]: key }));
       setRevealId(id);
     }
-    setLabel("");
     setExpiresInDays("");
     setOpen(false);
     load();
@@ -266,7 +320,7 @@ export default function InstallKeysPanel() {
   // is actually lost — the row's history — and what is not: the servers keep running.
   const handleDelete = async (k: InstallKey) => {
     const warning =
-      `Delete "${k.label}" from the list?\n\n` +
+      `Delete key ${k.keyPrefix}… from the list?\n\n` +
       (k.useCount > 0
         ? `The ${k.useCount} server(s) it enrolled keep running, but stop being linked to any key.\n`
         : "") +
@@ -319,8 +373,7 @@ export default function InstallKeysPanel() {
 
       <div className="flex flex-col gap-3" style={{ padding: 12 }}>
         <p className="text-[12px] leading-relaxed" style={{ color: gf.textDim }}>
-          A key lets the installer enrol a new server. It is used once, at install time —
-          revoking one blocks new enrolments and never affects servers already reporting.
+          Used once to enrol a server. Revoking blocks new enrolments only.
         </p>
 
         {/* Create form */}
@@ -329,16 +382,19 @@ export default function InstallKeysPanel() {
             className="flex flex-col gap-2.5 px-3 py-3 rounded-[2px]"
             style={{ background: gf.hover, border: `1px solid ${gf.border}` }}
           >
-            <div className="flex flex-col sm:flex-row gap-2.5">
-              <label className="flex-1 flex flex-col gap-1">
+            <div className="flex flex-col sm:flex-row sm:items-end gap-2.5">
+              <label className="flex flex-col gap-1 sm:w-44">
                 <span className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
-                  Label
+                  Expires in (days)
                 </span>
                 <input
-                  value={label}
-                  onChange={(e) => setLabel(e.target.value)}
-                  placeholder="e.g. Main server room — Aug 2026"
-                  maxLength={100}
+                  value={expiresInDays}
+                  onChange={(e) => setExpiresInDays(e.target.value.replace(/[^0-9]/g, ""))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !creating) handleCreate();
+                  }}
+                  placeholder="blank = never"
+                  inputMode="numeric"
                   autoFocus
                   className="px-2.5 py-1.5 text-[13px] rounded-[2px] outline-none"
                   style={{
@@ -349,38 +405,32 @@ export default function InstallKeysPanel() {
                   }}
                 />
               </label>
-              <label className="flex flex-col gap-1 sm:w-44">
-                <span className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
-                  Expires in (days)
-                </span>
-                <input
-                  value={expiresInDays}
-                  onChange={(e) => setExpiresInDays(e.target.value.replace(/[^0-9]/g, ""))}
-                  placeholder="blank = never"
-                  inputMode="numeric"
-                  className="px-2.5 py-1.5 text-[13px] rounded-[2px] outline-none"
-                  style={{
-                    background: gf.panel,
-                    border: `1px solid ${gf.border}`,
-                    color: gf.textPrimary,
-                    fontFamily: "'JetBrains Mono', monospace",
-                  }}
-                />
-              </label>
-            </div>
-            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={handleCreate}
                 disabled={creating}
-                className="gf-raise text-[13px] font-medium px-3 py-1.5 rounded-md text-white active:scale-95 transition disabled:opacity-60"
+                className="gf-raise inline-flex items-center justify-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-[2px] text-white active:scale-95 transition disabled:opacity-60 disabled:active:scale-100 disabled:cursor-not-allowed"
                 style={{ background: gf.accent }}
               >
-                {creating ? "Creating…" : "Create key"}
+                {creating ? (
+                  <>
+                    {/* Spinner rather than only swapping the word: minting encrypts the key
+                        and writes a row, so the button can sit disabled long enough that
+                        static text reads as a dead control. */}
+                    <span
+                      className="inline-block w-3 h-3 rounded-full animate-spin"
+                      style={{
+                        border: "2px solid rgba(255,255,255,0.35)",
+                        borderTopColor: "#FFFFFF",
+                      }}
+                      aria-hidden
+                    />
+                    Creating…
+                  </>
+                ) : (
+                  "Create key"
+                )}
               </button>
-              <span className="text-[11px]" style={{ color: gf.textDim }}>
-                The key is shown once, right after it is created.
-              </span>
             </div>
           </div>
         )}
@@ -395,67 +445,67 @@ export default function InstallKeysPanel() {
             this page stays loaded — see sessionKeys. */}
         {revealedKey && (
           <div
-            className="flex flex-col gap-3 px-3 py-3 rounded-[2px]"
-            style={{ background: "rgba(115,191,105,0.06)", border: `1px solid rgba(115,191,105,0.35)` }}
+            className="flex flex-col rounded-[2px] overflow-hidden"
+            style={{ background: gf.panel, border: `1px solid ${ACCENT_EDGE}` }}
           >
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <div className="text-[13px] font-semibold" style={{ color: GREEN }}>
-                  Copy this key now
-                </div>
-                <div className="text-[12px] mt-0.5" style={{ color: gf.textMuted }}>
-                  Stored encrypted — re-open it any time with <strong>Show command</strong>
-                  in the list below. Each view is recorded in the audit log.
-                </div>
-              </div>
+            {/* Header bar, matching the panel and modal headers on this page rather than
+                being a coloured slab of its own. */}
+            <div
+              className="flex items-center justify-between gap-2 px-3"
+              style={{ height: 34, background: gf.accentDim, borderBottom: `1px solid ${ACCENT_EDGE}` }}
+            >
+              <span
+                className="text-[12px] font-medium tracking-widest uppercase truncate"
+                style={{ color: gf.accentText }}
+              >
+                Install key
+              </span>
               <button
                 type="button"
                 onClick={() => setRevealId(null)}
-                className="shrink-0 text-[16px] leading-none px-1"
-                style={{ color: gf.textDim }}
+                className="shrink-0 text-[16px] leading-none px-1 rounded-[2px] transition-colors"
+                style={{ color: gf.textMuted }}
                 title="Hide"
+                aria-label="Hide the install key"
               >
                 ×
               </button>
             </div>
 
-            <div
-              className="flex items-center gap-2 px-2.5 py-2 rounded-[2px]"
-              style={{ background: "rgba(0,0,0,0.25)", border: `1px solid ${gf.border}` }}
-            >
-              <code
-                className="flex-1 min-w-0 text-[12px] overflow-x-auto whitespace-pre"
-                style={{ color: GREEN }}
+            <div className="flex flex-col gap-3 px-3 py-3">
+              <div
+                className="flex items-center gap-2 px-2.5 py-2 rounded-[2px]"
+                style={{ background: gf.well, border: `1px solid ${gf.border}` }}
               >
-                {revealedKey}
-              </code>
-              <CopyButton text={revealedKey} label="Copy key" />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <div className="text-[12px]" style={{ color: gf.textMuted }}>
-                Run this on the server you want to monitor, from the installer folder:
+                <code
+                  className="flex-1 min-w-0 text-[13px] tracking-wide overflow-x-auto whitespace-pre"
+                  style={{ color: gf.accentText }}
+                >
+                  {revealedKey}
+                </code>
+                <CopyButton text={revealedKey} label="Copy key" />
               </div>
-              <CommandLine os="Windows · PowerShell (as Administrator)" command={psCommand(revealedKey)} />
-              <CommandLine os="Linux · bash" command={shCommand(revealedKey)} />
-            </div>
 
-            {/* The URL comes from the address this dashboard is open at, which is wrong the
-                moment that address is loopback — the agent runs on another machine, where
-                localhost is itself. COMMAND_URL has already put a placeholder in its place;
-                this says what to fill in. */}
-            {isLocalUrl && (
-              <div className="text-[12px]" style={{ color: ORANGE }}>
-                ⚠ Replace <code>&lt;domain&gt;</code> with the backend's LAN address or
-                hostname (e.g. <code>192.168.100.9</code>). You opened this dashboard on
-                localhost, which means nothing on another machine.
+              <div className="text-[12px] leading-relaxed" style={{ color: gf.textMuted }}>
+                Stored encrypted — re-open it any time with <strong>Show command</strong> in
+                the list below. Each view is recorded in the audit log.
               </div>
-            )}
 
-            <div className="text-[12px]" style={{ color: gf.textDim }}>
-              The installer waits for approval — the server then appears under Pending
-              approvals below. Already-installed machines need <code>-ReEnroll</code> to
-              move onto this key.
+              <div className="h-px w-full" style={{ background: gf.divider }} />
+
+              <div className="flex flex-col gap-2.5">
+                <div className="text-[12px]" style={{ color: gf.textMuted }}>
+                  Run this on the server you want to monitor, from the installer folder:
+                </div>
+                <CommandLine os="Windows · PowerShell (as Administrator)" command={psCommand(revealedKey)} />
+                <CommandLine os="Linux · bash" command={shCommand(revealedKey)} />
+              </div>
+
+              <div className="text-[12px] leading-relaxed" style={{ color: gf.textDim }}>
+                The installer waits for approval — the server then appears under Pending
+                approvals below. Already-installed machines need <code>-ReEnroll</code> to
+                move onto this key.
+              </div>
             </div>
           </div>
         )}
@@ -470,7 +520,7 @@ export default function InstallKeysPanel() {
             <table className="w-full border-collapse">
               <thead>
                 <tr style={{ borderBottom: `1px solid ${gf.divider}` }}>
-                  {["Label", "Key", "Status", "Enrolled", "Created", "Expires", ""].map((h) => (
+                  {["Key", "Status", "Enrolled", "Created", "Expires", ""].map((h) => (
                     <th
                       key={h}
                       className="text-left px-2 py-1.5 text-[11px] tracking-widest uppercase font-medium whitespace-nowrap"
@@ -484,16 +534,16 @@ export default function InstallKeysPanel() {
               <tbody>
                 {keys.map((k) => (
                   <tr key={k.id} style={{ borderBottom: `1px solid ${gf.divider}` }}>
-                    <td className="px-2 py-2 text-[13px]" style={{ color: gf.textPrimary }}>
-                      {k.label}
+                    {/* The prefix is the key's identity now that there is no label. It is
+                        also the only part of a key that survives minting, so it is what the
+                        audit log and the revoke dialog name it by. */}
+                    <td className="px-2 py-2 text-[13px] whitespace-nowrap" style={{ color: gf.textPrimary }}>
+                      {k.keyPrefix}…
                       {k.createdByName && (
                         <span className="block text-[11px]" style={{ color: gf.textDim }}>
                           by {k.createdByName}
                         </span>
                       )}
-                    </td>
-                    <td className="px-2 py-2 text-[12px] whitespace-nowrap" style={{ color: gf.textMuted }}>
-                      {k.keyPrefix}…
                     </td>
                     <td className="px-2 py-2 whitespace-nowrap">
                       <span
@@ -532,7 +582,7 @@ export default function InstallKeysPanel() {
                             type="button"
                             onClick={() => showCommand(k)}
                             className="text-[12px] px-2 py-1 rounded-[2px] transition-colors"
-                            style={{ color: GREEN, border: `1px solid ${GREEN}40` }}
+                            style={{ color: gf.accentText, border: `1px solid ${ACCENT_EDGE}` }}
                             title="Show the key and install command again"
                           >
                             Show command
@@ -594,7 +644,7 @@ export default function InstallKeysPanel() {
               style={{ height: 40, borderBottom: `1px solid ${gf.divider}` }}
             >
               <span className="text-[13px] font-medium tracking-widest uppercase" style={{ color: gf.textMuted }}>
-                Revoke “{revoking.key.label}”
+                Revoke {revoking.key.keyPrefix}…
               </span>
             </div>
 

@@ -303,12 +303,14 @@ export const api = {
 
   // The response carries the plaintext key. It is the ONLY time the server will ever
   // return it — only a hash is stored — so the caller must show it before discarding.
+  // No label: the dashboard identifies a key by its prefix and dates. The server still
+  // writes one for the audit trail (installKeyService.create), and the field stays
+  // accepted by the API, so this can grow a label again without a backend change.
   createInstallKey: async (
-    label: string,
     expiresInDays: number | null,
   ): Promise<ApiResult<{ key: string; record: any }>> => {
     try {
-      const res = await apiClient.post("/agents/install-keys", { label, expiresInDays });
+      const res = await apiClient.post("/agents/install-keys", { expiresInDays });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);
