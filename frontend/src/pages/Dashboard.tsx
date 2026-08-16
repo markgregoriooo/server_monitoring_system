@@ -315,8 +315,20 @@ function Panel({
         </div>
       )}
       <div
-        className="flex-1 min-h-0"
-        style={{ padding: noPad ? 0 : 12, ...bodyStyle }}
+        className="min-h-0"
+        style={{
+          // ⚠️ A body with an explicit height must NOT also be `flex: 1 1 0%`. This div
+          // used to carry Tailwind's `flex-1`, and in a COLUMN flex container flex-basis:0
+          // wins over height — so `bodyStyle.height` was silently ignored and the panel
+          // sized to its CONTENT instead. A chart hid it (it fills whatever it is given),
+          // but the Active Alerts list has a real intrinsic height, so a run of incidents
+          // grew the panel without ever scrolling. It then dragged the whole grid ROW with
+          // it, because grid items stretch to the tallest in the row — which is why the
+          // Environment (temp/humidity) panel beside it grew too.
+          flex: bodyStyle?.height != null ? "0 0 auto" : "1 1 0%",
+          padding: noPad ? 0 : 12,
+          ...bodyStyle,
+        }}
       >
         {children}
       </div>
