@@ -154,7 +154,7 @@ server-infrastructure-monitoring-system-webSystem/
 │                                     UserManagement, auth/{Login,Unauthorized}
 │
 ├── go-agent/                       ← standalone Go monitoring agent (see go-agent/README.md)
-├── iot/esp32/env_monitor_v2.ino    ← active firmware
+├── iot/esp32/env_monitor_v2/env_monitor_v2.ino    ← active firmware
 ├── migrations/2026-06-09_google_auth.sql
 ├── V10cspc-ictu-monitoring-system-schema.sql ← current full MySQL schema
 │
@@ -248,7 +248,7 @@ an admin approves it in **Server Metrics → pending**, and the agent then POSTs
 | `VITE_API_URL` | Optional explicit backend URL override (production / HTTPS / different host) |
 
 > `backend/.env` is git-ignored — secrets are never committed. Firmware constants (`host`,
-> `port`, `deviceSecret`) are still hardcoded in `iot/esp32/env_monitor_v2.ino`.
+> `port`, `deviceSecret`) are still hardcoded in `iot/esp32/env_monitor_v2/env_monitor_v2.ino`.
 
 ---
 
@@ -410,7 +410,7 @@ parentheses use `requireRole(...)`.
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | POST | `/agents/register` | Install key | First-run enrollment (body `{ install_key, hostname, … }`) → pending token + emits `agentPending` |
-| GET | `/agents/status?pending_token=…` | Public | Agent polls for approval → `{ status, approved_token, device_id }` |
+| POST | `/agents/status` | Public | Agent polls for approval (body `{ pending_token }`) → `{ status, approved_token, device_id }`. POST because that token buys the permanent one and a query string would be logged |
 | GET | `/agents/pending` | ✅ (admin) | Servers awaiting approval |
 | POST | `/agents/:id/approve` | ✅ (admin) | Approve → emits `agentApproved` + `deviceLog` |
 | POST | `/agents/:id/reject` | ✅ (admin) | Reject (deletes pending device) → emits `agentPending` |
@@ -494,7 +494,7 @@ The backend overrides the device timestamp with `new Date()`, writes to InfluxDB
 queries via the `changeRange` → `sensorHistory` socket round-trip (not the mock REST
 endpoint). Full guide: **`Environment.md`**.
 
-Firmware notes (`iot/esp32/env_monitor_v2.ino`):
+Firmware notes (`iot/esp32/env_monitor_v2/env_monitor_v2.ino`):
 
 - **No SD card / on-device buffer** — removed; durability lives on the backend (`backupService`). The `offlineData` handler remains but is dormant.
 - `deviceSecret` must match `DEVICE_SECRET` in `backend/.env`.

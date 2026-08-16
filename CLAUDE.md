@@ -110,7 +110,12 @@ and **changing networks needs no edit**. To pin a specific backend (different ho
 set `VITE_API_URL` in `frontend/.env` (then restart `npm run dev`). Backend CORS is driven by
 `WEB_ORIGIN` in `backend/.env` — set `WEB_ORIGIN=*` to allow any origin on a roaming LAN.
 
-Still hardcoded (firmware only): `iot/esp32/env_monitor_v2.ino` — `host`, `port`, `deviceSecret`.
+Firmware config lives in **`iot/esp32/env_monitor_v2/secrets.h`** (gitignored) — `WIFI_SSID`, `WIFI_PASSWORD`,
+`BACKEND_HOST`, `BACKEND_PORT`, `DEVICE_SECRET`. Copy `secrets.h.example` to `secrets.h` and fill
+it in; the sketch `#include`s it. These were literals in the `.ino` until 2026-08-16, which put a
+real WiFi password and the real device secret into every clone. ⚠️ Both values are still in git
+**history** (since commit `5f5a084`) — the split stops new exposure, it does not undo the old one,
+so rotate anything that was committed.
 
 ---
 
@@ -208,7 +213,7 @@ frontend/src/
   hooks/useRoomThresholds.ts    ← the room-level alert thresholds, kept current: GET /api/environment/thresholds once, then follows the `envConfigUpdated` broadcast. Starts on `ROOM_THRESHOLD_FALLBACK` (the v13 seed) — starting empty would mean "no rule, no colour", painting a smoke reading green for as long as the request takes
   pages/                        ← one file per page
 
-iot/esp32/env_monitor_v2.ino    ← current firmware (active)
+iot/esp32/env_monitor_v2/env_monitor_v2.ino    ← current firmware (active)
 go-agent/                       ← standalone Go monitoring agent (enroll → approve → POST metrics); see server-metrics.md + go-agent/README.md
 SESSION_NOTES.md                ← per-session work log
 ```
@@ -243,7 +248,7 @@ SESSION_NOTES.md                ← per-session work log
 > ⚠️ **A stored session is never trusted without checking the token is still alive.** `sessionStorage` outlives what people assume: it survives a reload, and Chrome's **"Continue where you left off"** restores it *along with the tab* — so a laptop restart can hand the app a token that died two days ago. Restoring `cspc_user` on its own booted straight into the dashboard, fired every panel's request with the dead token, collected a screen of 403s and bounced to `/login` — which reads exactly like "signed out immediately after signing in", and only on machines that restore tabs. Three guards, each covering a moment the others never reach: **`AuthProvider` mount** (a tab that loads), the **axios request interceptor** (any request, in a tab already running — the only one that reaches a tab open for days), and the **`/login` mount wipe** (being on the sign-in page means the stored credentials are dead by definition). Expiry is measured by `msUntilTokenExpiry()` in `api/client.ts`, exported so both sides use one rule: it takes `exp - iat` (both server-clock, so skew-free) from `cspc_token_at` (our clock) — never `exp` against `Date.now()`, which mixes clocks and logs out anyone whose machine drifts. `middleware/auth.js` logs the real `jwt.verify` failure (`TokenExpiredError` vs `invalid signature` vs `jwt malformed`) plus `from=`/`ua=`; the client's `"Invalid or expired token."` hides all three, and the server listens on `0.0.0.0`, so a rejection can come from any device on the LAN.
 
 - JWT signed with `JWT_SECRET`, expires 1 h, stored in `sessionStorage` as `cspc_token`. Carries a `tv` (token_version) claim; `authMiddleware` rejects the token when `users.token_version` / `status` no longer match (logout, disable, role change bump it — server-side session revocation)
-- Socket.IO: browsers send JWT in `socket.handshake.auth.token`; ESP32 device key is read from `socket.handshake.auth.deviceKey` (preferred) or `.query.deviceKey` (legacy EIO3 fallback — firmware still sends it here)
+- Socket.IO: browsers send JWT in `socket.handshake.auth.token`; the ESP32 device key is read from `socket.handshake.auth.deviceKey` → `headers["x-device-key"]` → `.query.deviceKey`, in that order. The firmware sends the **header** (`setExtraHeaders`, since 2026-08-16) because EIO3 has no `auth` payload — that arrived in Socket.IO v3. The **query fallback is deprecated**: a query string is written verbatim into proxy/access logs, so the shared secret used to appear in every log line the handshake touched. Keep the fallback until every ESP32 in the field is reflashed, then delete it — removing it early silently strands an un-updated box
 - Go agents authenticate metric POSTs with a Bearer `AGT-…` token (`middleware/agentAuth.js`); first-run enrollment uses an **`AIK-…` install key** from `agent_install_keys` (admin-minted, revocable, optional expiry — `services/installKeyService.js`), with the legacy `.env` `AGENT_INSTALL_KEY` as a deprecated fallback.
   > **A key also OWNS what it enrolled.** `agent_tokens.install_key_id` records which key let each machine in, so revoking a key can *optionally* de-authorise those servers too — the branch model: one key per office, revoke it and that office's servers stop reporting. `POST /install-keys/:id/revoke` takes `{ revokeAgents }`; `GET /install-keys/:id/servers` lists the blast radius so the UI can name them first.
   > ⚠️ **Cutting agents off is opt-in, never an implicit side effect.** "Stop issuing this key" and "de-authorise its whole fleet" are both legitimate and differ by a fleet's worth of monitoring going dark. If it were automatic an admin could never tidy up a stale rollout key without taking servers down, so in practice they'd stop revoking keys at all. Set `revokeAgents:true` and the tokens go to `status='revoked'` → the agent's next POST 403s → it deletes its own `agent.conf` and exits (`go-agent/cmd/agent/main.go`). The **device row, its logs and its InfluxDB history are kept**, and `agentService.register` re-arms a `revoked` enrolment onto the *same* `device_id` — so re-installing with a live key brings the server back as itself rather than forking its time-series. Per-server revocation without touching a key is still `DELETE /api/servers/:id`.
@@ -472,7 +477,7 @@ Panel border-radius: `2px` (not `rounded-xl`). Font: `'JetBrains Mono', monospac
 
 ## ESP32 Firmware Notes
 
-- Active file: `iot/esp32/env_monitor_v2.ino`
+- Active file: `iot/esp32/env_monitor_v2/env_monitor_v2.ino`
 - **No SD card / on-device buffer** — the offline log was removed. Every monitored link is on a UPS, so the device doesn't drop; durability is the backend's job (`backupService`). A reading taken while WiFi is down is logged to serial and dropped. The backend's `offlineData` handler still exists but is dormant — nothing emits it
 - `deviceSecret` must match `DEVICE_SECRET` in `backend/.env`
 - IR fires only on temperature **zone change**, not every loop tick

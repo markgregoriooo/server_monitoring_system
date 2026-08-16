@@ -68,7 +68,7 @@ ON DUPLICATE KEY UPDATE zone = zone;
 
 ---
 
-## 4. Firmware — `iot/esp32/env_monitor_v2.ino`
+## 4. Firmware — `iot/esp32/env_monitor_v2/env_monitor_v2.ino`
 
 ### 4.1 Replace the five constants with a library
 

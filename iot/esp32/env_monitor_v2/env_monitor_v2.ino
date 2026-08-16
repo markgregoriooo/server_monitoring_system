@@ -64,6 +64,7 @@
 #include <IRsend.h>
 #include <time.h>          // NTP via ESP32 built-in
 #include <Preferences.h>   // NVS flash — persists the MQ-2 clean-air baseline
+#include "secrets.h"       // WiFi + backend + DEVICE_SECRET — gitignored, see secrets.h.example
 
 /* =================== PINS =================== */
 #define MQ2_PIN_1  34
@@ -120,14 +121,17 @@ bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
 #define FAST_PULSE_OFF 100
 
 /* =================== WiFi =================== */
-const char* ssid = "GREGORIO WIFI 2.4G";
-const char* password = "REDACTED-ROTATED-WIFI-PASSWORD";
+/* Values come from secrets.h, which is gitignored — copy secrets.h.example to
+   secrets.h and fill it in. They used to be literals here, which put a real WiFi
+   password and the real DEVICE_SECRET into every clone of the repository. */
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
 
 /* ================= Socket.IO ================ */
-const char* host = "192.168.100.39";
-const uint16_t port = 3000;
+const char* host = BACKEND_HOST;
+const uint16_t port = BACKEND_PORT;
 // Must match DEVICE_SECRET in backend/.env
-const char* deviceSecret = "REDACTED-ROTATED-DEVICE-SECRET";
+const char* deviceSecret = DEVICE_SECRET;
 
 /* ================= MQ-2 CONFIG ============== */
 #define RL_VALUE 10.0
@@ -1101,11 +1105,18 @@ void setup() {
     Serial.println("\n[WiFi] Not connected — offline mode.");
   }
 
-  /* Socket.IO — pass device key as query param for server auth */
-  char socketUrl[128];
-  snprintf(socketUrl, sizeof(socketUrl),
-    "/socket.io/?EIO=3&transport=websocket&deviceKey=%s", deviceSecret);
-  socketIO.begin(host, port, socketUrl);
+  /* Socket.IO — the device key travels in an HTTP HEADER on the WebSocket upgrade,
+     not in the URL. A query string is written verbatim into proxy and web-server
+     access logs, so the shared secret ended up in every log line the handshake
+     touched; a request header is not logged by default.
+     (Socket.IO's `auth` payload would be the usual place, but that arrived in v3 and
+     this client speaks EIO3 — a header is the equivalent here. The backend reads
+     auth → x-device-key → query, in that order; see backend/src/server.js.)
+     `static` because setExtraHeaders keeps the buffer, which must outlive setup(). */
+  static char deviceKeyHeader[128];
+  snprintf(deviceKeyHeader, sizeof(deviceKeyHeader), "X-Device-Key: %s", deviceSecret);
+  socketIO.setExtraHeaders(deviceKeyHeader);
+  socketIO.begin(host, port, "/socket.io/?EIO=3&transport=websocket");
   socketIO.onEvent(socketIOEvent);
   socketIO.setReconnectInterval(5000);
 

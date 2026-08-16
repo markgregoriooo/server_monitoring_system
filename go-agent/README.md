@@ -220,7 +220,8 @@ agent                                   backend                         admin (d
   │  ◀── { pending_token, device_id } ─────│ emit "agentPending" ───────────▶ │ (sees it appear)
   │                                        │                                  │
   │  (loop every 10s)                      │                                  │
-  │  GET /api/agents/status?pending_token= │                                  │
+  │  POST /api/agents/status               │                                  │
+  │       { pending_token }                │                                  │
   │  ───────────────────────────────────▶ │                                  │
   │  ◀── { status: "pending" } ────────────│                                  │
   │           …                            │       POST /:id/approve ◀──────── │ (clicks Approve)
@@ -297,7 +298,7 @@ plus the headers/auth it uses.
 | When | Method & path | Auth it sends | Body it sends | What it expects back |
 |------|---------------|---------------|---------------|----------------------|
 | Enroll | `POST /api/agents/register` | the **install key** (inside the JSON body) | `install_key` + all `HostInfo` fields | `{ pending_token, device_id }` |
-| Poll | `GET /api/agents/status?pending_token=…` | the **pending token** (in the query string) | — | `{ status, approved_token, device_id }` |
+| Poll | `POST /api/agents/status` | the **pending token** (inside the JSON body) | `pending_token` | `{ status, approved_token, device_id }` |
 | Send metrics | `POST /api/servers/metrics` | `Authorization: Bearer <approved_token>` | all `ServerMetrics` fields | `{ success: true }` |
 
 (The other server endpoints — `GET /api/servers`, `/api/agents/pending`,
@@ -415,7 +416,9 @@ The version string lives here: `const agentVersion = "1.0.0"`.
 1. Collects `HostInfo` (`collector.CollectHostInfo`).
 2. POSTs it + the install key to `/api/agents/register`; reads back the
    `pending_token`.
-3. **Polls** `/api/agents/status?pending_token=…` every 10 s:
+3. **Polls** `POST /api/agents/status` with `{ pending_token }` in the body every 10 s
+   (body rather than a query string — the token is exchanged for the permanent one, and
+   a URL would land in the access log on every poll):
    - `status: "approved"` → writes `agent.conf` (with the permanent token) and returns
      success.
    - `status: "rejected"` → returns an error (the agent will exit).

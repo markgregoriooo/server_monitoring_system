@@ -60,7 +60,7 @@ Three ingest paths converge on one alerting pipeline:
 │       └── pages/                    ← one file per page
 │
 ├── go-agent/                         ← standalone Go agent (enroll → approve → POST metrics)
-├── iot/esp32/env_monitor_v2.ino      ← firmware (active)
+├── iot/esp32/env_monitor_v2/env_monitor_v2.ino      ← firmware (active)
 ├── ops/                              ← db-backup + offsite-backup (rclone) scripts
 ├── dev-snmpsim/                      ← SNMP simulator for local router/UPS testing
 ├── v13_cspc-ictu-monitoring-system.sql ← full schema (single file, no migration chain)
@@ -210,7 +210,7 @@ All routes require a Bearer JWT unless marked otherwise. Roles: **A** = admin,
 | Method | Endpoint | Role | Description |
 |--------|----------|------|-------------|
 | POST | `/api/agents/register` | install key | First-run agent enrollment (rate-limited) |
-| GET | `/api/agents/status` | pending token | Agent polls until approved |
+| POST | `/api/agents/status` | pending token (body) | Agent polls until approved |
 | GET | `/api/agents/pending` | A | Enrollments awaiting approval |
 | POST | `/api/agents/:id/approve` \| `/reject` | A | Approve / reject an agent |
 | GET | `/api/agents/install-keys` | A | List enrollment keys (prefix only — the key itself is hashed) |

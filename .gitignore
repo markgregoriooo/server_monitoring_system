@@ -151,3 +151,9 @@ backend/backups/
 
 # MySQL Workbench auto-backup — rewritten on every save, pure churn
 *.mwb.bak
+
+# ESP32 per-deployment credentials: WiFi password, backend host, DEVICE_SECRET.
+# The sketch reads them from here; secrets.h.example is the committed template.
+# Matched at any depth under iot/esp32/ because the Arduino IDE relocates a sketch
+# into a folder named after it, and secrets.h has to follow the .ino to compile.
+iot/esp32/**/secrets.h

@@ -273,7 +273,7 @@ Values are read once at module load, so **restart the backend** after editing.
 - **Rules-only:** deleting the last active global rule for a metric silently disables alerting for
   it. The UI warns, but it can be overridden.
 - If alert emails stop with no other symptom, regenerate the App Password (§9.2).
-- Flashing `iot/esp32/env_monitor_v2.ino` is still pending; until then the device ignores
+- Flashing `iot/esp32/env_monitor_v2/env_monitor_v2.ino` is still pending; until then the device ignores
   `envConfig`/`acConfig` and keeps its compiled-in thresholds.
 
 ---

@@ -25,7 +25,7 @@ with IR transmitters, so **every physical AC action happens on the ESP32**.
 | IR TX #2 | 33 | AC channel 2 |
 | DS3231 RTC | SDA 21 / SCL 22 | Timestamp source (optional) |
 
-Firmware: `iot/esp32/env_monitor_v2.ino`. Reads every loop tick; logs/sends every
+Firmware: `iot/esp32/env_monitor_v2/env_monitor_v2.ino`. Reads every loop tick; logs/sends every
 `LOG_INTERVAL` (3 s).
 
 ---
@@ -308,7 +308,7 @@ Auth: browsers send JWT in `handshake.auth.token`; ESP32 sends `DEVICE_SECRET` i
 
 | File | Responsibility |
 |------|----------------|
-| `iot/esp32/env_monitor_v2.ino` | Firmware: read sensors, status, buzzer/LED, IR send |
+| `iot/esp32/env_monitor_v2/env_monitor_v2.ino` | Firmware: read sensors, status, buzzer/LED, IR send |
 | `backend/handlers/sensorHandler.js` | Validate + write live reading + broadcast |
 | `backend/handlers/offlineDataHandler.js` | Write SD-buffered historical rows |
 | `backend/handlers/querySensorHistoryHandler.js` | Flux history queries |
@@ -374,7 +374,7 @@ These are deliberately separate — cooling should ramp *before* the alarm fires
 Update both hardcoded endpoints **and** the firmware:
 - `frontend/src/api/client.ts` (Axios baseURL)
 - `frontend/src/socket/socket.ts` (Socket.IO URL)
-- `iot/esp32/env_monitor_v2.ino` — `host`, `port`, `ssid`, `password`, `deviceSecret`
+- `iot/esp32/env_monitor_v2/env_monitor_v2.ino` — `host`, `port`, `ssid`, `password`, `deviceSecret`
 
 ---
 

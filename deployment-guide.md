@@ -849,7 +849,7 @@ streams CPU/mem/disk/net every ~10 s thereafter.
 
 ## 8. ESP32 environment node
 
-Edit `iot/esp32/env_monitor_v2.ino` before flashing — three constants are **hardcoded in
+Edit `iot/esp32/env_monitor_v2/env_monitor_v2.ino` before flashing — three constants are **hardcoded in
 firmware** (not driven by `.env`):
 
 | Constant | Set to |

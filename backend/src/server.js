@@ -108,10 +108,18 @@ app.use(globalLimiter);
 
 // F-01: authenticate every socket connection before events are registered
 io.use(async (socket, next) => {
-  // F-04: prefer the secret in the auth payload (sent in the WebSocket frame body,
-  // not the URL) so it isn't captured in proxy/access logs. Query is kept only as a
-  // fallback for the current EIO3 firmware until it migrates to the auth payload.
-  const deviceKey = socket.handshake.auth?.deviceKey ?? socket.handshake.query?.deviceKey;
+  // F-04: keep the shared secret out of the URL — a query string is written verbatim
+  // into proxy and access logs, a header and a frame body are not. Three sources, in
+  // descending preference:
+  //   auth payload   — browsers and any Socket.IO v3+ client
+  //   x-device-key   — the ESP32, which speaks EIO3 and so has no `auth` payload
+  //   query string   — DEPRECATED, only reached by firmware predating 2026-08-16.
+  // Drop the query fallback once every ESP32 in the field has been reflashed; until
+  // then removing it would silently strand an un-updated box.
+  const deviceKey =
+    socket.handshake.auth?.deviceKey ??
+    socket.handshake.headers?.["x-device-key"] ??
+    socket.handshake.query?.deviceKey;
 
   // ESP32 device authentication via shared secret
   if (deviceKey) {

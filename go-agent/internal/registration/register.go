@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"time"
 
 	"cspc-ictu/go-agent/internal/collector"
@@ -29,6 +28,10 @@ type registerResponse struct {
 	DeviceID     int    `json:"device_id"`
 	Message      string `json:"message"`
 	Error        string `json:"error"`
+}
+
+type statusRequest struct {
+	PendingToken string `json:"pending_token"`
 }
 
 type statusResponse struct {
@@ -55,14 +58,17 @@ func Run(apiURL, installKey, confPath, agentVersion string, interval int) error 
 	}
 	logger.Infof("registered as device_id=%d — waiting for admin approval...", reg.DeviceID)
 
-	statusURL := fmt.Sprintf("%s/api/agents/status?pending_token=%s",
-		apiURL, url.QueryEscape(reg.PendingToken))
+	// The pending token goes in the BODY, not a query string: it is exchanged for the
+	// permanent token, and a URL is written verbatim into proxy/access logs on every
+	// one of these 10-second polls.
+	statusURL := apiURL + "/api/agents/status"
+	statusBody, _ := json.Marshal(statusRequest{PendingToken: reg.PendingToken})
 
 	for {
 		time.Sleep(pollInterval)
 
 		var st statusResponse
-		status, err := getJSON(statusURL, &st)
+		status, err := postJSONStatus(statusURL, statusBody, &st)
 		if err != nil {
 			// The pending token is gone (the admin rejected/removed this enrollment).
 			if status == http.StatusNotFound {
@@ -96,22 +102,18 @@ func Run(apiURL, installKey, confPath, agentVersion string, interval int) error 
 }
 
 func postJSON(endpoint string, body []byte, out any) error {
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	_, err = do(req, out)
+	_, err := postJSONStatus(endpoint, body, out)
 	return err
 }
 
-// getJSON returns the HTTP status code alongside any error so callers can react
-// to specific statuses (e.g. 404 = pending token gone).
-func getJSON(endpoint string, out any) (int, error) {
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+// postJSONStatus returns the HTTP status code alongside any error so callers can
+// react to specific statuses (e.g. 404 = pending token gone).
+func postJSONStatus(endpoint string, body []byte, out any) (int, error) {
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return 0, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 	return do(req, out)
 }
 

@@ -192,7 +192,7 @@ isolation; combined they allow privilege persistence and unauthorized actuation 
   Credentials), CWE-639 (Authorization bypass via shared secret)
 - **Evidence:** secret read from `socket.handshake.query.deviceKey`
   (`backend/src/server.js:51-62`); firmware sends it in the connection **URL query string**
-  (`iot/esp32/env_monitor_v2.ino:931-934`,
+  (`iot/esp32/env_monitor_v2/env_monitor_v2.ino:931-934`,
   `"/socket.io/?EIO=3&transport=websocket&deviceKey=%s"`). A device-authenticated socket can
   call `applyAutoIR`, which **overwrites every aircon unit's state**
   (`backend/services/airconService.js:190-219`, `UPDATE ... WHERE device_id IN (all
@@ -261,7 +261,7 @@ isolation; combined they allow privilege persistence and unauthorized actuation 
 - **CWE:** CWE-20 (Improper Input Validation)
 - **Evidence:** `backend/routes/aircon.js:38-39` accepts `ir_channel` 1–8, but firmware
   defines `MAX_IR_CHANNELS 4` with `IR_CHANNEL_PINS` of length 4
-  (`iot/esp32/env_monitor_v2.ino:86-87`); `irCommand`/`irConfig` for channels 5–8 are
+  (`iot/esp32/env_monitor_v2/env_monitor_v2.ino:86-87`); `irCommand`/`irConfig` for channels 5–8 are
   silently ignored on-device (`...esp32...:789, 812`).
 - **Why it matters:** A unit registered on channel 5–8 appears controllable in the DB/UI but
   never actuates hardware — a silent workflow inconsistency, not a security breach.

@@ -78,9 +78,18 @@ router.post("/register", enrollLimiter, async (req, res, next) => {
   }
 });
 
-// ── GET /api/agents/status?pending_token=… ─ agent polls for approval ─────────
-router.get("/status", async (req, res, next) => {
-  const token = req.query.pending_token;
+// ── POST /api/agents/status ─ agent polls for approval (pending token, no JWT) ─
+// POST, not GET, and the token is read from the BODY. The pending token is a
+// credential — it is exchanged here for the permanent `AGT-…` token — and a query
+// string is written verbatim into proxy and access logs. The agent polls this every
+// 10s while it waits for an admin, so the GET version wrote that credential into the
+// logs dozens of times per enrollment, where anyone with log access could replay it
+// and collect the permanent token. A body is not logged.
+// No extra rate limiter: the token is 24 random bytes (192 bits, agentService.register),
+// so there is nothing to guess, and `enrollLimiter`'s budget would cut off a legitimate
+// agent polling every 10s well before an admin got round to approving it.
+router.post("/status", async (req, res, next) => {
+  const token = req.body?.pending_token;
   if (!token) return res.status(400).json({ error: "pending_token is required." });
   try {
     const result = await agentService.getStatusByPendingToken(String(token));

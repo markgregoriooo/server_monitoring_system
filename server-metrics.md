@@ -95,7 +95,9 @@ therefore unaffected by any key revoke — there is no key to attribute them to.
    `device_network`, `agent_tokens` (`status='pending'`). Returns `{ pending_token, device_id }`.
    **Idempotent per NIC** — re-registering with the same MAC reuses the enrollment, so a
    restart before approval can't spawn duplicate pending devices.
-2. **Poll** — agent GETs `/api/agents/status?pending_token=…` every 10s and waits.
+2. **Poll** — agent POSTs `{ pending_token }` to `/api/agents/status` every 10s and waits.
+   Body, not a query string: that token is exchanged for the permanent one, and a URL
+   would be written into the access log on every poll.
 3. **Approve** — an admin approves in the dashboard → backend mints a permanent `AGT-…`
    token, sets `agent_tokens.status='approved'` + `devices.status='online'`, emits
    `agentApproved`.
@@ -115,7 +117,7 @@ so it won't trip this. InfluxDB history is left intact.
 | Method & path | Auth | Purpose |
 |---|---|---|
 | `POST /api/agents/register` | install key | First-run enrollment |
-| `GET /api/agents/status?pending_token=` | pending token | Poll for approval |
+| `POST /api/agents/status` | pending token (body) | Poll for approval |
 | `GET /api/agents/pending` | JWT admin | Servers awaiting approval |
 | `POST /api/agents/:id/approve` \| `/reject` | JWT admin | Approve (issue `AGT-…`) / reject |
 | `POST /api/servers/metrics` | agent Bearer | Metric ingestion |
