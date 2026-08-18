@@ -1,5 +1,5 @@
 # Example agent.conf. The real file is written automatically by
-# `go-agent --register` once an admin approves the device — you normally
+# `cspc-agent --register` once an admin approves the device — you normally
 # do not create it by hand. Shown here for reference.
 API_URL=http://192.168.100.9:3000
 DEVICE_TOKEN=AGT-replace-with-approved-token

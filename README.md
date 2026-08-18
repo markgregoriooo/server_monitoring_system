@@ -59,7 +59,7 @@ Three ingest paths converge on one alerting pipeline:
 │       ├── components/               ← layout/, notifications/, ui/
 │       └── pages/                    ← one file per page
 │
-├── go-agent/                         ← standalone Go agent (enroll → approve → POST metrics)
+├── agent/                            ← standalone Go agent (enroll → approve → POST metrics)
 ├── iot/esp32/env_monitor_v2/env_monitor_v2.ino      ← firmware (active)
 ├── ops/                              ← db-backup + offsite-backup (rclone) scripts
 ├── dev-snmpsim/                      ← SNMP simulator for local router/UPS testing
@@ -161,7 +161,7 @@ restart `npm run dev` (or rebuild) after any change.
 cd backend && npm test      # node --test — pure unit tests, no DB required
 ```
 
-Includes `contract.test.js`, which parses `go-agent/internal/collector/metrics.go` and fails
+Includes `contract.test.js`, which parses `agent/internal/collector/metrics.go` and fails
 if its JSON tags drift from the backend's validator.
 
 ---

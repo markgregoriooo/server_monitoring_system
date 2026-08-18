@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"cspc-ictu/go-agent/internal/collector"
-	"cspc-ictu/go-agent/internal/logger"
+	"cspc-ictu/agent/internal/collector"
+	"cspc-ictu/agent/internal/logger"
 )
 
 // ErrUnauthorized means the backend rejected the agent's token with HTTP 403 —

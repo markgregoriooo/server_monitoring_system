@@ -5,7 +5,7 @@ POSTs them to the Node backend, which stores them in InfluxDB + MySQL and pushes
 updates to the dashboard.
 
 > **This file is the feature flow.** For installing, building and cross-compiling the
-> agent, and the file-by-file source walkthrough, see **`go-agent/README.md`**.
+> agent, and the file-by-file source walkthrough, see **`agent/README.md`**.
 > Sensors/aircon → `Environment.md`. Users/auth → `CLAUDE.md`.
 
 ---
@@ -265,7 +265,7 @@ recoveries are intentionally **not** logged, which keeps the table lean with no 
 
 | File | Role |
 |---|---|
-| `go-agent/` | The agent — see `go-agent/README.md` |
+| `agent/` | The agent — see `agent/README.md` |
 | `backend/middleware/agentAuth.js` | Validate agent Bearer token → `req.device` |
 | `backend/services/agentService.js` | register/approve/heartbeat/read DB logic |
 | `backend/handlers/serverMetricsHandler.js` | Validate + Influx write + heartbeat + emit, and the backfill batch handler |
@@ -315,5 +315,5 @@ rules; `historyRange.test.js` pins preset and custom-window resolution.
   `-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries`. Windows kills tasks the moment a
   machine switches to battery — exactly when you want eyes on it. The agent never exits on a
   backend outage (only on a 403), so a dead agent is almost always this. Fix in
-  `go-agent/README.md` §11.
+  `agent/README.md` §11.
 - **Never commit `agent.conf`** (holds the device token) or `.env`.

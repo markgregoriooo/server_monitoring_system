@@ -1,7 +1,7 @@
 // Guards the metric contract that is hand-duplicated between the Go agent and
 // this backend (server-metrics.md §10 flags the drift hazard explicitly).
 //
-// It parses the REAL go-agent/internal/collector/metrics.go and asserts its json
+// It parses the REAL agent/internal/collector/metrics.go and asserts its json
 // tags still match what the handler validates. Adding a field on one side without
 // the other now fails here instead of silently 400-ing every agent in the field.
 
@@ -14,7 +14,7 @@ import path from "node:path";
 import { NUMERIC_FIELDS } from "../services/serverMetricUtils.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const METRICS_GO = path.resolve(HERE, "../../go-agent/internal/collector/metrics.go");
+const METRICS_GO = path.resolve(HERE, "../../agent/internal/collector/metrics.go");
 
 const source = readFileSync(METRICS_GO, "utf8");
 
@@ -113,7 +113,7 @@ test("the agent's volume cap is not above the backend's", () => {
   // The backend truncates at MAX_VOLUMES; an agent cap above it would silently
   // drop volumes server-side instead of reporting them.
   const m = source.match(/maxVolumes\s*=\s*(\d+)/) ?? readFileSync(
-    path.resolve(HERE, "../../go-agent/internal/collector/collector.go"), "utf8",
+    path.resolve(HERE, "../../agent/internal/collector/collector.go"), "utf8",
   ).match(/maxVolumes\s*=\s*(\d+)/);
   assert.ok(m, "could not find maxVolumes in the Go agent");
   assert.ok(

@@ -1,0 +1,90 @@
+CSPC-ICTU SERVER MONITORING AGENT  —  Linux
+===========================================
+
+Copy this WHOLE folder to the Linux server you want to monitor.
+
+  cspc-agent-linux-amd64    agent for Intel/AMD (x86_64) servers
+  cspc-agent-linux-arm64    agent for ARM servers (e.g. Raspberry Pi)
+  install.sh              installs it as a systemd service (starts at boot)
+  RUN-ME.txt              this file
+
+It reports CPU, memory, uptime, process count and EVERY mounted fixed filesystem
+(/, /home, /data, ...) every 10 seconds, plus its own details (IP, RAM, disk size)
+hourly. Pseudo filesystems (tmpfs, overlay, squashfs) are ignored. If the backend
+goes down it holds about 40 minutes of readings and fills them in afterwards, so an
+outage leaves a gap in the live view but not in the stored history.
+
+install.sh picks the right binary for this CPU automatically.
+
+-----------------------------------------------------------------------
+BEFORE YOU START
+-----------------------------------------------------------------------
+  1) The backend PC must be ON and on the SAME network as this server.
+       curl http://192.168.100.9:3000
+     You should see:  {"error":"Route not found"}
+     If it fails -> wrong network, or the firewall on the backend PC is blocking
+     port 3000. Fix that before continuing.
+
+  2) Get an install key from an admin. On the dashboard:
+       Server Metrics -> Agent install keys -> + New key
+     It starts with AIK- and the dashboard shows the ready-made command.
+
+-----------------------------------------------------------------------
+INSTALL
+-----------------------------------------------------------------------
+  1) Install (from inside this folder):
+       sudo bash install.sh http://192.168.100.9:3000 <INSTALL_KEY>
+     It installs to /opt/cspc-agent, registers, and waits.
+
+  2) An ADMIN approves it on the dashboard:
+       Server Metrics -> Pending agent approvals -> Approve this server
+
+  3) Done. The server appears Online within about 10 seconds and starts again at
+     every boot.
+
+  Check it worked:
+     Dashboard    -> this server is Online, with CPU/memory figures and a Volumes list.
+     This server  -> systemctl status cspc-agent
+
+-----------------------------------------------------------------------
+UPGRADING AN AGENT THAT IS ALREADY INSTALLED
+-----------------------------------------------------------------------
+  Do NOT re-register — the server keeps its enrolment and approval, you are only
+  swapping the program file.
+
+       sudo systemctl stop cspc-agent
+       sudo bash install.sh http://192.168.100.9:3000 <INSTALL_KEY>
+
+  It warns that the key was not used — that is expected, and nothing needs
+  approving again. To move this server onto a DIFFERENT install key (only if an
+  admin asks), add  --re-enroll  to that command: it keeps its identity and history.
+
+  Installed before August 2026, when the agent was called go-agent? Just run the
+  two commands above. The installer replaces the old binary and repoints the
+  service; agent.conf is untouched, so nothing needs approving again.
+
+-----------------------------------------------------------------------
+TROUBLESHOOTING
+-----------------------------------------------------------------------
+  Logs:  journalctl -u cspc-agent -f
+
+  "Invalid install key"           -> the key was revoked, expired or mistyped.
+                                     Ask an admin for a new one.
+  "registration was rejected or removed by an administrator", straight after
+   step 1                         -> this binary is older than the backend. Ask
+                                     for the current folder.
+  "send attempt 1/3 failed"       -> backend not running, wrong address, or
+                                     firewall. Re-do "Before you start" step 1.
+  Server never appears            -> nobody approved it (step 2), and the
+                                     approver must be an admin.
+  Server shows "Maintenance"      -> an admin parked it on purpose; it keeps
+                                     recording but raises no alerts. "Resume" on
+                                     the Server Metrics page brings it back.
+  Service stopped and agent.conf
+   is gone                        -> an admin removed this server, or revoked the
+                                     key it enrolled with. It needs a current key
+                                     and a fresh approval to come back.
+
+KEEP THIS FOLDER PRIVATE — the install key is a shared secret. On Google Drive
+share it to named people, never "anyone with the link". Never share an agent.conf
+file: it holds that machine's own device token.

@@ -811,12 +811,12 @@ project only once the new one is proven.
 ## 7. Server agents (Go) — one per monitored server
 
 Build once on a machine with Go; run the binary anywhere (no Go/runtime on targets).
-Full runbook: `server-metrics.md`; internals: `go-agent/README.md`.
+Full runbook: `server-metrics.md`; internals: `agent/README.md`.
 
 ```bash
-cd go-agent
+cd cspc-agent
 go mod tidy
-make all        # → dist/go-agent-windows-amd64.exe, dist/go-agent-linux-amd64, dist/go-agent-linux-arm64
+make all        # → dist/cspc-agent-windows-amd64.exe, dist/cspc-agent-linux-amd64, dist/cspc-agent-linux-arm64
 ```
 
 Install on a target server as a background service (enrolls, waits for your approval,

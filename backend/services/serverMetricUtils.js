@@ -6,7 +6,7 @@
 
 // Float fields every metric POST must carry. process_count is validated
 // separately as an integer. Keep this list in sync with the Go agent's
-// ServerMetrics struct (go-agent/internal/collector/metrics.go) — tests/contract.test.js
+// ServerMetrics struct (agent/internal/collector/metrics.go) — tests/contract.test.js
 // parses that file and fails if the two drift.
 export const NUMERIC_FIELDS = [
   "cpu_percent",

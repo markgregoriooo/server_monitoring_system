@@ -1,4 +1,4 @@
-module cspc-ictu/go-agent
+module cspc-ictu/agent
 
 go 1.22
 

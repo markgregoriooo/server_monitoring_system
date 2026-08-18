@@ -234,7 +234,7 @@ export async function enrolledServers(id) {
  *
  * `revokeAgents` also cuts off every server this key enrolled: their agent tokens go to
  * 'revoked', so the next metric POST 403s and the agent deletes its own agent.conf and
- * exits (see go-agent/cmd/agent/main.go). This is the branch model — one key per office,
+ * exits (see agent/cmd/agent/main.go). This is the branch model — one key per office,
  * revoke the key and that office's servers stop reporting.
  *
  * ⚠️ It is a SEPARATE, opt-in flag rather than an automatic consequence. Both meanings

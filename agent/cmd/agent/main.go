@@ -1,9 +1,9 @@
 // Command agent is the CSPC-ICTU server monitoring agent.
 //
-//	go-agent --register -api-url URL -install-key KEY   # enroll, wait for approval,
-//	                                                     # then START sending metrics
-//	go-agent -conf agent.conf                           # already enrolled: just run
-//	go-agent --register-only -api-url URL -install-key KEY  # enroll and exit (installers)
+//	cspc-agent --register -api-url URL -install-key KEY       # enroll, wait for approval,
+//	                                                          # then START sending metrics
+//	cspc-agent -conf agent.conf                               # already enrolled: just run
+//	cspc-agent --register-only -api-url URL -install-key KEY  # enroll and exit (installers)
 //
 // With --register the agent enrolls (if not already), blocks until an admin
 // approves it, writes agent.conf, and then continues straight into the metric
@@ -19,11 +19,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"cspc-ictu/go-agent/internal/collector"
-	"cspc-ictu/go-agent/internal/config"
-	"cspc-ictu/go-agent/internal/logger"
-	"cspc-ictu/go-agent/internal/registration"
-	"cspc-ictu/go-agent/internal/sender"
+	"cspc-ictu/agent/internal/collector"
+	"cspc-ictu/agent/internal/config"
+	"cspc-ictu/agent/internal/logger"
+	"cspc-ictu/agent/internal/registration"
+	"cspc-ictu/agent/internal/sender"
 )
 
 // Stays 1.0.0 until the system is actually deployed — nothing is in the field

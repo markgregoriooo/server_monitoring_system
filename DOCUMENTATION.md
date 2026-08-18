@@ -153,13 +153,13 @@ server-infrastructure-monitoring-system-webSystem/
 │                                     AirConditioner, History, Reports, Settings,
 │                                     UserManagement, auth/{Login,Unauthorized}
 │
-├── go-agent/                       ← standalone Go monitoring agent (see go-agent/README.md)
+├── agent/                       ← standalone Go monitoring agent (see agent/README.md)
 ├── iot/esp32/env_monitor_v2/env_monitor_v2.ino    ← active firmware
 ├── migrations/2026-06-09_google_auth.sql
 ├── V10cspc-ictu-monitoring-system-schema.sql ← current full MySQL schema
 │
 └── docs: CLAUDE.md, README.md, Environment.md, server-metrics.md,
-         google-oauth.md, go-agent/README.md, SESSION_NOTES.md
+         google-oauth.md, agent/README.md, SESSION_NOTES.md
 ```
 
 ---
@@ -217,9 +217,9 @@ backend with `VITE_API_URL` in `frontend/.env` (then restart `npm run dev`).
 
 ### 4. Go agent (per monitored server)
 
-See `server-metrics.md` and `go-agent/README.md`. In short: `--register` enrolls the host,
+See `server-metrics.md` and `agent/README.md`. In short: `--register` enrolls the host,
 an admin approves it in **Server Metrics → pending**, and the agent then POSTs metrics every
-~10s. Pre-built installer folders ship under `dist/cspc-ictu-agent-{windows,linux}/`.
+~10s. Pre-built installer folders ship under `dist/cspc-agent-{windows,linux}/`.
 
 ---
 
@@ -523,7 +523,7 @@ hardware and the re-capture procedure.
 
 ### 11.3 Server metrics (Go agent)
 
-A standalone Go program (`go-agent/`, module `cspc-ictu/go-agent`) collects CPU, memory,
+A standalone Go program (`agent/`, module `cspc-ictu/agent`) collects CPU, memory,
 disk, network bytes, uptime, and process count, then POSTs snake_case JSON to
 `/api/servers/metrics` every ~10s with a Bearer token.
 
@@ -534,7 +534,7 @@ write `agent.conf`) → admin approves in the dashboard → metric loop. On toke
 **Offline detection:** a 15s backend sweep flips approved servers whose `last_seen` is stale
 (`OFFLINE_AFTER_SEC = 30`) to `offline`, zeroes their live metrics, and emits `serverStatus`
 + `deviceLog`. Recovery is automatic on the next metric POST. Full guide:
-**`server-metrics.md`** and **`go-agent/README.md`**.
+**`server-metrics.md`** and **`agent/README.md`**.
 
 ---
 
@@ -596,7 +596,7 @@ classes; ServerDetail is a `slate-*` + `dark:` hybrid.
 | `CLAUDE.md` | Authoritative quick reference / build & architecture guide for contributors |
 | `Environment.md` | Environment + IR/aircon subsystem deep-dive (hardware, sensor logic, InfluxDB pipeline) |
 | `server-metrics.md` | Server-metrics feature: agent, enrollment/auth, data contract, deployment, production checklist |
-| `go-agent/README.md` | Go-agent internals, build/ship model, file-by-file walkthrough |
+| `agent/README.md` | Go-agent internals, build/ship model, file-by-file walkthrough |
 | `google-oauth.md` | Google OAuth setup + flow narrative + troubleshooting |
 | `SESSION_NOTES.md` | Per-session development log |
 | `README.md` | Original project README (⚠️ partially out of date — this file supersedes it) |

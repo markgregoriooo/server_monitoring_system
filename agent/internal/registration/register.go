@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"time"
 
-	"cspc-ictu/go-agent/internal/collector"
-	"cspc-ictu/go-agent/internal/config"
-	"cspc-ictu/go-agent/internal/logger"
+	"cspc-ictu/agent/internal/collector"
+	"cspc-ictu/agent/internal/config"
+	"cspc-ictu/agent/internal/logger"
 )
 
 const pollInterval = 10 * time.Second

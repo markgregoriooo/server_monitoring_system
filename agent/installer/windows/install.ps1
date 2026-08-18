@@ -1,7 +1,7 @@
 <#
   Windows installer — installs the CSPC-ICTU monitoring agent to run at startup
   via a Scheduled Task (SYSTEM account, auto-restart). Run from an elevated
-  PowerShell, with go-agent-windows-amd64.exe in the same folder.
+  PowerShell, with cspc-agent-windows-amd64.exe in the same folder.
 
   Usage:
     .\install.ps1 -ApiUrl "http://192.168.100.9:3000" -InstallKey "AIK-..."
@@ -24,11 +24,18 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$InstallDir = "C:\Program Files\cspc-agent"
-$BinarySrc  = Join-Path $PSScriptRoot "go-agent-windows-amd64.exe"
-$BinaryDst  = Join-Path $InstallDir "go-agent.exe"
+$InstallDir = "C:\Program Files\CSPC Monitoring Agent"
+$BinarySrc  = Join-Path $PSScriptRoot "cspc-agent-windows-amd64.exe"
+$BinaryDst  = Join-Path $InstallDir "cspc-agent.exe"
 $ConfPath   = Join-Path $InstallDir "agent.conf"
-$TaskName   = "CSPC-ICTU-MonitoringAgent"
+$TaskName   = "CSPC-ICTU Monitoring Agent"
+
+# Where installs made before the 2026-08-18 rename put things. The agent shipped as
+# go-agent.exe under a folder and task of its own, and this installer keys off those
+# paths — so without the migration below an upgrade would leave the OLD task running
+# alongside the new one, and the host would post twice every interval.
+$OldInstallDir = "C:\Program Files\cspc-agent"
+$OldTaskName   = "CSPC-ICTU-MonitoringAgent"
 
 if (-not (Test-Path $BinarySrc)) {
   throw "Binary not found: $BinarySrc (build it with 'make windows')"
@@ -36,6 +43,28 @@ if (-not (Test-Path $BinarySrc)) {
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item $BinarySrc $BinaryDst -Force
+
+# ── Migrate an install that predates the rename ───────────────────────────────
+# agent.conf is carried across FIRST: it holds this machine's approved token, so moving
+# it keeps the enrolment, the device id and the history. (Losing it is survivable — the
+# agent re-registers onto the same device and picks its token back up without another
+# approval — but it would read as a re-enrolment for no reason.)
+$oldTask = Get-ScheduledTask -TaskName $OldTaskName -ErrorAction SilentlyContinue
+$oldConf = Join-Path $OldInstallDir "agent.conf"
+if ($oldTask -or (Test-Path $OldInstallDir)) {
+  Write-Host "Found an older install ($OldInstallDir) - migrating it."
+  if ($oldTask) {
+    Stop-ScheduledTask -TaskName $OldTaskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $OldTaskName -Confirm:$false
+  }
+  # The old binary has its own name, so stop it by that one, not by the new one.
+  Get-Process -Name "go-agent" -ErrorAction SilentlyContinue | Stop-Process -Force
+  if ((Test-Path $oldConf) -and -not (Test-Path $ConfPath)) {
+    Copy-Item $oldConf $ConfPath -Force
+    Write-Host "Carried the existing enrolment across (agent.conf)."
+  }
+  Remove-Item $OldInstallDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # -ReEnroll: drop the existing enrollment so the key below is actually presented.
 if ($ReEnroll -and (Test-Path $ConfPath)) {

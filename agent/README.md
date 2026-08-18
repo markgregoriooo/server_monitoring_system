@@ -80,7 +80,7 @@ Just enough Go to read this codebase. If you already know Go, skip to §3.
 
 - **Packages.** Every folder is a *package* (the `package collector` line at the top
   of each file). Code in one package calls another by importing it
-  (`"cspc-ictu/go-agent/internal/collector"`) and prefixing the call with the package
+  (`"cspc-ictu/agent/internal/collector"`) and prefixing the call with the package
   name (`collector.Collect()`). The program starts at `func main()` in
   `package main` (`cmd/agent/main.go`).
 
@@ -135,7 +135,7 @@ That's all you need to follow everything below.
 ## 3. Project layout
 
 ```
-go-agent/
+agent/
 ├─ go.mod / go.sum                     module name + locked dependency versions
 ├─ Makefile                            build/cross-compile/format/vet targets
 ├─ cmd/
@@ -150,13 +150,15 @@ go-agent/
 │  │  └─ netinfo.go                    best-effort gateway + DNS discovery (OS-specific)
 │  ├─ sender/sender.go                 HTTP POST of metrics, with retry + backoff
 │  └─ registration/register.go         first-run handshake: register → poll → approve
-├─ installer/
-│  ├─ install.ps1                      Windows: install as a Scheduled Task (SYSTEM, at boot)
-│  └─ install.sh                       Linux: install as a systemd service
+├─ installer/                         exactly what ships beside the binary, per OS
+│  ├─ windows/install.ps1              install as a Scheduled Task (SYSTEM, at boot)
+│  ├─ windows/RUN-ME.txt               the operator's guide, shipped under this name
+│  ├─ linux/install.sh                 install as a systemd service
+│  └─ linux/RUN-ME.txt                 the operator's guide, shipped under this name
 └─ dist/                              built binaries + ready-to-ship installer folders
 ```
 
-- **Module path:** `cspc-ictu/go-agent`, **Go 1.22**.
+- **Module path:** `cspc-ictu/agent`, **Go 1.22**.
 - **Direct dependencies (just two):**
   - `github.com/shirou/gopsutil/v3` — reads CPU/mem/disk/net/host info cross-platform.
   - `github.com/joho/godotenv` — reads/writes the `KEY=value` `agent.conf` file.
@@ -184,10 +186,10 @@ So in practice:
 
 ```bash
 # Brand-new machine: enroll, wait for approval, then run forever
-go-agent --register -api-url http://192.168.100.9:3000 -install-key <KEY> -conf agent.conf
+cspc-agent --register -api-url http://192.168.100.9:3000 -install-key <KEY> -conf agent.conf
 
 # Already enrolled (agent.conf exists): just run the loop
-go-agent -conf agent.conf
+cspc-agent -conf agent.conf
 ```
 
 **How `main()` decides what to do** (`cmd/agent/main.go`):
@@ -507,7 +509,7 @@ Written automatically by the agent after approval (never edit it by hand unless 
 re-pointing it). Plain `KEY=value`:
 
 ```ini
-# Written by `go-agent --register` after admin approval. Do not commit.
+# Written by `cspc-agent --register` after admin approval. Do not commit.
 API_URL=http://192.168.100.9:3000
 DEVICE_TOKEN=AGT-3f9c…           # the permanent bearer token for this machine
 DEVICE_ID=42
@@ -531,7 +533,7 @@ explains the whole build-and-deploy workflow — including why testing on the ba
 needs an extra command, and why a target server needs no Go and no source.
 
 > **Analogy:** the `.go` source is a *recipe* (instructions a human reads). The binary
-> (`go-agent.exe`) is the *cooked meal* — you can serve it anywhere without the recipe
+> (`cspc-agent.exe`) is the *cooked meal* — you can serve it anywhere without the recipe
 > or the kitchen. `go build` is the cooking.
 
 ### What `go build` does
@@ -543,13 +545,13 @@ CPU machine code. Nothing is left "outside" the file.
 You can prove it — these readable strings are baked *inside* the shipped binary:
 
 ```
-# Written by `go-agent --register` after admin approval.   ← from internal/config/config.go
+# Written by `cspc-agent --register` after admin approval.   ← from internal/config/config.go
 waiting for admin approval...                              ← from internal/registration/register.go
 github.com/shirou/gopsutil/v3/cpu /mem /disk /host ...     ← the gopsutil dependency, compiled in
 ...net/http, crypto/tls...                                 ← the whole Go runtime + std library, compiled in
 ```
 
-So a single `go-agent.exe` (~6.7 MB) already contains *your code + all dependencies +
+So a single `cspc-agent.exe` (~6.7 MB) already contains *your code + all dependencies +
 the runtime*. That's **why** it's several MB for such a small program — and why it
 needs **no Go install, no source, and no `node_modules`-style folder** on the target.
 
@@ -574,12 +576,12 @@ is compiling. (The other change — `localhost` → the backend's LAN IP — is 
 ### Build commands
 
 ```bash
-cd go-agent
+cd cspc-agent
 go mod tidy          # fetch dependencies (needs internet the first time)
 make all             # builds all three targets into dist/:
-                     #   dist/go-agent-linux-amd64
-                     #   dist/go-agent-windows-amd64.exe
-                     #   dist/go-agent-linux-arm64   (Raspberry Pi etc.)
+                     #   dist/cspc-agent-linux-amd64
+                     #   dist/cspc-agent-windows-amd64.exe
+                     #   dist/cspc-agent-linux-arm64   (Raspberry Pi etc.)
 ```
 
 Other Makefile targets: `make linux` / `make windows` / `make arm64` (single target),
@@ -600,9 +602,9 @@ produced by `make all`):
 
 | Binary | Runs on | Approx size |
 |--------|---------|-------------|
-| `go-agent-windows-amd64.exe` | Windows, Intel/AMD 64-bit | 6.7 MB |
-| `go-agent-linux-amd64` | Linux, Intel/AMD 64-bit | 6.5 MB |
-| `go-agent-linux-arm64` | Linux ARM (e.g. Raspberry Pi) | 6.0 MB |
+| `cspc-agent-windows-amd64.exe` | Windows, Intel/AMD 64-bit | 6.7 MB |
+| `cspc-agent-linux-amd64` | Linux, Intel/AMD 64-bit | 6.5 MB |
+| `cspc-agent-linux-arm64` | Linux ARM (e.g. Raspberry Pi) | 6.0 MB |
 
 A Windows `.exe` won't run on Linux/ARM and vice-versa — which is why the USB has a
 **separate folder per OS**. You copy the one matching the target.
@@ -625,17 +627,18 @@ produces the `.exe` — you never edit the `.exe`). If you're curious, these dev
 commands peek at it:
 
 ```bash
-go version dist/go-agent.exe    # which Go version built it
-go tool nm   dist/go-agent.exe  # list the functions/symbols compiled in
+go version dist/cspc-agent.exe    # which Go version built it
+go tool nm   dist/cspc-agent.exe  # list the functions/symbols compiled in
 ```
 
 ---
 
 ## 11. Install as a background service
 
-The installers live in `installer/` (and are copied next to the binaries in the `dist/`
-folders shipped on USB). Each one **enrolls first (`--register-only`), pauses until you
-approve in the dashboard, then creates and starts the OS service.**
+The installers live in `installer/windows/` and `installer/linux/` — each folder holds
+exactly what ships beside the binary (the script + `RUN-ME.txt`), so `make package` is
+"copy the folder, add the binary". Each script **enrolls first (`--register-only`),
+pauses until you approve in the dashboard, then creates and starts the OS service.**
 
 ```powershell
 # Windows — run from an ELEVATED PowerShell, binary in the same folder
