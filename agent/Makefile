@@ -4,18 +4,19 @@ DIST    := dist
 PKG     := ./cmd/agent
 LDFLAGS := -s -w
 
-# `package` substitutes a real install key into the guides it hands out. Pass the
-# key you minted on the dashboard (Server Metrics -> Agent install keys), which is
-# the one that can be revoked later:
+# By DEFAULT the packaged folders carry NO install key: the guides keep their
+# <INSTALL_KEY> placeholder, so what ships is identical to what is in git and the
+# folder holds no secret. That matches how keys are really used — an admin mints and
+# revokes them on the dashboard, which prints the whole install command with the
+# CURRENT key, so a key baked in at build time is stale by the next rollout and makes
+# changing one line of text a 20 MB rebuild.
+#
+# Pass one only when you want a copy-paste-ready hand-off folder:
 #
 #   make package INSTALL_KEY=AIK-...
 #
-# With none given it falls back to the DEPRECATED AGENT_INSTALL_KEY in the backend's
-# .env — only a first install (empty database, no admin yet to mint a key) should
-# still be on that. Override the file for a different deployment:
-#   make package ENV_FILE=/path/to/.env
-ENV_FILE    := ../backend/.env
-INSTALL_KEY := $(shell sed -n 's/^AGENT_INSTALL_KEY=//p' $(ENV_FILE) 2>/dev/null | tr -d '\r' | head -1)
+# That folder then DOES hold a shared secret — hand it over privately.
+INSTALL_KEY ?=
 
 .PHONY: all linux windows arm64 package run fmt vet tidy clean
 
@@ -53,11 +54,12 @@ package: all
 	  for f in $(DIST)/cspc-agent-windows/RUN-ME.txt $(DIST)/cspc-agent-linux/RUN-ME.txt; do \
 	    sed "s|<INSTALL_KEY>|$(INSTALL_KEY)|g" "$$f" > "$$f.tmp" && mv "$$f.tmp" "$$f"; \
 	  done; \
-	  echo "Install key substituted into the guides."; \
+	  echo "Install key baked in - these folders now hold a SHARED SECRET."; \
+	  echo "Hand them over privately (USB, or a Drive link shared to named people)."; \
 	else \
-	  echo "WARNING: no install key given, and none in $(ENV_FILE)."; \
-	  echo "         Guides keep the <INSTALL_KEY> placeholder — fill it in by hand,"; \
-	  echo "         or re-run with:  make package INSTALL_KEY=AIK-..."; \
+	  echo "No key baked in - the guides keep their <INSTALL_KEY> placeholder."; \
+	  echo "Give the installer the command from the dashboard instead:"; \
+	  echo "  Server Metrics -> Agent install keys -> Show command."; \
 	fi
 	@# The loose build outputs have just been copied into the two folders above, so
 	@# dropping them leaves dist/ holding ONLY what you hand over — no guessing which
@@ -65,8 +67,6 @@ package: all
 	@# next run rebuilds them from source before copying.
 	@rm -f $(DIST)/$(BINARY)-windows-amd64.exe $(DIST)/$(BINARY)-linux-amd64 $(DIST)/$(BINARY)-linux-arm64
 	@echo "Packaged -> $(DIST)/cspc-agent-windows, $(DIST)/cspc-agent-linux"
-	@echo "These folders now hold a SHARED SECRET. Hand them over privately (USB, or a"
-	@echo "Drive link shared to named people, never 'anyone with the link')."
 
 # Run locally against ./agent.conf (after a --register).
 run:
