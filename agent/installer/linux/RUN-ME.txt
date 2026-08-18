@@ -5,8 +5,8 @@ Copy this WHOLE folder to the Linux server you want to monitor.
 
   cspc-agent-linux-amd64    agent for Intel/AMD (x86_64) servers
   cspc-agent-linux-arm64    agent for ARM servers (e.g. Raspberry Pi)
-  install.sh              installs it as a systemd service (starts at boot)
-  RUN-ME.txt              this file
+  install.sh                installs it as a systemd service (starts at boot)
+  RUN-ME.txt                this file
 
 It reports CPU, memory, uptime, process count and EVERY mounted fixed filesystem
 (/, /home, /data, ...) every 10 seconds, plus its own details (IP, RAM, disk size)
@@ -15,6 +15,35 @@ goes down it holds about 40 minutes of readings and fills them in afterwards, so
 outage leaves a gap in the live view but not in the stored history.
 
 install.sh picks the right binary for this CPU automatically.
+
+-----------------------------------------------------------------------
+GETTING THIS FOLDER ONTO THE SERVER  (command line only, no desktop)
+-----------------------------------------------------------------------
+  FROM A USB STICK
+  1) Plug it in, then find it (look for a device the size of your stick):
+       lsblk
+     It is usually sdb1 or sdc1.
+
+  2) Mount it and check you can see the folder:
+       sudo mkdir -p /mnt/usb
+       sudo mount /dev/sdb1 /mnt/usb
+       ls /mnt/usb
+
+  3) Copy this folder to your home directory:
+       cp -r /mnt/usb/cspc-agent-linux ~/
+
+  4) Eject:
+       sudo umount /mnt/usb
+
+  5) Go into it and carry on below:
+       cd ~/cspc-agent-linux
+
+  FROM YOUR OWN PC INSTEAD (often easier - no walking to the rack)
+     Run this on YOUR PC, not on the server, with the server's IP:
+       scp -r cspc-agent-linux youruser@<SERVER-IP>:~/
+     Then SSH in and continue:
+       ssh youruser@<SERVER-IP>
+       cd ~/cspc-agent-linux
 
 -----------------------------------------------------------------------
 BEFORE YOU START

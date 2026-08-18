@@ -6,6 +6,8 @@ updates to the dashboard.
 
 > **This file is the feature flow.** For installing, building and cross-compiling the
 > agent, and the file-by-file source walkthrough, see **`agent/README.md`**.
+> Trying the whole Linux path in a throwaway VirtualBox VM (network modes, getting the
+> folder in, and the outage/offline/revoke tests) → **`agent-vm-testing.md`**.
 > Sensors/aircon → `Environment.md`. Users/auth → `CLAUDE.md`.
 
 ---
