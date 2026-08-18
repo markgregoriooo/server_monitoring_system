@@ -58,12 +58,13 @@ else
   # Say so LOUDLY. The install key is a required argument, so silently ignoring it reads
   # as "the key was applied" — which is how a machine ends up still attributed to an old
   # key (or to none at all) while the operator believes they moved it onto the new one.
-  echo "WARNING: $CONF already exists - this machine is ALREADY ENROLLED." >&2
-  echo "WARNING: the install key you passed was NOT used and this server is NOT attributed to it." >&2
+  echo "NOTE: $CONF already exists - this machine is ALREADY ENROLLED." >&2
+  echo "NOTE: the install key you passed was NOT used. The enrolment is unchanged, so this" >&2
+  echo "      server stays attributed to whatever key first enrolled it (possibly this one)." >&2
   # A machine that is still approved keeps its approval and its AGT- token through a
   # re-enroll — it is only re-filed under the new key. One whose key was revoked comes
   # back as pending and does need approving again.
-  echo "WARNING: to move it onto that key, re-run with --re-enroll." >&2
+  echo "      Only if you meant to MOVE it onto a different key, re-run with --re-enroll." >&2
 fi
 
 cat > "$SERVICE" <<EOF

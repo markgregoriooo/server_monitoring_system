@@ -20,30 +20,31 @@ install.sh picks the right binary for this CPU automatically.
 GETTING THIS FOLDER ONTO THE SERVER  (command line only, no desktop)
 -----------------------------------------------------------------------
   FROM A USB STICK
-  1) Plug it in, then find it (look for a device the size of your stick):
-       lsblk
-     It is usually sdb1 or sdc1.
+  1) Plug it in, then find its name:
+       lsblk                   # lists every drive - find yours by its SIZE.
+                               # It is usually sdb1 or sdc1 (sda is the server's own disk).
 
-  2) Mount it and check you can see the folder:
-       sudo mkdir -p /mnt/usb
-       sudo mount /dev/sdb1 /mnt/usb
-       ls /mnt/usb
+  2) Mount it - Linux cannot read a stick until you attach it to a folder:
+       sudo mkdir -p /mnt/usb          # make an empty folder to attach it to
+       sudo mount /dev/sdb1 /mnt/usb   # attach the stick there (use YOUR name from step 1)
+       ls /mnt/usb                     # you should now see cspc-agent-linux listed
 
-  3) Copy this folder to your home directory:
-       cp -r /mnt/usb/cspc-agent-linux ~/
+  3) Copy the folder onto this server:
+       cp -r /mnt/usb/cspc-agent-linux ~/    # -r copies the folder and all its contents
+                                             # ~/ is your home folder on this server
 
   4) Eject:
-       sudo umount /mnt/usb
+       sudo umount /mnt/usb    # detaches the stick - only now is it safe to pull out
 
-  5) Go into it and carry on below:
+  5) Go into the copy you just made, then carry on below:
        cd ~/cspc-agent-linux
 
   FROM YOUR OWN PC INSTEAD (often easier - no walking to the rack)
-     Run this on YOUR PC, not on the server, with the server's IP:
-       scp -r cspc-agent-linux youruser@<SERVER-IP>:~/
-     Then SSH in and continue:
-       ssh youruser@<SERVER-IP>
-       cd ~/cspc-agent-linux
+     Both commands run on YOUR PC, not on the server. You need the server's IP
+     address and a username on it.
+       scp -r cspc-agent-linux youruser@<SERVER-IP>:~/   # copy the folder over the network
+       ssh youruser@<SERVER-IP>                          # open a terminal ON the server
+       cd ~/cspc-agent-linux                             # you are now typing on the server
 
 -----------------------------------------------------------------------
 BEFORE YOU START

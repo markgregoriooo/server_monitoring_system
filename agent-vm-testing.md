@@ -1,213 +1,161 @@
-# Testing the Agent in a Virtual Machine
+# Testing the Agent in a VM
 
-A VirtualBox VM running Ubuntu Server is the cheapest way to exercise the **whole**
-Linux path — binary, `install.sh`, the systemd unit, enrollment, approval and live
-metrics — without touching a machine anyone depends on. It is the same procedure a
-real server gets; only the "how do I reach it" plumbing differs.
+Install the Linux agent on a throwaway VirtualBox VM. Same steps as a real server.
 
-> Installing on a **real** server? Use `agent/dist/cspc-agent-linux/RUN-ME.txt`.
-> This file is the dev/test wrapper around it.
-> Feature internals → `server-metrics.md`. Agent build/ship model → `agent/README.md`.
+Uses **NAT** networking, so it works on campus Wi-Fi, at home, or with no internet at
+all — the VM only ever needs a path to your laptop, never to the internet.
 
----
-
-## 1. What you need
-
-| | |
-|---|---|
-| VirtualBox | with a VM running **Ubuntu Server 22.04** (no desktop needed) |
-| The backend | running on your PC — `cd backend && node src/server.js` |
-| An install key | dashboard → **Server Metrics → Agent install keys → + New key** |
-| The hand-off folder | `agent/dist/cspc-agent-linux/` (build it with `make package`) |
-
-Find your PC's LAN address first — it is what the VM will post to:
-
-```powershell
-ipconfig            # or: Get-NetIPAddress -AddressFamily IPv4
-```
-
-Examples used below: backend `192.168.100.9`, VM `192.168.100.47`, user `markgregorio`.
+> Real server? Use `agent/dist/cspc-agent-linux/RUN-ME.txt`.
+> Feature internals → `server-metrics.md`. Build/ship model → `agent/README.md`.
 
 ---
 
-## 2. Network: pick one
+## 1. Before you start
 
-### Bridged (recommended)
+- VirtualBox VM running **Ubuntu Server 22.04**
+- Backend running on your laptop: `cd backend && node src/server.js`
+- An install key: dashboard → **Server Metrics → Agent install keys → + New key**
+- The folder `agent/dist/cspc-agent-linux/` (build with `make package`)
 
-The VM gets its own LAN address and looks like a real server on the dashboard —
-its own IP, its own MAC, reachable from your PC for `scp`.
+---
 
-**VM must be powered off** (not saved state), then:
+## 2. Two addresses to remember
 
-```
-Settings → Network → Adapter 1
-  Attached to : Bridged Adapter
-  Name        : <your Wi-Fi or Ethernet card, e.g. "Intel(R) Wi-Fi 6E AX211 160MHz">
-  Adapter Type: Intel PRO/1000 MT Desktop (82540EM)   (default — Ubuntu has this driver)
-  Promiscuous : Deny  (default)
-```
+Under NAT the two machines reach each other by fixed addresses that never change,
+whatever network your laptop is on:
 
-Boot the VM and check it got a LAN address:
+| Typing on | To reach | Use |
+|---|---|---|
+| Laptop (Git Bash) | the VM | `127.0.0.1` port `2222` |
+| VM | your laptop | `10.0.2.2` port `3000` |
+
+Neither is a real IP — they're aliases VirtualBox provides. That's the point: campus
+Wi-Fi changes your laptop's real address constantly, and these don't care.
+
+---
+
+## 3. Set up the network
+
+**Settings → Network → Adapter 1 → Attached to: NAT** (the default).
+
+Then **Advanced → Port Forwarding → +** — this is what lets your laptop reach the VM:
+
+| Name | Protocol | Host Port | Guest Port |
+|---|---|---|---|
+| ssh | TCP | 2222 | 22 |
+
+Leave Host IP and Guest IP blank. It can be added while the VM is running.
+
+> Why not Bridged: it puts the VM's own MAC on the wireless network as a second device,
+> and campus Wi-Fi authenticates per device against your school account — so the VM
+> gets no usable address. NAT shares your laptop's already-authenticated connection.
+
+---
+
+## 4. In the VM — enable SSH
 
 ```bash
-ip a | grep "inet "        # expect 192.168.100.x
-```
-
-### NAT (fallback)
-
-Use this if *Bridged Adapter* is missing from the dropdown, or if your Wi-Fi router
-isolates clients from each other. Under NAT the VM reaches your PC at the fixed
-alias **`10.0.2.2`**, so the backend URL becomes `http://10.0.2.2:3000`.
-
-NAT is one-way — your PC cannot reach the VM — so add a port forward if you want
-SSH/`scp`:
-
-```
-Settings → Network → Adapter 1 → Advanced → Port Forwarding → +
-  Name: ssh   Protocol: TCP   Host Port: 2222   Guest Port: 22
-```
-
-Then `ssh -p 2222 user@127.0.0.1` and `scp -P 2222 …` from your PC.
-
-> The dashboard will show every NAT VM as `10.0.2.15`. Harmless for a test — device
-> identity is keyed on MAC/hostname, not IP — but bridged reads better.
-
----
-
-## 3. Prove the VM can reach the backend
-
-**Do this before anything else.** Nothing works until it returns JSON:
-
-```bash
-curl http://192.168.100.9:3000
-# {"error":"Route not found"}      ← correct: the backend answered
-```
-
-| Symptom | Cause |
-|---|---|
-| Hangs, no output | Backend not running, or the host firewall drops port 3000, or the router isolates clients (switch to NAT + `10.0.2.2`) |
-| `Connection refused` | You reached the PC but nothing is listening — start the backend |
-| `Could not resolve host` | You pasted a placeholder like `<domain>` instead of the real IP |
-
-Windows firewall needs an inbound allow rule for TCP 3000 (this repo's is named
-*Node SocketIO*).
-
----
-
-## 4. Get the folder into the VM
-
-Ubuntu Server has no desktop and the VirtualBox console window has **no clipboard**,
-so do everything over SSH — then pasting a 50-character install key is trivial.
-
-```bash
-# in the VM (console)
 sudo apt update
 sudo apt install openssh-server
-whoami                                  # note the username
+whoami                     # note the username
 ```
 
-> `install: invalid option --y` means the word `apt` was missing — `install` on its
-> own is a different Linux program.
+Check it can reach the backend:
 
 ```bash
-# on your PC (Git Bash), bridged:
-cd "…/server-infrastructure-monitoring-system-webSystem/agent"
-scp -r dist/cspc-agent-linux markgregorio@192.168.100.47:~/
-
-# …or NAT with the port forward from §2:
-scp -P 2222 -r dist/cspc-agent-linux markgregorio@127.0.0.1:~/
+curl http://10.0.2.2:3000
+# {"error":"Route not found"}    ← correct
 ```
 
-First connection asks to trust the host key — type `yes`. Then work inside the VM
-over SSH from here on:
-
-```bash
-ssh markgregorio@192.168.100.47
-```
-
-**From a USB stick instead** (no network path): `lsblk` → `sudo mount /dev/sdb1
-/mnt/usb` → `cp -r /mnt/usb/cspc-agent-linux ~/` → `sudo umount /mnt/usb`. The same
-steps are in the shipped `RUN-ME.txt`.
+| Result | Fix |
+|---|---|
+| Hangs | Backend not running, or the firewall is blocking port 3000 |
+| `Connection refused` | Backend not started |
+| `Could not resolve host` | You pasted `<domain>` instead of the real address |
 
 ---
 
-## 5. Install and approve
+## 5. On your laptop — copy the folder in
+
+```bash
+cd "/c/Users/Mark Angelo/Documents/Server-Infrastructure-Monitoring-System-WebSystem/agent"
+scp -P 2222 -r dist/cspc-agent-linux youruser@127.0.0.1:~/
+```
+
+Type `yes` at the host-key prompt. Then SSH in — pasting works here, unlike the
+VirtualBox console window:
+
+```bash
+ssh -p 2222 youruser@127.0.0.1
+```
+
+> Capital `-P` for `scp`, lowercase `-p` for `ssh`.
+
+---
+
+## 6. Install
 
 ```bash
 cd ~/cspc-agent-linux
-sudo bash install.sh http://192.168.100.9:3000 AIK-your-key-here
+sudo bash install.sh http://10.0.2.2:3000 AIK-your-key
 ```
 
-It installs to `/opt/cspc-agent`, registers, and blocks on:
+It waits. Approve it: dashboard → **Server Metrics → Pending agent approvals → Approve**.
 
-```
-registered as device_id=N — waiting for admin approval...
-```
-
-Approve it on the dashboard as an **admin**:
-
-**Server Metrics → Pending agent approvals → Approve**
-
-The command then finishes on its own, writes the systemd unit and starts it.
+Then check:
 
 ```bash
 systemctl status cspc-agent
-journalctl -u cspc-agent -f     # "metrics sent (cpu=… mem=… disk=…)" every 10s
+journalctl -u cspc-agent -f     # "metrics sent" every 10s
 ```
 
-The VM appears Online on Server Metrics within ~10 seconds, with every mounted
-filesystem in its Volumes panel.
+The VM shows Online with its volumes within ~10 seconds. Its IP reads `10.0.2.15` on
+the dashboard — normal for NAT, and harmless.
 
 ---
 
-## 6. Worth testing while you have a disposable server
-
-The VM is the only place you can break things freely — use it for the paths that are
-hard to demonstrate otherwise:
+## 7. Things worth testing here
 
 | Test | How | Expected |
 |---|---|---|
-| **Outage backfill** | Stop the backend (Ctrl-C), wait a few minutes, start it again | Agent logs `send attempt 1/3 failed` then buffers; on recovery `backfilled N buffered sample(s)`. The chart shows a gap in the live view but the history fills in |
-| **Offline detection** | `sudo systemctl stop cspc-agent` | Server flips **Offline** within ~30 s, raises an alert, and auto-resolves when you start it again |
-| **Maintenance mode** | Park it on the dashboard, then stop the agent | Stays **blue/Maintenance**, no alert, no bell |
-| **Threshold alerts** | `sudo apt install stress-ng && stress-ng --cpu 4 --timeout 120s` | CPU alert fires at the configured rule, auto-resolves after recovery |
-| **Per-volume disk** | Attach a second virtual disk, mount it, fill it | The Volumes panel lists it; disk alerting uses the **worst** volume, not `/` |
-| **Revoke** | Revoke the install key with *revoke agents* | Next POST 403s, the agent deletes its own `agent.conf` and exits; the server drops off the list |
+| Outage backfill | Stop the backend, wait, start it | Buffers, then `backfilled N sample(s)` — history fills in |
+| Offline alert | `sudo systemctl stop cspc-agent` | Offline in ~30s; auto-resolves on restart |
+| Maintenance mode | Park it, then stop the agent | Stays blue, no alert |
+| CPU alert | `sudo apt install stress-ng && stress-ng --cpu 4 --timeout 120s` | Alert fires, resolves after |
+| Extra volume | Add a virtual disk, mount, fill it | Listed in Volumes; alerts on the worst volume |
+| Key revoke | Revoke key with *revoke agents* | Agent 403s, deletes `agent.conf`, exits |
+
+Snapshot the VM before installing if you want to re-run from scratch.
 
 ---
 
-## 7. Reset / clean up
-
-Remove the test server so it does not sit in the dashboard as a ghost:
+## 8. Clean up
 
 ```bash
-# in the VM
+# stop the agent now, and stop it starting at boot
 sudo systemctl disable --now cspc-agent
-sudo rm -rf /opt/cspc-agent /etc/systemd/system/cspc-agent.service
+
+# delete the installed program + its enrolment, the service definition,
+# and the copy you scp'd in. -rf = delete folders and don't ask
+sudo rm -rf /opt/cspc-agent /etc/systemd/system/cspc-agent.service ~/cspc-agent-linux
+
+# tell systemd the service file is gone
 sudo systemctl daemon-reload
 ```
 
-Then on the dashboard: **Server Metrics → (the VM) → Remove**, which revokes its
-token. InfluxDB history is deliberately kept.
+⚠️ `/opt/cspc-agent` holds `agent.conf` — this machine's device token. Deleting it means
+the next install enrolls from scratch and needs approving again.
 
-**Revoke the test install key** when you are done — especially if it was pasted into
-a chat, a document or a screenshot. Dashboard → *Agent install keys* → **Revoke**.
-
-To re-run the whole test from scratch, snapshot the VM *before* installing and roll
-back to it.
+Then dashboard → remove the server. Revoke the test key too.
 
 ---
 
-## 8. What this does and does not prove
+## Notes
 
-**Covered:** the Linux binary on real hardware-ish, `install.sh`, the systemd unit,
-enrollment → approval → metrics, per-volume reporting, and the alerting paths above.
-
-**Not covered:** the **Windows** installer (`install.ps1`, Scheduled Task,
-`-ReEnroll`, the pre-rename migration), which needs a Windows machine or a Windows
-VM to exercise; and anything to do with the production backend address or HTTPS.
-
-⚠️ The backend URL is written into `agent.conf` on every machine at install time. A
-VM test uses your laptop's address — before a real rollout, settle on a **stable**
-backend address (static IP, DHCP reservation or DNS name), or every agent will need
-re-pointing by hand later.
+- **Not tested by this:** the Windows installer (`install.ps1`, Scheduled Task, `-ReEnroll`).
+- Changing the backend address later: edit `API_URL` in `/opt/cspc-agent/agent.conf`,
+  then `sudo systemctl restart cspc-agent`. The token and identity survive.
+- ⚠️ That address is saved at install time on **every** machine. Settle on a stable
+  production one (static IP or DNS name) before a real rollout, or every agent needs
+  re-pointing by hand later.
+- `install: invalid option --y` means you left out `apt` — `install` is a different command.
