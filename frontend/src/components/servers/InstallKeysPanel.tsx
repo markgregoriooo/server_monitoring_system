@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api/api";
 import { API_URL } from "../../config";
+import { socket } from "../../socket/socket";
 
 // ─── Agent install keys (admin) ─────────────────────────────────────────────────
 //
@@ -50,6 +51,11 @@ export interface InstallKey {
   expiresAt: string | null;
   revokedAt: string | null;
   lastUsedAt: string | null;
+  /** Servers enrolled with this key that still exist. Derived server-side on every read,
+   *  so removing a server lowers it. This is the "Enrolled" column. */
+  enrolledCount: number;
+  /** How many times the key was ever spent. Only ever rises — a removed server stays
+   *  counted here. Do NOT show this as "Enrolled"; that is the bug this pair replaced. */
   useCount: number;
   /** Whether the install command can be re-opened (false for pre-existing keys). */
   canReveal: boolean;
@@ -280,6 +286,25 @@ export default function InstallKeysPanel() {
     load();
   }, [load]);
 
+  // The "Enrolled" count is derived from what is actually enrolled RIGHT NOW, so it moves
+  // for reasons that have nothing to do with this panel: an admin removes a server further
+  // up the same page, approves a pending agent, or a key revoke cuts a fleet off. Without
+  // this the panel only re-fetched after its OWN mutations, so a removed server left the
+  // count visibly stale until a full page reload — which reads as the number being wrong.
+  //
+  // `serverRemoved` covers deletion AND revoke-with-agents (routes/agents.js emits it for
+  // each cut-off server); `agentApproved` is the one event that makes the count RISE, since
+  // an enrolment only counts once it is approved.
+  useEffect(() => {
+    const refresh = () => load();
+    socket.on("serverRemoved", refresh);
+    socket.on("agentApproved", refresh);
+    return () => {
+      socket.off("serverRemoved", refresh);
+      socket.off("agentApproved", refresh);
+    };
+  }, [load]);
+
   const handleCreate = async () => {
     setError("");
     setCreating(true);
@@ -321,8 +346,8 @@ export default function InstallKeysPanel() {
   const handleDelete = async (k: InstallKey) => {
     const warning =
       `Delete key ${k.keyPrefix}… from the list?\n\n` +
-      (k.useCount > 0
-        ? `The ${k.useCount} server(s) it enrolled keep running, but stop being linked to any key.\n`
+      (k.enrolledCount > 0
+        ? `The ${k.enrolledCount} server(s) it enrolled keep running, but stop being linked to any key.\n`
         : "") +
       `The record of this key — who created it and what it enrolled — is lost.`;
     if (!window.confirm(warning)) return;
@@ -558,7 +583,7 @@ export default function InstallKeysPanel() {
                       </span>
                     </td>
                     <td className="px-2 py-2 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>
-                      {k.useCount}
+                      {k.enrolledCount}
                       {k.lastUsedAt && (
                         <span className="block text-[11px]" style={{ color: gf.textDim }}>
                           last {fmtDate(k.lastUsedAt)}

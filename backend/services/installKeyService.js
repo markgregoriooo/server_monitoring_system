@@ -123,6 +123,12 @@ function toClient(r, now = new Date()) {
     expiresAt: iso(r.expires_at),
     revokedAt: iso(r.revoked_at),
     lastUsedAt: iso(r.last_used_at),
+    // Servers enrolled with this key that STILL EXIST — derived per read (see BASE_SELECT).
+    // This is what the UI labels "Enrolled", and it falls when a server is removed.
+    enrolledCount: Number(r.enrolled_count ?? 0),
+    // Historical tally: how many times this key was ever spent. Only ever goes up, and is
+    // deliberately NOT what "Enrolled" shows — a decommissioned server is still a machine
+    // this key once let in, which is a fact worth keeping, but it is not a current enrolment.
     useCount: Number(r.use_count ?? 0),
     // Whether the install command can be shown again. False for keys minted before the
     // key_cipher column existed, or while no encryption key was configured — the UI
@@ -131,8 +137,27 @@ function toClient(r, now = new Date()) {
   };
 }
 
+// `enrolled_count` is DERIVED, never stored. It is the live answer to "how many servers
+// is this key holding up right now", counted from agent_tokens on every read.
+//
+// ⚠️ Do NOT serve this column from `use_count`. That is a monotonic tally bumped by
+// noteUsed() at each enrollment and nothing ever decrements it, so removing a server left
+// the dashboard claiming a key still had enrolments that no longer existed. Deleting a
+// server drops its `devices` row and agent_tokens CASCADEs with it (fk_agent_tokens_devices1),
+// which is why counting the tokens is correct and needs no join back to `devices`.
+//
+// Scoped to status='approved' so this is the SAME population enrolledServers() lists in the
+// revoke dialog — one WHERE clause, so the number in the table and the names in the dialog
+// can never disagree. That also excludes tokens already revoked by a previous revokeAgents,
+// which are cut off and no longer holding anything up.
+//
+// Indexed by idx_agent_tokens_install_key, and the key list is a handful of rows.
 const BASE_SELECT = `
-  SELECT k.*, c.name AS created_by_name, r.name AS revoked_by_name
+  SELECT k.*, c.name AS created_by_name, r.name AS revoked_by_name,
+         (SELECT COUNT(*)
+            FROM agent_tokens t
+           WHERE t.install_key_id = k.install_key_id
+             AND t.status = 'approved') AS enrolled_count
     FROM agent_install_keys k
     LEFT JOIN users c ON c.user_id = k.created_by
     LEFT JOIN users r ON r.user_id = k.revoked_by`;
