@@ -933,11 +933,15 @@ captured from the real remote (see `CLAUDE.md` → Air Conditioner System).
 
 ## 11. Backups — on-site + offsite (cloud)
 
+> **Step-by-step walkthroughs** (this section is the reference; those are the runbooks):
+> **Linux → [`ops/backup-setup-linux.md`](ops/backup-setup-linux.md)** ·
+> Windows → [`ops/backblaze-setup-guide.md`](ops/backblaze-setup-guide.md)
+
 > **Branch scope.** The automated backup subsystem (the NDJSON stream mirror written by
 > `backupService`, plus `ops/db-backup/` and `ops/offsite-backup/`) ships with the backup
 > work on the **`mikrotik-monitoring`** branch, not this one — deploy it once that branch
 > is merged (or if you deploy from it). The **full step-by-step for the cloud copy** is in
-> **`ops/backblaze-guide.md`**; this section is the deploy-time summary.
+> **`ops/backblaze-setup-guide.md`**; this section is the deploy-time summary.
 
 Three copies, **3-2-1** style — so the data survives a DB wipe, a dead disk, *and* a lost
 building:
@@ -1005,7 +1009,7 @@ until the sync is actually running, so it never false-alerts.
 > separately from the server.
 
 Full walkthrough — bucket, keys, rclone config, connection test, restore, and verification:
-**`ops/backblaze-guide.md`**.
+**`ops/backblaze-setup-guide.md`**.
 
 ---
 

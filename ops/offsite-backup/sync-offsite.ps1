@@ -13,9 +13,33 @@
 #  Scheduler (see README.md). A non-zero exit signals failure.
 # ============================================================================
 $ErrorActionPreference = "Stop"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$EnvFile   = if ($env:ENV_FILE) { $env:ENV_FILE } else { Join-Path $ScriptDir "..\..\backend\.env" }
+
+# Read one KEY=value from .env without executing it. Strips an inline `# comment`,
+# trailing spaces and surrounding quotes so the value matches what dotenv hands the
+# backend. Same helper as ops/db-backup/dump-mysql.ps1.
+function Get-EnvVal($key, $default) {
+  if (Test-Path $EnvFile) {
+    $m = Select-String -Path $EnvFile -Pattern "^\s*$key=" | Select-Object -First 1
+    if ($m) {
+      $v = $m.Line -replace "^\s*$key=", ""
+      $v = $v -replace '\s+#.*$', ''
+      $v = $v.Trim()
+      if ($v -match '^"(.*)"$') { $v = $Matches[1] }
+      elseif ($v -match "^'(.*)'$") { $v = $Matches[1] }
+      if ($v -ne "") { return $v }
+    }
+  }
+  return $default
+}
 
 # ── Config (override via environment, or edit these defaults) ──────────────
-$BackupDir  = if ($env:BACKUP_DIR)          { $env:BACKUP_DIR }          else { "E:\backups" }
+# BACKUP_DIR is read from backend/.env so this job uploads the folder the backend is
+# actually writing to. Hardcoding it meant the scheduled task and the .env could drift
+# apart, and the failure is silent: rclone happily uploads an absent/empty folder and
+# still exits 0, which stamps the success marker and clears the staleness alert.
+$BackupDir  = if ($env:BACKUP_DIR)          { $env:BACKUP_DIR }          else { Get-EnvVal "BACKUP_DIR" "E:\backups" }
 $Remote     = if ($env:RCLONE_REMOTE)       { $env:RCLONE_REMOTE }       else { "b2crypt:cspc-monitoring-backup/offsite" }
 $RcloneConf = if ($env:RCLONE_CONFIG)       { $env:RCLONE_CONFIG }       else { "C:\ProgramData\rclone\rclone.conf" }
 $Marker     = if ($env:BACKUP_OFFSITE_MARKER) { $env:BACKUP_OFFSITE_MARKER } else { Join-Path $BackupDir ".last_offsite_sync" }

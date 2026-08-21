@@ -1,4 +1,4 @@
-# Backblaze Setup — Simple Step-by-Step Guide
+# Backblaze Setup on Windows — Step-by-Step
 
 This is the beginner-friendly walkthrough for putting a copy of your backups in the
 cloud (Backblaze). For the deeper technical reference, see
@@ -12,6 +12,17 @@ Backblaze can read them.
 
 > This is the **"1 offsite" copy** of the classic **3-2-1 backup rule**: 3 copies, on
 > 2 kinds of storage, 1 of them off-site.
+
+> **Which parts apply to you:**
+> - **"Which Backblaze product?" and Part A** are done in a **web browser** — same on every
+>   OS. Read them whichever machine you are deploying to.
+> - **Parts B–F are Windows commands.** ICTU's server runs Linux, so for the real
+>   deployment follow **[`backup-setup-linux.md`](backup-setup-linux.md)** from its Step 6
+>   onward instead. The Windows parts here are for trying the whole thing out on a laptop.
+
+**Run every command on the machine the backend runs on.** The scripts read *that*
+machine's `backend\.env`, dump *its* MySQL, and upload *its* backup folder. Running them
+from somewhere else backs up the wrong computer.
 
 ---
 
@@ -115,22 +126,30 @@ Your project already has the scripts. First, run each once by hand to make sure 
 work, then schedule them.
 
 **1. Point them at your backup folder.** By default the system saves backups to the
-`backend\backups` folder inside the project. For real safety you'd point `BACKUP_DIR`
-at a USB stick or SD card (e.g. `E:\backups`). Set it in `backend\.env`:
+`backend\backups` folder inside the project. For real safety point `BACKUP_DIR` at a USB
+stick or SD card. Set it in `backend\.env` — **once**. Both scripts read it from there, so
+the scheduled task does not have to repeat the path:
 ```
-BACKUP_DIR=E:\backups
+BACKUP_DIR=D:/backups
 ```
 
-**2. Run the two jobs once by hand:**
+**2. Run the two jobs once by hand.** Do not schedule anything until both work:
 ```powershell
 # saves a copy of the database
-$env:BACKUP_DIR="E:\backups"; .\ops\db-backup\dump-mysql.ps1
+powershell -ExecutionPolicy Bypass -File .\ops\db-backup\dump-mysql.ps1
 
 # uploads everything in the backup folder to Backblaze
-$env:BACKUP_DIR="E:\backups"; .\ops\offsite-backup\sync-offsite.ps1
+powershell -ExecutionPolicy Bypass -File .\ops\offsite-backup\sync-offsite.ps1
 ```
 Then check the Backblaze website — you should see files in your bucket (their names
 will look scrambled — that's the encryption working, and it's expected).
+
+> **If the dump says `mysqldump` is not found:** MySQL's client tools are not on your
+> PATH. XAMPP in particular never adds them. Rather than editing the system PATH, point
+> at the binary in `backend\.env`:
+> ```
+> MYSQLDUMP=C:/xampp/mysql/bin/mysqldump.exe
+> ```
 
 **3. Schedule them** so they run automatically each night (database dump at 2:15 AM,
 upload at 2:30 AM). In an **Administrator** PowerShell:
@@ -148,6 +167,21 @@ $trg = New-ScheduledTaskTrigger -Daily -At 2:30AM
 Register-ScheduledTask -TaskName "OffsiteBackupSync" -Action $act -Trigger $trg -RunLevel Highest
 ```
 (Replace `C:\path\to\project` with the real folder path of this project.)
+
+> ⚠️ **A Scheduled Task does not inherit your PATH.** Setting `$env:Path` in your
+> PowerShell window only lasts for that window, so a script that works when you run it can
+> still fail at 2 AM because it cannot find `mysqldump` or `rclone`. Either put those on
+> the **system** PATH, or set `MYSQLDUMP` in `backend\.env` as above. This is the most
+> common reason these jobs "work but don't run".
+
+**4. Check it the next morning.** Both scripts log every run into the backup folder:
+```powershell
+Get-Content D:\backups\offsite-sync.log -Tail 10
+Get-Content D:\backups\db-backup.log   -Tail 10
+```
+An `OK` line means it worked. A `FAILED` line means it ran but could not finish — rclone
+logs the reason just above it. **No line at all** for last night means the task never
+ran: the machine was off or asleep, or the task is disabled.
 
 ---
 
@@ -199,4 +233,17 @@ These aren't in the cloud copy — keep an **encrypted, offline** copy yourself:
 - [ ] Test `ls` command connects with no error
 - [ ] Ran both scripts once by hand — files appear in the bucket
 - [ ] Scheduled both nightly tasks
+- [ ] Next morning: `offsite-sync.log` shows an `OK` line
 - [ ] Added the two `BACKUP_OFFSITE_*` lines to `backend\.env` and restarted the backend
+
+---
+
+## Related
+
+| Doc | For |
+|---|---|
+| [`backup-setup-linux.md`](backup-setup-linux.md) | **The same thing on Linux — use this for the ICTU server** |
+| [`../backup-storage.md`](../backup-storage.md) | Why the backup system is designed this way |
+| [`db-backup/README.md`](db-backup/README.md) | The dump script in detail |
+| [`offsite-backup/README.md`](offsite-backup/README.md) | The upload script in detail |
+| [`../deployment-guide.md`](../deployment-guide.md) | Deploying the rest of the system |

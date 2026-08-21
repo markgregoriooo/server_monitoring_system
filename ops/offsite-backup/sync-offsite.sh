@@ -15,8 +15,27 @@
 # ============================================================================
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/../../backend/.env}"
+
+# Read one KEY=value from .env without sourcing it. Strips an inline `# comment`,
+# trailing spaces and surrounding quotes, so the value matches what dotenv hands the
+# backend. Same helper as ops/db-backup/dump-mysql.sh.
+getenv() {
+  [ -f "$ENV_FILE" ] || return 0
+  sed -n "s/^[[:space:]]*$1=//p" "$ENV_FILE" | head -1 \
+    | sed -e 's/[[:space:]][[:space:]]*#.*$//' \
+          -e 's/[[:space:]]*$//' \
+          -e 's/^"\(.*\)"$/\1/' \
+          -e "s/^'\(.*\)'$/\1/"
+}
+
 # ── Config (override via environment, or edit these defaults) ──────────────
-: "${BACKUP_DIR:=/mnt/backup/backups}"                    # local backup folder (match backend .env)
+# BACKUP_DIR is read from backend/.env so this job uploads the folder the backend is
+# actually writing to. Hardcoding it here meant the cron line and the .env could drift
+# apart, and the failure is silent: rclone happily uploads an empty/absent folder and
+# still exits 0, which stamps the success marker and clears the staleness alert.
+BACKUP_DIR="${BACKUP_DIR:-$(getenv BACKUP_DIR)}"; : "${BACKUP_DIR:=/mnt/backup/backups}"
 : "${RCLONE_REMOTE:=b2crypt:cspc-monitoring-backup/offsite}"  # crypt remote:bucket[/path]
 : "${RCLONE_CONFIG:=/etc/rclone/rclone.conf}"             # where the (secret) rclone.conf lives
 MARKER="${BACKUP_OFFSITE_MARKER:-$BACKUP_DIR/.last_offsite_sync}"
