@@ -83,10 +83,13 @@ const registerEvents = (io, socket) => {
     handleSensorData(socket, data);
   });
 
-  // ESP32 device only — offline SD card flush
+  // ESP32 device only — replay of readings buffered to the micro SD during an outage.
+  // Deliberately NOT logged per row: a replay is a burst (a two-hour outage is ~240
+  // rows arriving back to back), and dumping each one buries the rest of the log at
+  // exactly the moment someone is reading it to find out what happened. The handler
+  // logs one summary line per burst instead.
   socket.on("offlineData", (data) => {
     if (!socket.isDevice) return;
-    console.log("offlineData received:", data);
     handleOfflineData(socket, data);
   });
 

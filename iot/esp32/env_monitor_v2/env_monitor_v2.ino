@@ -2,7 +2,7 @@
  * ============================================================
  *  ESP32 Environment & Smoke Monitoring System v2
  *  Components: 2x MQ-2, DHT11, Piezo Buzzer, WS2812B RGB LED,
- *              RTC (DS3231), 2x IR Transmitter
+ *              RTC (DS3231), micro SD (SPI), 2x IR Transmitter
  *
  *  ─── PIN ASSIGNMENTS ────────────────────────────────────────
  *  MQ-2 #1 AOUT  : GPIO 34  (ADC, via 10kΩ/20kΩ divider)
@@ -13,6 +13,25 @@
  *  IR TX #1      : GPIO 25  ← NEW (AC unit 1)
  *  IR TX #2      : GPIO 33  ← NEW (AC unit 2)
  *  RTC DS3231    : SDA=21, SCL=22  (I2C, shared bus OK)
+ *  micro SD      : SCK=18, MISO=19, MOSI=23, CS=5  (VSPI default)
+ *
+ *  --- SD CARD OFFLINE BUFFER ---
+ *  The card is a SAFETY NET for the minutes the backend cannot be
+ *  reached, not a second copy of everything: while the socket is up the
+ *  backend stores and backs up each reading itself, so the card is only
+ *  written when the reading has nowhere else to go.
+ *
+ *    socket DOWN  -> append the reading to /log.csv
+ *    socket BACK  -> replay the file to the server as "offlineData"
+ *                    events, a few rows per loop tick, then delete it
+ *
+ *  WARNING: the RTC's coin cell is what makes this worth having.
+ *  "offlineData" is stored under the TIMESTAMP THE DEVICE SENDS -- unlike
+ *  live data, which the backend stamps itself -- and a DS3231 with no
+ *  battery comes back from a power cut with no idea what time it is. A row
+ *  the device cannot date is refused rather than buffered (sdAppendRow), so
+ *  an unbatteried RTC does not corrupt history; it just means an outage
+ *  records nothing. Fit the cell.
  *
  *  ─── IR TRANSMITTER LOGIC ────────────────────────────────────
  *  Both transmitters send identical signals simultaneously.
@@ -49,6 +68,7 @@
  *  - ArduinoJson              (Benoit Blanchon) v6
  *  - WebSockets               (Markus Sattler)  — provides SocketIOclient
  *  - RTClib                   (Adafruit)
+ *  - SD                       (built-in ESP32 core) - only when SD_ENABLED
  *  - Adafruit NeoPixel        (Adafruit)
  *  - IRremoteESP8266          (crankyoldgit) — IRsend
  * ─────────────────────────────────────────────────────────── */
@@ -72,6 +92,7 @@
 #define BUZZER_PIN 26
 #define DHTPIN      4
 #define RGB_PIN    27    // WS2812B data
+#define SD_CS_PIN   5    // micro SD chip select (SPI: SCK 18 / MISO 19 / MOSI 23)
 
 /* =========== IR CHANNEL ARRAY ===============
  * Each index = ir_channel value stored in DB (0-based here).
@@ -126,6 +147,51 @@ bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
    password and the real DEVICE_SECRET into every clone of the repository. */
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
+
+/* How often to re-attempt the join while the radio is down. WiFi.begin() is
+   non-blocking, so this costs the loop nothing — it only stops retries from
+   stacking up faster than an association can complete. */
+#define WIFI_RETRY_MS 15000
+bool wifiWasUp = false;   // last known link state, for edge detection in loop()
+
+/* ================= SD CARD OFFLINE BUFFER ==================
+   0 removes the feature outright - includes, globals and all - which is worth
+   knowing because this sketch compiles at ~94% of program storage on the default
+   partition scheme. If it no longer fits, set Tools > Partition Scheme to
+   "Huge APP (3MB No OTA/1MB SPIFFS)" rather than dropping the buffer.        */
+#define SD_ENABLED 1
+
+#if SD_ENABLED
+#include <SD.h>
+#include <SPI.h>
+
+#define LOG_FILE "/log.csv"
+
+/* A long outage must not fill the card, and a box that never reconnects must not
+   write until it dies. 8 MB is weeks of buffering at the cadence below; past it the
+   sketch stops appending and says so, rather than silently wrapping. */
+#define SD_MAX_LOG_BYTES (8UL * 1024UL * 1024UL)
+
+/* Replay pacing. The OLD implementation of this feature streamed the whole file in
+   one while-loop with a delay(30) per row - an hour of buffer meant a 36-SECOND
+   blocking stall with no sensor read, no buzzer update and no IR in it. During a
+   fire. So the replay is a state machine that hands control back to loop() after a
+   few rows and resumes on the next tick. */
+#define SD_FLUSH_BATCH 5
+#define SD_FLUSH_GAP_MS 40
+
+/* Report-by-exception, mirroring backend services/envPersistPolicy.js - the same
+   gates, the same numbers. Buffering all 20 readings a minute would replay ten
+   times what a CONNECTED device would have stored, so the chart would gain
+   resolution across the outage: the gap would come back as the best-sampled
+   stretch of the day. Matching the backend's policy keeps buffered history and
+   live history the same shape, and cuts card wear and replay time by the same 10x.
+   Change one of these and change the other side with it.                      */
+#define SD_HEARTBEAT_MS 30000UL
+#define SD_DEADBAND_GAS 15.0
+#define SD_DEADBAND_TEMP 0.5
+#define SD_DEADBAND_HUM 2.0
+#endif  // SD_ENABLED
 
 /* ================= Socket.IO ================ */
 const char* host = BACKEND_HOST;
@@ -243,6 +309,28 @@ bool warmupDone = false;
 unsigned long warmupStart = 0;
 bool rtcAvailable = false;
 int lastIRZone = IR_ZONE_NONE;
+
+#if SD_ENABLED
+/* ===== SD buffer state ===== */
+bool sdAvailable   = false;   // module answered at boot
+bool sdLogDirty    = false;   // rows are sitting on the card, unsent
+bool sdWarnedClock = false;   // "no trustworthy clock" is logged once, not every 3s
+bool sdWarnedFull  = false;   // ditto for the size cap
+
+/* Replay state machine (see SD_FLUSH_BATCH). */
+bool sdFlushing = false;
+File sdFlushFile;
+unsigned long sdFlushSent = 0;
+unsigned long sdLastFlushStep = 0;
+
+/* The last row actually WRITTEN to the card - the deadband baseline. Kept separately
+   from anything the live path uses: what matters here is how far the room has moved
+   since the last row that made it onto the card, not since the last reading. */
+bool sdHaveLast = false;
+unsigned long sdLastAt = 0;
+float sdLastTemp = 0, sdLastHum = 0, sdLastPpm1 = 0, sdLastPpm2 = 0;
+String sdLastSmoke = "", sdLastTempSt = "", sdLastEnvSt = "";
+#endif
 
 /* MQ-2 clean-air baseline persistence + deferred calibration. Scheduling rather than
  * calibrating inline keeps loop() non-blocking — a 3-minute settle must not stall
@@ -655,6 +743,222 @@ String getTimestamp() {
   sprintf(buf, "UP %02lu:%02lu:%02lu", h, m, s);
   return String(buf);
 }
+
+/* =============================================
+ *  SD CARD - offline buffer
+ *
+ *  Only ever touched while the socket is DOWN (append) or has just come
+ *  back (replay), so it never competes with the live send path.
+ * =============================================*/
+#if SD_ENABLED
+
+/* getTimestamp() falls back to "UP HH:MM:SS" when neither the RTC nor NTP can say
+   what time it is. That string is not a date, and the backend refuses it - so a row
+   carrying one could never be backfilled and would only wear the card out. Buffering
+   is therefore gated on having a REAL clock, which during an outage means the DS3231
+   and its coin cell: WiFi is down, so there is no NTP to fall back to. */
+bool sdClockIsReal(const String& ts) {
+  return ts.length() >= 19 && ts.charAt(4) == '-' && ts.charAt(7) == '-';
+}
+
+void sdInit() {
+  Serial.println("[SD] Initializing...");
+  SPI.begin(18, 19, 23, SD_CS_PIN);
+
+  /* Step down through the speeds rather than failing at the fastest. Cheap cards and
+     long dupont leads often refuse 25 MHz and work fine at 4. */
+  const uint32_t speeds[] = { 20000000, 4000000, 1000000, 400000 };
+  const char* labels[]    = { "20MHz", "4MHz", "1MHz", "400kHz" };
+  for (int i = 0; i < 4; i++) {
+    SD.end();
+    delay(50);
+    if (SD.begin(SD_CS_PIN, SPI, speeds[i])) {
+      sdAvailable = true;
+      Serial.printf("[SD] OK at %s\n", labels[i]);
+      break;
+    }
+    Serial.printf("[SD] Failed at %s\n", labels[i]);
+  }
+
+  if (!sdAvailable) {
+    Serial.println("[WARN] SD card not found - an outage will record nothing.");
+    return;
+  }
+
+  /* A log left over from before a reboot is still worth sending: the rows in it ARE
+     the outage. Marking it dirty here is what makes the buffer survive a power cut,
+     which is the failure this whole feature exists for. */
+  if (SD.exists(LOG_FILE)) {
+    File f = SD.open(LOG_FILE, FILE_READ);
+    unsigned long bytes = f ? f.size() : 0;
+    if (f) f.close();
+    sdLogDirty = bytes > 0;
+    if (sdLogDirty) {
+      Serial.printf("[SD] Found %s from a previous run (%lu bytes) - will replay.\n",
+                    LOG_FILE, bytes);
+    }
+  }
+}
+
+/* Same gates as envPersistPolicy.shouldPersist, in the same order. */
+bool sdShouldBuffer(unsigned long now_ms, float temp, float hum, float ppm1, float ppm2,
+                    const String& smokeSt, const String& tempSt, const String& envSt) {
+  if (!sdHaveLast) return true;                                   // first row of the outage
+  if (now_ms - sdLastAt >= SD_HEARTBEAT_MS) return true;          // heartbeat
+  if (smokeSt != sdLastSmoke) return true;                        // band transitions -
+  if (tempSt  != sdLastTempSt) return true;                       // never smooth one away
+  if (envSt   != sdLastEnvSt) return true;
+  if (fabs(ppm1 - sdLastPpm1) >= SD_DEADBAND_GAS) return true;    // per sensor, not the max
+  if (fabs(ppm2 - sdLastPpm2) >= SD_DEADBAND_GAS) return true;
+  if (fabs(temp - sdLastTemp) >= SD_DEADBAND_TEMP) return true;
+  if (fabs(hum  - sdLastHum)  >= SD_DEADBAND_HUM) return true;
+  return false;
+}
+
+void sdAppendRow(const String& ts, float temp, float hum, float ppm1, float ppm2,
+                 const String& smokeSt, const String& tempSt, const String& envSt,
+                 float heatIndex, unsigned long now_ms) {
+  if (!sdAvailable) return;
+
+  if (!sdClockIsReal(ts)) {
+    if (!sdWarnedClock) {
+      sdWarnedClock = true;
+      Serial.println("[SD] No real clock (RTC battery dead / never set?) - not buffering. "
+                     "A row the backend cannot date is a row it will refuse.");
+    }
+    return;
+  }
+
+  if (!sdShouldBuffer(now_ms, temp, hum, ppm1, ppm2, smokeSt, tempSt, envSt)) return;
+
+  File f = SD.open(LOG_FILE, FILE_APPEND);
+  if (!f) {
+    Serial.println("[SD] Cannot open " LOG_FILE " for append.");
+    return;
+  }
+  if (f.size() >= SD_MAX_LOG_BYTES) {
+    f.close();
+    if (!sdWarnedFull) {
+      sdWarnedFull = true;
+      Serial.printf("[SD] %s hit the %lu-byte cap - buffering stopped until it is replayed.\n",
+                    LOG_FILE, (unsigned long)SD_MAX_LOG_BYTES);
+    }
+    return;
+  }
+  if (f.size() == 0) {
+    f.println("timestamp,temperature,humidity,ppm1,ppm2,"
+              "smoke_status,temp_status,env_status,heat_index");
+  }
+  f.printf("%s,%.1f,%.1f,%.1f,%.1f,%s,%s,%s,%.1f\n",
+           ts.c_str(), temp, hum, ppm1, ppm2,
+           smokeSt.c_str(), tempSt.c_str(), envSt.c_str(), heatIndex);
+  f.close();
+
+  sdHaveLast   = true;
+  sdLastAt     = now_ms;
+  sdLastTemp   = temp; sdLastHum = hum; sdLastPpm1 = ppm1; sdLastPpm2 = ppm2;
+  sdLastSmoke  = smokeSt; sdLastTempSt = tempSt; sdLastEnvSt = envSt;
+  sdLogDirty   = true;
+  sdWarnedFull = false;
+
+  Serial.println("[SD] Buffered (offline) " + ts);
+}
+
+/* One buffered CSV row -> one "offlineData" event. Field order must match the header
+   written above. */
+bool sdSendRow(const String& line) {
+  String fields[9];
+  int fi = 0, start = 0;
+  for (int i = 0; i <= (int)line.length(); i++) {
+    if (i == (int)line.length() || line.charAt(i) == ',') {
+      if (fi < 9) fields[fi++] = line.substring(start, i);
+      start = i + 1;
+    }
+  }
+  if (fi < 9) return false;   // malformed - e.g. a tail truncated by a power cut mid-write
+
+  StaticJsonDocument<400> doc;
+  JsonArray array = doc.to<JsonArray>();
+  array.add("offlineData");
+  JsonObject p = array.createNestedObject();
+  p["timestamp"]          = fields[0];
+  p["temperature"]        = fields[1].toFloat();
+  p["humidity"]           = fields[2].toFloat();
+  p["mq2_1_ppm"]          = fields[3].toFloat();
+  p["mq2_2_ppm"]          = fields[4].toFloat();
+  p["smoke_status"]       = fields[5];
+  p["temp_status"]        = fields[6];
+  p["environment_status"] = fields[7];
+  p["heat_index"]         = fields[8].toFloat();
+
+  String output;
+  serializeJson(doc, output);
+  socketIO.sendEVENT(output);
+  return true;
+}
+
+bool sdPendingFlush() { return sdAvailable && sdLogDirty && !sdFlushing; }
+
+void sdBeginFlush() {
+  sdFlushFile = SD.open(LOG_FILE, FILE_READ);
+  if (!sdFlushFile) {
+    Serial.println("[SD] Cannot open " LOG_FILE " to replay - clearing the flag.");
+    sdLogDirty = false;
+    return;
+  }
+  sdFlushing  = true;
+  sdFlushSent = 0;
+  Serial.printf("[SD] Backend reachable - replaying %lu bytes of buffered readings.\n",
+                (unsigned long)sdFlushFile.size());
+}
+
+/* Called every tick. Sends at most SD_FLUSH_BATCH rows and returns, so the sensor,
+   buzzer and IR loops keep their cadence while a long buffer drains. */
+void sdFlushStep(unsigned long now_ms) {
+  if (!sdFlushing) return;
+
+  /* The link went away again mid-replay. KEEP the file: the tail has not been sent.
+     Re-sending the head on the next attempt is harmless - InfluxDB overwrites a point
+     with the same measurement, tag set and timestamp, so a replayed row is idempotent.
+     That property is also why no read offset is persisted across reboots. */
+  if (!socketIO.isConnected()) {
+    sdFlushFile.close();
+    sdFlushing = false;
+    Serial.printf("[SD] Replay interrupted after %lu row(s) - log kept for the next attempt.\n",
+                  sdFlushSent);
+    return;
+  }
+
+  if (now_ms - sdLastFlushStep < SD_FLUSH_GAP_MS) return;
+  sdLastFlushStep = now_ms;
+
+  for (int n = 0; n < SD_FLUSH_BATCH && sdFlushFile.available(); n++) {
+    String line = sdFlushFile.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+    if (line.startsWith("timestamp,")) continue;   // CSV header
+    if (sdSendRow(line)) sdFlushSent++;
+  }
+
+  if (!sdFlushFile.available()) {
+    sdFlushFile.close();
+    SD.remove(LOG_FILE);
+    sdLogDirty = false;
+    sdFlushing = false;
+    sdHaveLast = false;   // the next outage starts its own deadband baseline
+    Serial.printf("[SD] Replay complete - %lu row(s) backfilled, %s deleted.\n",
+                  sdFlushSent, LOG_FILE);
+  }
+}
+
+#else   /* SD_ENABLED == 0 - no-op stubs so the call sites stay readable */
+inline void sdInit() { Serial.println("[SD] Compiled out (SD_ENABLED 0) - no offline buffer."); }
+inline void sdAppendRow(const String&, float, float, float, float,
+                        const String&, const String&, const String&, float, unsigned long) {}
+inline bool sdPendingFlush() { return false; }
+inline void sdBeginFlush() {}
+inline void sdFlushStep(unsigned long) {}
+#endif  // SD_ENABLED
 
 /* ─────────────────────────────────────────────
  *  BUZZER PATTERN HANDLER (unchanged logic)
@@ -1072,8 +1376,14 @@ void setup() {
     rtcAvailable = false;
   }
 
+  /* micro SD - before WiFi on purpose. If the access point is down at boot, the very
+     first readings are already offline ones, and the buffer has to exist to catch them. */
+  sdInit();
+
   /* WiFi */
   Serial.print("[WiFi] Connecting");
+  WiFi.mode(WIFI_STA);          // never leave a stale AP / AP+STA mode from NVS active
+  WiFi.setAutoReconnect(true);  // let the SDK re-associate after a brief drop
   WiFi.begin(ssid, password);
   int wifiAttempts = 0;
   while (WiFi.status() != WL_CONNECTED && wifiAttempts < 20) {
@@ -1082,6 +1392,7 @@ void setup() {
     wifiAttempts++;
   }
   if (WiFi.status() == WL_CONNECTED) {
+    wifiWasUp = true;
     Serial.print("\n[WiFi] IP: ");
     Serial.println(WiFi.localIP());
 
@@ -1142,6 +1453,43 @@ void loop() {
   unsigned long now_ms = millis();
 
   bool wifiNow = (WiFi.status() == WL_CONNECTED);
+
+  /* ── WiFi keep-alive ──
+     WiFi.begin() used to run ONCE, in setup(), inside a 10-second window. If the
+     access point was not up yet at boot — a phone hotspot switched on after the
+     ESP32, say — or if it dropped later, the box stayed offline until somebody
+     pressed RESET: every reading logged as offline while Socket.IO kept retrying a
+     network the radio was not even on, which reads as a BACKEND fault when it is a
+     WiFi one. Retry on a slow timer instead. Sits BEFORE the warmup early-return so
+     it runs from the first tick, and is non-blocking, so the sensor / LED / buzzer /
+     IR cadence is unaffected while the radio re-associates. */
+  if (wifiNow != wifiWasUp) {
+    wifiWasUp = wifiNow;
+    if (wifiNow) {
+      Serial.print("[WiFi] Connected. IP: ");
+      Serial.println(WiFi.localIP());
+      /* NTP is configured per connection, so a box that booted with no WiFi never
+         got it at all — which is why its timestamps read UP HH:MM:SS. */
+      configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+    } else {
+      Serial.println("[WiFi] Link lost — will retry.");
+    }
+  }
+  static unsigned long lastWifiRetry = 0;
+  if (!wifiNow && (now_ms - lastWifiRetry) >= WIFI_RETRY_MS) {
+    lastWifiRetry = now_ms;
+    Serial.print("[WiFi] Down — retrying SSID: ");
+    Serial.println(ssid);
+    WiFi.disconnect();
+    WiFi.begin(ssid, password);
+  }
+
+  /* ── SD backfill ──
+     Sits ahead of the warmup early-return: rows buffered before a reboot are already
+     complete and have nothing to do with this boot's MQ-2 heater settling. Both calls
+     are no-ops in the common case (nothing buffered, or not connected). */
+  if (sdPendingFlush() && wifiNow && socketIO.isConnected()) sdBeginFlush();
+  sdFlushStep(now_ms);
 
   /* ── Non-blocking warmup ── */
   if (!warmupDone) {
@@ -1253,7 +1601,9 @@ void loop() {
         Serial.println("[IO] Sent: " + output);
 
       } else {
-        Serial.println("[WARN] WiFi down — reading not sent (offline).");
+        /* Offline: buffer to the card instead of dropping the reading. */
+        sdAppendRow(timestamp, temperature, humidity, ppm1, ppm2,
+                    smokeStatus, tempStatus, envStatus, heatIndex, now_ms);
       }
     }
   }

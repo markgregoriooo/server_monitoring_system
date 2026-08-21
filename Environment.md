@@ -23,7 +23,8 @@ with IR transmitters, so **every physical AC action happens on the ESP32**.
 | WS2812B RGB ×20 | 27 | Status color |
 | IR TX #1 | 25 | AC channel 1 |
 | IR TX #2 | 33 | AC channel 2 |
-| DS3231 RTC | SDA 21 / SCL 22 | Timestamp source (optional) |
+| DS3231 RTC | SDA 21 / SCL 22 | Timestamp source — **fit the coin cell**, see §9 |
+| micro SD | SCK 18 / MISO 19 / MOSI 23 / CS 5 | Offline buffer (§4.2) |
 
 Firmware: `iot/esp32/env_monitor_v2/env_monitor_v2.ino`. Reads every loop tick; logs/sends every
 `LOG_INTERVAL` (3 s).
@@ -152,16 +153,51 @@ ESP32 emits every 3 s when WiFi + socket are up. Backend `sensorHandler.js`:
    - **timestamp = server `new Date()`** (ms precision) — ESP32's own time is ignored for live data.
 4. **Broadcasts** `sensorData` to all *other* browsers (`socket.broadcast.volatile.emit`).
 
-### 4.2 Offline replay (`offlineData`) — DORMANT
-⚠️ **Nothing emits this any more.** The ESP32's SD-card offline buffer was removed from the
-firmware: every monitored link (ESP32 mini-UPS, router UPS, backend UPS) rides through an
-outage, so the device does not disconnect, and the single on-site backup now lives on the
-backend (`backupService`, rotating NDJSON — see `backup-storage.md`).
+### 4.2 Offline buffer + replay (`offlineData`) — LIVE again since 2026-08-21
 
-The backend side is still wired (`offlineDataHandler.js`, `socket.on("offlineData")`) and
-still works if anything ever sends it — it is dormant, not broken:
-- Same InfluxDB fields **but uses the sender's timestamp** (historical, not now).
-- **No broadcast** (it's backfill, not live) and **no throttle**.
+The ESP32 buffers to a micro SD whenever the socket is down, and replays the file once
+the backend is reachable. This was removed in July 2026 on the reasoning that every
+monitored link sits on a UPS, so the device never disconnects — which covers a *power*
+outage and not the other ways the link dies: the AP rebooting, the backend restarting
+for a deploy, a cable pulled, WiFi simply not associating at boot. Those leave the room
+unmonitored with no record that it was, which is the one gap the environment subsystem
+cannot argue away: it is the fire alarm.
+
+**Firmware side** (`sdAppendRow` / `sdFlushStep`):
+- Socket **down** → append the reading to `/log.csv`.
+- Socket **back** → replay each row as an `offlineData` event, **`SD_FLUSH_BATCH` (5) rows
+  per loop tick**, then delete the file.
+- Rows are written **report-by-exception**, mirroring `services/envPersistPolicy.js` gate
+  for gate: a 30 s heartbeat plus an immediate row on a gas move past 15 ppm, any status
+  transition, or a real temperature/humidity excursion. Buffering all 20 readings a
+  minute would replay ten times what a *connected* device stores, and the outage would
+  come back as the best-sampled stretch of the day.
+- A row the device cannot **date** is refused rather than buffered — see §9.
+
+> ⚠️ **The replay is a state machine, not a loop, and must stay that way.** The pre-2026-07
+> implementation streamed the whole file in one `while` with a `delay(30)` per row: an hour
+> of buffer meant a **36-second blocking stall** with no sensor read, no buzzer update and
+> no IR in it. During a fire. `sdFlushStep()` sends a few rows and returns to `loop()`.
+
+**Backend side** (`offlineDataHandler.js`) — same InfluxDB fields as the live path, and
+three deliberate differences:
+- **The sender's timestamp**, not `new Date()`. Parsed as UTC+8 (the firmware's compiled
+  `configTime` offset) rather than the backend's local zone, and gated for plausibility by
+  the pure, unit-tested `services/backfillTime.js`.
+- **No broadcast and no alert evaluation.** This is history, not news: redrawing the live
+  tiles from the middle of a finished outage would be wrong, and raising a smoke alert for
+  air that cleared an hour ago would be a false alarm with a real siren on it.
+- **No re-gating by `envPersistPolicy`** — the firmware already applied the same rules, so
+  every row arriving is one a connected device would have stored anyway.
+- **Mirrored into the on-site NDJSON backup** (`backupService`), so the backup does not
+  carry a hole exactly across the outage the buffer exists to cover. The line's `ts` is
+  when the reading was *taken*; the file it lands in is today's, which is when the backend
+  learned of it.
+- Writes are **batched** — one debounced flush per burst, not the old flush-per-row.
+
+**Idempotence.** InfluxDB overwrites a point with the same measurement, tag set and
+timestamp, so replaying a row twice is harmless. That is what lets the firmware keep the
+file when a replay is interrupted, and why no read offset is persisted across reboots.
 
 ### 4.3 History queries (`changeRange` → `sensorHistory`)
 Browser sends a range; backend `querySensorHistoryHandler.js` runs two Flux queries:
@@ -288,7 +324,7 @@ pushes use `io.to("devices").emit(...)`, so the backend never tracks the volatil
 |-------|-----------|---------|
 | `sensorData` | ESP32 → server | Live reading → InfluxDB write + broadcast |
 | `sensorData` | server → browsers | Live reading fan-out |
-| `offlineData` | ESP32 → server | SD replay → InfluxDB (RTC time, no broadcast) |
+| `offlineData` | ESP32 → server | SD replay → InfluxDB (device RTC time, no broadcast, no alerting) |
 | `changeRange` | browser → server | Request history for a range |
 | `sensorHistory` | server → browser | History response (array) |
 | `irFired` | ESP32 → server | Auto IR fired → `applyAutoIR()` |
@@ -310,7 +346,8 @@ Auth: browsers send JWT in `handshake.auth.token`; ESP32 sends `DEVICE_SECRET` i
 |------|----------------|
 | `iot/esp32/env_monitor_v2/env_monitor_v2.ino` | Firmware: read sensors, status, buzzer/LED, IR send |
 | `backend/handlers/sensorHandler.js` | Validate + write live reading + broadcast |
-| `backend/handlers/offlineDataHandler.js` | Write SD-buffered historical rows |
+| `backend/handlers/offlineDataHandler.js` | Write SD-buffered historical rows (+ backup mirror) |
+| `backend/services/backfillTime.js` | PURE: parse + sanity-check a device timestamp (tested) |
 | `backend/handlers/querySensorHistoryHandler.js` | Flux history queries |
 | `backend/config/influx.js` | InfluxDB write/query clients (ms precision) |
 | `backend/sockets/connectionHandler.js` | Socket events, device vs browser routing |
@@ -369,6 +406,9 @@ These are deliberately separate — cooling should ramp *before* the alarm fires
 1. Firmware: add the field to the `sensorData` JSON.
 2. `sensorHandler.js` **and** `offlineDataHandler.js`: validate it + `.floatField(...)`.
 3. `querySensorHistoryHandler.js`: add it to the numeric filter + the row mapper.
+4. Firmware again: add it to the SD CSV **header and row** in `sdAppendRow()` and to the
+   parser in `sdSendRow()` — the two must stay in the same column order, or a replayed
+   row silently lands its fields one column across.
 
 ### Move to a new network
 Update both hardcoded endpoints **and** the firmware:
@@ -389,8 +429,27 @@ Update both hardcoded endpoints **and** the firmware:
 - **On/off is the only manual control** — the mode/temp endpoints were removed (§5.3).
 - **Live timestamps are server-side** — InfluxDB live points use `new Date()`, so ESP32
   clock drift doesn't matter for live data; only offline replay uses the RTC time.
-- **There is no on-device buffer** — the SD-card offline log was removed from the firmware
-  (§4.2). A reading taken while WiFi is down is logged to serial and dropped; durability is
-  the backend's job now (`backupService`).
+- **The on-device buffer is back** (§4.2) — a reading taken while the socket is down goes
+  to `/log.csv` on the micro SD and is replayed on reconnect. The backend's `backupService`
+  is still the primary on-site copy; the card covers the window where the backend cannot be
+  reached at all.
+- **⚠️ Fit the DS3231's coin cell, and check what kind the module wants.** Backfilled rows
+  are stored under the **device's** clock (live ones are stamped by the backend, so they
+  never depended on it). A DS3231 with no battery reports `lostPower()` after any cut and
+  the firmware answers with `rtc.adjust(compile time)` — a *well-formed* date attached to
+  readings never taken then, which is worse than losing them because it reads as history.
+  Two guards, because neither alone is enough: the firmware refuses to buffer a row it
+  cannot date (`sdClockIsReal` catches the `UP HH:MM:SS` fallback), and the backend refuses
+  one dated more than 90 days back or 5 minutes ahead (`backfillTime.js` — the only thing
+  that catches the build-date case, since that string parses fine).
+  > **Hardware note:** the common ZS-042 DS3231 board has a trickle-charge circuit (a diode
+  > + a `201` resistor) meant for a **rechargeable LIR2032**. A non-rechargeable **CR2032**
+  > — which is what "CMOS battery" usually means — must **not** be charged: remove the
+  > diode or the `201` resistor first, or fit an LIR2032. Boards sold as "DS3231 for
+  > Raspberry Pi" usually have this circuit already omitted.
+- **⚠️ Program storage.** The sketch was already at ~94 % of the default partition before
+  the SD code went back in. If it no longer fits, set Arduino IDE ▸ Tools ▸ **Partition
+  Scheme → "Huge APP (3MB No OTA/1MB SPIFFS)"** rather than dropping the buffer;
+  `SD_ENABLED 0` compiles the whole feature out if you need the space some other way.
 - **DHT11 is low-resolution** (±1 °C / integer-ish humidity) — fine for zone logic, not for
   precise readings.

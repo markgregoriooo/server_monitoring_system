@@ -173,8 +173,11 @@ void setup() {
   line();
   if (ok) {
     Serial.println(">>> ALL TESTS PASSED  ✓");
-    Serial.println("    Your SD module + card work. You can safely set");
-    Serial.println("    SD_ENABLED true in env_monitor_v2.ino.");
+    Serial.println("    Your SD module + card work. env_monitor_v2.ino ships with");
+    Serial.println("    SD_ENABLED 1, so the offline buffer is already on - just");
+    Serial.println("    flash it. Fit the DS3231 coin cell too: a replayed reading");
+    Serial.println("    is stored under the DEVICE's clock, so an unbatteried RTC");
+    Serial.println("    means an outage records nothing. See Environment.md 4.2.");
   } else {
     Serial.println(">>> SOME TESTS FAILED  ✗");
     Serial.println("    Card initialized but file I/O failed — likely a");
