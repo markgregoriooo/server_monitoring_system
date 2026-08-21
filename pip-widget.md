@@ -73,6 +73,7 @@ First-cut catalog:
 | `network.summary` | **ports** up/total across every router — SNMP *and* MikroTik — plus peak link utilization, or an offline-router count when one is unreachable. Counts ports rather than devices: a router answering SNMP while three buildings' links are down is "online" by device count and broken by any measure that matters | `networkMetrics` / `networkStatus` / `networkRemoved` |
 | `ups.list` | **every UPS by name**, one line each, sorted on-battery → least runtime → name | `upsMetrics` / `upsStatus` |
 | `network.list` | **every router by name** (SNMP + MikroTik), ports up/total, sorted offline → most ports down → name | `networkMetrics` / `networkStatus` |
+| `server.device:<id>` | **one pinned server** — its own name, CPU headline + memory, `maintenance` called out (a parked box reports normally but raises no alerts) | `serverMetrics` / `serverStatus` / `serverRenamed` |
 | `ups.device:<id>` | **one pinned UPS** — its own name, charge/runtime/load, ON BATTERY state | `upsMetrics` / `upsStatus` |
 | `network.device:<id>` | **one pinned router** — its own name, ports up/total, SNMP-vs-MikroTik, peak link | `networkMetrics` / `networkStatus` |
 | `alerts.count` | open-alert badge (red when >0) | `useNotifications().openAlertCount` |
@@ -341,12 +342,12 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
       - The backend validates these by **shape**, never against `devices`: a decommissioned
         unit already renders "Unavailable" client-side, so an existence check would only add a
         DB round-trip per read and risk deleting a tile during a blip. Id pattern is
-        `^(ups|network)\.device:[1-9]\d{0,9}$` — **no leading zeros**, so `ups.device:07` can't
+        `^(ups|network|server)\.device:[1-9]\d{0,9}$` — **no leading zeros**, so `ups.device:07` can't
         become a second string for device 7 and slip past the dedupe. Keep the regex in
         `catalog.tsx` and `widgetPrefsService.js` in step.
       - Device picking lives in the **builder**, not the widget — React events don't fire on
         nodes portaled into the PiP document (§9), so an in-widget selector could never be
-        clicked. Each of the UPS / Network groups gets a **"+ Specific …" dropdown** listing
+        clicked. Each of the Servers / UPS / Network groups gets a **"+ Specific …" dropdown** listing
         live units (already-added ones filtered out, resetting after each pick so it reads as
         an action, not a setting). A dropdown rather than one "+" per unit because a campus
         with a dozen routers would otherwise bury the static tiles above them. ✅

@@ -21,7 +21,8 @@ const ALLOWED_TILES = new Set([
   "meta.clock",
 ]);
 
-// PARAMETERISED tile ids pin one device — "ups.device:7", "network.device:3" — so they
+// PARAMETERISED tile ids pin one device — "ups.device:7", "network.device:3",
+// "server.device:12" — so they
 // can't live in the literal set above. They are validated by SHAPE instead.
 //
 // Deliberately no existence check against `devices`: the frontend already renders an
@@ -32,7 +33,7 @@ const ALLOWED_TILES = new Set([
 // `[1-9]\d*` — no leading zeros, so "ups.device:07" can't sneak in as a SECOND distinct
 // string for device 7 and defeat the dedupe below. Bounded length keeps it away from
 // unsafe-integer territory. Must stay in step with catalog.tsx's DEVICE_TILE_RE.
-const DEVICE_TILE_RE = /^(ups|network)\.device:[1-9]\d{0,9}$/;
+const DEVICE_TILE_RE = /^(ups|network|server)\.device:[1-9]\d{0,9}$/;
 
 function isAllowedTile(id) {
   return ALLOWED_TILES.has(id) || DEVICE_TILE_RE.test(id);

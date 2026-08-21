@@ -447,6 +447,41 @@ function Unavailable({ label }: { label: string }) {
   );
 }
 
+const ServerDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
+  const { servers, stale } = useLiveSummary();
+  const s = servers.find((x) => x.id === deviceId);
+  if (!s) return <Unavailable label={`Server #${deviceId}`} />;
+  if (s.status === "Offline") {
+    return (
+      <Shell label={s.name} stale={stale.servers}>
+        <Big color={RED}>offline</Big>
+        <span className="text-[9px]" style={{ color: T_MUTED }}>no metrics</span>
+      </Shell>
+    );
+  }
+  // Maintenance is a deliberate park, not a fault — the agent keeps reporting and the
+  // numbers stay real, so they are shown as usual. It is called out because this tile
+  // is the whole reason someone pinned this box: knowing its alerts are suppressed is
+  // the difference between "quiet" and "muted".
+  const maint = s.status === "Maintenance";
+  // CPU leads and memory rides the sub-line, rather than both at one size. A pinned
+  // tile is a glance surface — one number has to be the headline, and CPU is what
+  // moves. Both keep the load colouring the Servers list uses, so the same number is
+  // the same colour in both places.
+  return (
+    <Shell label={s.name} stale={stale.servers}>
+      <div className="flex items-baseline gap-1">
+        <Big color={loadColor(s.cpu)}>{Math.round(s.cpu)}%</Big>
+        <span className="text-[9px]" style={{ color: T_MUTED }}>cpu</span>
+      </div>
+      <span className="text-[9px]" style={{ color: maint ? ORANGE : T_MUTED }}>
+        {maint ? "maintenance · " : ""}mem{" "}
+        <b style={{ color: loadColor(s.memory) }}>{Math.round(s.memory)}%</b>
+      </span>
+    </Shell>
+  );
+};
+
 const UpsDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
   const { upsList, stale } = useLiveSummary();
   const u = upsList.find((x) => x.id === deviceId);
@@ -578,23 +613,27 @@ export const TILE_BY_ID = new Map(TILE_CATALOG.map((t) => [t.id, t]));
 // The backend validates these by PATTERN and never needs to know which device ids
 // exist — a decommissioned device's tile simply renders "Unavailable", which is the
 // same forward-compatible behaviour unknown ids already had.
-export const DEVICE_TILE_PREFIXES = ["ups.device", "network.device"] as const;
+export const DEVICE_TILE_PREFIXES = ["ups.device", "network.device", "server.device"] as const;
 export type DeviceTilePrefix = (typeof DEVICE_TILE_PREFIXES)[number];
+
+// The device families that can be pinned individually. Named once so the regex, the
+// parser and the id builder cannot drift apart when a fourth is added.
+export type DeviceTileKind = "ups" | "network" | "server";
 
 // `[1-9]\d*` — no leading zeros, so "ups.device:07" is rejected rather than accepted as
 // a SECOND distinct string for device 7, which would slip past the layout's dedupe and
 // render the same unit twice.
-const DEVICE_TILE_RE = /^(ups|network)\.device:([1-9]\d{0,9})$/;
+const DEVICE_TILE_RE = /^(ups|network|server)\.device:([1-9]\d{0,9})$/;
 
-export function parseDeviceTileId(id: string): { kind: "ups" | "network"; deviceId: number } | null {
+export function parseDeviceTileId(id: string): { kind: DeviceTileKind; deviceId: number } | null {
   const m = DEVICE_TILE_RE.exec(id);
   if (!m) return null;
   const deviceId = Number(m[2]);
   if (!Number.isSafeInteger(deviceId) || deviceId <= 0) return null;
-  return { kind: m[1] as "ups" | "network", deviceId };
+  return { kind: m[1] as DeviceTileKind, deviceId };
 }
 
-export const deviceTileId = (kind: "ups" | "network", deviceId: number | string) =>
+export const deviceTileId = (kind: DeviceTileKind, deviceId: number | string) =>
   `${kind}.device:${deviceId}`;
 
 // The single lookup every renderer should use. Resolves a static catalog id OR a
@@ -605,14 +644,20 @@ export function resolveTile(id: string): TileDef | undefined {
   const parsed = parseDeviceTileId(id);
   if (!parsed) return undefined;
   const { kind, deviceId } = parsed;
-  return {
-    id,
-    label: kind === "ups" ? `UPS #${deviceId}` : `Router #${deviceId}`,
-    description: kind === "ups" ? "One pinned UPS" : "One pinned router",
-    group: kind === "ups" ? "UPS" : "Network",
-    span: 1,
-    Render: () => (kind === "ups" ? <UpsDeviceTile deviceId={deviceId} /> : <NetDeviceTile deviceId={deviceId} />),
-  };
+  // Keyed rather than chained ternaries: three families already made the old
+  // `kind === "ups" ? … : …` form read as "UPS or not-UPS", which is how a fourth
+  // gets silently filed under Network.
+  const META = {
+    ups: { label: `UPS #${deviceId}`, description: "One pinned UPS", group: "UPS" },
+    network: { label: `Router #${deviceId}`, description: "One pinned router", group: "Network" },
+    server: { label: `Server #${deviceId}`, description: "One pinned server", group: "Servers" },
+  } as const;
+  const RENDER = {
+    ups: () => <UpsDeviceTile deviceId={deviceId} />,
+    network: () => <NetDeviceTile deviceId={deviceId} />,
+    server: () => <ServerDeviceTile deviceId={deviceId} />,
+  } as const;
+  return { id, ...META[kind], span: 1, Render: RENDER[kind] };
 }
 
 // Sensible default until the user customizes (Phase 4).

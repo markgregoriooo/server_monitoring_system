@@ -155,7 +155,7 @@ export default function WidgetBuilder() {
   // device picking lives HERE and not in the pop-out: React events don't fire on nodes
   // portaled into the PiP document (pip-widget.md §9), so a selector inside the widget
   // could never be clicked. Build big, render small.
-  const { upsList, routers } = useLiveSummary();
+  const { servers, upsList, routers } = useLiveSummary();
 
   // Catalog grouped for the "Available tiles" column. Per-device tiles are NOT listed
   // here — they go in a dropdown under their group (see DevicePicker), because one "+"
@@ -171,6 +171,10 @@ export default function WidgetBuilder() {
   }, []);
 
   // Pickable devices per group, minus whatever is already on the widget.
+  const serverOptions = useMemo(
+    () => servers.map((sv) => ({ id: deviceTileId("server", sv.id), name: sv.name })).filter((o) => !inDraft.has(o.id)),
+    [servers, inDraft],
+  );
   const upsOptions = useMemo(
     () => upsList.map((u) => ({ id: deviceTileId("ups", u.id), name: u.name })).filter((o) => !inDraft.has(o.id)),
     [upsList, inDraft],
@@ -186,6 +190,8 @@ export default function WidgetBuilder() {
   const labelFor = (id: string): string => {
     const def = resolveTile(id);
     if (!def) return id;
+    const srv = servers.find((sv) => deviceTileId("server", sv.id) === id);
+    if (srv) return srv.name;
     const ups = upsList.find((u) => deviceTileId("ups", u.id) === id);
     if (ups) return ups.name;
     const net = routers.find((r) => deviceTileId("network", r.id) === id);
@@ -353,7 +359,15 @@ export default function WidgetBuilder() {
                   );
                 })}
                 </div>
-                {/* Pin a single unit. Only under the two groups that have devices. */}
+                {/* Pin a single unit. Only under the groups that have devices. */}
+                {group === "Servers" && (
+                  <DevicePicker
+                    placeholder="+ Specific server…"
+                    emptyLabel={servers.length === 0 ? "No servers enrolled" : "All servers added"}
+                    options={serverOptions}
+                    onPick={add}
+                  />
+                )}
                 {group === "UPS" && (
                   <DevicePicker
                     placeholder="+ Specific UPS…"
