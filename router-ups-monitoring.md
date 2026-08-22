@@ -436,9 +436,18 @@ intact** (it's tagged by the stable `device_id`; see §5).
 - **Not started / blocked:** a **live end-to-end test** against a real SNMP target (needs MySQL
   + InfluxDB + registered devices). ⚠️ Note this is *less blocked than it looks*: `dev-snmpsim/`
   simulates a router **and** a UPS answering the exact OIDs the poller reads, so the whole
-  pipeline can be exercised on a dev box with no campus hardware. Also unbuilt: **alert rules for
-  latency / packet loss** (`router_latency` / `router_loss`), which would let a flapping WAN link
-  raise an alert rather than only appearing on a chart — the ping data is collected and stored,
-  nothing evaluates it yet.
+  pipeline can be exercised on a dev box with no campus hardware.
+- **✅ Alert rules for latency / packet loss — BUILT** (`router_latency` / `router_loss`,
+  migration `2026-08-22_icmp_alert_rules.sql`). Evaluated in `deviceAlerts.checkRouter` against
+  the configurable `alert_rules` like every other numeric metric, and editable on the Alert
+  Rules page. `router_loss` ships **active** (5% warning / 20% critical — loss is not
+  site-specific, 0% is healthy everywhere); `router_latency` ships **inactive** with 100/300 ms
+  as starting figures, because a rack switch answers in <1 ms and an ISP CPE in 20-40 ms and
+  both are healthy — one global number would either page constantly or never fire. Set a
+  per-device rule at ~2-3x the link's observed normal. ⚠️ With the default `PING_COUNT=3` the
+  only possible loss values are 0/33/67/100, so both loss bands trip on the first lost echo;
+  raise `PING_COUNT` to 10 for a 10%-step scale.
+- These two also close a gap specific to ping-only devices: without them such a router could
+  raise nothing but `device_offline` — working or dead, with no degraded state in between.
 - See `CLAUDE.md` (architecture + data stores) and the architecture diagram (data sources C, D)
   for the broader context.

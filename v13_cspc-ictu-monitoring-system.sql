@@ -221,7 +221,21 @@ INSERT INTO `alert_rules` (`alert_rule_id`, `device_id`, `interface_name`, `metr
 (30, NULL, NULL, 'ups_load', 80, '>=', 'warning', 1, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
 (31, NULL, NULL, 'ups_load', 90, '>=', 'critical', 1, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
 (32, NULL, NULL, 'router_clients', 200, '>=', 'warning', 0, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
-(33, NULL, NULL, 'router_clients', 300, '>=', 'critical', 0, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL);
+(33, NULL, NULL, 'router_clients', 300, '>=', 'critical', 0, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
+-- ICMP link quality (deviceAlerts.checkRouter). The only two things SNMP cannot report:
+-- a walk either answers or times out, so a link dropping a third of its packets reads as
+-- healthy until it goes flat Offline. Also the ONLY numeric metrics a ping-only router
+-- (no community string — ISP CPE) has. See migrations/2026-08-22_icmp_alert_rules.sql
+-- router_loss ships ACTIVE: loss is not site-specific, 0% is healthy everywhere.
+-- ⚠️ With PING_COUNT=3 the possible values are 0/33/67/100, so both bands trip on the
+-- first lost echo. Raise PING_COUNT to 10 for a finer scale.
+(34, NULL, NULL, 'router_loss', 5, '>=', 'warning', 1, '2026-08-22 00:00:00', '2026-08-22 00:00:00', NULL),
+(35, NULL, NULL, 'router_loss', 20, '>=', 'critical', 1, '2026-08-22 00:00:00', '2026-08-22 00:00:00', NULL),
+-- router_latency ships INACTIVE — a rack switch answers in <1 ms, an ISP CPE in 20-40 ms
+-- and both are healthy, so one global number would either page constantly or never fire.
+-- Watch a device's real figure, then set a per-device rule at ~2-3x it and enable.
+(36, NULL, NULL, 'router_latency', 100, '>=', 'warning', 0, '2026-08-22 00:00:00', '2026-08-22 00:00:00', NULL),
+(37, NULL, NULL, 'router_latency', 300, '>=', 'critical', 0, '2026-08-22 00:00:00', '2026-08-22 00:00:00', NULL);
 
 -- --------------------------------------------------------
 

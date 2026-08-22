@@ -26,6 +26,7 @@ import db from "../config/mysql.js";
 //
 // metric_name vocabulary (must match the seeded alert_rules + the Alert Rules UI):
 //   router_cpu, router_mem, router_clients   (router_metrics, per device)
+//   router_latency, router_loss              (ICMP, per device — see checkRouter)
 //   link_util                                (network_traffic, per interface)
 //   ups_charge, ups_runtime, ups_load        (ups_metrics, per device)
 // Boolean events that aren't numeric thresholds (interface down, UPS on battery) are
@@ -254,6 +255,18 @@ async function checkRouter(io, device, sample) {
   events.push(await evalMetric({ deviceId: id, metricName: "router_cpu", type: "router_cpu", value: num(sample.cpuPercent), label: "Router CPU", unit: "%" }));
   events.push(await evalMetric({ deviceId: id, metricName: "router_mem", type: "router_mem", value: num(sample.memPercent), label: "Router memory", unit: "%" }));
   events.push(await evalMetric({ deviceId: id, metricName: "router_clients", type: "router_clients", value: num(sample.connectedClients), label: "Connected clients" }));
+
+  // ── ICMP link quality ────────────────────────────────────────────────────────
+  // The two things SNMP structurally cannot report. An SNMP walk either answers or
+  // times out, so a link that is UP and dropping a third of its packets looks
+  // perfectly healthy until it finally crosses into a flat Offline — by which point
+  // the useful warning window has passed. These are also the ONLY numeric metrics a
+  // ping-only router has, so without them such a device could raise nothing but
+  // "unreachable": working or dead, with no degraded state in between.
+  //
+  // Both come from icmpPing via the poller, on SNMP and ping devices alike.
+  events.push(await evalMetric({ deviceId: id, metricName: "router_latency", type: "router_latency", value: num(sample.latencyMs), label: "Latency", unit: " ms" }));
+  events.push(await evalMetric({ deviceId: id, metricName: "router_loss", type: "router_loss", value: num(sample.packetLossPct), label: "Packet loss", unit: "%" }));
 
   // Unexpected reboot — uptime went backwards vs the last poll. The 60s slack absorbs
   // poll jitter and TimeTicks rounding, so only a genuine restart trips it.
