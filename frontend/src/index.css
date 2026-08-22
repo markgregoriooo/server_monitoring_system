@@ -33,6 +33,11 @@
   --gf-seg-empty:     rgba(255,255,255,0.06);
   --gf-scroll-bg:     rgba(0,0,0,0.25);
   --gf-scrollbar:     rgba(255,255,255,0.10);
+  /* Frosted topbar. A translucent take on --gf-bg — backdrop-filter blurs what
+     is BEHIND an element, so the element still needs its own see-through fill
+     or there is nothing for the blur to tint. */
+  --gf-glass:         rgba(17, 18, 23, 0.72);
+  --gf-glass-border:  rgba(255, 255, 255, 0.10);
   /* elevation for floating panels (dropdowns/toasts) — on dark, a faint light ring
      makes the edge readable against the dark page; plus a soft drop shadow for depth */
   --gf-shadow: 0 8px 28px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.14);
@@ -80,6 +85,8 @@
   --gf-seg-empty:     rgba(0,0,0,0.08);
   --gf-scroll-bg:     rgba(0,0,0,0.04);
   --gf-scrollbar:     rgba(0,0,0,0.15);
+  --gf-glass:         rgba(244, 245, 245, 0.72);
+  --gf-glass-border:  rgba(0, 0, 0, 0.10);
   /* light mode: a darker drop shadow + subtle dark ring so the panel edge reads */
   --gf-shadow: 0 8px 28px rgba(0,0,0,0.20), 0 0 0 1px rgba(0,0,0,0.06);
 
@@ -344,8 +351,33 @@
   }
 }
 
+/* The landing hero's minimum height.
+   A class rather than an inline style because this needs a FALLBACK, and a style
+   object cannot hold two values for one property.
+
+   `100svh` is the small-viewport height — the height with the mobile browser's
+   URL bar VISIBLE. Plain `100vh` on a phone measures the tallest possible
+   viewport, so a full-height section is taller than what you can actually see
+   and the bottom of it sits under the browser chrome until you scroll. Anything
+   without svh support keeps the old behaviour rather than losing the floor. */
+.hero-fold { min-height: 100vh; }
+@supports (min-height: 100svh) {
+  .hero-fold { min-height: 100svh; }
+}
+
 /* Toast entrance (used by ToastHost via animate-[fadeIn_…]) */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Landing walkthrough: the dwell bar under the active chapter, counting down to
+   the auto-advance. CSS rather than anime.js because its duration differs per
+   chapter and it restarts on every pick — a keyframe with a duration set inline
+   handles both by construction, where a JS animation would need tearing down and
+   rebuilding each time. The element carries a `key`, so React remounts it and
+   the animation restarts from zero. */
+@keyframes landingDwell {
+  from { width: 0%; }
+  to   { width: 100%; }
 }

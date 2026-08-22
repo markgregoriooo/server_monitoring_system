@@ -22,8 +22,10 @@ export default {
         "light-muted": "#64748b",
       },
       fontFamily: {
+        // ⚠️ `font-mono` here is Share Tech Mono, NOT the JetBrains Mono that
+        // index.css sets on html/body. Two monospace families in one app is an
+        // accident rather than a decision — see the note in index.css.
         mono: ["Share Tech Mono", "monospace"],
-        body: ["Barlow", "sans-serif"],
       },
     },
   },
