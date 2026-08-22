@@ -45,6 +45,14 @@ export interface NetDevice {
   memPercent?: number | null;
   interfaces: NetIface[];
   monitored: boolean;
+  // How this device is collected. 'snmp' = the full read (interfaces, traffic,
+  // uptime). 'ping' = ICMP only, for a router with no community string — an
+  // ISP-owned CPE, typically. A ping device will NEVER report interfaces, so the
+  // UI must say so rather than render an empty port list that reads as a fault.
+  mode?: "snmp" | "ping";
+  // ICMP, present in both modes. The only live numbers a ping device has.
+  latencyMs?: number | null;
+  packetLossPct?: number | null;
   descr?: string | null; // sysDescr — vendor/model string reported by the device
   sysName?: string | null; // sysName — the hostname the device calls itself
 }

@@ -102,6 +102,8 @@ function mapUps(r: any): UpsDevice {
     outputVoltage: r.outputVoltage ?? null,
     batteryVoltage: r.batteryVoltage ?? null,
     onBattery: r.onBattery ?? null,
+    onBypass: r.onBypass ?? null,
+    outputState: r.outputState ?? null,
     batteryStatus: r.batteryStatus ?? null,
     temperature: r.temperature ?? null,
     monitored: r.monitored ?? true,
@@ -185,6 +187,7 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
   const charge = u.batteryChargePct ?? 0;
   const load = u.loadPct ?? 0;
   const onBattery = u.onBattery === true;
+  const onBypass = u.onBypass === true;
   const health = batteryHealth(u.batteryStatus);
   return (
     <div
@@ -226,7 +229,15 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
         <span className="ml-auto">{fmt(u.runtimeRemainingMin, " min")} left</span>
       </div>
 
-      {/* On-battery banner */}
+      {/* Output-source banner. Bypass gets its own wording rather than being folded
+          into "on battery": the two are opposite problems. On battery means powered
+          and protected, with a clock running. On bypass means powered and NOT
+          protected, with no clock at all — so it must not read as the milder case. */}
+      {onBypass && (
+        <div className="px-3 py-1.5 text-[13px] font-medium" style={{ background: "rgba(242,73,92,0.12)", color: RED }}>
+          ⚠ ON BYPASS — load on raw mains, no battery protection
+        </div>
+      )}
       {onBattery && (
         <div className="px-3 py-1.5 text-[13px] font-medium" style={{ background: "rgba(242,73,92,0.12)", color: RED }}>
           ⚡ ON BATTERY — running on backup power
@@ -496,6 +507,7 @@ export default function UpsMonitoring() {
   const total = devices.length;
   const online = devices.filter((d) => d.status === "Online").length;
   const onBatteryCount = devices.filter((d) => d.onBattery === true).length;
+  const onBypassCount = devices.filter((d) => d.onBypass === true).length;
   const loads = devices.filter((d) => d.loadPct != null).map((d) => d.loadPct as number);
   // Worst unit, not the mean. One UPS at 95% load or 15% charge is the incident;
   // averaging it against healthy units is exactly how you miss it.
@@ -537,6 +549,14 @@ export default function UpsMonitoring() {
         </div>
       </div>
 
+      {/* Bypass banner — above the on-battery one, because it is the state with no
+          runtime behind it. */}
+      {onBypassCount > 0 && (
+        <div className="rounded-lg px-3 py-2 text-[14px] font-medium" style={{ background: "rgba(242,73,92,0.12)", border: "1px solid rgba(242,73,92,0.3)", color: RED }}>
+          ⚠ {onBypassCount} UPS {onBypassCount === 1 ? "is" : "are"} on BYPASS — the load is on raw mains with no battery protection. A mains dip now takes it down instantly.
+        </div>
+      )}
+
       {/* On-battery alert banner */}
       {onBatteryCount > 0 && (
         <div className="rounded-lg px-3 py-2 text-[14px] font-medium" style={{ background: "rgba(242,73,92,0.12)", border: "1px solid rgba(242,73,92,0.3)", color: RED }}>
@@ -547,7 +567,14 @@ export default function UpsMonitoring() {
       {/* Stat row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
         <StatPanel label="UPS Units" value={`${online}/${total}`} color={onlineColor} sub="online" />
-        <StatPanel label="On Battery" value={String(onBatteryCount)} color={onBatteryCount > 0 ? RED : GREEN} sub={onBatteryCount > 0 ? "outage" : "on mains"} />
+        {/* One tile for "where is the load being fed from". Bypass takes the slot
+            when present: it is rarer and more urgent, and two near-identical tiles
+            would be read as one. */}
+        {onBypassCount > 0 ? (
+          <StatPanel label="On Bypass" value={String(onBypassCount)} color={RED} sub="unprotected" />
+        ) : (
+          <StatPanel label="On Battery" value={String(onBatteryCount)} color={onBatteryCount > 0 ? RED : GREEN} sub={onBatteryCount > 0 ? "outage" : "on mains"} />
+        )}
         <StatPanel
           label="Lowest Battery"
           value={worstCharge == null ? "—" : String(worstCharge)}
@@ -625,6 +652,7 @@ export default function UpsMonitoring() {
               <tbody>
                 {devices.map((u, i) => {
                   const onBattery = u.onBattery === true;
+                  const onBypass = u.onBypass === true;
                   return (
                     <Fragment key={u.id}>
                       <tr
@@ -644,6 +672,7 @@ export default function UpsMonitoring() {
                             {u.name}
                             <span className="ml-1.5 text-[12px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === u.id ? "rotate(180deg)" : "none" }}>▾</span>
                           </div>
+                          {onBypass && <div className="text-[12px] font-medium" style={{ color: RED }}>⚠ on bypass</div>}
                           {onBattery && <div className="text-[12px] font-medium" style={{ color: RED }}>⚡ on battery</div>}
                         </td>
                         <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{u.ip}</td>
@@ -659,7 +688,7 @@ export default function UpsMonitoring() {
                             {fmt(u.batteryChargePct, "%")}
                           </span>
                         </td>
-                        <td className="px-3 py-2.5 text-[13px] tabular-nums whitespace-nowrap" style={{ color: onBattery ? RED : gf.textMuted }}>
+                        <td className="px-3 py-2.5 text-[13px] tabular-nums whitespace-nowrap" style={{ color: onBattery || onBypass ? RED : gf.textMuted }}>
                           {fmt(u.runtimeRemainingMin, " min")}
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">

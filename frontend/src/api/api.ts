@@ -493,6 +493,10 @@ export const api = {
   addNetworkDevice: async (payload: {
     name: string;
     ip: string;
+    /** Read-only v2c community. **Empty string = register for ICMP ping monitoring
+     *  only** (up/down, latency, packet loss — no per-port traffic or link status),
+     *  which is the only way to watch gear you cannot enable SNMP on, such as an
+     *  ISP-owned router. A UPS has no such fallback and still requires one. */
     community: string;
     snmpPort?: number | string | undefined;
     location?: string | undefined;
