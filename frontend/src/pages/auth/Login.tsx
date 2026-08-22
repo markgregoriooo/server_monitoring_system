@@ -456,8 +456,15 @@ export default function Login() {
             {/* copy */}
             <div className="max-w-2xl">
               <Reveal>
+                {/* The full institution name is ~82 characters — four wrapped lines on
+                    a phone, above the fold, before the headline has been reached. It is
+                    the right label on a wide screen and the wrong one on a narrow one,
+                    so the phone gets the short form. Both are rendered and one is hidden
+                    by CSS rather than switched in JS: this is above the fold, and a
+                    swap that waits for a media-query hook shows the wrong one first. */}
                 <p className="text-[11px] tracking-[0.1em] sm:text-[12.5px] sm:tracking-[0.2em] uppercase mb-4 sm:mb-5 leading-relaxed" style={{ color: "var(--gf-accent-text)" }}>
-                  {BRAND.fullName}
+                  <span className="sm:hidden">{BRAND.name} · {BRAND.subtitle}</span>
+                  <span className="hidden sm:inline">{BRAND.fullName}</span>
                 </p>
               </Reveal>
 
@@ -471,9 +478,19 @@ export default function Login() {
               </Reveal>
 
               <Reveal delay={150}>
+                {/* Same idea for the body. The full sentence carries three ideas
+                    (what is collected, how it is stored, what it becomes); on a phone
+                    the third is the one worth keeping, since it is the reason the
+                    system exists. The rest is said again further down the page. */}
                 <p className="text-[14px] sm:text-[16.5px] leading-relaxed mt-5 sm:mt-6" style={{ color: "var(--gf-text-muted)" }}>
-                  Servers, network links, power and the room itself — collected continuously, stored as
-                  time-series, and turned into alerts that reach someone before a failure does.
+                  <span className="sm:hidden">
+                    Servers, network, power and the room itself — turned into alerts that reach
+                    someone before a failure does.
+                  </span>
+                  <span className="hidden sm:inline">
+                    Servers, network links, power and the room itself — collected continuously, stored as
+                    time-series, and turned into alerts that reach someone before a failure does.
+                  </span>
                 </p>
               </Reveal>
 
@@ -496,7 +513,7 @@ export default function Login() {
               <Parallax distance={30}>
                 <BrowserFrame>
                   <ScaledStage width={mockWidth}>
-                    <HeroDashboard />
+                    <HeroDashboard compact={narrow} />
                   </ScaledStage>
                 </BrowserFrame>
               </Parallax>

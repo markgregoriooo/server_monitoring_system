@@ -100,7 +100,18 @@ const ROWS: { name: string; tone: string; label: string }[] = [
   { name: "ups-main", tone: ORANGE, label: "ON BATT" },
 ];
 
-export default function HeroDashboard() {
+/**
+ * `compact` drops the DEVICES column and the forecast alert, leaving the four
+ * tiles and the chart.
+ *
+ * On a phone the mock is scaled to ~360px of design width, which puts the device
+ * rows at roughly 6px of rendered text and the forecast sub-line under 5px —
+ * present, unreadable, and adding height to a first screen that already carries a
+ * long institution name, a headline, a paragraph and two calls to action. Cutting
+ * them keeps the two parts that still read at that size and still say "this is a
+ * monitoring dashboard", which is the mock's entire job here.
+ */
+export default function HeroDashboard({ compact = false }: { compact?: boolean }) {
   const { ref, inView } = useInView<HTMLDivElement>({ threshold: 0.2 });
   const cpuRef = useRef<SVGPathElement | null>(null);
   const memRef = useRef<SVGPathElement | null>(null);
@@ -340,9 +351,12 @@ export default function HeroDashboard() {
         ))}
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: "1.55fr 1fr" }}>
+      <div className="grid" style={{ gridTemplateColumns: compact ? "1fr" : "1.55fr 1fr" }}>
         {/* chart */}
-        <div className="p-3" style={{ borderRight: "1px solid var(--gf-divider)" }}>
+        <div
+          className="p-3"
+          style={{ borderRight: compact ? "none" : "1px solid var(--gf-divider)" }}
+        >
           <div className="flex items-center justify-between mb-2">
             <span style={{ fontSize: 9, letterSpacing: "0.14em", color: "var(--gf-text-dim)" }}>
               LAST 6 HOURS
@@ -410,7 +424,8 @@ export default function HeroDashboard() {
           </svg>
         </div>
 
-        {/* device rows + one alert */}
+        {/* device rows + one alert — dropped in compact mode, see the note above */}
+        {!compact && (
         <div className="p-3">
           <div style={{ fontSize: 9, letterSpacing: "0.14em", color: "var(--gf-text-dim)" }}>
             DEVICES
@@ -456,6 +471,7 @@ export default function HeroDashboard() {
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   );
