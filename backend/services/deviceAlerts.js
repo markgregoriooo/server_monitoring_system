@@ -26,6 +26,7 @@ import db from "../config/mysql.js";
 //
 // metric_name vocabulary (must match the seeded alert_rules + the Alert Rules UI):
 //   router_cpu, router_mem, router_clients   (router_metrics, per device)
+//   router_latency, router_loss              (ICMP, per device — see checkRouter)
 //   link_util                                (network_traffic, per interface)
 //   ups_charge, ups_runtime, ups_load        (ups_metrics, per device)
 // Boolean events that aren't numeric thresholds (interface down, UPS on battery) are
@@ -255,6 +256,18 @@ async function checkRouter(io, device, sample) {
   events.push(await evalMetric({ deviceId: id, metricName: "router_mem", type: "router_mem", value: num(sample.memPercent), label: "Router memory", unit: "%" }));
   events.push(await evalMetric({ deviceId: id, metricName: "router_clients", type: "router_clients", value: num(sample.connectedClients), label: "Connected clients" }));
 
+  // ── ICMP link quality ────────────────────────────────────────────────────────
+  // The two things SNMP structurally cannot report. An SNMP walk either answers or
+  // times out, so a link that is UP and dropping a third of its packets looks
+  // perfectly healthy until it finally crosses into a flat Offline — by which point
+  // the useful warning window has passed. These are also the ONLY numeric metrics a
+  // ping-only router has, so without them such a device could raise nothing but
+  // "unreachable": working or dead, with no degraded state in between.
+  //
+  // Both come from icmpPing via the poller, on SNMP and ping devices alike.
+  events.push(await evalMetric({ deviceId: id, metricName: "router_latency", type: "router_latency", value: num(sample.latencyMs), label: "Latency", unit: " ms" }));
+  events.push(await evalMetric({ deviceId: id, metricName: "router_loss", type: "router_loss", value: num(sample.packetLossPct), label: "Packet loss", unit: "%" }));
+
   // Unexpected reboot — uptime went backwards vs the last poll. The 60s slack absorbs
   // poll jitter and TimeTicks rounding, so only a genuine restart trips it.
   const up = num(sample.uptimeSeconds);
@@ -333,12 +346,43 @@ async function checkUps(io, device, sample) {
   const id = Number(device.id);
   const events = [];
 
-  // On-battery = mains lost → critical event (not rule-based, like server offline).
+  // ─── Where the load is being fed from (RFC 1628 upsOutputSource) ─────────────
+  // Three distinct ways to be in trouble, all boolean events rather than rules —
+  // like server 'offline', there is no threshold to hang hysteresis on.
+
+  // On-battery = mains lost. Loud, and you have N minutes.
   events.push(await evalEvent({
     deviceId: id, type: "ups_on_battery", active: sample.onBattery === true,
     severity: "critical", title: "UPS on battery",
     message: "UPS switched to battery power (mains lost)",
   }));
+
+  // On-BYPASS = the load is wired straight to raw mains, around the inverter and
+  // the battery. Critical, not warning: the racks are running but have ZERO
+  // protection, so the next mains dip takes them down with no runtime at all.
+  //
+  // This was silent until now. `onBattery` tests upsOutputSource === battery(5),
+  // so bypass(4) reported false and the UPS read as perfectly healthy — a green
+  // tile in front of an unprotected rack. Exactly backwards from the risk.
+  events.push(await evalEvent({
+    deviceId: id, type: "ups_on_bypass", active: sample.onBypass === true,
+    severity: "critical", title: "UPS on bypass",
+    message: "UPS is on BYPASS — load is on raw mains with no battery protection. "
+      + "Check for an overload, an over-temperature, or a maintenance bypass switch left engaged.",
+  }));
+
+  // Output off entirely — the UPS is not feeding the load at all.
+  events.push(await evalEvent({
+    deviceId: id, type: "ups_output_off", active: sample.outputState === "off",
+    severity: "critical", title: "UPS output off",
+    message: "UPS reports no output source — the protected load is not being powered",
+  }));
+
+  // NOTE: booster/reducer (AVR — mains present but out of spec, being boosted or
+  // trimmed) deliberately raises nothing here. The load is still protected, and the
+  // `ups_input_voltage` event below already alerts on the bad mains that causes it;
+  // adding a second alert would double-report one condition. It is carried through
+  // to the dashboard as `outputState: "avr"` so it can still be SEEN.
 
   events.push(await evalMetric({ deviceId: id, metricName: "ups_charge", type: "ups_charge", value: num(sample.batteryChargePct), label: "UPS battery", unit: "%", low: true }));
   events.push(await evalMetric({ deviceId: id, metricName: "ups_runtime", type: "ups_runtime", value: num(sample.runtimeRemainingMin), label: "UPS runtime", unit: " min", low: true }));

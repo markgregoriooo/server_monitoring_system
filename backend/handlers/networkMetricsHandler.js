@@ -94,13 +94,28 @@ export async function writeNetworkSample(io, device, sample) {
         ip: device.ip,
         type: device.type ?? "router",
         location: device.location,
-        status: "Online",
+        // Derived, not hardcoded "Online". The ping-only path writes a sample even
+        // when the device is DOWN (100% loss is the measurement), so a fixed
+        // "Online" here would have every dashboard show an unreachable router as up
+        // on the same broadcast that reports it lost every packet.
+        status: sample.reachable !== false ? "Online" : "Offline",
         reachable: sample.reachable !== false,
         descr: sample.descr ?? null, // sysDescr — vendor/model
         sysName: sample.sysName ?? null, // sysName — device hostname
         uptimeSeconds: sample.uptimeSeconds ?? null,
         cpuPercent: sample.cpuPercent ?? null,
         memPercent: sample.memPercent ?? null,
+        // ICMP — written to Influx since this handler was built, but never sent to
+        // the browser, so the two fields could not be displayed anywhere. They are
+        // the ONLY live numbers a ping-only router has.
+        latencyMs: sample.latencyMs ?? null,
+        packetLossPct: sample.packetLossPct ?? null,
+        // Which collector produced this. The UI renders a different set of panels per
+        // mode, so a broadcast that omitted it left a dashboard opened mid-session
+        // showing SNMP panels (Ports Up 0/0, Peak Util 0%) for a ping device — the
+        // exact "looks broken" state the mode flag exists to prevent. MikroTik goes
+        // through this handler too and is always a full read, hence the default.
+        mode: device.pingOnly ? "ping" : "snmp",
         // Was omitted, so the dashboard's client count never updated live — it only
         // arrived on the initial GET. SNMP leaves it null; MikroTik fills it.
         connectedClients: sample.connectedClients ?? null,
@@ -109,16 +124,20 @@ export async function writeNetworkSample(io, device, sample) {
           locationLabel: i.locationLabel ?? "",
           linkUp: Boolean(i.linkUp),
           utilizationPct: i.utilizationPct ?? null,
-          speedMbps: i.speedMbps ?? null, // negotiated link speed (ifHighSpeed)
-          rxErrors: i.rxErrors ?? null, // cumulative — UI shows the per-poll delta
-          txErrors: i.txErrors ?? null,
-          rxBytes: i.rxBytes != null ? String(i.rxBytes) : null,
-          txBytes: i.txBytes != null ? String(i.txBytes) : null,
-          // Collected by both pollers and written to Influx, but previously never sent
-          // to the browser — so error counts and link speed couldn't be shown at all.
+          // Collected by both pollers and written to Influx. Cumulative counters —
+          // the UI shows the per-poll DELTA, since a lifetime total says nothing about
+          // whether a cable is failing now.
+          //
+          // ⚠️ These three (rxErrors/txErrors/speedMbps) were each declared TWICE in
+          // this object literal: once as `?? null` and again below as `?? 0`. A
+          // duplicate key is not an error in JS — the last one silently wins — so the
+          // first set was dead code, and reading the file suggested errors could arrive
+          // as null when they never could.
           rxErrors: i.rxErrors ?? 0,
           txErrors: i.txErrors ?? 0,
-          speedMbps: i.speedMbps ?? null,
+          speedMbps: i.speedMbps ?? null, // negotiated link speed (ifHighSpeed)
+          rxBytes: i.rxBytes != null ? String(i.rxBytes) : null,
+          txBytes: i.txBytes != null ? String(i.txBytes) : null,
           // Per-port DHCP client count; null when the topology can't attribute it.
           clients: i.clients ?? null,
         })),

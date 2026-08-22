@@ -301,6 +301,9 @@ const METRIC_OPTIONS = [
   { key: "router_cpu", label: "Router CPU", scope: "router" },
   { key: "router_mem", label: "Router Memory", scope: "router" },
   { key: "router_clients", label: "Connected Devices", scope: "router" },
+  // ICMP — on every router, and the ONLY two metrics a ping-only one has.
+  { key: "router_latency", label: "Latency", scope: "router" },
+  { key: "router_loss", label: "Packet Loss", scope: "router" },
 ] as const;
 const METRIC_GROUP: Record<string, string> = {
   env: "Server Room", server: "Servers", router: "Network / MikroTik",
@@ -311,7 +314,11 @@ const METRIC_SELECT_OPTIONS: SelectOption[] = METRIC_OPTIONS.map((m) => ({
   group: METRIC_GROUP[m.scope] ?? null,
 }));
 const SERVER_METRICS = new Set<string>(["cpu", "mem", "disk"]);
-const ROUTER_METRICS = new Set<string>(["router_cpu", "router_mem", "router_clients"]);
+// Metrics that need a DEVICE picked before they mean anything. Latency and loss join
+// the list for the same reason as the rest: "the latency" of a fleet is not a quantity.
+const ROUTER_METRICS = new Set<string>([
+  "router_cpu", "router_mem", "router_clients", "router_latency", "router_loss",
+]);
 
 const TABS = [
   { key: "forecasts", label: "Forecasts" },
@@ -469,6 +476,9 @@ export default function Analytics() {
   const [forecasts, setForecasts] = useState<DiskForecast[]>([]);
   const [upsForecasts, setUpsForecasts] = useState<UpsBatteryForecast[]>([]);
   const [linkForecasts, setLinkForecasts] = useState<LinkForecast[]>([]);
+  // The registered routers, fetched directly rather than inferred from the link
+  // forecast. See the `routers` memo below for why that inference was wrong.
+  const [netDevices, setNetDevices] = useState<{ id: number; name: string; typeLabel: string | null }[]>([]);
   const [summary, setSummary] = useState<AlertSummary | null>(null);
   const [diskLoading, setDiskLoading] = useState(true);
   const [upsLoading, setUpsLoading] = useState(true);
@@ -527,6 +537,28 @@ export default function Analytics() {
     if (!silent) setLinkLoading(false);
   }, [linkDays]);
 
+  // The router list for the Trends/Anomalies device picker. Fetched from the device
+  // endpoints, NOT derived from a forecast — see the `routers` memo.
+  const loadRouters = useCallback(async () => {
+    const [net, mt] = await Promise.all([api.getNetworkDevices(), api.getMikrotikDevices()]);
+    const rows = [
+      ...(net.success ? net.data?.devices ?? [] : []),
+      ...(mt.success ? mt.data?.devices ?? [] : []),
+    ];
+    const byId = new Map<number, { id: number; name: string; typeLabel: string | null }>();
+    for (const d of rows) {
+      const id = Number(d.id);
+      if (!byId.has(id)) {
+        byId.set(id, {
+          id,
+          name: d.name ?? `#${id}`,
+          typeLabel: d.type === "mikrotik" ? "MikroTik" : "Router",
+        });
+      }
+    }
+    setNetDevices([...byId.values()]);
+  }, []);
+
   // Forecasts load on mount + their own lookback change (they are also the source of the
   // device lists the Trends tab's selector needs, so they load regardless of active tab).
   // The other tabs load lazily when first activated.
@@ -541,6 +573,9 @@ export default function Analytics() {
   useEffect(() => { loadAccuracy(); }, [loadAccuracy]);
   useEffect(() => { loadUps(); }, [loadUps]);
   useEffect(() => { loadLink(); }, [loadLink]);
+  // Independent of the forecasts: the device picker must list every registered router,
+  // including the ping-only ones that produce no forecast of any kind.
+  useEffect(() => { loadRouters(); }, [loadRouters]);
   useEffect(() => { if (tab === "alerts") loadSummary(); }, [tab, loadSummary]);
 
   // Live alert analytics: re-pull the summary whenever an alert is raised
@@ -563,13 +598,23 @@ export default function Analytics() {
     () => forecasts.map((f) => ({ id: f.deviceId, name: f.name, typeLabel: f.typeLabel })),
     [forecasts],
   );
+  // ⚠️ This list was built from `linkForecasts` — every device that reports INTERFACE
+  // traffic. That silently excluded exactly one class of device: a PING-ONLY router has
+  // no interfaces at all, so it produced no link forecast and never appeared in the
+  // picker — making Latency and Packet Loss unreachable for the one device whose ONLY
+  // metrics those are.
+  //
+  // So the list now comes from the device endpoints, with the link forecast folded in
+  // as a fallback: a device deleted from the dashboard still has history in InfluxDB,
+  // and dropping it from the picker would hide a trend that is still perfectly readable.
   const routers = useMemo(() => {
     const seen = new Map<number, { id: number; name: string; typeLabel: string | null }>();
+    for (const d of netDevices) seen.set(d.id, d);
     for (const l of linkForecasts) {
       if (!seen.has(l.deviceId)) seen.set(l.deviceId, { id: l.deviceId, name: l.name, typeLabel: l.typeLabel });
     }
-    return [...seen.values()];
-  }, [linkForecasts]);
+    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [netDevices, linkForecasts]);
 
   const needsDevice = SERVER_METRICS.has(selMetric) || ROUTER_METRICS.has(selMetric);
   const deviceOptions = ROUTER_METRICS.has(selMetric) ? routers : servers;
@@ -1180,27 +1225,51 @@ export default function Analytics() {
           title="Threshold Recommendations"
           subtitle={
             recDevice == null
-              ? `All servers pooled · last ${REC_WINDOW_DAYS} days · warn = p95, critical = p99`
-              : `${servers.find((s) => s.id === recDevice)?.name ?? "Server"} only · last ${REC_WINDOW_DAYS} days`
+              // Not "All servers": the unscoped pass also evaluates the ROOM metrics
+              // (temperature, humidity, gas), which is why they appear in the table. They
+              // have no per-device version — there is no such thing as one server's share
+              // of "the server room is too hot" — so they show here and nowhere else.
+              ? `All servers + server room · pooled over ${REC_WINDOW_DAYS} days · warn = p95, critical = p99`
+              : `${
+                  [...servers, ...routers].find((s) => s.id === recDevice)?.name ?? "Device"
+                } only · last ${REC_WINDOW_DAYS} days`
           }
           action={
-            servers.length > 0 ? (
+            /* Routers belong in this picker, not just servers. `router_latency` is
+               recommendable ONLY per device (see analyticsService METRICS) — a rack
+               switch answering in <1 ms and an ISP CPE in 30 ms are both healthy, so a
+               pooled percentile fits neither. Offering servers alone left that the one
+               recommendation the backend could produce and the UI could never ask for. */
+            servers.length > 0 || routers.length > 0 ? (
               <Select
                 value={recDevice == null ? "" : String(recDevice)}
                 options={[
                   { value: "", label: "All servers", group: null },
                   ...servers.map((s) => ({ value: String(s.id), label: s.name, group: "Per server" })),
+                  ...routers.map((r) => ({ value: String(r.id), label: r.name, group: "Per router" })),
                 ]}
                 onChange={(v) => setRecDevice(v ? Number(v) : null)}
-                title="Suggest thresholds for one server instead of the whole fleet"
+                title="Suggest thresholds for one device instead of the whole fleet"
+                align="right"
               />
             ) : undefined
           }
         >
           {recDevice != null && (
             <p className="mb-3 text-[0.9em]" style={{ color: gf.textMuted }}>
-              A busy server and an idle one share a pooled p95 that suits neither. Applying
-              here writes a per-server override, leaving the global rule untouched.
+              {routers.some((r) => r.id === recDevice) ? (
+                <>
+                  Latency is a property of the individual link — a switch in the rack answers
+                  in under 1 ms, an ISP router in 20–40 ms, and both are healthy. This is the
+                  p95/p99 of what <em>this</em> link actually does. Applying writes a
+                  per-device override, leaving the global rule untouched.
+                </>
+              ) : (
+                <>
+                  A busy server and an idle one share a pooled p95 that suits neither. Applying
+                  here writes a per-server override, leaving the global rule untouched.
+                </>
+              )}
             </p>
           )}
           {recsLoading ? (
@@ -1548,11 +1617,16 @@ interface SelectOption { value: string; label: string; group: string | null }
 // Owning it also means owning the behaviour a native select gave us for free, so: click
 // outside and Escape close it, Up/Down move, Enter/Space select, Home/End jump, the
 // trigger keeps proper listbox ARIA, and the active option is scrolled into view.
-function Select({ value, options, onChange, title }: {
+function Select({ value, options, onChange, title, align = "left" }: {
   value: string;
   options: readonly SelectOption[];
   onChange: (v: string) => void;
   title?: string;
+  // Which edge the dropdown is pinned to. A menu is always WIDER than its trigger
+  // (the labels are nowrap), so a left-pinned menu grows rightward — fine for the
+  // triggers in a left-aligned toolbar, but off the panel and off the screen for one
+  // sitting in a right-aligned panel header. Pin that one right instead.
+  align?: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -1639,7 +1713,7 @@ function Select({ value, options, onChange, title }: {
           ref={listRef}
           role="listbox"
           tabIndex={-1}
-          className="absolute left-0 top-full mt-1.5 z-50 min-w-full max-h-72 overflow-y-auto rounded-[3px] py-1"
+          className={`absolute ${align === "right" ? "right-0" : "left-0"} top-full mt-1.5 z-50 min-w-full max-w-[min(20rem,80vw)] max-h-72 overflow-y-auto rounded-[3px] py-1`}
           style={{
             background: gf.panel,
             // --gf-shadow is the token defined for exactly this (dropdowns/toasts): a
@@ -1677,7 +1751,7 @@ function Select({ value, options, onChange, title }: {
                     boxShadow: selected ? `inset 3px 0 0 ${gf.textPrimary}` : "none",
                   }}
                 >
-                  <span className="whitespace-nowrap">{o.label}</span>
+                  <span className="truncate">{o.label}</span>
                   {selected && <span aria-hidden style={{ color: gf.textPrimary }}>✓</span>}
                 </div>
               </div>

@@ -62,6 +62,11 @@ export interface MkDevice {
   cpuPercent: number | null;
   memPercent: number | null;
   connectedClients: number | null;
+  // ICMP, measured alongside the RouterOS API call each poll. The API says whether the
+  // router is answering; these say how well the PATH to it is carrying traffic — a link
+  // dropping a third of its packets answers the API perfectly.
+  latencyMs?: number | null;
+  packetLossPct?: number | null;
   routerosVersion: string | null;
   boardModel: string | null;
   apiPort: number | null;
@@ -518,7 +523,17 @@ export default function MikrotikDetail({
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+      {/* Latency and loss are measured on every poll and were already driving alerts
+          and Analytics — the router's own page was the one place they weren't visible. */}
+      {/* AUTO-FIT rather than a fixed column count. The tile count is not constant —
+          a ping-only router shows 4, an SNMP router 7, a MikroTik 7 — and any fixed
+          grid leaves an orphan row for some of them (7 into 5 gives 5+2, 7 into 4
+          gives 4+3). auto-fit packs as many as fit at >=150px and stretches them to
+          fill the row, so every layout comes out flush whatever the count. */}
+      <div
+        className="grid gap-2.5"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}
+      >
         <Stat label="Status" value={d.status} color={statusColor(d.status)} sub={d.reachable ? "reachable" : "—"} />
         <Stat label="CPU" value={d.cpuPercent != null ? String(cpu) : "—"} unit={d.cpuPercent != null ? "%" : undefined} color={loadColor(cpu)} sub="router load" />
         <Stat label="Memory" value={d.memPercent != null ? String(mem) : "—"} unit={d.memPercent != null ? "%" : undefined} color={loadColor(mem)} sub="router RAM" />
@@ -527,6 +542,25 @@ export default function MikrotikDetail({
             lease survives the device unplugging until it expires, so this lags reality
             by up to one lease period — calling it "clients" invites the wrong reading. */}
         <Stat label="DHCP Leases" value={d.connectedClients != null ? String(d.connectedClients) : "—"} color={BLUE} sub="bound" />
+        <Stat
+          label="Latency"
+          value={d.latencyMs == null ? "—" : String(Math.round(d.latencyMs))}
+          {...(d.latencyMs == null ? {} : { unit: "ms" })}
+          color={d.latencyMs == null ? gf.textMuted : d.latencyMs > 150 ? ORANGE : GREEN}
+          sub="round trip"
+        />
+        <Stat
+          label="Packet Loss"
+          value={d.packetLossPct == null ? "—" : String(Math.round(d.packetLossPct))}
+          {...(d.packetLossPct == null ? {} : { unit: "%" })}
+          color={
+            d.packetLossPct == null ? gf.textMuted
+              : d.packetLossPct >= 20 ? RED
+              : d.packetLossPct > 0 ? ORANGE
+              : GREEN
+          }
+          sub="of echoes sent"
+        />
       </div>
 
       {/* Throughput history */}
@@ -611,7 +645,7 @@ export default function MikrotikDetail({
                     value={labelDraft[i.name] ?? ""}
                     maxLength={100}
                     onChange={(e) => setLabelDraft((p) => ({ ...p, [i.name]: e.target.value }))}
-                    placeholder="e.g. ISP uplink, Rack A switch"
+                    placeholder="e.g. ISP uplink, Admin building"
                     className="flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
                     style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
                   />

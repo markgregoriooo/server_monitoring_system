@@ -45,6 +45,14 @@ export interface NetDevice {
   memPercent?: number | null;
   interfaces: NetIface[];
   monitored: boolean;
+  // How this device is collected. 'snmp' = the full read (interfaces, traffic,
+  // uptime). 'ping' = ICMP only, for a router with no community string — an
+  // ISP-owned CPE, typically. A ping device will NEVER report interfaces, so the
+  // UI must say so rather than render an empty port list that reads as a fault.
+  mode?: "snmp" | "ping";
+  // ICMP, present in both modes. The only live numbers a ping device has.
+  latencyMs?: number | null;
+  packetLossPct?: number | null;
   descr?: string | null; // sysDescr — vendor/model string reported by the device
   sysName?: string | null; // sysName — the hostname the device calls itself
 }
@@ -386,6 +394,9 @@ export default function NetworkDetail({
   }, [d.id]);
 
   const ifaces = d.interfaces ?? [];
+  // ICMP-only device (no SNMP community). It reports reachability, latency and loss
+  // and nothing else — so several panels below are not "empty", they are inapplicable.
+  const pingMode = d.mode === "ping";
   const portsUp = ifaces.filter((i) => i.linkUp).length;
   const upUtil = ifaces.filter((i) => i.linkUp && i.utilizationPct != null).map((i) => i.utilizationPct as number);
   // Worst port, not the average: one saturated uplink is the whole story, and
@@ -461,22 +472,95 @@ export default function NetworkDetail({
         </span>
       </div>
 
-      {!d.monitored && (
-        <div className="text-[13px] px-3 py-2 rounded-[2px]" style={{ color: ORANGE, background: ORANGE + "14", border: `1px solid ${ORANGE}40` }}>
-          SNMP not configured — this device can't be polled until a read-only community string is set.
+      {/* A ping device is not a misconfigured SNMP device. It is being polled, on
+          schedule, and reporting everything it is capable of reporting — so this
+          says what it DOES cover rather than what is missing. */}
+      {pingMode && (
+        <div className="text-[13px] px-3 py-2 rounded-[2px]" style={{ color: gf.textMuted, background: gf.hover, border: `1px solid ${gf.border}` }}>
+          <span style={{ color: gf.textPrimary }}>Ping-only monitoring.</span> No SNMP community is
+          set for this device, so it is polled by ICMP: reachability, latency and packet loss.
+          Per-port traffic, link status and uptime need SNMP enabled on the device — usually not
+          possible on ISP-owned equipment.
         </div>
       )}
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+      {/* Stats. A ping device gets a DIFFERENT set, not the same set full of zeroes:
+          "Ports Up 0/0", "Peak Util 0%", "Errors 0" and "Uptime —" are not facts about
+          this router, they are the shape of a router we cannot read. Four tiles of
+          nothing read as a broken device; three tiles of real measurements read as a
+          working one. */}
+      {/* ICMP is measured on EVERY router — it runs alongside the SNMP walk — so
+          latency and loss belong here too, not only in ping mode. Leaving them out
+          meant the system alerted on a metric, reported on it and charted it in
+          Analytics, while the device's own page never showed it. */}
+      {/* AUTO-FIT rather than a fixed column count. The tile count is not constant —
+          a ping-only router shows 4, an SNMP router 7, a MikroTik 7 — and any fixed
+          grid leaves an orphan row for some of them (7 into 5 gives 5+2, 7 into 4
+          gives 4+3). auto-fit packs as many as fit at >=150px and stretches them to
+          fill the row, so every layout comes out flush whatever the count. */}
+      <div
+        className="grid gap-2.5"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}
+      >
         <Stat label="Status" value={d.status} color={statusColor(d.status)} sub={d.reachable ? "reachable" : "—"} />
-        <Stat label="Ports Up" value={`${portsUp}/${ifaces.length}`} color={ifaces.length > 0 && portsUp === ifaces.length ? GREEN : portsUp === 0 ? RED : ORANGE} sub="links online" />
-        <Stat label="Peak Util" value={String(worstUtil)} unit="%" color={loadColor(worstUtil)} sub={upUtil.length > 1 ? `busiest of ${upUtil.length}` : "of link speed"} />
-        <Stat label="Errors" value={String(totalErrs)} color={totalErrs > 0 ? ORANGE : GREEN} sub="since last poll" />
-        <Stat label="Uptime" value={formatUptime(d.uptimeSeconds)} color={BLUE} sub="since boot" />
+        {pingMode ? (
+          <>
+            <Stat
+              label="Latency"
+              value={d.latencyMs == null ? "—" : String(d.latencyMs)}
+              {...(d.latencyMs == null ? {} : { unit: "ms" })}
+              color={d.latencyMs == null ? gf.textMuted : d.latencyMs > 150 ? ORANGE : GREEN}
+              sub="round trip"
+            />
+            <Stat
+              label="Packet Loss"
+              value={d.packetLossPct == null ? "—" : String(d.packetLossPct)}
+              {...(d.packetLossPct == null ? {} : { unit: "%" })}
+              color={
+                d.packetLossPct == null ? gf.textMuted
+                  : d.packetLossPct >= 50 ? RED
+                  : d.packetLossPct > 0 ? ORANGE
+                  : GREEN
+              }
+              sub="of echoes sent"
+            />
+            <Stat label="Mode" value="ICMP" color={BLUE} sub="no SNMP community" />
+          </>
+        ) : (
+          <>
+            <Stat label="Ports Up" value={`${portsUp}/${ifaces.length}`} color={ifaces.length > 0 && portsUp === ifaces.length ? GREEN : portsUp === 0 ? RED : ORANGE} sub="links online" />
+            <Stat label="Peak Util" value={String(worstUtil)} unit="%" color={loadColor(worstUtil)} sub={upUtil.length > 1 ? `busiest of ${upUtil.length}` : "of link speed"} />
+            <Stat label="Errors" value={String(totalErrs)} color={totalErrs > 0 ? ORANGE : GREEN} sub="since last poll" />
+            <Stat label="Uptime" value={formatUptime(d.uptimeSeconds)} color={BLUE} sub="since boot" />
+            <Stat
+              label="Latency"
+              value={d.latencyMs == null ? "—" : String(Math.round(d.latencyMs))}
+              {...(d.latencyMs == null ? {} : { unit: "ms" })}
+              color={d.latencyMs == null ? gf.textMuted : d.latencyMs > 150 ? ORANGE : GREEN}
+              sub="round trip"
+            />
+            <Stat
+              label="Packet Loss"
+              value={d.packetLossPct == null ? "—" : String(Math.round(d.packetLossPct))}
+              {...(d.packetLossPct == null ? {} : { unit: "%" })}
+              color={
+                d.packetLossPct == null ? gf.textMuted
+                  : d.packetLossPct >= 20 ? RED
+                  : d.packetLossPct > 0 ? ORANGE
+                  : GREEN
+              }
+              sub="of echoes sent"
+            />
+          </>
+        )}
       </div>
 
-      {/* Throughput history */}
+      {/* Throughput history. Hidden entirely for a ping device rather than left to
+          render "No data in range" forever: that message means "nothing in THIS
+          window, try another", and offering 1h/6h/24h/7d/30d buttons for a series
+          that can never exist sends the reader hunting for data that was never
+          collected. ICMP has no byte counters at all. */}
+      {!pingMode && (
       <Panel
         title={chartPort ? `Throughput · ${chartPort}` : "Total Throughput"}
         right={
@@ -507,10 +591,11 @@ export default function NetworkDetail({
       >
         <ThroughputChart history={history} />
       </Panel>
+      )}
 
       {/* Physical ports */}
       <Panel
-        title={`Ports · ${portsUp}/${ifaces.length} up`}
+        title={pingMode ? "Physical ports" : `Ports · ${portsUp}/${ifaces.length} up`}
         right={
           isAdmin && ifaces.length > 0 ? (
             editLabels ? (
@@ -537,7 +622,11 @@ export default function NetworkDetail({
       >
         {ifaces.length === 0 ? (
           <div className="px-3 py-4 text-[13px]" style={{ color: gf.textDim }}>
-            {d.status === "Online" ? "No interfaces reported." : "Offline — awaiting next poll."}
+            {pingMode
+              ? "Ping-only device — ICMP cannot see interfaces. This is expected, not a fault."
+              : d.status === "Online"
+                ? "No interfaces reported."
+                : "Offline — awaiting next poll."}
           </div>
         ) : editLabels ? (
           <div className="flex flex-col">
@@ -552,7 +641,7 @@ export default function NetworkDetail({
                   value={labelDraft[i.name] ?? ""}
                   maxLength={100}
                   onChange={(e) => setLabelDraft((p) => ({ ...p, [i.name]: e.target.value }))}
-                  placeholder="e.g. ISP uplink, Rack A switch"
+                  placeholder="e.g. ISP uplink, Admin building"
                   className="flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
                   style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
                 />

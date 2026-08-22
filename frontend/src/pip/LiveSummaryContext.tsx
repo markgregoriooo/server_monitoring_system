@@ -52,6 +52,11 @@ export interface NetLive {
   portsUp: number;
   portsTotal: number;
   worstUtil: number | null;
+  // How this router is collected. "ping" = no SNMP community, so it has NO ports and
+  // never will — its 0/0 is not a fault, and a tile must not paint it as one.
+  mode: "snmp" | "ping";
+  latencyMs: number | null;   // ICMP, present in both modes
+  packetLossPct: number | null;
 }
 
 export interface LiveSummary {
@@ -78,6 +83,9 @@ export interface LiveSummary {
   routersTotal: number;
   portsUp: number;
   portsTotal: number;
+  // Ping-only routers among them. A tile showing "0/0 ports" for these would read as
+  // three dead links rather than as three devices that have no ports to report.
+  pingOnlyRouters: number;
   // Per-stream "we haven't heard anything in a suspiciously long time". A stream that
   // has never produced data is NOT stale — that is an empty state, and the tiles
   // already say "No UPS" / "—" for it.
@@ -143,6 +151,9 @@ function mapNet(r: any, fallbackType = "router"): NetLive {
     portsUp: ifaces.filter((i) => i.linkUp).length,
     portsTotal: ifaces.length,
     worstUtil: utils.length ? Math.max(...utils) : null,
+    mode: r.mode === "ping" ? "ping" : "snmp",
+    latencyMs: r.latencyMs ?? null,
+    packetLossPct: r.packetLossPct ?? null,
   };
 }
 
@@ -353,7 +364,11 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
         prev.map((r) =>
           r.id === Number(d?.id)
             ? d?.status === "Offline"
-              ? { ...r, status: "Offline", portsUp: 0, worstUtil: null }
+              // latency goes null (there was no measurement) while loss goes to 100
+              // (there was: nothing came back). Same asymmetry as icmpPing's DOWN
+              // result — a fabricated 0 ms would drag a latency read toward zero at
+              // exactly the moment the link is worst.
+              ? { ...r, status: "Offline", portsUp: 0, worstUtil: null, latencyMs: null, packetLossPct: 100 }
               : { ...r, status: d?.status }
             : r,
         ),
@@ -445,6 +460,7 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
       routersTotal: routers.length,
       portsUp: routers.reduce((n, r) => n + r.portsUp, 0),
       portsTotal: routers.reduce((n, r) => n + r.portsTotal, 0),
+      pingOnlyRouters: routers.filter((r) => r.mode === "ping").length,
       stale: {
         env: isStale("env"),
         servers: isStale("servers"),

@@ -12,7 +12,9 @@ import backupService from "../services/backupService.js";
 
 // sample = {
 //   batteryChargePct, runtimeRemainingMin, loadPct, inputVoltage, outputVoltage,
-//   batteryVoltage, onBattery(bool|null), batteryStatus, temperature|null
+//   batteryVoltage, onBattery(bool|null), onBypass(bool|null),
+//   outputState('normal'|'battery'|'bypass'|'off'|'avr'|'unknown'|null),
+//   batteryStatus, temperature|null
 // }
 export async function writeUpsSample(io, device, sample) {
   const ts = new Date();
@@ -57,6 +59,16 @@ export async function writeUpsSample(io, device, sample) {
       p.booleanField("on_battery", Boolean(sample.onBattery));
       fields++;
     }
+
+    // on_bypass — the load on raw mains with the inverter cut out of the path. Kept
+    // as its own field rather than folded into on_battery: they are opposite states
+    // of the same enum (battery = protected but on a clock, bypass = powered but
+    // unprotected) and an outage post-mortem needs to tell them apart. Null-guarded
+    // for the same reason as on_battery.
+    if (sample.onBypass != null) {
+      p.booleanField("on_bypass", Boolean(sample.onBypass));
+      fields++;
+    }
     p.timestamp(ts);
 
     // A point with tags but no fields is invalid line protocol and would fail the
@@ -85,6 +97,8 @@ export async function writeUpsSample(io, device, sample) {
     output_voltage: sample.outputVoltage ?? null,
     battery_voltage: sample.batteryVoltage ?? null,
     on_battery: sample.onBattery ?? null,
+    on_bypass: sample.onBypass ?? null,
+    output_state: sample.outputState ?? null,
     battery_status: sample.batteryStatus ?? null,
     temperature: sample.temperature ?? null,
   });
@@ -104,6 +118,10 @@ export async function writeUpsSample(io, device, sample) {
         outputVoltage: sample.outputVoltage ?? null,
         batteryVoltage: sample.batteryVoltage ?? null,
         onBattery: sample.onBattery ?? null,
+        onBypass: sample.onBypass ?? null,
+        // The raw state name, so the UI can say WHICH abnormal source is in use
+        // rather than inferring it from two booleans.
+        outputState: sample.outputState ?? null,
         batteryStatus: sample.batteryStatus ?? null,
         temperature: sample.temperature ?? null,
         timestamp: ts.toISOString(),

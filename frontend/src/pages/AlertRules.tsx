@@ -75,6 +75,14 @@ const METRICS: MetricMeta[] = [
   // sensible threshold depends on the poll cadence. See
   // the seeded `link_errors` rule in the base schema.
   { value: "link_errors", label: "Link errors", unit: "/poll", color: "#F2495C", scope: "network" },
+  // ICMP link quality — the two things SNMP cannot report (a walk either answers or
+  // times out, so a link dropping a third of its packets reads as healthy). Also the
+  // only numeric metrics a PING-ONLY router has. Seeded in the base schema:
+  // router_loss ACTIVE, router_latency INACTIVE — latency's right value is a property
+  // of the link (a rack switch answers in <1 ms, an ISP CPE in 20-40 ms, both healthy),
+  // so it is put in front of an admin to set per device rather than guessed globally.
+  { value: "router_latency", label: "Latency", unit: "ms", color: "#3CC8E8", scope: "network" },
+  { value: "router_loss", label: "Packet loss", unit: "%", color: "#F2495C", scope: "network" },
   { value: "ups_charge", label: "UPS battery", unit: "%", color: "#73BF69", scope: "ups", lowerIsWorse: true },
   { value: "ups_runtime", label: "UPS runtime", unit: "min", color: "#5794F2", scope: "ups", lowerIsWorse: true },
   { value: "ups_load", label: "UPS load", unit: "%", color: "#FF780A", scope: "ups" },
@@ -210,6 +218,8 @@ function MetricIcon({ name, size = 15 }: { name: string; size?: number }) {
     case "router_clients":
     case "link_util":
     case "link_errors":
+    case "router_latency":
+    case "router_loss":
       return (
         <svg {...p}>
           <rect x="3" y="13" width="18" height="7" rx="1.5" />

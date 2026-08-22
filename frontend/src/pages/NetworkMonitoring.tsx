@@ -6,7 +6,14 @@ import { useAuth } from "../context/AuthContext";
 import NetworkDetail from "./NetworkDetail";
 import type { NetDevice } from "./NetworkDetail";
 
-// ─── SNMP router/switch list page ─────────────────────────────────────────────
+// ─── Router list page ─────────────────────────────────────────────────────────
+//
+// USER-FACING WORDING: everything here says "router", never "router/switch".
+// A managed switch is still fully supported and registers through this same form —
+// SNMP reads IF-MIB from both and the poller cannot tell them apart — but naming
+// both device classes in the UI raised more questions than it answered at CSPC,
+// where there is no switch to register. The capability is documented in
+// router-ups-monitoring.md; the label is kept plain.
 // First page = the fleet list (one compact card per router, with "View"); clicking
 // through swaps in NetworkDetail for the full drill-down. Mirrors
 // MikrotikMonitoring ↔ MikrotikDetail and ServerMetrics ↔ ServerDetail, so moving
@@ -49,7 +56,7 @@ interface NetForm {
 const EMPTY_NET_FORM: NetForm = {
   name: "",
   ip: "",
-  community: "public",
+  community: "", // blank = ICMP-only monitoring (see the note in save())
   snmpPort: "161",
   location: "CSPC-ICTU Server Room",
 };
@@ -100,6 +107,9 @@ function mapNet(r: any): NetDevice {
       txBytes: i.txBytes ?? null,
     })),
     monitored: r.monitored ?? true,
+    mode: r.mode ?? "snmp",
+    latencyMs: r.latencyMs ?? null,
+    packetLossPct: r.packetLossPct ?? null,
   };
 }
 function mergeNetLive(prev: NetDevice | undefined, p: any): NetDevice {
@@ -111,6 +121,11 @@ function mergeNetLive(prev: NetDevice | undefined, p: any): NetDevice {
     descr: p.descr ?? base.descr,
     sysName: p.sysName ?? base.sysName,
     uptimeSeconds: p.uptimeSeconds ?? base.uptimeSeconds,
+    // ?? would keep a stale reading when the newest poll measured null — which for
+    // latency is exactly the total-loss case, i.e. the one worth showing.
+    latencyMs: "latencyMs" in p ? p.latencyMs : base.latencyMs,
+    packetLossPct: "packetLossPct" in p ? p.packetLossPct : base.packetLossPct,
+    mode: p.mode ?? base.mode,
     interfaces: p.interfaces ? mapNet(p).interfaces : base.interfaces,
   };
 }
@@ -238,9 +253,28 @@ function NetDrawerRow({ d, isOpen, colSpan }: { d: NetDevice; isOpen: boolean; c
               {d.descr && <Meta label="Description" value={d.descr} />}
               <Meta label="Uptime" value={formatUptime(d.uptimeSeconds)} />
             </div>
-            {!d.monitored ? (
-              <div className="text-[13px]" style={{ color: ORANGE }}>
-                SNMP not configured — reachability only (ping fallback pending).
+            {d.mode === "ping" ? (
+              /* A ping device is not a broken SNMP device, and must not look like
+                 one. It reports exactly three things and will never report ports, so
+                 name the mode and show what it does have instead of an empty list. */
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
+                  ICMP ping · no SNMP community
+                </span>
+                <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1.5">
+                  <Meta
+                    label="Latency"
+                    value={d.latencyMs == null ? "—" : `${d.latencyMs} ms`}
+                  />
+                  <Meta
+                    label="Packet loss"
+                    value={d.packetLossPct == null ? "—" : `${d.packetLossPct}%`}
+                  />
+                </div>
+                <span className="text-[12px]" style={{ color: gf.textDim }}>
+                  Reachability, latency and loss only — enable SNMP on this device for
+                  per-port traffic and link status.
+                </span>
               </div>
             ) : d.interfaces.length === 0 ? (
               <div className="text-[13px]" style={{ color: gf.textDim }}>
@@ -268,6 +302,22 @@ function NetDrawerRow({ d, isOpen, colSpan }: { d: NetDevice; isOpen: boolean; c
 // Compact ports figure for the table cell — the count is the scannable bit, the chips
 // live in the drawer.
 function PortsCell({ d }: { d: NetDevice }) {
+  // A ping device has no ports and never will. An em-dash here would read as
+  // "SNMP is broken / not polled yet", which is the opposite of the truth — so say
+  // what it IS instead, and put the one number it does have where the eye lands.
+  if (d.mode === "ping") {
+    const loss = d.packetLossPct;
+    const lossColor =
+      loss == null ? gf.textDim : loss >= 50 ? RED : loss > 0 ? ORANGE : GREEN;
+    return (
+      <span className="inline-flex items-baseline gap-1.5">
+        <span className="text-[11px] tracking-wider uppercase" style={{ color: gf.textDim }}>ping</span>
+        <span className="text-[13px] tabular-nums" style={{ color: lossColor }}>
+          {loss == null ? "—" : loss > 0 ? `${loss}% loss` : `${d.latencyMs ?? "—"} ms`}
+        </span>
+      </span>
+    );
+  }
   const up = d.interfaces.filter((i) => i.linkUp).length;
   const total = d.interfaces.length;
   const color = total === 0 ? gf.textDim : up === total ? GREEN : up === 0 ? RED : ORANGE;
@@ -326,7 +376,10 @@ export default function NetworkMonitoring() {
   const save = async () => {
     if (!form.name.trim()) return setFormError("Device name is required.");
     if (!form.ip.trim()) return setFormError("IP address is required.");
-    if (!form.community.trim()) return setFormError("SNMP community is required.");
+    // A blank community is a CHOICE, not an omission: it registers the device for
+    // ICMP monitoring. Refusing it is what kept the one router this system most
+    // needs to watch — the ISP-owned CPE, which will never hand out a community —
+    // out of the dashboard entirely.
     setSaving(true);
     setFormError("");
     const res = await api.addNetworkDevice({
@@ -471,7 +524,7 @@ export default function NetworkMonitoring() {
               <rect x="2" y="15" width="20" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
               <path d="M12 9v6M7 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
-            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No routers or switches monitored yet</p>
+            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No routers monitored yet</p>
             <p className="text-[13px] mt-1 max-w-md" style={{ color: gf.textDim }}>
               {isAdmin
                 ? "Click “Add router” to register a managed router (with SNMP enabled) — it starts polling within a minute."
@@ -491,7 +544,7 @@ export default function NetworkMonitoring() {
            which meant scrolling past detail you hadn't asked for to find the one router
            you cared about. */
         <Panel
-          title="Routers & switches"
+          title="Routers"
           noPad
           right={<span className="text-[12px]" style={{ color: gf.textDim }}>{online}/{total} online</span>}
         >
@@ -583,14 +636,14 @@ export default function NetworkMonitoring() {
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setFormOpen(false)}>
           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
             <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.panel }}>
-              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router / switch</span>
+              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router</span>
               <button onClick={() => setFormOpen(false)} className="grid place-items-center w-7 h-7 rounded-md" style={{ color: gf.textMuted }} title="Close (Esc)">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
               </button>
             </div>
             <div className="p-4 flex flex-col gap-3">
               <Field label="Name">
-                <input name="name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Core switch" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="PLDT DMZ router" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="IP address">
@@ -600,14 +653,30 @@ export default function NetworkMonitoring() {
                   <input name="snmpPort" value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
               </div>
-              <Field label="SNMP community (read-only, v2c)">
-                <input name="community" value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+              <Field label="SNMP community (read-only, v2c) — leave blank for ping-only">
+                <input name="community" value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="blank = monitor by ping only" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <Field label="Location">
                 <input name="location" value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
+              {/* The note changes with the mode, because the two register very
+                  different devices and the difference is invisible once saved. */}
               <p className="text-[12px] leading-relaxed" style={{ color: gf.textDim }}>
-                Uses SNMP v2c with a read-only community. Confirm UDP {form.snmpPort || "161"} is reachable from the backend host. Polling begins on the next cycle (≤60s) — no restart needed.
+                {form.community.trim() ? (
+                  <>
+                    <span style={{ color: gf.textMuted }}>SNMP mode.</span> Reads per-port
+                    traffic, link status and uptime over v2c with a read-only community.
+                    Confirm UDP {form.snmpPort || "161"} is reachable from the backend host.
+                  </>
+                ) : (
+                  <>
+                    <span style={{ color: ORANGE }}>Ping-only mode.</span> With no community
+                    this device is monitored by ICMP: up/down, latency and packet loss, and
+                    nothing else — no per-port traffic or link status. Use this for gear you
+                    cannot enable SNMP on, such as an ISP-owned router.
+                  </>
+                )}{" "}
+                Polling begins on the next cycle (≤60s) — no restart needed.
               </p>
               {formError && <div className="text-[12px]" style={{ color: RED }}>{formError}</div>}
               <div className="flex gap-2 mt-1">

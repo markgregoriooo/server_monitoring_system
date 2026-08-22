@@ -241,7 +241,13 @@ async function buildNetwork(start, stop, deviceId) {
       |> range(start: ${S}, stop: ${E})
       |> filter(fn: (r) => r._measurement == "router_metrics")
       ${scope}
-      |> filter(fn: (r) => r._field == "cpu_percent" or r._field == "mem_percent" or r._field == "connected_clients")
+      |> filter(fn: (r) =>
+          r._field == "cpu_percent" or r._field == "mem_percent" or
+          r._field == "connected_clients" or
+          // ICMP. These are the ONLY numbers a ping-only router has, so without
+          // them its report row was blank in every column — a device that had been
+          // polled all month appeared never to have reported at all.
+          r._field == "latency_ms" or r._field == "packet_loss_pct")
       |> group(columns: ["device_id", "_field"])
       |> ${fn}()`;
 
@@ -315,7 +321,10 @@ async function buildNetwork(start, stop, deviceId) {
     if (!byDev.has(id)) byDev.set(id, { device_id: id, rxBytes: 0, txBytes: 0 });
     return byDev.get(id);
   };
-  const G = { cpu_percent: "Cpu", mem_percent: "Mem", connected_clients: "Clients" };
+  const G = {
+    cpu_percent: "Cpu", mem_percent: "Mem", connected_clients: "Clients",
+    latency_ms: "Latency", packet_loss_pct: "Loss",
+  };
   for (const r of means) dev(r.device_id)[`avg${G[r._field]}`] = num(r._value, 0);
   for (const r of maxes) dev(r.device_id)[`max${G[r._field]}`] = num(r._value, 0);
 
@@ -374,15 +383,33 @@ async function buildNetwork(start, stop, deviceId) {
           : "—",
       },
       { label: "Link errors", value: totalErrors },
+      // Worst packet loss anywhere in the period. For a ping-only WAN router this is
+      // the headline figure — a link that never went "offline" but dropped a third of
+      // its traffic is the failure nothing else in this report would show.
+      {
+        label: "Worst packet loss",
+        value: (() => {
+          const withLoss = devRows.filter((d) => d.maxLoss != null);
+          if (!withLoss.length) return "—";
+          const worst = withLoss.reduce((a, b) => (b.maxLoss > a.maxLoss ? b : a));
+          return `${nameOf(worst.device_id)} — ${worst.maxLoss}%`;
+        })(),
+      },
       { label: "Offline events", value: totalOffline },
     ],
     tables: [
       {
         title: "Devices",
-        columns: ["Device", "Kind", "Avg CPU %", "Max CPU %", "Avg Mem %", "Avg Clients", "RX GB", "TX GB", "Offline"],
+        // Avg/Max latency and avg loss sit next to the SNMP gauges rather than in a
+        // separate table: one row per device stays one row per device, and a column
+        // that reads "—" for an SNMP router is the same "not reported" the CPU
+        // columns already show for a ping-only one. Max latency earns its column —
+        // an average hides the spikes, which is the whole complaint about a slow link.
+        columns: ["Device", "Kind", "Avg CPU %", "Max CPU %", "Avg Mem %", "Avg Clients", "Avg ms", "Max ms", "Loss %", "RX GB", "TX GB", "Offline"],
         rows: devRows.map((d) => [
           nameOf(d.device_id), kindOf(d.device_id),
           d.avgCpu ?? "—", d.maxCpu ?? "—", d.avgMem ?? "—", d.avgClients ?? "—",
+          d.avgLatency ?? "—", d.maxLatency ?? "—", d.avgLoss ?? "—",
           gb(d.rxBytes), gb(d.txBytes), offlineOf.get(d.device_id) ?? 0,
         ]),
       },

@@ -10,7 +10,8 @@
     "test": "node --test \"tests/*.test.js\"",
     "mail:check": "node scripts/mailCheck.js",
     "analytics:check": "node scripts/analyticsCheck.js",
-    "link:check": "node scripts/linkCheck.js"
+    "link:check": "node scripts/linkCheck.js",
+    "probe": "node scripts/probeDevice.js"
   },
   "dependencies": {
     "@influxdata/influxdb-client": "^1.35.0",

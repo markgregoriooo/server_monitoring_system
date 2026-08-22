@@ -36,6 +36,14 @@ export interface UpsDevice {
   outputVoltage: number | null;
   batteryVoltage: number | null;
   onBattery: boolean | null;
+  // On BYPASS: the load is on raw mains with the inverter and battery cut out of
+  // the path. Powered, but with zero protection — a distinct state from onBattery,
+  // never both at once (RFC 1628 upsOutputSource is one value).
+  onBypass?: boolean | null;
+  // The raw state name from the backend: normal | battery | bypass | off | avr |
+  // unknown. Lets the UI name WHICH abnormal source is in use instead of inferring
+  // it from a pair of booleans.
+  outputState?: string | null;
   temperature: number | null;
   batteryStatus?: number | null; // RFC 1628: 1 unknown, 2 normal, 3 low, 4 depleted
   commType?: string | null;
@@ -316,6 +324,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
   }, [u.id, range, range.kind === "custom" ? 0 : poll]);
 
   const onBattery = u.onBattery === true;
+  const onBypass = u.onBypass === true;
   const health = batteryHealth(u.batteryStatus);
   const charge = u.batteryChargePct;
 
@@ -353,6 +362,15 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
         </span>
       </div>
 
+      {/* Bypass first: it is the state with NO runtime behind it, so it must not sit
+          below a banner that talks about minutes remaining. */}
+      {onBypass && (
+        <div className="rounded-lg px-3 py-2 text-[14px] font-medium" style={{ background: "rgba(242,73,92,0.12)", border: "1px solid rgba(242,73,92,0.3)", color: RED }}>
+          ⚠ ON BYPASS — the load is on raw mains with the inverter and battery cut out of the path.
+          <span style={{ color: gf.textPrimary }}> There is no backup time at all: a mains dip now drops the load instantly.</span>
+          <span style={{ color: gf.textMuted }}> Check for an overload, an over-temperature, or a maintenance bypass switch left engaged.</span>
+        </div>
+      )}
       {onBattery && (
         <div className="rounded-lg px-3 py-2 text-[14px] font-medium" style={{ background: "rgba(242,73,92,0.12)", border: "1px solid rgba(242,73,92,0.3)", color: RED }}>
           ⚡ ON BATTERY — running on backup power, mains may be down.
@@ -361,7 +379,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
           )}
         </div>
       )}
-      {health.text === "Replace" && !onBattery && (
+      {health.text === "Replace" && !onBattery && !onBypass && (
         <div className="rounded-lg px-3 py-2 text-[14px] font-medium" style={{ background: ORANGE + "14", border: `1px solid ${ORANGE}40`, color: ORANGE }}>
           Battery reports REPLACE — it may not carry the load through the next outage, even at full charge.
         </div>

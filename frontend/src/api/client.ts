@@ -12,6 +12,8 @@ const baseURL = `${API_URL}/api`;
 declare module "axios" {
   export interface InternalAxiosRequestConfig {
     __cspcToken?: string | null;
+    /** Set once when a replaced-session failure is retried, so it can never loop. */
+    __cspcRetried?: boolean;
   }
 }
 
@@ -257,6 +259,30 @@ apiClient.interceptors.response.use(
     const belongsToCurrentSession = sentUnder === getToken();
 
     if (isAuthFailure && !belongsToCurrentSession) {
+      // Not logging out is only HALF the answer. The request was still wanted — it
+      // simply left under a session that rotated out from under it — and dropping it
+      // leaves whatever asked for it permanently empty.
+      //
+      // That is exactly what happened on the Dashboard: the focus charts fetch their
+      // history once, in an effect keyed on [device, range]. If that one fetch lands
+      // during a session rotation it is discarded, nothing re-triggers the effect, and
+      // the Network / MikroTik / UPS charts stay blank until the user changes the range
+      // by hand. Three empty charts and a console full of 403s, on a live session.
+      //
+      // So retry once, with the token now in storage. This is safe for ANY method: the
+      // auth middleware rejects before the route handler runs, so the request provably
+      // had no effect the first time. The flag makes it at most one extra attempt, and
+      // if the new token is also rejected that failure DOES match the current session
+      // and logs out through the branch below.
+      const cfg = error?.config;
+      if (cfg && !cfg.__cspcRetried && getToken()) {
+        cfg.__cspcRetried = true;
+        console.warn(
+          "[session] auth failure from a replaced session — retrying under the current one:",
+          { status, url, serverError },
+        );
+        return apiClient.request(cfg);
+      }
       console.warn(
         "[session] ignored an auth failure from a replaced session:",
         { status, url, serverError },
