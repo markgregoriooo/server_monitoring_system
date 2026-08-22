@@ -523,11 +523,17 @@ export default function MikrotikDetail({
       )}
 
       {/* Stats */}
-      {/* Seven tiles now, so four columns and a second row rather than five cramped
-          ones. Latency and loss are measured on every poll and were already driving
-          alerts and Analytics — the router's own page was the one place they weren't
-          visible. */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
+      {/* Latency and loss are measured on every poll and were already driving alerts
+          and Analytics — the router's own page was the one place they weren't visible. */}
+      {/* AUTO-FIT rather than a fixed column count. The tile count is not constant —
+          a ping-only router shows 4, an SNMP router 7, a MikroTik 7 — and any fixed
+          grid leaves an orphan row for some of them (7 into 5 gives 5+2, 7 into 4
+          gives 4+3). auto-fit packs as many as fit at >=150px and stretches them to
+          fill the row, so every layout comes out flush whatever the count. */}
+      <div
+        className="grid gap-2.5"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}
+      >
         <Stat label="Status" value={d.status} color={statusColor(d.status)} sub={d.reachable ? "reachable" : "—"} />
         <Stat label="CPU" value={d.cpuPercent != null ? String(cpu) : "—"} unit={d.cpuPercent != null ? "%" : undefined} color={loadColor(cpu)} sub="router load" />
         <Stat label="Memory" value={d.memPercent != null ? String(mem) : "—"} unit={d.memPercent != null ? "%" : undefined} color={loadColor(mem)} sub="router RAM" />

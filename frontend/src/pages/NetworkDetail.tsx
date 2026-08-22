@@ -489,12 +489,19 @@ export default function NetworkDetail({
           this router, they are the shape of a router we cannot read. Four tiles of
           nothing read as a broken device; three tiles of real measurements read as a
           working one. */}
-      {/* Four columns in both modes: ping shows 4 tiles exactly, SNMP shows 7 and
-          wraps to 4+3. ICMP is measured on EVERY router — it runs alongside the SNMP
-          walk — so latency and loss belong here too, not only in ping mode. Leaving
-          them out meant the system alerted on a metric, reported on it and charted it
-          in Analytics, while the device's own page never showed it. */}
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
+      {/* ICMP is measured on EVERY router — it runs alongside the SNMP walk — so
+          latency and loss belong here too, not only in ping mode. Leaving them out
+          meant the system alerted on a metric, reported on it and charted it in
+          Analytics, while the device's own page never showed it. */}
+      {/* AUTO-FIT rather than a fixed column count. The tile count is not constant —
+          a ping-only router shows 4, an SNMP router 7, a MikroTik 7 — and any fixed
+          grid leaves an orphan row for some of them (7 into 5 gives 5+2, 7 into 4
+          gives 4+3). auto-fit packs as many as fit at >=150px and stretches them to
+          fill the row, so every layout comes out flush whatever the count. */}
+      <div
+        className="grid gap-2.5"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}
+      >
         <Stat label="Status" value={d.status} color={statusColor(d.status)} sub={d.reachable ? "reachable" : "—"} />
         {pingMode ? (
           <>
