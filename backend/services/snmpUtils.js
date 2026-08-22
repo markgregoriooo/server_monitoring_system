@@ -39,6 +39,82 @@ export const UPS_BOUNDS = {
   temperatureC: [-40, 100], // battery-plausible range
 };
 
+// ─── UPS output source (RFC 1628 upsOutputSource) ─────────────────────────────
+//
+// Where the load is being fed FROM. This one integer is the difference between a
+// protected rack and an unprotected one, and only two of its seven values mean
+// everything is fine.
+//
+// The enum and its interpreters live here, in the pure module, rather than beside
+// the OIDs in snmpClient.js: they are the reasoning, not the transport, and this is
+// the file `npm test` can reach without net-snmp or a device.
+export const UPS_OUTPUT_SOURCE = {
+  other: 1,
+  none: 2,
+  normal: 3,
+  bypass: 4,
+  battery: 5,
+  booster: 6,
+  reducer: 7,
+};
+
+// Collapse the seven raw values into the states an operator would act on.
+//
+//   normal   mains, through the inverter — protected
+//   battery  mains lost, running down the battery. You have N minutes.
+//   bypass   ⚠️ load wired straight to RAW MAINS, around the inverter and battery.
+//            It keeps running, so nothing looks wrong — but protection is GONE:
+//            if mains drops now, everything dies instantly with zero runtime.
+//            Reached by overload, overheating, an internal fault, or someone
+//            throwing the maintenance bypass switch.
+//   off      output disabled entirely — the load is dead.
+//   avr      mains present but out of spec; the UPS is boosting/trimming it.
+//            Still protected. Mains quality is degrading.
+//   unknown  other(1), or anything not in the enum.
+export function upsOutputState(v) {
+  switch (Number(v)) {
+    case UPS_OUTPUT_SOURCE.normal:
+      return "normal";
+    case UPS_OUTPUT_SOURCE.battery:
+      return "battery";
+    case UPS_OUTPUT_SOURCE.bypass:
+      return "bypass";
+    case UPS_OUTPUT_SOURCE.none:
+      return "off";
+    case UPS_OUTPUT_SOURCE.booster:
+    case UPS_OUTPUT_SOURCE.reducer:
+      return "avr";
+    default:
+      return "unknown";
+  }
+}
+
+// True when the UPS is drawing from its battery (an active power event).
+export const isOnBattery = (v) => upsOutputState(v) === "battery";
+
+// True when the load is running on raw mains with NO protection behind it.
+//
+// ⚠️ This was the gap: the enum has named `bypass` since it was written, but the
+// only interpreter was isOnBattery, which tests for battery(5) alone. A UPS in
+// bypass therefore reported onBattery:false and read as perfectly normal — green
+// tile, no alert — while the racks behind it had zero seconds of runtime. Exactly
+// backwards from the risk: on-battery is loud and gives you minutes; bypass was
+// silent and gives you none.
+export const isOnBypass = (v) => upsOutputState(v) === "bypass";
+
+// True when the UPS is not feeding the load at all.
+export const isOutputOff = (v) => upsOutputState(v) === "off";
+
+// Is the load protected right now?
+//
+// Written as "not one of the three states we KNOW are unprotected", never as "one of
+// the states we know are fine". The difference is what happens to `unknown`: a UPS
+// reporting other(1) or a value outside the enum has told us nothing, and turning
+// that silence into an outage would page someone at 3 a.m. over a firmware quirk.
+// An allow-list would also silently start reporting every future RFC value as an
+// outage, which is the wrong default for a list we don't control.
+export const isProtected = (v) => !["battery", "bypass", "off"].includes(upsOutputState(v));
+
 // SNMP port: blank/omitted → 161; anything else must be a real port. Throws rather
 // than silently coercing, so a typo'd port surfaces on the form instead of producing
 // a device that sits Offline forever with nothing explaining why.

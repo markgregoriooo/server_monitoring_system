@@ -1,4 +1,12 @@
 import snmp from "net-snmp";
+import {
+  UPS_OUTPUT_SOURCE,
+  upsOutputState,
+  isOnBattery,
+  isOnBypass,
+  isOutputOff,
+  isProtected,
+} from "./snmpUtils.js";
 
 // ─── Thin net-snmp wrapper for the router/UPS poller ──────────────────────────
 //
@@ -64,14 +72,15 @@ export const UPS_OID = {
   upsOutputPercentLoad: "1.3.6.1.2.1.33.1.4.4.1.5", // percent — table col (per output line)
 };
 
-// UPS-MIB upsOutputSource enum (RFC 1628). Value 5 (battery) == running on
-// battery during an outage; anything else means mains/other.
-export const UPS_OUTPUT_SOURCE = { other: 1, none: 2, normal: 3, bypass: 4, battery: 5, booster: 6, reducer: 7 };
-
-// True when the UPS is drawing from its battery (an active power event).
-export function isOnBattery(outputSourceValue) {
-  return Number(outputSourceValue) === UPS_OUTPUT_SOURCE.battery;
-}
+// UPS-MIB upsOutputSource enum (RFC 1628) + its interpreters. Defined in the PURE
+// snmpUtils.js — they are reasoning about a value, not transport, and `npm test`
+// can reach that file without net-snmp or a device. Re-exported here so the OIDs
+// and the meaning of what they return stay one import away from each other.
+//
+// Imported and re-exported rather than `export … from`, because that form creates
+// no LOCAL binding — the default-export object at the bottom of this file needs
+// real ones.
+export { UPS_OUTPUT_SOURCE, upsOutputState, isOnBattery, isOnBypass, isOutputOff, isProtected };
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 
@@ -169,7 +178,11 @@ export default {
   IF_ADMIN_STATUS,
   UPS_OID,
   UPS_OUTPUT_SOURCE,
+  upsOutputState,
   isOnBattery,
+  isOnBypass,
+  isOutputOff,
+  isProtected,
   DEFAULTS,
   openSession,
   closeSession,

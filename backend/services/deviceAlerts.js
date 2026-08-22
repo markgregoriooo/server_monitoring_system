@@ -333,12 +333,43 @@ async function checkUps(io, device, sample) {
   const id = Number(device.id);
   const events = [];
 
-  // On-battery = mains lost → critical event (not rule-based, like server offline).
+  // ─── Where the load is being fed from (RFC 1628 upsOutputSource) ─────────────
+  // Three distinct ways to be in trouble, all boolean events rather than rules —
+  // like server 'offline', there is no threshold to hang hysteresis on.
+
+  // On-battery = mains lost. Loud, and you have N minutes.
   events.push(await evalEvent({
     deviceId: id, type: "ups_on_battery", active: sample.onBattery === true,
     severity: "critical", title: "UPS on battery",
     message: "UPS switched to battery power (mains lost)",
   }));
+
+  // On-BYPASS = the load is wired straight to raw mains, around the inverter and
+  // the battery. Critical, not warning: the racks are running but have ZERO
+  // protection, so the next mains dip takes them down with no runtime at all.
+  //
+  // This was silent until now. `onBattery` tests upsOutputSource === battery(5),
+  // so bypass(4) reported false and the UPS read as perfectly healthy — a green
+  // tile in front of an unprotected rack. Exactly backwards from the risk.
+  events.push(await evalEvent({
+    deviceId: id, type: "ups_on_bypass", active: sample.onBypass === true,
+    severity: "critical", title: "UPS on bypass",
+    message: "UPS is on BYPASS — load is on raw mains with no battery protection. "
+      + "Check for an overload, an over-temperature, or a maintenance bypass switch left engaged.",
+  }));
+
+  // Output off entirely — the UPS is not feeding the load at all.
+  events.push(await evalEvent({
+    deviceId: id, type: "ups_output_off", active: sample.outputState === "off",
+    severity: "critical", title: "UPS output off",
+    message: "UPS reports no output source — the protected load is not being powered",
+  }));
+
+  // NOTE: booster/reducer (AVR — mains present but out of spec, being boosted or
+  // trimmed) deliberately raises nothing here. The load is still protected, and the
+  // `ups_input_voltage` event below already alerts on the bad mains that causes it;
+  // adding a second alert would double-report one condition. It is carried through
+  // to the dashboard as `outputState: "avr"` so it can still be SEEN.
 
   events.push(await evalMetric({ deviceId: id, metricName: "ups_charge", type: "ups_charge", value: num(sample.batteryChargePct), label: "UPS battery", unit: "%", low: true }));
   events.push(await evalMetric({ deviceId: id, metricName: "ups_runtime", type: "ups_runtime", value: num(sample.runtimeRemainingMin), label: "UPS runtime", unit: " min", low: true }));

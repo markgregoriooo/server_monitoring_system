@@ -9,6 +9,12 @@ import {
   networkSegment,
   computeUtilizationPct,
   counterDelta,
+  UPS_OUTPUT_SOURCE,
+  upsOutputState,
+  isOnBattery,
+  isOnBypass,
+  isOutputOff,
+  isProtected,
 } from "../services/snmpUtils.js";
 
 // Pure-logic tests for the SNMP router/UPS path. No MySQL, no InfluxDB, no .env —
@@ -159,4 +165,63 @@ test("networkSegment derives the /24 and degrades to empty string", () => {
   assert.equal(networkSegment("127.0.0.1"), "127.0.0.0/24");
   assert.equal(networkSegment("not-an-ip"), "");
   assert.equal(networkSegment(null), "");
+});
+
+// ─── UPS output source (RFC 1628) ─────────────────────────────────────────────
+
+test("every enum value maps to a state, and only two mean the load is safe", () => {
+  const S = UPS_OUTPUT_SOURCE;
+  assert.equal(upsOutputState(S.normal), "normal");
+  assert.equal(upsOutputState(S.battery), "battery");
+  assert.equal(upsOutputState(S.bypass), "bypass");
+  assert.equal(upsOutputState(S.none), "off");
+  assert.equal(upsOutputState(S.booster), "avr");
+  assert.equal(upsOutputState(S.reducer), "avr");
+  assert.equal(upsOutputState(S.other), "unknown");
+
+  // Protected = mains through the inverter, or mains being boosted/trimmed by AVR.
+  assert.equal(isProtected(S.normal), true);
+  assert.equal(isProtected(S.booster), true);
+  assert.equal(isProtected(S.battery), false);
+  assert.equal(isProtected(S.bypass), false);
+  assert.equal(isProtected(S.none), false);
+});
+
+test("BYPASS is detected — the state that used to read as a healthy UPS", () => {
+  // The regression this exists to prevent. isOnBattery tests battery(5), so
+  // bypass(4) answered false and every downstream check saw a normal UPS: no
+  // alert, green tile, and a rack with zero seconds of runtime behind it.
+  const bypass = UPS_OUTPUT_SOURCE.bypass;
+  assert.equal(isOnBattery(bypass), false); // still false — that part was never wrong
+  assert.equal(isOnBypass(bypass), true); // …but now something catches it
+  assert.equal(isProtected(bypass), false); // and it counts as unprotected
+});
+
+test("the three abnormal states are mutually exclusive", () => {
+  // A UPS is on battery, on bypass, or off — never two at once. Overlapping
+  // predicates would raise two critical alerts for one condition.
+  for (const v of Object.values(UPS_OUTPUT_SOURCE)) {
+    const flags = [isOnBattery(v), isOnBypass(v), isOutputOff(v)].filter(Boolean);
+    assert.ok(flags.length <= 1, `value ${v} matched ${flags.length} states`);
+  }
+});
+
+test("an unreported or unrecognised source never invents an outage", () => {
+  // A UPS that answers other(1), or a value outside the enum, has told us nothing.
+  // Reading that as "unprotected" would page someone over a firmware quirk.
+  for (const v of [null, undefined, "", 0, 99, "banana", NaN]) {
+    assert.equal(upsOutputState(v), "unknown", `value=${String(v)}`);
+    assert.equal(isOnBattery(v), false);
+    assert.equal(isOnBypass(v), false);
+    assert.equal(isOutputOff(v), false);
+    assert.equal(isProtected(v), true); // benefit of the doubt, deliberately
+  }
+});
+
+test("a numeric string from SNMP reads the same as a number", () => {
+  // net-snmp normalizes Integer varbinds to numbers, but a value that has been
+  // through JSON (the backup replay path) can arrive as a string.
+  assert.equal(upsOutputState("4"), "bypass");
+  assert.equal(isOnBypass("4"), true);
+  assert.equal(isOnBattery("5"), true);
 });

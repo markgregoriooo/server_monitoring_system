@@ -94,13 +94,22 @@ export async function writeNetworkSample(io, device, sample) {
         ip: device.ip,
         type: device.type ?? "router",
         location: device.location,
-        status: "Online",
+        // Derived, not hardcoded "Online". The ping-only path writes a sample even
+        // when the device is DOWN (100% loss is the measurement), so a fixed
+        // "Online" here would have every dashboard show an unreachable router as up
+        // on the same broadcast that reports it lost every packet.
+        status: sample.reachable !== false ? "Online" : "Offline",
         reachable: sample.reachable !== false,
         descr: sample.descr ?? null, // sysDescr — vendor/model
         sysName: sample.sysName ?? null, // sysName — device hostname
         uptimeSeconds: sample.uptimeSeconds ?? null,
         cpuPercent: sample.cpuPercent ?? null,
         memPercent: sample.memPercent ?? null,
+        // ICMP — written to Influx since this handler was built, but never sent to
+        // the browser, so the two fields could not be displayed anywhere. They are
+        // the ONLY live numbers a ping-only router has.
+        latencyMs: sample.latencyMs ?? null,
+        packetLossPct: sample.packetLossPct ?? null,
         // Was omitted, so the dashboard's client count never updated live — it only
         // arrived on the initial GET. SNMP leaves it null; MikroTik fills it.
         connectedClients: sample.connectedClients ?? null,

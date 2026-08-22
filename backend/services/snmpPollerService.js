@@ -1,5 +1,15 @@
 import db from "../config/mysql.js";
-import client, { SYS_OID, IF_OID, IF_OPER_STATUS, IF_ADMIN_STATUS, UPS_OID, isOnBattery } from "./snmpClient.js";
+import client, {
+  SYS_OID,
+  IF_OID,
+  IF_OPER_STATUS,
+  IF_ADMIN_STATUS,
+  UPS_OID,
+  isOnBattery,
+  isOnBypass,
+  upsOutputState,
+} from "./snmpClient.js";
+import icmpPing from "./icmpPing.js";
 import agentService from "./agentService.js";
 import deviceAlerts from "./deviceAlerts.js";
 import alertBandState from "./alertBandState.js";
@@ -26,9 +36,21 @@ import {
 // separate offline sweep: each cycle directly knows whether a device answered, and
 // flips devices.status accordingly.
 //
-// SNMP-only (design scope): a device is pollable only if it has an IP + community
-// string (and, for a UPS, communication_type snmp/network). Unmanaged routers that
-// would need ICMP-ping fallback are skipped for now — see the note in loadDevices.
+// Two collection modes for a router, decided per device by whether it has a
+// community string (see loadDevices):
+//
+//   SNMP  — the full read: interfaces, traffic counters, link state, uptime.
+//           ICMP runs alongside it and adds latency/packet loss, which SNMP cannot
+//           express: an SNMP walk either answers or times out, so a link that is up
+//           but dropping 40% of packets looks perfectly healthy until it finally
+//           flips to a flat Offline.
+//   PING  — ICMP only: reachable, latency, loss. The design doc's "universal
+//           fallback" (§4), and the only way to monitor ISP-owned CPE, which is
+//           locked down and will not answer SNMP at all.
+//
+// A UPS is always SNMP — communication_type must be snmp/network, and pinging a UPS
+// would tell you its management card has power while saying nothing about the
+// battery, which is the entire reason the device is monitored.
 
 const SNMP_TIMEOUT_MS = 5000;
 const SNMP_RETRIES = 1;
@@ -185,6 +207,12 @@ export async function collectUps(conn) {
       outputVoltage: inRange(firstValue(outV), ...B.voltage),
       batteryVoltage: battV == null ? null : battV / 10, // RFC 1628: 0.1 V DC units
       onBattery: src == null ? null : isOnBattery(src),
+      // Where the load is actually fed from. `onBattery` alone cannot express
+      // BYPASS — the load on raw mains with the inverter and battery cut out of the
+      // path — which reported false here and read as a healthy UPS. See
+      // snmpUtils.upsOutputState.
+      onBypass: src == null ? null : isOnBypass(src),
+      outputState: src == null ? null : upsOutputState(src),
       batteryStatus: inRange(s[UPS_OID.upsBatteryStatus], ...B.batteryStatus),
       temperature: inRange(s[UPS_OID.upsBatteryTemperature], ...B.temperatureC),
     };
@@ -195,11 +223,18 @@ export async function collectUps(conn) {
 
 // ─── DB reads ──────────────────────────────────────────────────────────────────
 
-// Load the routers + UPS to poll, with their SNMP connection details. A device is
-// pollable only with an IP + community (SNMP-only scope). A UPS additionally needs
-// communication_type snmp/network — a usb/serial UPS can't be reached over SNMP.
-// NOTE: managed-by-ping-only routers (no community) are intentionally excluded for
-// now; ICMP-ping fallback is a separate small module (design doc §4/§6).
+// Load the routers + UPS to poll, with their connection details, and tag each with
+// the mode it will be collected in.
+//
+// A ROUTER needs only an IP: with a community it is polled over SNMP, without one
+// it falls back to ICMP (`pingOnly`). It used to need both, which silently dropped
+// every router that cannot run SNMP — and at CSPC that is the ISP-owned PLDT CPE,
+// i.e. the only non-MikroTik router on site (see router-ups-client-answers.md §3).
+// The feature had no device left to show.
+//
+// A UPS still needs an IP + community + communication_type snmp/network. There is
+// no ping fallback for one: a UPS that answers a ping tells you its management card
+// has power, which is not what anybody is monitoring a battery for.
 async function loadDevices() {
   const [rows] = await db.query(
     `SELECT d.device_id AS id, d.device_name AS name, d.ip_address AS ip,
@@ -211,9 +246,13 @@ async function loadDevices() {
        LEFT JOIN ups_details u     ON u.device_id = d.device_id
       WHERE d.device_type IN ('router','ups')`,
   );
-  return rows.filter(
-    (r) => r.ip && r.community && (r.type !== "ups" || ["snmp", "network"].includes(r.commType)),
-  );
+  return rows
+    .filter((r) => {
+      if (!r.ip) return false;
+      if (r.type === "ups") return Boolean(r.community) && ["snmp", "network"].includes(r.commType);
+      return true; // router: community → SNMP, none → ICMP
+    })
+    .map((r) => ({ ...r, pingOnly: r.type === "router" && !r.community }));
 }
 
 async function loadInterfaceLabels(deviceId) {
@@ -326,10 +365,14 @@ async function setReachable(io, d, online) {
   } catch (err) {
     console.error("[SNMP_POLLER] status update error:", err.message);
   }
+  // Name the protocol that actually fell silent. "no SNMP response" on a ping-only
+  // router describes a poll that was never attempted, and sends whoever reads the log
+  // off to check a community string the device does not have.
+  const silent = d.pingOnly ? "no ICMP reply" : "no SNMP response";
   const log = await agentService.logDevice(
     d.id,
     online ? "info" : "warning",
-    online ? `${typeLabel(d)} reachable` : `${typeLabel(d)} unreachable — no SNMP response`,
+    online ? `${typeLabel(d)} reachable` : `${typeLabel(d)} unreachable — ${silent}`,
   );
   if (log) io?.emit("deviceLog", log);
   io?.emit(d.type === "ups" ? "upsStatus" : "networkStatus", {
@@ -351,9 +394,82 @@ async function setReachable(io, d, online) {
 
 // --- Per-device poll ------------------------------------------------------------
 
+// A router with no community string: ICMP is the entire sample. No interfaces, no
+// uptime, no traffic — just whether it answers, how fast, and how much it drops.
+//
+// Unlike the SNMP path this writes the sample even when the device is DOWN. Total
+// loss is a measurement, not an error: `reachable` and `packet_loss_pct` are the
+// only two things a no-SNMP router ever gives us, so dropping the point during an
+// outage would blank the chart at exactly the moment it is worth reading. (The SNMP
+// path has no equivalent — an SNMP timeout yields no partial sample to write.)
+async function pollRouterByPing(io, d) {
+  const icmp = await icmpPing.ping(d.ip);
+  const sample = {
+    reachable: icmp.reachable,
+    descr: null,
+    sysName: null,
+    uptimeSeconds: null,
+    cpuPercent: null,
+    memPercent: null,
+    latencyMs: icmp.latencyMs,
+    packetLossPct: icmp.packetLossPct,
+    connectedClients: null,
+    interfaces: [],
+  };
+
+  await setReachable(io, d, icmp.reachable);
+  await writeNetworkSample(io, d, sample);
+  // Safe with an empty sample: every numeric rule reads null → NaN and bails, and the
+  // per-interface loop doesn't run. The alert that matters here — the device going
+  // unreachable — is already raised by setReachable → deviceAlerts.checkReachability.
+  await deviceAlerts.checkRouter(io, d, sample);
+
+  latestNetwork.set(Number(d.id), {
+    status: icmp.reachable ? "Online" : "Offline",
+    reachable: icmp.reachable,
+    mode: "ping",
+    descr: null,
+    sysName: null,
+    uptimeSeconds: null,
+    cpuPercent: null,
+    memPercent: null,
+    latencyMs: icmp.latencyMs,
+    packetLossPct: icmp.packetLossPct,
+    interfaces: [],
+  });
+}
+
 async function pollRouter(io, d) {
+  if (d.pingOnly) return pollRouterByPing(io, d);
+
   const labels = await loadInterfaceLabels(d.id);
-  const sample = await collectRouter(d.id, connFor(d), labels); // throws if unreachable
+  // Started before the SNMP walk so the two overlap rather than adding their
+  // latencies together. icmpPing.ping never rejects, so this promise is always safe
+  // to await later — including on the SNMP failure path below.
+  const icmpPromise = icmpPing.ping(d.ip);
+
+  let sample;
+  try {
+    sample = await collectRouter(d.id, connFor(d), labels); // throws if unreachable
+  } catch (err) {
+    // Say WHICH of the two failures this is. "Request timed out" alone cannot
+    // distinguish a dead router from a live one with the wrong community string or a
+    // blocked UDP 161 — and those need opposite fixes. §9 of the design doc sends the
+    // operator to run snmpwalk by hand precisely because the log couldn't tell them.
+    const icmp = await icmpPromise;
+    err.message = icmp.reachable
+      ? `${err.message} — but the host ANSWERS ICMP (${icmp.latencyMs} ms), so the device is up and SNMP is the problem: wrong community, SNMP not enabled, or UDP ${d.snmpPort || 161} blocked`
+      : `${err.message} — and the host does not answer ICMP either, so the device or its link is down`;
+    throw err;
+  }
+
+  // Latency and packet loss are what SNMP cannot express. An SNMP walk either
+  // answers or times out, so a link that is up but dropping 40% of packets reads as
+  // perfectly healthy right until it flips to a flat Offline.
+  const icmp = await icmpPromise;
+  sample.latencyMs = icmp.latencyMs;
+  sample.packetLossPct = icmp.packetLossPct;
+
   await syncInterfaces(d.id, sample.interfaces);
   await setReachable(io, d, true);
   await writeNetworkSample(io, d, sample);
@@ -361,6 +477,9 @@ async function pollRouter(io, d) {
   latestNetwork.set(Number(d.id), {
     status: "Online",
     reachable: true,
+    mode: "snmp",
+    latencyMs: sample.latencyMs,
+    packetLossPct: sample.packetLossPct,
     // sysDescr/sysName were polled every cycle and thrown away. They're the only
     // vendor/model/hostname the standard MIBs give us — the router equivalent of the
     // server path's server_specs — so carry them through to the list + detail views.
@@ -402,6 +521,8 @@ async function pollUps(io, d) {
     outputVoltage: sample.outputVoltage,
     batteryVoltage: sample.batteryVoltage,
     onBattery: sample.onBattery,
+    onBypass: sample.onBypass,
+    outputState: sample.outputState,
     // RFC 1628 upsBatteryStatus (2 normal, 3 low, 4 depleted). Already drives the
     // battery-replace alert and the broadcast; cached here too so the list endpoint
     // can surface battery HEALTH, which is distinct from charge level — a battery at
@@ -443,9 +564,14 @@ async function pollAll(io) {
 
 // ─── Dashboard reads (GET /api/network, /api/ups) ───────────────────────────────
 
-// All routers + their latest live values (status, interfaces, uptime). A router
-// with no community string is returned with monitored=false so the UI can flag it
-// as "not yet pollable" (it would need SNMP enabled or the ICMP fallback module).
+// All routers + their latest live values (status, interfaces, uptime).
+//
+// `mode` tells the UI which kind of device it is looking at: 'snmp' gets the full
+// read, 'ping' gets reachability, latency and loss and nothing else. Both are
+// monitored — the field used to be `monitored: Boolean(community)`, which labelled
+// a ping-only router "not yet pollable" back when that was true. It no longer is,
+// and a page that renders an empty interface table for a device that will never
+// report interfaces reads as broken rather than as a different kind of device.
 async function getNetworkDevices() {
   const [rows] = await db.query(
     `SELECT d.device_id AS id, d.device_name AS name, d.ip_address AS ip,
@@ -471,8 +597,13 @@ async function getNetworkDevices() {
       uptimeSeconds: live?.uptimeSeconds ?? null,
       cpuPercent: live?.cpuPercent ?? null,
       memPercent: live?.memPercent ?? null,
+      latencyMs: live?.latencyMs ?? null,
+      packetLossPct: live?.packetLossPct ?? null,
       interfaces: live?.interfaces ?? [],
-      monitored: Boolean(r.community), // false → SNMP not configured (ping-only/unmanaged)
+      // Falls back to the DB fact rather than the live cache, so the mode is right
+      // on the very first GET after a restart, before any poll has run.
+      mode: live?.mode ?? (r.community ? "snmp" : "ping"),
+      monitored: true, // every registered router is polled, one way or the other
     };
   });
 }
@@ -508,6 +639,8 @@ async function getUpsDevices() {
       outputVoltage: live?.outputVoltage ?? null,
       batteryVoltage: live?.batteryVoltage ?? null,
       onBattery: live?.onBattery ?? null,
+      onBypass: live?.onBypass ?? null,
+      outputState: live?.outputState ?? null,
       batteryStatus: live?.batteryStatus ?? null, // RFC 1628 enum: 2 normal, 3 low, 4 depleted
       temperature: live?.temperature ?? null,
       monitored: ["snmp", "network"].includes(r.commType),
@@ -520,9 +653,12 @@ async function getUpsDevices() {
 // The poller is data-driven: loadDevices() runs every cycle, so a device added here
 // starts being polled within one interval (≤ SNMP_POLL_INTERVAL_MS) with NO restart.
 // These replace the old hand-written seed SQL, so the
-// dashboard's "Add router / Add UPS" replaces hand-writing SQL. A community string is
-// REQUIRED: SNMP-only scope means a device without one can't be polled at all (the
-// ICMP-ping fallback for unmanaged routers isn't built yet).
+// dashboard's "Add router / Add UPS" replaces hand-writing SQL.
+//
+// A community string is REQUIRED for a UPS and OPTIONAL for a router: leaving it
+// blank registers the router for ICMP monitoring instead. It used to be required for
+// both, which meant the form refused the one device class the fallback exists for —
+// an ISP-owned CPE that will never hand out a community string.
 
 const trimOrNull = (v) => {
   const s = v == null ? "" : String(v).trim();
@@ -535,35 +671,58 @@ const trimOrNull = (v) => {
 // dev simulator does (router and UPS both answer on 127.0.0.1:1161, told apart by
 // community). An exact triple match is unambiguously a double-registration, which
 // would poll the box twice and split its history across two device_id-tagged series.
+// A PING-ONLY device has no community, so its endpoint identity collapses to the IP
+// alone — there is no second ICMP context to tell two entries at one address apart.
+// `= NULL` is never true in SQL, so this needs its own branch: without it the guard
+// silently matched nothing and every re-submit of the add form created another
+// duplicate router.
 async function assertEndpointFree(conn, ip, snmpPort, community) {
-  const [dup] = await conn.query(
-    `SELECT d.device_name, d.device_type
-       FROM devices d
-       JOIN device_network n ON n.device_id = d.device_id
-      WHERE d.ip_address = ? AND n.snmp_port = ? AND n.snmp_community = ?
-      LIMIT 1`,
-    [ip, snmpPort, community],
-  );
+  const [dup] = community
+    ? await conn.query(
+        `SELECT d.device_name, d.device_type
+           FROM devices d
+           JOIN device_network n ON n.device_id = d.device_id
+          WHERE d.ip_address = ? AND n.snmp_port = ? AND n.snmp_community = ?
+          LIMIT 1`,
+        [ip, snmpPort, community],
+      )
+    : await conn.query(
+        `SELECT d.device_name, d.device_type
+           FROM devices d
+           JOIN device_network n ON n.device_id = d.device_id
+          WHERE d.ip_address = ? AND (n.snmp_community IS NULL OR n.snmp_community = '')
+          LIMIT 1`,
+        [ip],
+      );
   if (dup.length) {
     throw badRequest(
-      `"${dup[0].device_name}" (${dup[0].device_type}) is already registered at ${ip}:${snmpPort} ` +
-        `with that community string.`,
+      community
+        ? `"${dup[0].device_name}" (${dup[0].device_type}) is already registered at ${ip}:${snmpPort} ` +
+            `with that community string.`
+        : `"${dup[0].device_name}" (${dup[0].device_type}) is already registered at ${ip} for ping monitoring.`,
     );
   }
 }
 
 // Validate the fields shared by both device classes, or throw a 400.
-function parseCommon(input) {
+//
+// `communityRequired` is false for a ROUTER, where a blank community is a real
+// choice — it registers the device for ICMP monitoring instead. It stays true for a
+// UPS: there is no ping fallback for a battery, so a UPS without a community would
+// be a row that can never report the values it exists to report.
+function parseCommon(input, { communityRequired = true } = {}) {
   const name = String(input?.name ?? "").trim();
   const ip = String(input?.ip ?? "").trim();
   const community = String(input?.community ?? "").trim();
   if (!name) throw badRequest("Device name is required.");
   if (!isValidIp(ip)) throw badRequest("A valid IPv4 address is required.");
-  if (!community) throw badRequest("SNMP community string is required (SNMP-only monitoring).");
+  if (communityRequired && !community) {
+    throw badRequest("SNMP community string is required for a UPS (there is no ping fallback for a battery).");
+  }
   return {
     name,
     ip,
-    community,
+    community: community || null, // null → ICMP-only monitoring
     location: String(input?.location ?? "").trim() || "CSPC-ICTU Server Room",
     snmpPort: normalizePort(input?.snmpPort),
   };
@@ -573,7 +732,8 @@ function parseCommon(input) {
 // transaction. Returns the row shaped exactly like a getNetworkDevices() item so the
 // caller can broadcast/return it directly.
 async function addNetworkDevice(input) {
-  const { name, ip, community, location, snmpPort } = parseCommon(input);
+  // A blank community is allowed here and means "monitor this one by ping".
+  const { name, ip, community, location, snmpPort } = parseCommon(input, { communityRequired: false });
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
@@ -590,7 +750,13 @@ async function addNetworkDevice(input) {
       [deviceId, networkSegment(ip), snmpPort, community],
     );
     await conn.commit();
-    await agentService.logDevice(deviceId, "info", "Router registered for SNMP monitoring");
+    await agentService.logDevice(
+      deviceId,
+      "info",
+      community
+        ? "Router registered for SNMP monitoring"
+        : "Router registered for ICMP ping monitoring (no SNMP community)",
+    );
     return {
       id: deviceId,
       name,
@@ -604,7 +770,10 @@ async function addNetworkDevice(input) {
       uptimeSeconds: null,
       cpuPercent: null,
       memPercent: null,
+      latencyMs: null,
+      packetLossPct: null,
       interfaces: [],
+      mode: community ? "snmp" : "ping",
       monitored: true,
     };
   } catch (err) {
