@@ -1,7 +1,7 @@
 # Router & UPS Monitoring — Client's Returned Answers
 
 **Returned by:** CSPC-ICTU · **Transcribed:** 2026-08-22
-**Source:** photographs of the filled-in form, `router&ups_questionnaire_answers/` (4 JPGs)
+**Source:** photographs of the filled-in form + one UPS nameplate, `router&ups_questionnaire_answers/` (5 JPGs)
 **Form:** `router-ups-client-questionnaire.md`
 **Answers to:** `router-ups-monitoring.md` §10
 
@@ -19,11 +19,17 @@ a *device* is missing or out of scope:
 
 | | Listed | In scope for this feature | Has an IP we can poll |
 |---|---|---|---|
-| **UPS** | 3 | 3 (claimed) | **0** |
+| **UPS** | 3 | 3 (one confirmed networked — see §2) | **0** |
 | **Routers/switches** | 4 | **1** (3 are MikroTik) | 1 (needs confirming) |
 
 So the answer to "which devices do we register?" is currently **one router, maybe**, and it is the
 one row the client left un-classified. See §5 for what to ask back.
+
+> **Mixed UPS brands are not a problem** and never were. UPS-MIB (RFC 1628) is a standard, so
+> `1.3.6.1.2.1.33.1.2.4.0` means "battery charge %" on every vendor; `snmpClient.js` carries no
+> brand-specific code and `ups_details.brand`/`model` are descriptive labels nothing branches on.
+> The question is never *which brand* but *does this unit answer SNMP* — which is per-unit, since
+> two identical units differ if only one has its network module configured.
 
 ---
 
@@ -34,6 +40,59 @@ one row the client left un-classified. See §5 for what to ask back.
 | 1 | KEDOS | ☑ **Yes** | *(blank)* | MAIN COMPUTER |
 | 2 | NEW STAR INDUSTRIAL | ☑ **Yes** | *(blank)* | RACK |
 | 3 | NEWSTAR INDUSTRIAL | ☑ **Yes** | *(blank)* | RACK |
+
+### ⚠️ Superseded — a nameplate photo arrived (2026-08-22)
+
+ICTU sent a photo of one unit's nameplate, which answers most of this section and
+**overturns the doubt recorded below**:
+
+| | |
+|---|---|
+| **Brand** | PHOENIX |
+| **Model** | **TTN-V 2K VA RT UNITY IoT** |
+| **Rating** | 2000 VA / 2000 W (at 220–240 VAC), rack-tower |
+| **AC input** | 200/208/220/230/240 VAC, 50/60 Hz, 16 A max, 1-phase + N + PE |
+| **Battery** | 6 × 12 V 7 Ah lead-acid, one string (72 V DC) |
+| **Ambient** | 0–40 °C |
+| **P/N** | 9103-73932DM1 |
+| **MAC** | printed on the nameplate — **`00…`, the rest is cut off by the photo edge** |
+
+**A MAC address on the nameplate is proof of a built-in network interface.** Combined
+with `IoT` in the model name, the "Yes — has a network/SNMP card" answers are
+credible after all. The doubt recorded below was reasonable from the form alone and
+is wrong about this unit; it is kept rather than deleted because the reasoning still
+applies to the *other* two rows, which have not been photographed.
+
+**Note the brand mismatch.** The form says KEDOS and NewStar Industrial; the
+nameplate says PHOENIX. Either the form's names came off rack labels rather than the
+units, or this photo is of a unit the form did not list. Which of the three rows this
+nameplate belongs to is **not yet known** — ask before registering anything.
+
+**The open question has moved, and it is narrower.** A network port is not the same
+as SNMP:
+
+- `UNITY IoT` is a vendor **cloud/app** monitoring platform. Units in this class very
+  often expose WiFi or a phone app and reach SNMP only through an optional card.
+- Our poller speaks **SNMP v2c / UPS-MIB (RFC 1628)** and nothing else. A UPS that is
+  on the network but only talks to its vendor's cloud is still unmonitorable here.
+
+**One command settles it**, once the unit has an IP:
+
+```bash
+snmpwalk -v2c -c <community> <ups-ip> 1.3.6.1.2.1.33
+```
+
+A subtree back = fully supported, register it and it works. A timeout = the network
+interface is real but not SNMP, and this unit needs an SNMP card (or the feature
+covers only what does answer).
+
+**Finding its IP is now easy**, and does not need another form: the nameplate carries
+the MAC, and the MikroTik knows every lease on the LAN — `IP → DHCP Server → Leases`,
+match the MAC. Get the full MAC from the sticker; the photo cut it off after `00`.
+
+---
+
+### Original assessment, from the form alone (kept for the two un-photographed units)
 
 ⚠️ **Treat all three "Yes" answers as unconfirmed.** Three things point the other way:
 
