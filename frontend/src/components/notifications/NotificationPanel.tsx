@@ -58,8 +58,30 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
         className="flex items-center justify-between px-2 py-2.5 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--gf-divider)" }}
       >
-        <span className="text-[14px] font-semibold tracking-wide truncate min-w-0" style={{ color: "var(--gf-text-primary)" }}>
-          NOTIFICATIONS{unreadCount > 0 ? ` (${unreadCount})` : ""}
+        {/* The count is a SEPARATE, non-shrinking element rather than part of the
+            title string.
+            
+            It used to read `NOTIFICATIONS (22)` inside one truncating span, and the
+            three buttons on the right never shrink — so the title is the only thing
+            that can give. The count sits at the END of that string, which makes the
+            number the FIRST thing lost: at two digits the header read
+            "NOTIFICATIONS (2…", turning 22 unread into an apparent 2. The one part
+            of the header that carries information was the part being thrown away.
+            
+            Now the word truncates and the number cannot. Capped at 99+ like the bell
+            badge in Header.tsx, so a busy night can't widen the header either. */}
+        <span className="flex items-baseline gap-1.5 min-w-0">
+          <span className="text-[14px] font-semibold tracking-wide truncate" style={{ color: "var(--gf-text-primary)" }}>
+            NOTIFICATIONS
+          </span>
+          {unreadCount > 0 && (
+            <span
+              className="shrink-0 text-[11px] font-semibold tabular-nums rounded-[2px] px-1"
+              style={{ color: "var(--gf-accent)", background: "var(--gf-accent-dim)" }}
+            >
+              {unreadCount > 99 ? "99+" : unreadCount}
+            </span>
+          )}
         </span>
         <div className="flex items-center gap-2 shrink-0">
           {unreadCount > 0 && (
