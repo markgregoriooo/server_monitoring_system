@@ -5,16 +5,19 @@ Monitoring for the two remaining server-room data sources in the architecture di
 **over the LAN via SNMP** — nothing is installed *on* the device.
 Branch: `router-ups-monitoring`.
 
-> ⚠️ **SNMP-only (no NUT).** A UPS must have a **network / SNMP card** to be monitored — a
-> USB-/serial-only UPS is **out of scope** (it would need an SNMP card added first). Routers
-> still use **ICMP ping** as a complement for reachability / latency / packet-loss — that's not
-> a separate stack, just a ping.
+> ⚠️ **SNMP for the real data; ICMP where SNMP isn't available.** A UPS must have a
+> **network / SNMP card** to be monitored — a USB-/serial-only UPS is **out of scope**, and
+> there is no ping fallback for one (pinging a battery tells you its management card has
+> power, which is not what anyone monitors a battery for). A **router** needs only an IP: with
+> a community string it is polled over SNMP, without one it falls back to **ICMP ping**
+> (up/down + latency + packet loss). ICMP also runs *alongside* every SNMP router poll, since
+> latency and loss are things SNMP cannot express. ✅ **Built** — see §8/§11.
 
 > ✅ **Scope (confirmed with client):** UPS monitoring is **monitor-and-alert only** — the
 > system never takes automated action on a power event (no automatic server shutdown). It
 > observes, records to InfluxDB, and raises alerts; humans decide what to do.
 
-> 🧭 **Status: IMPLEMENTED (poller + APIs + pages + add/remove UI).** The poller, handlers,
+> 🧭 **Status: IMPLEMENTED (poller + ICMP fallback + APIs + pages + add/remove UI).** The poller, handlers,
 > read routes, and the two dashboard pages are built (`node --check` / `tsc` clean; see §8 /
 > SESSION_NOTES SESSION 10). **Devices can now be registered from the dashboard** — the Network
 > and UPS pages have an admin-only **"Add router" / "Add UPS"** button (`POST /api/network`,
@@ -278,6 +281,8 @@ SNMP_POLL_INTERVAL_MS=60000   # default poll cadence for the router/UPS poller
 | File | Role | Status |
 |---|---|---|
 | `backend/services/snmpClient.js` | thin `net-snmp` wrapper (GET/walkColumn, v2c, timeouts, OID maps for IF-MIB + UPS-MIB) | ✅ built (loopback-verified) |
+| `backend/services/pingOutput.js` | **PURE** `ping`-output parser + argv builder. Reads NUMBERS, `ms` and `=`/`<` — never English words, because `ping` is localized and a German/French box would otherwise parse as 100% loss, indistinguishable from a dead device. Tested in `tests/pingOutput.test.js` (18 cases over 5 platform/locale fixtures) | ✅ built |
+| `backend/services/icmpPing.js` | spawns the OS `ping` (argv array, no shell) and assembles `{reachable, latencyMs, packetLossPct}`. **Never throws** — total loss is a measurement, not an error. Shells out rather than using raw sockets so the backend needn't run elevated | ✅ built |
 | `backend/services/snmpPollerService.js` | poll loop: load devices, SNMP GET/walk, diff counters, write InfluxDB, broadcast, thresholds; + list reads | ✅ built |
 | `backend/handlers/networkMetricsHandler.js` | router sample → InfluxDB `network_traffic` (per-interface) + `router_metrics` + `networkMetrics` broadcast | ✅ built |
 | `backend/handlers/upsMetricsHandler.js` | UPS sample → InfluxDB `ups_metrics` + `upsMetrics` broadcast | ✅ built |
@@ -362,10 +367,18 @@ intact** (it's tagged by the stable `device_id`; see §5).
 
 ## 10. Open questions / decisions needed
 
-1. **Actual device models?** The router make/model decides SNMP-vs-ping and which vendor MIB
-   (if any) exposes CPU/mem.
-2. **Does each UPS have a network / SNMP card?** *(Required — a USB-/serial-only UPS can't be
-   monitored under SNMP-only; it needs an SNMP card added first.)*
+1. **Actual device models?** — ⚠️ **ANSWERED, and the answer reshaped the feature.** CSPC has
+   **no non-MikroTik managed router at all**: 3 × MikroTik CloudCore (data source B, already
+   polled over the RouterOS API — do NOT register them here or one physical router becomes two
+   `devices` rows with two InfluxDB series) plus **one ISP-owned PLDT DMZ router**. That single
+   device is the entire router scope of this feature, and being ISP CPE it is unlikely to
+   answer SNMP — which is why the **ICMP fallback** was built. See `router-ups-client-answers.md` §3.
+2. **Does each UPS have a network / SNMP card?** — ⚠️ **PARTLY ANSWERED.** Three units, all
+   claimed networked; one nameplate photo (PHOENIX **TTN-V 2K VA RT UNITY IoT**) carries a
+   **MAC address**, which proves a built-in network interface. Still open: whether that
+   interface speaks **SNMP/RFC 1628** or only the vendor's `UNITY IoT` cloud app — one
+   `snmpwalk 1.3.6.1.2.1.33` settles it. Mixed brands are a non-issue: UPS-MIB is standard and
+   the poller has no brand-specific code. See `router-ups-client-answers.md` §2.
 3. **SNMP v2c or v3?** — *settled by the schema:* `device_network` only stores a community
    string + port (no v3 auth/priv columns), so the implementation is **v2c**. v3 would need a
    follow-up migration to add credential columns + the `snmpClient` v3 branch. (Use a read-only
@@ -401,9 +414,31 @@ intact** (it's tagged by the stable `device_id`; see §5).
   device starts polling within ~60s with no restart. The `migrations/2026-06-12_router_ups_devices.sql`
   template remains as an alternative (e.g. bulk seeding), still gated on the §10 device facts (Q1 UPS
   SNMP cards, Q6 managed routers, Q9 firewall).
+- **✅ ICMP-ping fallback — BUILT** (`services/pingOutput.js` + `services/icmpPing.js`). A router
+  now needs only an IP; a blank community registers it for ICMP instead of being refused. ICMP
+  also runs alongside every SNMP router poll, filling `latency_ms` / `packet_loss_pct` — fields
+  `networkMetricsHandler` was always ready to write and the collector always returned as `null`.
+  On the SNMP failure path the two results are combined, so the log finally distinguishes a dead
+  router from a live one with a wrong community or a blocked UDP 161 (§9 previously sent the
+  operator to run `snmpwalk` by hand for exactly that reason). The ping path writes its sample
+  even when the device is DOWN — `reachable` + `packet_loss_pct` are the only two things a
+  no-SNMP router ever gives, so dropping the point during an outage would blank the chart
+  precisely when it matters. Dashboard shows the mode explicitly rather than rendering an empty
+  port table that reads as a fault.
+- **✅ UPS on BYPASS — now alerted** (was a silent gap). `upsOutputSource` has named `bypass(4)`
+  since `snmpClient.js` was written, but its only interpreter was `isOnBattery`, which tests
+  `battery(5)` — so a UPS on bypass reported `onBattery:false` and read as perfectly normal:
+  green tile, no alert, in front of a rack with **zero** seconds of runtime. Exactly backwards
+  from the risk. The enum + interpreters moved to the pure `snmpUtils.js` (`upsOutputState`), and
+  bypass and output-off now raise their own critical alerts. Booster/reducer (AVR) deliberately
+  raises nothing — the load is still protected and `ups_input_voltage` already covers the bad
+  mains that causes it — but reaches the dashboard as `outputState: "avr"`.
 - **Not started / blocked:** a **live end-to-end test** against a real SNMP target (needs MySQL
-  + InfluxDB + registered devices + a reachable router/UPS), and an **ICMP-ping fallback module** for
-  unmanaged/no-community routers (currently skipped, returned `monitored:false`; note the add form
-  **requires** a community string, so it won't register a ping-only router until that module exists).
+  + InfluxDB + registered devices). ⚠️ Note this is *less blocked than it looks*: `dev-snmpsim/`
+  simulates a router **and** a UPS answering the exact OIDs the poller reads, so the whole
+  pipeline can be exercised on a dev box with no campus hardware. Also unbuilt: **alert rules for
+  latency / packet loss** (`router_latency` / `router_loss`), which would let a flapping WAN link
+  raise an alert rather than only appearing on a chart — the ping data is collected and stored,
+  nothing evaluates it yet.
 - See `CLAUDE.md` (architecture + data stores) and the architecture diagram (data sources C, D)
   for the broader context.
