@@ -310,6 +310,23 @@ const METRICS = {
   router_cpu:     { source: "router", field: "cpu_percent",       unit: "%", label: "MikroTik CPU",     bounded: 100, recommend: false },
   router_mem:     { source: "router", field: "mem_percent",       unit: "%", label: "MikroTik Memory",  bounded: 100, recommend: false },
   router_clients: { source: "router", field: "connected_clients", unit: "",  label: "MikroTik Clients", recommend: false },
+  // ICMP link quality. Present on EVERY router — the SNMP ones (ping runs alongside the
+  // walk) and the ping-only ones, for which these two are the only numeric metrics that
+  // exist at all. Without them a ping-only router had nothing to trend, nothing to check
+  // for anomalies, and no way to be told what its own thresholds should be.
+  //
+  // `recommend: "scoped"` on latency: it is the one metric here whose right value is a
+  // property of the individual link, so a fleet-wide percentile would mix a rack switch
+  // answering in under 1 ms with an ISP CPE answering in 30 ms and recommend a number
+  // that fits neither. Per device it is exactly the right tool — and it closes the loop
+  // on router_latency shipping INACTIVE (migration 2026-08-22): instead of "watch it for
+  // a few days and pick 2-3x", the p95/p99 of what this link actually does is computed
+  // and an admin applies it in one click.
+  router_latency: { source: "router", field: "latency_ms", unit: "ms", label: "Latency", recommend: "scoped" },
+  // Loss is NOT site-specific — 0% is healthy on every link everywhere — so the seeded
+  // 5/20 global rule is already right and a percentile recommendation would only ever
+  // talk you into a worse one. Trend + anomaly still apply.
+  router_loss: { source: "router", field: "packet_loss_pct", unit: "%", label: "Packet Loss", bounded: 100, recommend: false },
 };
 export function metricMeta(metric) {
   return Object.prototype.hasOwnProperty.call(METRICS, metric) ? METRICS[metric] : null;
@@ -584,9 +601,15 @@ async function recommendThresholds({ lookbackDays = 14, deviceId = null } = {}) 
   const out = [];
   for (const [metric, meta] of Object.entries(METRICS)) {
     if (meta.recommend === false) continue; // device-class metrics opt out of threshold recs
+    // `recommend: "scoped"` means the metric is only meaningful PER DEVICE — offering it
+    // fleet-wide would average across populations that have no business being compared
+    // (see router_latency in METRICS).
+    const scopedOnly = meta.recommend === "scoped";
+    if (scopedOnly && !scoped) continue;
     // Environment metrics are room-level: there is no per-device version of "the server
-    // room is too hot", so a scoped request simply skips them.
-    if (scoped && meta.source !== "server") continue;
+    // room is too hot", so a scoped request simply skips them. Router metrics are exempt
+    // only when they asked to be scoped in the first place.
+    if (scoped && meta.source !== "server" && !scopedOnly) continue;
     const series = await fetchMetricSeries(metric, {
       deviceId: scoped ? deviceId : null,
       rangeExpr: `-${days}d`,

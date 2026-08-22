@@ -301,6 +301,9 @@ const METRIC_OPTIONS = [
   { key: "router_cpu", label: "Router CPU", scope: "router" },
   { key: "router_mem", label: "Router Memory", scope: "router" },
   { key: "router_clients", label: "Connected Devices", scope: "router" },
+  // ICMP — on every router, and the ONLY two metrics a ping-only one has.
+  { key: "router_latency", label: "Latency", scope: "router" },
+  { key: "router_loss", label: "Packet Loss", scope: "router" },
 ] as const;
 const METRIC_GROUP: Record<string, string> = {
   env: "Server Room", server: "Servers", router: "Network / MikroTik",
@@ -311,7 +314,11 @@ const METRIC_SELECT_OPTIONS: SelectOption[] = METRIC_OPTIONS.map((m) => ({
   group: METRIC_GROUP[m.scope] ?? null,
 }));
 const SERVER_METRICS = new Set<string>(["cpu", "mem", "disk"]);
-const ROUTER_METRICS = new Set<string>(["router_cpu", "router_mem", "router_clients"]);
+// Metrics that need a DEVICE picked before they mean anything. Latency and loss join
+// the list for the same reason as the rest: "the latency" of a fleet is not a quantity.
+const ROUTER_METRICS = new Set<string>([
+  "router_cpu", "router_mem", "router_clients", "router_latency", "router_loss",
+]);
 
 const TABS = [
   { key: "forecasts", label: "Forecasts" },

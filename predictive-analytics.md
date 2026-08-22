@@ -11,6 +11,29 @@ The `reports.type` migration for the Capacity Forecast report **has been applied
 
 ---
 
+
+> ⚠️ **ICMP metrics (`router_latency` / `router_loss`) are in the registry too**, and they
+> are the only two a **ping-only router** has — one registered with no SNMP community, i.e.
+> ISP-owned CPE (`router-ups-monitoring.md`). Without them such a device had nothing to
+> trend, nothing to scan for anomalies, and no way to be told what its own thresholds
+> should be. Both are present on SNMP routers as well, since ICMP runs alongside every
+> walk.
+>
+> `router_latency` carries **`recommend: "scoped"`** — a marker that only exists for it.
+> The metric is offered for threshold recommendation **per device and never fleet-wide**,
+> because a rack switch answers in under 1 ms and an ISP CPE in 20–40 ms and both are
+> healthy: one percentile across the fleet mixes two populations and lands on a number
+> that fits neither. Scoped, it is exactly the right tool, and it closes the loop on the
+> `router_latency` rule shipping **inactive** (migration `2026-08-22_icmp_alert_rules.sql`).
+> Instead of "watch the link for a few days and pick 2–3× its normal", the p95/p99 of what
+> that link actually does is computed and an admin applies it in one click.
+>
+> `router_loss` is deliberately **`recommend: false`**. Loss is not site-specific — 0% is
+> healthy on every link everywhere — so the seeded 5%/20% rule is already correct, and a
+> percentile recommendation could only ever talk you into a worse one. It still gets Trend
+> and Anomaly.
+
+
 ## 1. Is it machine learning? — the honest answer
 
 Say this exactly, and every word is defensible:
