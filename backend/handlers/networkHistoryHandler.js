@@ -15,9 +15,13 @@ import { resolveRange } from "../services/historyRange.js";
 // drawn from it said "no data" forever. Latency and packet loss were being collected
 // and stored the whole time; nothing ever asked for them.
 //
-// They are merged into one row per timestamp rather than served from a second endpoint
-// so a caller gets one request, one range, one set of labels — and the Dashboard can
-// switch which series it draws by mode without re-fetching.
+// Both come back from ONE request (one range, one window) but as TWO arrays, because
+// they do not share timestamps: a 60s poll against the -1h preset's 20s window leaves
+// most windows empty, and `createEmpty: false` keeps a different subset for each
+// measurement. Merging them per-timestamp injected nulls into whichever series was
+// absent, and the client draws a null as a GAP — so throughput lines came out shattered
+// on devices that had no downtime at all. Nothing needs them interleaved: a chart shows
+// throughput or ICMP, never both on one axis.
 //
 // `interface` narrows the THROUGHPUT half to a single port. The data was always tagged
 // by interface_name; there was simply no way to ask for one port, so a busy uplink was
@@ -95,38 +99,31 @@ export function networkHistoryHandler(req, res) {
 
   Promise.all([rows(throughputFlux), rows(icmpFlux)])
     .then(([tp, icmp]) => {
-      // Merge on the timestamp. Both queries used the same range and the same `every`,
-      // so their windows line up — but a router can legitimately appear in one and not
-      // the other (a ping device has no traffic; a router polled before the ICMP fields
-      // existed has no latency), so the merge is a union, not a join. Missing values
-      // stay null and the client draws a gap rather than a zero.
-      const byTime = new Map();
-      const at = (t) => {
-        if (!byTime.has(t)) {
-          byTime.set(t, {
-            time: t,
-            rxBytesPerSec: null,
-            txBytesPerSec: null,
-            latencyMs: null,
-            packetLossPct: null,
-          });
-        }
-        return byTime.get(t);
-      };
-      for (const d of tp) {
-        const p = at(d._time);
-        p.rxBytesPerSec = d.rx_bytes ?? null;
-        p.txBytesPerSec = d.tx_bytes ?? null;
-      }
-      for (const d of icmp) {
-        const p = at(d._time);
-        p.latencyMs = d.latency_ms ?? null;
-        p.packetLossPct = d.packet_loss_pct ?? null;
-      }
-      // Sorted in JS: the array's order is really the Map's insertion order, which is
-      // whichever query happened to reach a given timestamp first. Same reasoning as
-      // querySensorHistoryHandler's final sort.
-      const history = [...byTime.values()].sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+      // TWO ARRAYS, NOT ONE MERGED SERIES.
+      //
+      // These were merged into one row per timestamp, as a union. That was wrong, and
+      // visibly so: the two measurements do not land in the same windows. A 60s poll
+      // against a 20s window (the -1h preset) leaves two thirds of the windows empty,
+      // and `createEmpty: false` means each query keeps a DIFFERENT subset of them. The
+      // union therefore produced rows carrying latency but no throughput, and the
+      // client — which inserts a gap wherever a value is null, so a real outage reads as
+      // a hole rather than a straight line across it — shattered every throughput line
+      // into fragments. On a MikroTik with no downtime at all the chart looked chopped
+      // up; at -1h there was often no continuous line left to draw.
+      //
+      // Nothing needs them interleaved. The page draws throughput OR ICMP, never both on
+      // one axis (an SNMP router charts bytes/sec, a ping-only router charts ms and %),
+      // so each series keeps its own timestamps and its own gaps mean what they say.
+      const history = tp.map((d) => ({
+        time: d._time,
+        rxBytesPerSec: d.rx_bytes ?? null,
+        txBytesPerSec: d.tx_bytes ?? null,
+      }));
+      const icmpHistory = icmp.map((d) => ({
+        time: d._time,
+        latencyMs: d.latency_ms ?? null,
+        packetLossPct: d.packet_loss_pct ?? null,
+      }));
 
       // Echo what was actually served (incl. the resolved custom bounds + the window
       // that was chosen) so the client can label the axis without re-deriving it.
@@ -137,6 +134,7 @@ export function networkHistoryHandler(req, res) {
           stop: resolved.stopISO ?? null,
           every,
           history,
+          icmp: icmpHistory,
         });
       }
     })

@@ -86,6 +86,8 @@ export default function NetworkFocus({
   // endpoints are served by networkHistoryHandler and return the identical shape — only
   // the route differs.
   const isMikrotik = device?.type === "mikrotik";
+  // Decided here, not at render: it selects WHICH array the effect keeps.
+  const isPing = device?.mode === "ping";
 
   useEffect(() => {
     if (deviceId == null) {
@@ -104,15 +106,22 @@ export default function NetworkFocus({
     req.then((r) => {
       if (!alive) return;
       setLoading(false);
-      const rows: any[] = r.success && r.data ? r.data.history ?? [] : [];
+      // Throughput and ICMP come back as SEPARATE arrays with their own timestamps —
+      // they do not share windows (see networkHistoryHandler). Whichever one this
+      // device charts becomes the series; interleaving them here would put a null in
+      // every other row and withGaps would then cut the line into fragments.
+      const tp: any[] = r.success && r.data ? r.data.history ?? [] : [];
+      const ic: any[] = r.success && r.data ? r.data.icmp ?? [] : [];
       setHistory(
-        rows.map((p) => ({
-          time: p.time,
-          rx: p.rxBytesPerSec ?? null,
-          tx: p.txBytesPerSec ?? null,
-          latency: p.latencyMs ?? null,
-          loss: p.packetLossPct ?? null,
-        })),
+        isPing
+          ? ic.map((p) => ({
+              time: p.time, rx: null, tx: null,
+              latency: p.latencyMs ?? null, loss: p.packetLossPct ?? null,
+            }))
+          : tp.map((p) => ({
+              time: p.time, rx: p.rxBytesPerSec ?? null, tx: p.txBytesPerSec ?? null,
+              latency: null, loss: null,
+            })),
       );
     });
 
@@ -120,7 +129,7 @@ export default function NetworkFocus({
     // rate, so appending one would mean re-deriving the throughput on the client — and at
     // a 30-60s poll cadence that whole second implementation buys a single extra point.
     return () => { alive = false; };
-  }, [deviceId, isMikrotik, range]);
+  }, [deviceId, isMikrotik, isPing, range]);
 
   const spanSec = rangeSpanSec(range);
 
@@ -163,7 +172,7 @@ export default function NetworkFocus({
   }
 
   const offline = device.status !== "Online";
-  const pingMode = device.mode === "ping";
+  const pingMode = isPing;
   const dim = "var(--gf-text-dim)";
   const ifaces = device.interfaces ?? [];
   const busiest = ifaces
