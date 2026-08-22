@@ -17,6 +17,13 @@ npm run link:check      # per-port interface-down verdict for every MikroTik —
                         # port is alerting or silent (empty socket / disabled / muted / down).
                         # Link alerting is mostly silence by design, so "broken" and "nothing
                         # to report" look identical without this.
+npm run probe -- <ip> [community] [port]  # "can this device be monitored, and HOW?" — the one check to run
+                        # BEFORE registering anything. Pings it, then tries MIB-II / IF-MIB / UPS-MIB
+                        # independently, then prints a VERDICT naming the form to use: register as a UPS,
+                        # as an SNMP router, or as a PING-only router (blank community). Replaces the
+                        # `snmpwalk` step in router-ups-monitoring.md §9 — snmpwalk is a net-snmp CLI
+                        # tool that does NOT ship with Windows. Runs the same snmpClient/icmpPing code the
+                        # poller runs, and touches no DB/InfluxDB, so it works before anything is set up.
 npm run analytics:check # DRY RUN of the predictive-alerting job — prints what it WOULD raise, raises nothing.
                         # The job runs every 6h and correctly raises nothing on a healthy system, which makes
                         # "alerting is broken" and "nothing to alert about" look identical. This tells them apart.
