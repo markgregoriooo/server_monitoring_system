@@ -39,16 +39,20 @@ interface Box {
 // ⚠️ The three source boxes share a width on purpose — a column of boxes that are
 // nearly-but-not-quite the same size reads as a mistake. It is 152 rather than 130
 // because the Pollers label now names three protocols: at 10.5px monospace,
-// "SNMP · RouterOS · ICMP" is ~139px and spilled out of the old box. Widening the
-// column also moves where the connectors start (see LINKS: x=158, was 136).
+// "SNMP · RouterOS · ICMP" is ~139px and spilled out of the old 130px box. Widening the
+// column also moves where the connectors start (see LINKS: x=166, was 136).
 const BOXES: Box[] = [
-  { x: 6, y: 18, w: 152, h: 52, title: "ESP32", sub: "DHT11 · MQ-2 · IR", tone: GREEN },
-  { x: 6, y: 92, w: 152, h: 52, title: "Go agents", sub: "one per server", tone: GREEN },
+  { x: 6, y: 18, w: 160, h: 52, title: "ESP32", sub: "DHT11 · MQ-2 · IR", tone: GREEN },
+  { x: 6, y: 92, w: 160, h: 52, title: "Go agents", sub: "one per server", tone: GREEN },
   // ICMP is not a fourth ingest path — it rides the same pull poller. It earns a name
   // here because it is the only one that can monitor equipment we hold no credentials
   // for, which at CSPC is the only non-MikroTik router that exists.
-  { x: 6, y: 166, w: 152, h: 52, title: "Pollers", sub: "SNMP · RouterOS · ICMP", tone: GREEN },
-  { x: 280, y: 79, w: 150, h: 90, title: "Node.js", sub: "validate · alert · broadcast", tone: ACCENT },
+  { x: 6, y: 166, w: 160, h: 52, title: "Pollers", sub: "SNMP · RouterOS · ICMP", tone: GREEN },
+  // 196 wide, not 150: "validate · alert · broadcast" is 28 monospace characters,
+  // about 176px at 10.5px, and was spilling past both edges of the old box. It is the
+  // hub and already the tallest box, so being the widest reads as hierarchy rather
+  // than as an odd size. Its right edge moves 430 → 476, which is where l4/l5 start.
+  { x: 280, y: 79, w: 196, h: 90, title: "Node.js", sub: "validate · alert · broadcast", tone: ACCENT },
   { x: 560, y: 44, w: 130, h: 54, title: "InfluxDB", sub: "time-series" },
   { x: 560, y: 150, w: 130, h: 54, title: "MySQL", sub: "state · alerts" },
   { x: 800, y: 79, w: 134, h: 90, title: "Dashboard", sub: "React · live", tone: ACCENT },
@@ -59,11 +63,11 @@ const BOXES: Box[] = [
  * streams merging rather than three lines meeting a wall.
  */
 const LINKS: { id: string; d: string; tone: string; dur: number }[] = [
-  { id: "l1", d: "M158,44 C210,44 226,105 280,105", tone: GREEN, dur: 2200 },
-  { id: "l2", d: "M158,118 C210,118 226,124 280,124", tone: GREEN, dur: 2000 },
-  { id: "l3", d: "M158,192 C210,192 226,143 280,143", tone: GREEN, dur: 2400 },
-  { id: "l4", d: "M430,100 C490,100 505,71 560,71", tone: ACCENT, dur: 1900 },
-  { id: "l5", d: "M430,148 C490,148 505,177 560,177", tone: ACCENT, dur: 2100 },
+  { id: "l1", d: "M166,44 C214,44 228,105 280,105", tone: GREEN, dur: 2200 },
+  { id: "l2", d: "M166,118 C214,118 228,124 280,124", tone: GREEN, dur: 2000 },
+  { id: "l3", d: "M166,192 C214,192 228,143 280,143", tone: GREEN, dur: 2400 },
+  { id: "l4", d: "M476,100 C516,100 528,71 560,71", tone: ACCENT, dur: 1900 },
+  { id: "l5", d: "M476,148 C516,148 528,177 560,177", tone: ACCENT, dur: 2100 },
   { id: "l6", d: "M690,71 C740,71 755,105 800,105", tone: "var(--gf-text-dim)", dur: 2300 },
   { id: "l7", d: "M690,177 C740,177 755,143 800,143", tone: "var(--gf-text-dim)", dur: 2500 },
   // the live lane — over the top, bypassing the stores entirely
