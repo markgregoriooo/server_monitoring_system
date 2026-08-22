@@ -1225,7 +1225,11 @@ export default function Analytics() {
           title="Threshold Recommendations"
           subtitle={
             recDevice == null
-              ? `All servers pooled · last ${REC_WINDOW_DAYS} days · warn = p95, critical = p99`
+              // Not "All servers": the unscoped pass also evaluates the ROOM metrics
+              // (temperature, humidity, gas), which is why they appear in the table. They
+              // have no per-device version — there is no such thing as one server's share
+              // of "the server room is too hot" — so they show here and nowhere else.
+              ? `All servers + server room · pooled over ${REC_WINDOW_DAYS} days · warn = p95, critical = p99`
               : `${
                   [...servers, ...routers].find((s) => s.id === recDevice)?.name ?? "Device"
                 } only · last ${REC_WINDOW_DAYS} days`
@@ -1246,6 +1250,7 @@ export default function Analytics() {
                 ]}
                 onChange={(v) => setRecDevice(v ? Number(v) : null)}
                 title="Suggest thresholds for one device instead of the whole fleet"
+                align="right"
               />
             ) : undefined
           }
@@ -1612,11 +1617,16 @@ interface SelectOption { value: string; label: string; group: string | null }
 // Owning it also means owning the behaviour a native select gave us for free, so: click
 // outside and Escape close it, Up/Down move, Enter/Space select, Home/End jump, the
 // trigger keeps proper listbox ARIA, and the active option is scrolled into view.
-function Select({ value, options, onChange, title }: {
+function Select({ value, options, onChange, title, align = "left" }: {
   value: string;
   options: readonly SelectOption[];
   onChange: (v: string) => void;
   title?: string;
+  // Which edge the dropdown is pinned to. A menu is always WIDER than its trigger
+  // (the labels are nowrap), so a left-pinned menu grows rightward — fine for the
+  // triggers in a left-aligned toolbar, but off the panel and off the screen for one
+  // sitting in a right-aligned panel header. Pin that one right instead.
+  align?: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -1703,7 +1713,7 @@ function Select({ value, options, onChange, title }: {
           ref={listRef}
           role="listbox"
           tabIndex={-1}
-          className="absolute left-0 top-full mt-1.5 z-50 min-w-full max-h-72 overflow-y-auto rounded-[3px] py-1"
+          className={`absolute ${align === "right" ? "right-0" : "left-0"} top-full mt-1.5 z-50 min-w-full max-w-[min(20rem,80vw)] max-h-72 overflow-y-auto rounded-[3px] py-1`}
           style={{
             background: gf.panel,
             // --gf-shadow is the token defined for exactly this (dropdowns/toasts): a
@@ -1741,7 +1751,7 @@ function Select({ value, options, onChange, title }: {
                     boxShadow: selected ? `inset 3px 0 0 ${gf.textPrimary}` : "none",
                   }}
                 >
-                  <span className="whitespace-nowrap">{o.label}</span>
+                  <span className="truncate">{o.label}</span>
                   {selected && <span aria-hidden style={{ color: gf.textPrimary }}>✓</span>}
                 </div>
               </div>
