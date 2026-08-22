@@ -611,7 +611,7 @@ export default function MikrotikDetail({
                     value={labelDraft[i.name] ?? ""}
                     maxLength={100}
                     onChange={(e) => setLabelDraft((p) => ({ ...p, [i.name]: e.target.value }))}
-                    placeholder="e.g. ISP uplink, Rack A switch"
+                    placeholder="e.g. ISP uplink, Admin building"
                     className="flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
                     style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
                   />

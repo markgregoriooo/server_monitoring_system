@@ -6,7 +6,14 @@ import { useAuth } from "../context/AuthContext";
 import NetworkDetail from "./NetworkDetail";
 import type { NetDevice } from "./NetworkDetail";
 
-// ─── SNMP router/switch list page ─────────────────────────────────────────────
+// ─── Router list page ─────────────────────────────────────────────────────────
+//
+// USER-FACING WORDING: everything here says "router", never "router/switch".
+// A managed switch is still fully supported and registers through this same form —
+// SNMP reads IF-MIB from both and the poller cannot tell them apart — but naming
+// both device classes in the UI raised more questions than it answered at CSPC,
+// where there is no switch to register. The capability is documented in
+// router-ups-monitoring.md; the label is kept plain.
 // First page = the fleet list (one compact card per router, with "View"); clicking
 // through swaps in NetworkDetail for the full drill-down. Mirrors
 // MikrotikMonitoring ↔ MikrotikDetail and ServerMetrics ↔ ServerDetail, so moving
@@ -517,7 +524,7 @@ export default function NetworkMonitoring() {
               <rect x="2" y="15" width="20" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
               <path d="M12 9v6M7 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
-            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No routers or switches monitored yet</p>
+            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No routers monitored yet</p>
             <p className="text-[13px] mt-1 max-w-md" style={{ color: gf.textDim }}>
               {isAdmin
                 ? "Click “Add router” to register a managed router (with SNMP enabled) — it starts polling within a minute."
@@ -537,7 +544,7 @@ export default function NetworkMonitoring() {
            which meant scrolling past detail you hadn't asked for to find the one router
            you cared about. */
         <Panel
-          title="Routers & switches"
+          title="Routers"
           noPad
           right={<span className="text-[12px]" style={{ color: gf.textDim }}>{online}/{total} online</span>}
         >
@@ -629,14 +636,14 @@ export default function NetworkMonitoring() {
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setFormOpen(false)}>
           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
             <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.panel }}>
-              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router / switch</span>
+              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router</span>
               <button onClick={() => setFormOpen(false)} className="grid place-items-center w-7 h-7 rounded-md" style={{ color: gf.textMuted }} title="Close (Esc)">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
               </button>
             </div>
             <div className="p-4 flex flex-col gap-3">
               <Field label="Name">
-                <input name="name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="Core switch" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus placeholder="PLDT DMZ router" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="IP address">
