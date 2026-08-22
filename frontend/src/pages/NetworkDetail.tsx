@@ -489,7 +489,12 @@ export default function NetworkDetail({
           this router, they are the shape of a router we cannot read. Four tiles of
           nothing read as a broken device; three tiles of real measurements read as a
           working one. */}
-      <div className={`grid grid-cols-2 gap-2.5 ${pingMode ? "sm:grid-cols-3 lg:grid-cols-4" : "sm:grid-cols-3 lg:grid-cols-5"}`}>
+      {/* Four columns in both modes: ping shows 4 tiles exactly, SNMP shows 7 and
+          wraps to 4+3. ICMP is measured on EVERY router — it runs alongside the SNMP
+          walk — so latency and loss belong here too, not only in ping mode. Leaving
+          them out meant the system alerted on a metric, reported on it and charted it
+          in Analytics, while the device's own page never showed it. */}
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
         <Stat label="Status" value={d.status} color={statusColor(d.status)} sub={d.reachable ? "reachable" : "—"} />
         {pingMode ? (
           <>
@@ -520,6 +525,25 @@ export default function NetworkDetail({
             <Stat label="Peak Util" value={String(worstUtil)} unit="%" color={loadColor(worstUtil)} sub={upUtil.length > 1 ? `busiest of ${upUtil.length}` : "of link speed"} />
             <Stat label="Errors" value={String(totalErrs)} color={totalErrs > 0 ? ORANGE : GREEN} sub="since last poll" />
             <Stat label="Uptime" value={formatUptime(d.uptimeSeconds)} color={BLUE} sub="since boot" />
+            <Stat
+              label="Latency"
+              value={d.latencyMs == null ? "—" : String(Math.round(d.latencyMs))}
+              {...(d.latencyMs == null ? {} : { unit: "ms" })}
+              color={d.latencyMs == null ? gf.textMuted : d.latencyMs > 150 ? ORANGE : GREEN}
+              sub="round trip"
+            />
+            <Stat
+              label="Packet Loss"
+              value={d.packetLossPct == null ? "—" : String(Math.round(d.packetLossPct))}
+              {...(d.packetLossPct == null ? {} : { unit: "%" })}
+              color={
+                d.packetLossPct == null ? gf.textMuted
+                  : d.packetLossPct >= 20 ? RED
+                  : d.packetLossPct > 0 ? ORANGE
+                  : GREEN
+              }
+              sub="of echoes sent"
+            />
           </>
         )}
       </div>

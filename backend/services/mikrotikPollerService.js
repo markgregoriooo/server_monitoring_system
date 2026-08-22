@@ -163,6 +163,11 @@ async function pollDevice(io, d) {
   latest.set(Number(d.id), {
     status: "Online",
     reachable: true,
+    // ICMP, collected above. Cached so GET /api/mikrotik can serve it — without this
+    // the poller measured latency, wrote it to InfluxDB and alerted on it, while the
+    // pages that show a MikroTik had no way to read it at all.
+    latencyMs: sample.latencyMs,
+    packetLossPct: sample.packetLossPct,
     uptimeSeconds: sample.uptimeSeconds,
     cpuPercent: sample.cpuPercent,
     memPercent: sample.memPercent,
@@ -259,6 +264,8 @@ async function getMikrotikDevices() {
       uptimeSeconds: live?.uptimeSeconds ?? null,
       cpuPercent: live?.cpuPercent ?? null,
       memPercent: live?.memPercent ?? null,
+      latencyMs: live?.latencyMs ?? null,
+      packetLossPct: live?.packetLossPct ?? null,
       connectedClients: live?.connectedClients ?? null,
       interfaces: live?.interfaces ?? [],
       monitored: Boolean(r.apiUser && r.apiEnabled),

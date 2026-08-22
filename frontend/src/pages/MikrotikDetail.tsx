@@ -62,6 +62,11 @@ export interface MkDevice {
   cpuPercent: number | null;
   memPercent: number | null;
   connectedClients: number | null;
+  // ICMP, measured alongside the RouterOS API call each poll. The API says whether the
+  // router is answering; these say how well the PATH to it is carrying traffic — a link
+  // dropping a third of its packets answers the API perfectly.
+  latencyMs?: number | null;
+  packetLossPct?: number | null;
   routerosVersion: string | null;
   boardModel: string | null;
   apiPort: number | null;
@@ -518,7 +523,11 @@ export default function MikrotikDetail({
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+      {/* Seven tiles now, so four columns and a second row rather than five cramped
+          ones. Latency and loss are measured on every poll and were already driving
+          alerts and Analytics — the router's own page was the one place they weren't
+          visible. */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
         <Stat label="Status" value={d.status} color={statusColor(d.status)} sub={d.reachable ? "reachable" : "—"} />
         <Stat label="CPU" value={d.cpuPercent != null ? String(cpu) : "—"} unit={d.cpuPercent != null ? "%" : undefined} color={loadColor(cpu)} sub="router load" />
         <Stat label="Memory" value={d.memPercent != null ? String(mem) : "—"} unit={d.memPercent != null ? "%" : undefined} color={loadColor(mem)} sub="router RAM" />
@@ -527,6 +536,25 @@ export default function MikrotikDetail({
             lease survives the device unplugging until it expires, so this lags reality
             by up to one lease period — calling it "clients" invites the wrong reading. */}
         <Stat label="DHCP Leases" value={d.connectedClients != null ? String(d.connectedClients) : "—"} color={BLUE} sub="bound" />
+        <Stat
+          label="Latency"
+          value={d.latencyMs == null ? "—" : String(Math.round(d.latencyMs))}
+          {...(d.latencyMs == null ? {} : { unit: "ms" })}
+          color={d.latencyMs == null ? gf.textMuted : d.latencyMs > 150 ? ORANGE : GREEN}
+          sub="round trip"
+        />
+        <Stat
+          label="Packet Loss"
+          value={d.packetLossPct == null ? "—" : String(Math.round(d.packetLossPct))}
+          {...(d.packetLossPct == null ? {} : { unit: "%" })}
+          color={
+            d.packetLossPct == null ? gf.textMuted
+              : d.packetLossPct >= 20 ? RED
+              : d.packetLossPct > 0 ? ORANGE
+              : GREEN
+          }
+          sub="of echoes sent"
+        />
       </div>
 
       {/* Throughput history */}
