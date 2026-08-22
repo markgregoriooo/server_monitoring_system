@@ -122,6 +122,12 @@ interface NetDevice {
   memPercent?: number | null;
   connectedClients?: number | null;
   interfaces?: NetIface[];
+  // "ping" = registered with no SNMP community (ISP-owned CPE). Passed through to
+  // NetworkFocus, which draws latency/loss instead of throughput for these — a ping
+  // device has no byte counters, so the traffic chart would never have a point.
+  mode?: "snmp" | "ping";
+  latencyMs?: number | null;
+  packetLossPct?: number | null;
 }
 
 // UPS, as returned by GET /ups and pushed on `upsMetrics`.

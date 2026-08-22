@@ -306,7 +306,7 @@ const UpsTile: FC = () => {
 // Counts PORTS, not devices: a router that answers SNMP while three buildings' links
 // are down is "online" by device count and broken by any measure that matters.
 const NetworkTile: FC = () => {
-  const { routers, routersOnline, routersTotal, portsUp, portsTotal, stale } = useLiveSummary();
+  const { routers, routersOnline, routersTotal, portsUp, portsTotal, pingOnlyRouters, stale } = useLiveSummary();
   if (routersTotal === 0) {
     return (
       <Shell label="Network" stale={stale.network}>
@@ -315,6 +315,32 @@ const NetworkTile: FC = () => {
     );
   }
   const routerDown = routersTotal - routersOnline;
+  // Every router is ping-only: there are no ports anywhere, so "0/0 ports up" would be
+  // the headline and would read as a total outage. Lead with the worst packet loss
+  // instead — the number that actually says whether these links are healthy.
+  const allPing = pingOnlyRouters === routersTotal;
+  const worstLoss = routers
+    .filter((r) => r.packetLossPct != null)
+    .reduce<number | null>((w, r) => (w == null || (r.packetLossPct as number) > w ? (r.packetLossPct as number) : w), null);
+  if (allPing) {
+    return (
+      <Shell label="Network" stale={stale.network}>
+        <div className="flex items-baseline gap-1">
+          <Big color={routerDown > 0 ? RED : worstLoss && worstLoss >= 20 ? RED : worstLoss ? ORANGE : GREEN}>
+            {routerDown > 0 ? "offline" : worstLoss != null ? `${Math.round(worstLoss)}%` : "—"}
+          </Big>
+          {routerDown === 0 && worstLoss != null && (
+            <span className="text-[9px]" style={{ color: T_MUTED }}>loss</span>
+          )}
+        </div>
+        <span className="text-[9px]" style={{ color: routerDown > 0 ? RED : T_MUTED }}>
+          {routerDown > 0
+            ? `${routerDown} of ${routersTotal} router${routersTotal > 1 ? "s" : ""} offline`
+            : `${routersTotal} router${routersTotal > 1 ? "s" : ""} · ping only`}
+        </span>
+      </Shell>
+    );
+  }
   const portsDown = portsTotal - portsUp;
   const worstUtil = routers
     .filter((r) => r.status !== "Offline" && r.worstUtil != null)
@@ -410,7 +436,22 @@ const NetworkListTile: FC = () => {
           {rows.map((r) => {
             const off = r.status === "Offline";
             const down = r.portsTotal - r.portsUp;
-            const color = off ? RED : down > 0 ? ORANGE : GREEN;
+            const ping = r.mode === "ping";
+            // A ping router has no ports, so its health is loss-then-latency. Showing
+            // "0/0" beside real port counts would read as every link down.
+            const loss = r.packetLossPct;
+            const color = off
+              ? RED
+              : ping
+                ? loss != null && loss >= 20 ? RED : loss ? ORANGE : GREEN
+                : down > 0 ? ORANGE : GREEN;
+            const right = off
+              ? "offline"
+              : ping
+                ? loss != null && loss > 0
+                  ? `${Math.round(loss)}% loss`
+                  : r.latencyMs != null ? `${Math.round(r.latencyMs)} ms` : "—"
+                : `${r.portsUp}/${r.portsTotal}`;
             return (
               <Row
                 key={r.id}
@@ -418,7 +459,7 @@ const NetworkListTile: FC = () => {
                 name={r.name}
                 right={
                   <span className="text-[11px] tabular-nums flex-shrink-0" style={{ color }}>
-                    {off ? "offline" : `${r.portsUp}/${r.portsTotal}`}
+                    {right}
                   </span>
                 }
               />
@@ -532,6 +573,25 @@ const NetDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
       <Shell label={r.name} stale={stale.network}>
         <Big color={RED}>offline</Big>
         <span className="text-[9px]" style={{ color: T_MUTED }}>unreachable</span>
+      </Shell>
+    );
+  }
+  // A ping-only router reports latency and loss and nothing else — so the tile leads
+  // with those instead of a permanent "0/0 ports up", which reads as a dead device.
+  if (r.mode === "ping") {
+    const loss = r.packetLossPct;
+    const bad = loss != null && loss >= 20;
+    return (
+      <Shell label={r.name} stale={stale.network}>
+        <div className="flex items-baseline gap-1">
+          <Big color={bad ? RED : loss ? ORANGE : GREEN}>
+            {r.latencyMs != null ? Math.round(r.latencyMs) : "—"}
+          </Big>
+          <span className="text-[9px]" style={{ color: T_MUTED }}>ms</span>
+        </div>
+        <span className="text-[9px]" style={{ color: loss ? (bad ? RED : ORANGE) : T_MUTED }}>
+          {loss != null && loss > 0 ? `ping · ${Math.round(loss)}% loss` : "ping · no loss"}
+        </span>
       </Shell>
     );
   }

@@ -28,6 +28,11 @@ import {
 
 const IN_COLOR = "#5DCAA5";
 const OUT_COLOR = "#D85A30";
+// ICMP series. Latency reuses the humidity/"link quality" blue used elsewhere for a
+// measured-not-alarming reading; loss takes the danger red, because any loss at all is
+// a fault (see the seeded router_loss rule — 0% is healthy on every link).
+const LATENCY_COLOR = "#3CC8E8";
+const LOSS_COLOR = "#F2495C";
 
 export interface FocusNetDevice {
   id: number | string;
@@ -38,12 +43,21 @@ export interface FocusNetDevice {
   memPercent?: number | null | undefined;
   connectedClients?: number | null | undefined;
   interfaces?: { name: string; locationLabel?: string; linkUp?: boolean; utilizationPct?: number | null }[] | undefined;
+  // "ping" = registered without an SNMP community (ISP-owned CPE). Such a router has no
+  // interfaces and no byte counters — EVER — so the throughput chart below would sit on
+  // "No traffic stored for this range yet" permanently, which reads as a broken feed
+  // rather than as a device that has no traffic data to give.
+  mode?: "snmp" | "ping" | undefined;
+  latencyMs?: number | null | undefined;
+  packetLossPct?: number | null | undefined;
 }
 
 interface Point {
   time: string;
   rx: number | null;
   tx: number | null;
+  latency: number | null;
+  loss: number | null;
 }
 
 // Values stay in BYTES PER SECOND, exactly as the endpoint returns them, and are scaled
@@ -91,7 +105,15 @@ export default function NetworkFocus({
       if (!alive) return;
       setLoading(false);
       const rows: any[] = r.success && r.data ? r.data.history ?? [] : [];
-      setHistory(rows.map((p) => ({ time: p.time, rx: p.rxBytesPerSec ?? null, tx: p.txBytesPerSec ?? null })));
+      setHistory(
+        rows.map((p) => ({
+          time: p.time,
+          rx: p.rxBytesPerSec ?? null,
+          tx: p.txBytesPerSec ?? null,
+          latency: p.latencyMs ?? null,
+          loss: p.packetLossPct ?? null,
+        })),
+      );
     });
 
     // No live tail here. `networkMetrics` carries the poller's CUMULATIVE counters, not a
@@ -104,22 +126,35 @@ export default function NetworkFocus({
 
   // Breaks inserted wherever the poller stopped, so an unreachable router reads as a hole
   // rather than as a straight line across the outage.
-  const { labels, inData, outData, inNow, outNow } = useMemo(() => {
+  const { labels, inData, outData, latData, lossData, inNow, outNow, latNow, lossNow } = useMemo(() => {
     const rawIn = history.map((p) => p.rx);
     const rawOut = history.map((p) => p.tx);
+    const rawLat = history.map((p) => p.latency);
+    const rawLoss = history.map((p) => p.loss);
     const { labels: l, series } = withGaps(
       history.map((p) => Date.parse(p.time)),
       history.map((p) => fmtTime(p.time, spanSec)),
-      [rawIn, rawOut],
+      [rawIn, rawOut, rawLat, rawLoss],
     );
+    // `.at(-1)` on the raw arrays can still be null when the last window had no reading
+    // for that field — the two measurements are merged as a UNION, so a throughput row
+    // may carry no ICMP value and vice versa. Fall back to the last non-null.
+    const lastReal = (a: (number | null)[]) => {
+      for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i] as number;
+      return null;
+    };
     return {
       labels: l,
       inData: series[0]!,
       outData: series[1]!,
+      latData: series[2]!,
+      lossData: series[3]!,
       // The headline numbers read the ORIGINAL arrays: the gap-filled ones end in a null
       // whenever the series happens to close on a break.
       inNow: rawIn.at(-1) ?? null,
       outNow: rawOut.at(-1) ?? null,
+      latNow: lastReal(rawLat),
+      lossNow: lastReal(rawLoss),
     };
   }, [history, spanSec]);
 
@@ -128,6 +163,7 @@ export default function NetworkFocus({
   }
 
   const offline = device.status !== "Online";
+  const pingMode = device.mode === "ping";
   const dim = "var(--gf-text-dim)";
   const ifaces = device.interfaces ?? [];
   const busiest = ifaces
@@ -135,12 +171,22 @@ export default function NetworkFocus({
     .sort((a, b) => (b.utilizationPct ?? 0) - (a.utilizationPct ?? 0))[0];
   const portsUp = ifaces.filter((i) => i.linkUp === true).length;
 
+  // A ping device gets its OWN two series. Latency and loss share a chart because both
+  // are "how healthy is this link" and neither has a unit the other would distort at
+  // this scale — a link at 30 ms and 0% sits low on both, and either one climbing is
+  // the thing worth seeing. Deliberately NOT a fixed 0-100 axis: latency has no ceiling
+  // and pinning one would flatten every real change.
   const data: ChartData<"line"> = {
     labels,
-    datasets: [
-      lineSeries("In", inData, IN_COLOR, true),
-      lineSeries("Out", outData, OUT_COLOR, true),
-    ],
+    datasets: pingMode
+      ? [
+          lineSeries("Latency", latData, LATENCY_COLOR, true),
+          lineSeries("Loss", lossData, LOSS_COLOR, true),
+        ]
+      : [
+          lineSeries("In", inData, IN_COLOR, true),
+          lineSeries("Out", outData, OUT_COLOR, true),
+        ],
   };
 
   return (
@@ -151,13 +197,42 @@ export default function NetworkFocus({
           CPU and client count exist only on a MikroTik (the SNMP poller cannot read them),
           so they appear only when they are real rather than as a misleading 0. */}
       <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap text-[11px]" style={{ color: "var(--gf-text-muted)" }}>
+        {pingMode ? (
+          /* No ports to count. Lead with loss — the number that says whether this link
+             is healthy — and name the mode so "no ports" reads as expected. */
+          <>
+            <span>
+              <span
+                className="font-semibold"
+                style={{
+                  color: offline ? "#FF780A"
+                    : lossNow == null ? dim
+                    : lossNow >= 20 ? "#F2495C"
+                    : lossNow > 0 ? "#FF780A"
+                    : "#73BF69",
+                }}
+              >
+                {lossNow == null ? "—" : `${Math.round(lossNow)}%`}
+              </span>{" "}
+              packet loss
+            </span>
+            <span>
+              · latency{" "}
+              <span className="font-semibold" style={{ color: offline ? dim : "var(--gf-text-primary)" }}>
+                {latNow == null ? "—" : `${Math.round(latNow)} ms`}
+              </span>
+            </span>
+            <span style={{ color: dim }}>· ping only — no per-port data</span>
+          </>
+        ) : (
         <span>
           <span className="font-semibold" style={{ color: offline ? "#FF780A" : "#73BF69" }}>
             {portsUp}/{ifaces.length}
           </span>{" "}
           ports up
         </span>
-        {busiest && (
+        )}
+        {!pingMode && busiest && (
           <span>
             · busiest {busiest.locationLabel || busiest.name}{" "}
             <span className="font-semibold" style={{ color: offline ? dim : loadColor(busiest.utilizationPct ?? 0) }}>
@@ -180,18 +255,51 @@ export default function NetworkFocus({
       {loading && history.length === 0 ? (
         <ChartMessage>Loading traffic…</ChartMessage>
       ) : history.length === 0 ? (
-        <ChartMessage>No traffic stored for this range yet.</ChartMessage>
+        <ChartMessage>
+          {pingMode
+            ? "No ping history stored for this range yet."
+            : "No traffic stored for this range yet."}
+        </ChartMessage>
       ) : (
         <div style={{ height: FOCUS_CHART_H }}>
-          <Line data={data} options={focusLineOptions(isDark, { format: formatBps })} />
+          {/* The formatter has to follow the SERIES, not the panel: formatBps on a
+              latency series would label 30 ms as "30 B/s". Loss and latency share the
+              axis, so the unit is left off the tick and carried by the legend instead —
+              "30" reads fine against a legend that says ms, whereas a hardcoded "ms"
+              would be wrong for the loss line. */}
+          <Line
+            data={data}
+            options={
+              pingMode
+                ? focusLineOptions(isDark, { decimals: 0, min: 0 })
+                : focusLineOptions(isDark, { format: formatBps })
+            }
+          />
         </div>
       )}
 
       {/* The legend carries the CURRENT value too, so removing the tiles didn't take the
           numbers with it — it just stopped spending a 2x2 grid on them. */}
       <div className="flex items-center gap-3 flex-wrap">
-        <LegendDot color={IN_COLOR} label="In" value={offline ? "—" : formatBps(inNow)} />
-        <LegendDot color={OUT_COLOR} label="Out" value={offline ? "—" : formatBps(outNow)} />
+        {pingMode ? (
+          <>
+            <LegendDot
+              color={LATENCY_COLOR}
+              label="Latency"
+              value={offline || latNow == null ? "—" : `${Math.round(latNow)} ms`}
+            />
+            <LegendDot
+              color={LOSS_COLOR}
+              label="Loss"
+              value={offline || lossNow == null ? "—" : `${Math.round(lossNow)}%`}
+            />
+          </>
+        ) : (
+          <>
+            <LegendDot color={IN_COLOR} label="In" value={offline ? "—" : formatBps(inNow)} />
+            <LegendDot color={OUT_COLOR} label="Out" value={offline ? "—" : formatBps(outNow)} />
+          </>
+        )}
       </div>
     </div>
   );

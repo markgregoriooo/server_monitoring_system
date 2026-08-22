@@ -5,6 +5,26 @@
 
 ---
 
+
+> ⚠️ **Ping-only routers change what the Network tiles can say.** A router registered with
+> no SNMP community (an ISP-owned CPE — see `router-ups-monitoring.md`) has **no ports and
+> never will**, so `0/0 ports up` is not a fault report, it is the absence of a fact. All
+> three network tiles therefore branch on `NetLive.mode`:
+>
+> | Tile | SNMP router | Ping-only router |
+> |---|---|---|
+> | `network.summary` | ports up across all routers | worst **packet loss** (only when EVERY router is ping-only — a mixed fleet still counts real ports) |
+> | `network.list` | `4/6` ports | `12% loss`, or the latency when loss is 0 |
+> | `network.device:<id>` | ports up + peak util | **latency in ms**, with loss on the sub-line |
+>
+> `LiveSummaryContext` carries `mode`, `latencyMs` and `packetLossPct` per router for this,
+> plus a `pingOnlyRouters` count. ⚠️ On a `networkStatus` → Offline event the row keeps
+> `latencyMs: null` but sets `packetLossPct: 100` — the same asymmetry `icmpPing` uses for
+> its DOWN result, because there genuinely was no latency measurement while there genuinely
+> was total loss, and a fabricated `0 ms` would drag a latency reading toward zero at
+> exactly the moment the link is worst.
+
+
 ## 1. What it is (in one paragraph)
 
 A small, always-on-top floating window — the kind Google Meet pops out when you leave the
