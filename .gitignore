@@ -163,3 +163,9 @@ iot/esp32/**/secrets.h
 # seven .docx files in the repo root (the manuscript itself, the ICTU letters and
 # questionnaires) ARE tracked, so a blanket rule would misdescribe what belongs here.
 MANUSCRIPT-REVISION-GUIDE.docx
+
+# Word's owner-lock files — created while a .docx is OPEN and deleted on close,
+# so one is only ever noise in `git status`. The pattern is anchored to the two
+# leading characters Word uses, not to *.docx, since the .docx files themselves
+# are tracked (see the note above).
+~$*
