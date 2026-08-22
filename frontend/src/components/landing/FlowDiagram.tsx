@@ -36,10 +36,18 @@ interface Box {
   tone?: string;
 }
 
+// ⚠️ The three source boxes share a width on purpose — a column of boxes that are
+// nearly-but-not-quite the same size reads as a mistake. It is 152 rather than 130
+// because the Pollers label now names three protocols: at 10.5px monospace,
+// "SNMP · RouterOS · ICMP" is ~139px and spilled out of the old box. Widening the
+// column also moves where the connectors start (see LINKS: x=158, was 136).
 const BOXES: Box[] = [
-  { x: 6, y: 18, w: 130, h: 52, title: "ESP32", sub: "DHT11 · MQ-2 · IR", tone: GREEN },
-  { x: 6, y: 92, w: 130, h: 52, title: "Go agents", sub: "one per server", tone: GREEN },
-  { x: 6, y: 166, w: 130, h: 52, title: "Pollers", sub: "SNMP · RouterOS", tone: GREEN },
+  { x: 6, y: 18, w: 152, h: 52, title: "ESP32", sub: "DHT11 · MQ-2 · IR", tone: GREEN },
+  { x: 6, y: 92, w: 152, h: 52, title: "Go agents", sub: "one per server", tone: GREEN },
+  // ICMP is not a fourth ingest path — it rides the same pull poller. It earns a name
+  // here because it is the only one that can monitor equipment we hold no credentials
+  // for, which at CSPC is the only non-MikroTik router that exists.
+  { x: 6, y: 166, w: 152, h: 52, title: "Pollers", sub: "SNMP · RouterOS · ICMP", tone: GREEN },
   { x: 280, y: 79, w: 150, h: 90, title: "Node.js", sub: "validate · alert · broadcast", tone: ACCENT },
   { x: 560, y: 44, w: 130, h: 54, title: "InfluxDB", sub: "time-series" },
   { x: 560, y: 150, w: 130, h: 54, title: "MySQL", sub: "state · alerts" },
@@ -51,9 +59,9 @@ const BOXES: Box[] = [
  * streams merging rather than three lines meeting a wall.
  */
 const LINKS: { id: string; d: string; tone: string; dur: number }[] = [
-  { id: "l1", d: "M136,44 C200,44 220,105 280,105", tone: GREEN, dur: 2200 },
-  { id: "l2", d: "M136,118 C200,118 220,124 280,124", tone: GREEN, dur: 2000 },
-  { id: "l3", d: "M136,192 C200,192 220,143 280,143", tone: GREEN, dur: 2400 },
+  { id: "l1", d: "M158,44 C210,44 226,105 280,105", tone: GREEN, dur: 2200 },
+  { id: "l2", d: "M158,118 C210,118 226,124 280,124", tone: GREEN, dur: 2000 },
+  { id: "l3", d: "M158,192 C210,192 226,143 280,143", tone: GREEN, dur: 2400 },
   { id: "l4", d: "M430,100 C490,100 505,71 560,71", tone: ACCENT, dur: 1900 },
   { id: "l5", d: "M430,148 C490,148 505,177 560,177", tone: ACCENT, dur: 2100 },
   { id: "l6", d: "M690,71 C740,71 755,105 800,105", tone: "var(--gf-text-dim)", dur: 2300 },
@@ -151,7 +159,7 @@ export default function FlowDiagram() {
         className="w-full"
         style={{ display: "block", overflow: "visible" }}
         role="img"
-        aria-label="Three ingest paths feed one Node.js backend, which writes to InfluxDB and MySQL and broadcasts live readings straight to the React dashboard."
+        aria-label="Three ingest paths feed one Node.js backend: sensors and agents push, while routers and UPS units are polled over SNMP, the RouterOS API and ICMP. The backend writes to InfluxDB and MySQL and broadcasts live readings straight to the React dashboard."
       >
         {/* connectors first, so boxes sit on top of their endpoints */}
         {LINKS.map((l) => (

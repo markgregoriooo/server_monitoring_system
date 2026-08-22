@@ -69,7 +69,7 @@ function LogoMark({ size }: { size: number }) {
 // a sentence would take a paragraph to say — "0 passwords stored" is the whole
 // authentication design in two words.
 const FIGURES: { value: number; suffix?: string; label: string; note: string }[] = [
-  { value: 4, label: "ingest paths", note: "agents · SNMP · RouterOS · sensor" },
+  { value: 4, label: "ingest paths", note: "agents · SNMP · RouterOS · ICMP · sensor" },
   { value: 3, suffix: "s", label: "room sampling", note: "every reading evaluated" },
   { value: 2, label: "data stores", note: "InfluxDB + MySQL" },
   { value: 0, label: "passwords stored", note: "Google Workspace only" },
@@ -93,8 +93,8 @@ const COVERAGE: {
     visual: "network",
     color: ACCENT,
     title: "Network",
-    body: "Per-interface throughput, utilisation and link state across the campus routers and the MikroTik — with ports that were never patched kept deliberately silent.",
-    meta: "SNMP IF-MIB + RouterOS API · pull",
+    body: "Per-interface throughput, utilisation and link state across the campus routers and the MikroTik — with ports that were never patched kept deliberately silent. Latency and packet loss are measured by ping alongside every poll, so a link that is up but quietly dropping traffic still shows.",
+    meta: "SNMP IF-MIB + RouterOS API + ICMP · pull",
   },
   {
     visual: "power",
@@ -591,7 +591,7 @@ export default function Login() {
           <SectionHead
             label="Architecture"
             title="Three ingest paths, one backend, two stores"
-            sub="Sensors and agents push; routers and UPS units are polled. Everything converges on a single Node.js service that writes measurements to InfluxDB, state to MySQL, and a mirrored copy to on-site storage that survives a database wipe."
+            sub="Sensors and agents push; routers and UPS units are polled — over SNMP, the RouterOS API, and ICMP for the gear we hold no credentials for. Everything converges on a single Node.js service that writes measurements to InfluxDB, state to MySQL, and a mirrored copy to on-site storage that survives a database wipe."
           />
 
           {/* Full diagram on large screens; scaled to a phone its labels would be
@@ -605,7 +605,7 @@ export default function Login() {
           <div className="lg:hidden flex flex-col gap-2">
             <Chip title="ESP32" sub="DHT11 + MQ-2 + IR — push over Socket.IO" />
             <Chip title="Go agents" sub="one per server — push over HTTP" />
-            <Chip title="Pollers" sub="SNMP + RouterOS API — pull" />
+            <Chip title="Pollers" sub="SNMP + RouterOS API + ICMP — pull" />
             <DownArrow />
             <Chip title="Node.js + Express" sub="validate · alert · broadcast" />
             <DownArrow />
