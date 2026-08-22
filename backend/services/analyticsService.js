@@ -598,6 +598,21 @@ function roundForUnit(v, meta) {
 async function recommendThresholds({ lookbackDays = 14, deviceId = null } = {}) {
   const days = clampInt(lookbackDays, 1, 90, 14);
   const scoped = deviceId != null;
+
+  // When scoped, the device's CLASS decides which metrics are even askable. Looked up
+  // here rather than taken as a caller-supplied hint: one indexed read, and a caller
+  // cannot get it wrong. Without it, scoping to a router still evaluated cpu/mem/disk
+  // against a router id — three guaranteed-empty Flux queries per request, surfacing as
+  // three "insufficient data" rows that look like a broken collector rather than like a
+  // question that was never sensible to ask.
+  let scopedSource = "server";
+  if (scoped) {
+    const [[row]] = await db.query(
+      `SELECT device_type FROM devices WHERE device_id = ? LIMIT 1`,
+      [Number(deviceId)],
+    );
+    scopedSource = row?.device_type === "router" || row?.device_type === "mikrotik" ? "router" : "server";
+  }
   const out = [];
   for (const [metric, meta] of Object.entries(METRICS)) {
     if (meta.recommend === false) continue; // device-class metrics opt out of threshold recs
@@ -607,9 +622,11 @@ async function recommendThresholds({ lookbackDays = 14, deviceId = null } = {}) 
     const scopedOnly = meta.recommend === "scoped";
     if (scopedOnly && !scoped) continue;
     // Environment metrics are room-level: there is no per-device version of "the server
-    // room is too hot", so a scoped request simply skips them. Router metrics are exempt
-    // only when they asked to be scoped in the first place.
-    if (scoped && meta.source !== "server" && !scopedOnly) continue;
+    // room is too hot", so a scoped request always skips them. Otherwise the metric must
+    // belong to the class of device that was scoped to — asking a router for disk usage
+    // is not a missing reading, it is a category error.
+    if (scoped && meta.source === "env") continue;
+    if (scoped && meta.source !== scopedSource) continue;
     const series = await fetchMetricSeries(metric, {
       deviceId: scoped ? deviceId : null,
       rangeExpr: `-${days}d`,

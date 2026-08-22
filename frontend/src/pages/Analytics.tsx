@@ -1226,26 +1226,45 @@ export default function Analytics() {
           subtitle={
             recDevice == null
               ? `All servers pooled · last ${REC_WINDOW_DAYS} days · warn = p95, critical = p99`
-              : `${servers.find((s) => s.id === recDevice)?.name ?? "Server"} only · last ${REC_WINDOW_DAYS} days`
+              : `${
+                  [...servers, ...routers].find((s) => s.id === recDevice)?.name ?? "Device"
+                } only · last ${REC_WINDOW_DAYS} days`
           }
           action={
-            servers.length > 0 ? (
+            /* Routers belong in this picker, not just servers. `router_latency` is
+               recommendable ONLY per device (see analyticsService METRICS) — a rack
+               switch answering in <1 ms and an ISP CPE in 30 ms are both healthy, so a
+               pooled percentile fits neither. Offering servers alone left that the one
+               recommendation the backend could produce and the UI could never ask for. */
+            servers.length > 0 || routers.length > 0 ? (
               <Select
                 value={recDevice == null ? "" : String(recDevice)}
                 options={[
                   { value: "", label: "All servers", group: null },
                   ...servers.map((s) => ({ value: String(s.id), label: s.name, group: "Per server" })),
+                  ...routers.map((r) => ({ value: String(r.id), label: r.name, group: "Per router" })),
                 ]}
                 onChange={(v) => setRecDevice(v ? Number(v) : null)}
-                title="Suggest thresholds for one server instead of the whole fleet"
+                title="Suggest thresholds for one device instead of the whole fleet"
               />
             ) : undefined
           }
         >
           {recDevice != null && (
             <p className="mb-3 text-[0.9em]" style={{ color: gf.textMuted }}>
-              A busy server and an idle one share a pooled p95 that suits neither. Applying
-              here writes a per-server override, leaving the global rule untouched.
+              {routers.some((r) => r.id === recDevice) ? (
+                <>
+                  Latency is a property of the individual link — a switch in the rack answers
+                  in under 1 ms, an ISP router in 20–40 ms, and both are healthy. This is the
+                  p95/p99 of what <em>this</em> link actually does. Applying writes a
+                  per-device override, leaving the global rule untouched.
+                </>
+              ) : (
+                <>
+                  A busy server and an idle one share a pooled p95 that suits neither. Applying
+                  here writes a per-server override, leaving the global rule untouched.
+                </>
+              )}
             </p>
           )}
           {recsLoading ? (
