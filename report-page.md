@@ -137,7 +137,15 @@ internal** (stable, collision-free). It is *not* what the user sees — see §7.
 |------|--------|---------|-------|
 | `environment` | InfluxDB `sensor_environment` — 3 daily-window queries (`mean` / `max` / `min`, `every: 1d`, `timeSrc: "_start"`) | days covered, avg temp, peak temp, peak gas | per day: avg/max/min temp, avg humidity, peak gas (max of the two MQ-2 sensors) |
 | `server` | InfluxDB `server_metrics` — grouped `mean` + `max` per `device_id`/`_field`, names joined from MySQL `devices` (`device_type='server'`) | servers reporting, busiest CPU | per server: avg/max CPU, mem, disk % |
-| `network` | InfluxDB `router_metrics` (grouped `mean`/`max`) + `network_traffic` (`increase()` → `last()` for counters, `max` for utilization, bool→float `mean` for link state); device facts + offline events from MySQL | devices reporting, total traffic, busiest port, link errors, offline events | **two tables** — per device: kind, avg/max CPU, avg mem, avg clients, RX/TX GB, offline count; per port: RX/TX GB, peak util, errors, link-up % |
+| `network` | InfluxDB `router_metrics` (grouped `mean`/`max`, **incl. `latency_ms` / `packet_loss_pct`**) + `network_traffic` (`increase()` → `last()` for counters, `max` for utilization, bool→float `mean` for link state); device facts + offline events from MySQL | devices reporting, total traffic, busiest port, link errors, **worst packet loss**, offline events | **two tables** — per device: kind, avg/max CPU, avg mem, avg clients, **avg/max latency ms, loss %**, RX/TX GB, offline count; per port: RX/TX GB, peak util, errors, link-up % |
+
+> ⚠️ **The ICMP columns are what make a ping-only router reportable at all.** A router
+> registered with no SNMP community (an ISP-owned CPE — see `router-ups-monitoring.md`)
+> reports no CPU, no memory, no clients, no interfaces and no traffic, so before
+> `latency_ms`/`packet_loss_pct` were queried here its row came out blank in every
+> column: a device polled all month appeared never to have reported. **Worst packet loss**
+> is in the summary for the same reason — a WAN link that never went "offline" but dropped
+> a third of its traffic is a failure nothing else in this report would surface.
 | `ups` | InfluxDB `ups_metrics` (grouped `mean`/`min`/`max`, plus bool→float `mean` for `on_battery`); device facts + events from MySQL `alerts` | units reporting, lowest battery, shortest runtime, peak load, on-battery + offline events | **two tables** — battery & load: avg/min charge, avg/min runtime, avg/max load, on-battery %; voltage & events: in/out/battery volts, max temp, event counts |
 | `alerts` | MySQL `alerts` (`created_at BETWEEN`) joined to `devices` | total + critical/warning/info counts | each alert: time, severity, device, title, value, status |
 | `aircon` | MySQL `aircon_logs` (`created_at BETWEEN`) joined to `devices` + `users` | total, manual vs auto | each action: time, unit, action, trigger, who, reason |
