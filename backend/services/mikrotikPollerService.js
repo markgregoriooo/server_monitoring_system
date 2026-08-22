@@ -2,6 +2,7 @@ import db from "../config/mysql.js";
 import agentService from "./agentService.js";
 import mikrotikClient from "./mikrotikClient.js";
 import { writeNetworkSample } from "../handlers/networkMetricsHandler.js";
+import icmpPing from "./icmpPing.js";
 import { encrypt, decrypt } from "./mikrotikCrypto.js";
 import deviceAlerts from "./deviceAlerts.js";
 import alertBandState from "./alertBandState.js";
@@ -136,7 +137,21 @@ async function setReachable(io, d, online) {
 // ─── Per-device poll ────────────────────────────────────────────────────────────
 async function pollDevice(io, d) {
   const labels = await loadInterfaceLabels(d.id);
+  // ICMP alongside the API call, exactly as the SNMP poller does it. Started first so
+  // the two overlap rather than adding their latencies together; icmpPing never
+  // rejects, so this is always safe to await.
+  //
+  // Without it a MikroTik was the one router class with no latency_ms / packet_loss_pct
+  // at all — so `router_latency` and `router_loss` (alert rules, Analytics trends and
+  // anomalies, the report columns) silently had no data for the campus core routers,
+  // which are the devices those metrics matter most for. It also made the metric
+  // inconsistent: present on some routers, absent on others, for no reason a user
+  // could see.
+  const icmpPromise = icmpPing.ping(d.ip);
   const sample = await collect(d, labels); // throws if unreachable
+  const icmp = await icmpPromise;
+  sample.latencyMs = icmp.latencyMs;
+  sample.packetLossPct = icmp.packetLossPct;
   await setReachable(io, d, true);
   await writeNetworkSample(
     io,

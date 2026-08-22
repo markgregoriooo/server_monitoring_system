@@ -476,6 +476,9 @@ export default function Analytics() {
   const [forecasts, setForecasts] = useState<DiskForecast[]>([]);
   const [upsForecasts, setUpsForecasts] = useState<UpsBatteryForecast[]>([]);
   const [linkForecasts, setLinkForecasts] = useState<LinkForecast[]>([]);
+  // The registered routers, fetched directly rather than inferred from the link
+  // forecast. See the `routers` memo below for why that inference was wrong.
+  const [netDevices, setNetDevices] = useState<{ id: number; name: string; typeLabel: string | null }[]>([]);
   const [summary, setSummary] = useState<AlertSummary | null>(null);
   const [diskLoading, setDiskLoading] = useState(true);
   const [upsLoading, setUpsLoading] = useState(true);
@@ -534,6 +537,28 @@ export default function Analytics() {
     if (!silent) setLinkLoading(false);
   }, [linkDays]);
 
+  // The router list for the Trends/Anomalies device picker. Fetched from the device
+  // endpoints, NOT derived from a forecast — see the `routers` memo.
+  const loadRouters = useCallback(async () => {
+    const [net, mt] = await Promise.all([api.getNetworkDevices(), api.getMikrotikDevices()]);
+    const rows = [
+      ...(net.success ? net.data?.devices ?? [] : []),
+      ...(mt.success ? mt.data?.devices ?? [] : []),
+    ];
+    const byId = new Map<number, { id: number; name: string; typeLabel: string | null }>();
+    for (const d of rows) {
+      const id = Number(d.id);
+      if (!byId.has(id)) {
+        byId.set(id, {
+          id,
+          name: d.name ?? `#${id}`,
+          typeLabel: d.type === "mikrotik" ? "MikroTik" : "Router",
+        });
+      }
+    }
+    setNetDevices([...byId.values()]);
+  }, []);
+
   // Forecasts load on mount + their own lookback change (they are also the source of the
   // device lists the Trends tab's selector needs, so they load regardless of active tab).
   // The other tabs load lazily when first activated.
@@ -548,6 +573,9 @@ export default function Analytics() {
   useEffect(() => { loadAccuracy(); }, [loadAccuracy]);
   useEffect(() => { loadUps(); }, [loadUps]);
   useEffect(() => { loadLink(); }, [loadLink]);
+  // Independent of the forecasts: the device picker must list every registered router,
+  // including the ping-only ones that produce no forecast of any kind.
+  useEffect(() => { loadRouters(); }, [loadRouters]);
   useEffect(() => { if (tab === "alerts") loadSummary(); }, [tab, loadSummary]);
 
   // Live alert analytics: re-pull the summary whenever an alert is raised
@@ -570,13 +598,23 @@ export default function Analytics() {
     () => forecasts.map((f) => ({ id: f.deviceId, name: f.name, typeLabel: f.typeLabel })),
     [forecasts],
   );
+  // ⚠️ This list was built from `linkForecasts` — every device that reports INTERFACE
+  // traffic. That silently excluded exactly one class of device: a PING-ONLY router has
+  // no interfaces at all, so it produced no link forecast and never appeared in the
+  // picker — making Latency and Packet Loss unreachable for the one device whose ONLY
+  // metrics those are.
+  //
+  // So the list now comes from the device endpoints, with the link forecast folded in
+  // as a fallback: a device deleted from the dashboard still has history in InfluxDB,
+  // and dropping it from the picker would hide a trend that is still perfectly readable.
   const routers = useMemo(() => {
     const seen = new Map<number, { id: number; name: string; typeLabel: string | null }>();
+    for (const d of netDevices) seen.set(d.id, d);
     for (const l of linkForecasts) {
       if (!seen.has(l.deviceId)) seen.set(l.deviceId, { id: l.deviceId, name: l.name, typeLabel: l.typeLabel });
     }
-    return [...seen.values()];
-  }, [linkForecasts]);
+    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [netDevices, linkForecasts]);
 
   const needsDevice = SERVER_METRICS.has(selMetric) || ROUTER_METRICS.has(selMetric);
   const deviceOptions = ROUTER_METRICS.has(selMetric) ? routers : servers;
