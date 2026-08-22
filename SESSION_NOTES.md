@@ -2017,3 +2017,192 @@ plain HTTP on the LAN where `navigator.clipboard` does not exist.
   flow — fine for a capstone, worth naming as a limitation.
 - Deliberately not built: Dashboard click-through beyond the alerts panel, and an analytics
   "upcoming risks" strip on the Dashboard.
+
+---
+
+## SESSION 23 — 2026-08-22
+**Branch:** `feat/router-ups-completion` (off `main`, **not yet merged**)
+**Developer:** Mark Gregorio
+
+> The client returned the Router & UPS questionnaire. Reading it changed what the feature
+> had to be: CSPC owns **no non-MikroTik managed router at all**, so the SNMP half had
+> nothing to point at. Building the long-deferred **ICMP fallback** turned it from a
+> feature with zero devices into one with a real device. Along the way, a UPS on BYPASS
+> turned out to be reported as perfectly healthy.
+
+### The questionnaire, and what it actually said
+
+Transcribed to `router-ups-client-answers.md`; photos kept in
+`router&ups_questionnaire_answers/`.
+
+**Policy answers all landed.** v2c confirmed (§10 Q3 closed), **no firewall** between the
+backend and the devices (Q9 closed), a read-only community string already in use, and a
+named admin ("Sir Alex" — first name only, no contact).
+
+**Device answers did not, and one reshaped the feature:**
+
+- **Section 2 asked for non-MikroTik routers and three of its four rows are MikroTik
+  CloudCore.** Those are data source B, already polled over the RouterOS API. Registering
+  them here would double-count one physical router as two `devices` rows with two InfluxDB
+  series. That leaves **one in-scope router: the ISP-owned PLDT DMZ box** — and its
+  Managed/Basic checkbox is the one they left blank. Its IP reads `10.233.200.18` but could
+  be `10.253.200.18`; confirm before registering.
+- **All three UPS rows claim an SNMP card and none carries an IP.** A later nameplate photo
+  (PHOENIX **TTN-V 2K VA RT UNITY IoT**, 2000 VA, 6 x 12 V 7 Ah) shows a **MAC address**,
+  which proves a network interface — so the "Yes" answers are credible after all. Still
+  open: whether that interface speaks **RFC 1628** or only the vendor's `UNITY IoT` cloud
+  app. One `snmpwalk 1.3.6.1.2.1.33` settles it. Brand mismatch on record: the form says
+  KEDOS / NewStar Industrial, the nameplate says PHOENIX, and nobody knows which row it is.
+- **Fix the source `.docx` before reusing the form**: the UPS header prints as
+  `Has a network/ SNMP card?` with *"Has a network"* struck through. The respondent read a
+  malformed question.
+
+### ICMP fallback — built (router-ups-monitoring.md §11's last open item)
+
+A router now needs only an IP: with a community it is polled over SNMP, without one it
+falls back to ICMP. The add form drops its community requirement for routers accordingly;
+a **UPS still requires one** — pinging a battery tells you its management card has power.
+
+ICMP also runs **alongside** every SNMP and RouterOS poll, filling `latency_ms` /
+`packet_loss_pct` — fields `networkMetricsHandler` was always ready to write and both
+collectors always returned as `null`. They say what SNMP structurally cannot: a walk either
+answers or times out, so a link dropping 40% of packets reads as perfectly healthy right up
+until it flips to a flat Offline. On the SNMP failure path the two verdicts are combined, so
+the log finally distinguishes a dead router from a wrong community or a blocked UDP 161.
+
+Two decisions worth keeping:
+
+- **We shell out to the OS `ping`, not raw sockets.** `net-ping` needs Administrator on
+  Windows and root on Linux; running the whole backend elevated is a far worse trade than
+  parsing text, on a box that also holds `JWT_SECRET` and every device credential.
+- **The parser reads numbers, `ms` and `=`/`<` — never English words.** `ping` is localized
+  (German `Zeit=15ms`, French `temps=14,7 ms`), and a word-matching parser works on the dev
+  machine then silently reports 100% loss on a differently-localized server —
+  indistinguishable from a dead device. A reply line is identified as "carries BOTH an
+  address and an RTT", which separates it from every summary line on every platform and
+  correctly rejects Windows' *"Reply from 10.0.0.1: Destination host unreachable"*.
+  18 tests over 5 platform/locale fixtures in `tests/pingOutput.test.js`.
+
+The ping path **writes its sample even when the device is DOWN** — `reachable` +
+`packet_loss_pct` are the only two things a no-SNMP router ever gives, so dropping the point
+during an outage would blank the chart exactly when it is worth reading.
+
+### UPS on BYPASS — a silent gap, now alerted
+
+`upsOutputSource` has named `bypass(4)` since `snmpClient.js` was written, but its only
+interpreter was `isOnBattery`, which tests `battery(5)`. **A UPS on bypass reported
+`onBattery: false` and read as perfectly normal** — green tile, no alert — in front of a
+rack with **zero** seconds of runtime. Exactly backwards from the risk: on-battery is loud
+and gives you minutes; bypass was silent and gives you none.
+
+The enum and its interpreters moved to the pure `snmpUtils.js` (`upsOutputState()` folds all
+seven RFC 1628 values into normal | battery | **bypass** | off | avr | unknown). Bypass and
+output-off now raise their own **critical** alerts, with their own banners and wording
+everywhere — ordered above on-battery, because it is the state with no clock behind it.
+
+Booster/reducer (AVR) deliberately raises nothing: the load is still protected and
+`ups_input_voltage` already alerts on the bad mains that causes it. It reaches the dashboard
+as `outputState: "avr"` so it can still be seen.
+
+`isProtected` is written as "**not** one of the three we KNOW are unprotected", never as an
+allow-list. A UPS reporting `other(1)` has told us nothing, and turning that silence into an
+outage would page someone over a firmware quirk. A test asserting exactly that caught the
+allow-list version.
+
+### The ICMP metrics reach alerting, reports and analytics
+
+- **`router_latency` / `router_loss`** evaluated in `deviceAlerts.checkRouter` against the
+  configurable `alert_rules` (migration `2026-08-22_icmp_alert_rules.sql`, folded into v13).
+  **`router_loss` ships ACTIVE** at 5% / 20% — loss is not site-specific, 0% is healthy on
+  every link everywhere. **`router_latency` ships INACTIVE** at 100/300 ms: a rack switch
+  answers in under 1 ms and an ISP CPE in 20-40 ms and *both are healthy*, so one global
+  number would either page constantly or never fire.
+  With the default `PING_COUNT=3` the only possible loss values are 0/33/67/100, so both
+  bands trip on the first lost echo. **`PING_COUNT=10` is now set in `backend/.env`**, giving
+  10% steps so warning and critical mean different things.
+- **Reports:** a ping-only router had a **blank row in every column** — no CPU, memory,
+  clients, interfaces or traffic. The network report now queries the ICMP fields; the Devices
+  table gains Avg ms / Max ms / Loss %, plus a **Worst packet loss** summary line.
+- **Analytics:** both metrics added to the registry. `router_latency` carries a new
+  **`recommend: "scoped"`** marker — recommendable per device and never fleet-wide, for the
+  same reason its rule ships inactive. That closes the loop the rule was designed around:
+  instead of "watch it for a few days and pick 2-3x", the p95/p99 of what *this* link does is
+  computed and applied in one click.
+
+### Three bugs I introduced, and one I found
+
+- **My history merge shattered every throughput line.** I merged `network_traffic` and
+  `router_metrics` into one row per timestamp so a ping-only router would have something to
+  chart. They do not share timestamps — `derivative()` lands the throughput series one window
+  later than the raw gauge reads. Measured live: **`-1h` (20s windows) had ZERO shared
+  timestamps** out of 56/57 rows, so every merged row was half-null and the client (which
+  draws a null as a gap, deliberately) never drew a line at all; `-6h` (2m windows) shared 46
+  of 47 and merely looked chopped up. Returned as **two arrays** now — nothing ever needed
+  them interleaved, since a chart draws throughput *or* ICMP, never both on one axis.
+- **Ping-only routers were missing from their own Analytics picker.** The device list was
+  derived from `linkForecasts` — devices that report *interface* traffic — so a ping-only
+  router never appeared, making Latency and Packet Loss unreachable for the one device whose
+  only metrics those are. Same class of bug on the Threshold Recommendations picker, which
+  offered servers only.
+- **Latency and loss were invisible on the pages that own the device.** Both detail pages
+  showed them only in ping mode, so an operator could get a "Latency high" alert and find
+  nothing on that router's page. The MikroTik path needed more: `pollDevice` measured ICMP but
+  never put it in the `latest` cache, so `GET /api/mikrotik` did not carry the fields at all.
+- **Found, not introduced:** the Dashboard's focus charts went permanently blank after a
+  session rotation. The interceptor correctly refused to log out over a replaced session's
+  403 — but it also **dropped the request**, and those charts fetch once from an effect keyed
+  on `[device, range]`. Now retried once under the current token; safe for any method, since
+  auth rejects before the route handler runs.
+
+### Verified on live data
+
+`npm run probe -- <ip> [community] [port]` was added because `router-ups-monitoring.md` §9
+tells you to run `snmpwalk` before registering a device, and **snmpwalk does not ship with
+Windows** — the step was effectively dead. It runs the same `snmpClient` / `icmpPing` code
+the poller runs, touches no DB, and prints a verdict naming the form to fill in.
+
+| Device | Type | ICMP points (30 min) |
+|---|---|---|
+| Campus MikroTik | mikrotik | 51 |
+| Huawei Router (ISP-owned) | router, **ping-only** | 29 |
+| Dev Router (simulator) | router, SNMP | 29 |
+
+A real ISP-owned home router probed exactly as the PLDT box is expected to: reachable at
+1 ms, SNMP timed out, verdict **ping mode**. The dev simulator's UPS and router both probe
+correctly, and bypass / battery / off were verified by flipping `upsOutputSource` in the
+`.snmprec`. 212 tests pass; `tsc` and the production build are clean.
+
+### Documentation
+
+`CLAUDE.md` (env vars, the two new services, and why each odd choice),
+`router-ups-monitoring.md` (§8, §10 Q1/Q2, §11), `report-page.md`,
+`predictive-analytics.md`, `pip-widget.md`, and the new `router-ups-client-answers.md`.
+**No ERD change** — this branch adds zero structural SQL: the new rules are *rows* in
+`alert_rules`, and `device_network.snmp_community` was already nullable.
+
+### Next session
+
+1. **Merge `feat/router-ups-completion` to `main`** — 19 commits, nothing merged yet.
+2. **DFD: one label, both files.** In `docs/dfd/dfd-level0-clean.drawio` and
+   `dfd-level1-clean.drawio`, the arrow to **Router / MikroTik** reads `SNMP / RouterOS
+   query`; it should read `SNMP / RouterOS / ICMP query`. **Leave the UPS arrow alone**
+   (`SNMP query` stays correct — there is no ping fallback for a battery).
+3. **Campus visit** — the only remaining blockers, none of them code:
+   - 3 UPS IPs from the MikroTik's DHCP leases (match the nameplate MAC — the photo cuts it
+     off after `00`), then `npm run probe` each one
+   - the community string from Sir Alex, plus his contact
+   - `npm run probe` the PLDT router; blank community if SNMP is locked
+   - **DHCP reservations before registering** — the poller keys on IP, and a moved lease
+     reads as Offline with nothing on screen explaining why
+   - the management VLAN's ID/subnet, and confirmation the backend has a leg on it
+
+**Still open, unscheduled:**
+- **No real UPS has ever been polled.** Bypass, battery-fault and the rest work against the
+  simulator, which returns clean textbook values for every OID. Real units routinely omit
+  optional ones (temperature, battery voltage) or return sentinels. The code handles that
+  (`inRange` to null, conditional fields) but it is reasoned-about, not observed.
+- An unreachable MikroTik writes **no** sample at all, ICMP included, because the API call
+  throws first. Consistent with the SNMP path, but it means no latency data at the moment you
+  would most want it. Deliberate for now.
+- Alert-type chips in Analytics still render raw names (`router_loss - 4`). Cosmetic, and it
+  predates this session.
