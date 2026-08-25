@@ -87,8 +87,32 @@ const ACCENT = "#2563eb";
 const ROW_ALT = "#f3f4f6";
 const BORDER = "#d1d5db";
 
+// pdfkit's built-in fonts (Helvetica/Times/Courier) are WinAnsi — a SINGLE-BYTE
+// encoding. Hand it a codepoint outside that set and it does not throw: it writes the
+// codepoint's bytes raw, so "→" left the Period line reading "!’" in every report
+// ever generated. Report titles and device names are user-typed and reach this file
+// verbatim, so one pasted character can do the same again at any time.
+//
+// Latin-1 passes through, plus the typographic block CP1252 keeps at 0x80-0x9F.
+// Anything else is transliterated where there is an honest equivalent, else "?" —
+// a visible gap beats a glyph that silently reads as different text.
+const CP1252_EXTRA = "€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ";
+const TRANSLIT = {
+  "→": "->", "←": "<-", "↔": "<->", "≤": "<=", "≥": ">=",
+  "≠": "!=", "≈": "~", "✓": "Y", "✗": "N", "′": "'", "″": '"',
+};
+
+function winAnsi(v) {
+  const str = v === null || v === undefined ? "" : String(v);
+  let out = "";
+  for (const ch of str) {
+    out += ch.codePointAt(0) <= 0xff || CP1252_EXTRA.includes(ch) ? ch : (TRANSLIT[ch] ?? "?");
+  }
+  return out;
+}
+
 function truncate(doc, text, width) {
-  let s = String(text ?? "");
+  let s = winAnsi(text);
   if (doc.widthOfString(s) <= width) return s;
   while (s.length > 1 && doc.widthOfString(s + "…") > width) s = s.slice(0, -1);
   return s + "…";
@@ -259,11 +283,11 @@ export function toPDFBuffer(report) {
     doc.x = left;
     doc.y = ruleY + 13;
     doc.fillColor(INK).font("Helvetica-Bold").fontSize(13)
-      .text(report.title, { width: right - left });
+      .text(winAnsi(report.title), { width: right - left });
     doc.moveDown(0.3);
     doc.font("Helvetica").fontSize(9).fillColor(MUTED);
-    doc.text(`Type: ${report.type}`);
-    doc.text(`Period: ${fmtTs(report.periodStart)}  →  ${fmtTs(report.periodEnd)}`);
+    doc.text(winAnsi(`Type: ${report.type}`));
+    doc.text(`Period: ${fmtTs(report.periodStart)}  to  ${fmtTs(report.periodEnd)}`);
     doc.text(`Generated: ${fmtTs(report.generatedAt)}`);
     doc.moveDown(0.8);
 
@@ -273,8 +297,8 @@ export function toPDFBuffer(report) {
       doc.moveDown(0.3);
       doc.font("Helvetica").fontSize(9);
       report.summary.forEach((s) => {
-        doc.fillColor(MUTED).text(`${s.label}: `, { continued: true });
-        doc.fillColor(INK).text(String(s.value));
+        doc.fillColor(MUTED).text(winAnsi(`${s.label}: `), { continued: true });
+        doc.fillColor(INK).text(winAnsi(s.value));
       });
       doc.moveDown(0.8);
     }
@@ -284,7 +308,7 @@ export function toPDFBuffer(report) {
       if (i > 0) doc.moveDown(1);
       // A heading stranded at the foot of a page is worse than an early break.
       if (doc.y > doc.page.height - doc.page.margins.bottom - 60) doc.addPage();
-      doc.fillColor(INK).font("Helvetica-Bold").fontSize(11).text(s.title);
+      doc.fillColor(INK).font("Helvetica-Bold").fontSize(11).text(winAnsi(s.title));
       doc.moveDown(0.3);
       if (s.columns.length && s.rows.length) {
         drawTable(doc, s.columns, s.rows);
