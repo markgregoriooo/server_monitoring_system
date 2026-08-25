@@ -13,10 +13,12 @@ The dashboard can already generate reports from live monitoring data and save th
 Metrics, Network Traffic, UPS Power, Alert History, and Aircon Activity.
 
 What we do **not** know is what ICTU actually needs the paper/PDF to look like. The
-current layout — the header, the order of sections, the fact that there is **no
-signature block** — was decided by us, not by you. If these reports will be filed,
-submitted upward, or shown during accreditation, the format matters as much as the
-numbers.
+current layout — the letterhead, the order of sections, the wording of the signature
+block — was decided by us, not by you. As of **2026-08-25** the PDF carries both logos,
+a centred wordmark and *Prepared by / Noted by* lines, but that arrangement is our best
+guess at an institutional format, not anything ICTU approved. **Treat it as a draft to
+correct, not a finished design.** If these reports will be filed, submitted upward, or
+shown during accreditation, the format matters as much as the numbers.
 
 **"Whatever you think is best" is a fine answer** for anything you don't have a
 preference on. We only need to know where you *do*.
@@ -28,35 +30,69 @@ preference on. We only need to know where you *do*.
 
 ---
 
+## What to send us — the actual files ⭐
+
+Ticked boxes on this form help. **Files help more.** In rough order of usefulness:
+
+| # | What we're asking for | Why it matters | Format |
+|---|---|---|---|
+| 1 | **Any real ICTU report you already file** — monthly accomplishment report, incident report, inventory, anything already accepted | One genuine document answers most of this form at once: letterhead, fonts, signature wording, paper size, control number, date format. This is by far the most valuable item. | Word or PDF — a phone photo of a printed copy is fine |
+| 2 | **The official letterhead template**, if ICTU has a standard one | We copy it exactly instead of approximating it | `.docx` / `.dotx` |
+| 3 | **ICTU logo — high resolution, transparent background** | The copy we have is a 447×447 **JPEG**. JPEG cannot store transparency, so the logo prints inside a white rectangle. Invisible on a plain white page, obvious on any coloured or bordered letterhead. | PNG with transparency, or SVG / AI / EPS |
+| 4 | **CSPC logo — the current official version** | We are using the one from the website. If print work uses a different or newer version, we should match it. | PNG with transparency, or SVG / AI / EPS |
+| 5 | **Font files** — only if your template uses a non-standard typeface | The PDF engine ships only Helvetica, Times and Courier. Anything else has to be supplied as a file; we cannot substitute it by name. | `.ttf` / `.otf` |
+| 6 | **One sample control / reference number** | Far easier to copy from a real example than from a description | Just write one out, e.g. `ICTU-ENV-2026-001` |
+| 7 | **Names and exact position titles** of the signatories — *only if* they should be pre-printed | Right now we print blank lines, which needs no names at all | Text |
+
+> ⚠️ **Please do not send scanned signature images.** We print blank rules on purpose.
+> If a stored signature were embedded, anyone able to click "Generate Report" could
+> produce a document already bearing someone's name without that person seeing it. A
+> blank rule is what makes the signature evidence that a specific person approved a
+> specific printed copy.
+
+---
+
 ## Section 0 — What we produce right now
 
-So you're reacting to something concrete rather than a blank page. Current PDF:
+So you're reacting to something concrete rather than a blank page. Current PDF, as of
+**2026-08-25** — note the letterhead and signature lines are **our draft**, not an
+ICTU-approved format:
 
 ```
-┌────────────────────────────────────────────────┐
-│ CSPC-ICTU Monitoring            ← plain text,  │
-│ Environment Report                no logo      │
-│ Type: Environment                              │
-│ Period: 2026-07-01 → 2026-07-31 UTC            │
-│ Generated: 2026-08-02 13:20:11 UTC             │
-│                                                │
-│ Summary                                        │
-│   Days covered: 31                             │
-│   Avg temperature: 28.4 °C                     │
-│   Peak temperature: 34.5 °C                    │
-│                                                │
-│ Details                                        │
-│ ┌──────────┬──────────┬──────────┬───────────┐ │
-│ │ Date     │ Avg Temp │ Max Temp │ Peak Gas  │ │  ← striped table,
-│ ├──────────┼──────────┼──────────┼───────────┤ │    repeats its header
-│ │ ...      │          │          │           │ │    on each new page
-│ └──────────┴──────────┴──────────┴───────────┘ │
-│                                                │
-│              (no signature block)              │
-└────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ [CSPC]    CAMARINES SUR POLYTECHNIC COLLEGES     [ICTU]  │
+│  logo   Information and Communications Technology Unit    │
+│           Server Infrastructure Monitoring System         │
+│ ──────────────────────────────────────────────────────── │
+│ Environment Report                                        │
+│ Type: Environment                                         │
+│ Period: 2026-07-01 → 2026-07-31 UTC                       │
+│ Generated: 2026-08-02 13:20:11 UTC                        │
+│                                                           │
+│ Summary                                                   │
+│   Days covered: 31                                        │
+│   Avg temperature: 28.4 °C                                │
+│   Peak temperature: 34.5 °C                               │
+│                                                           │
+│ Details                                                   │
+│ ┌──────────┬──────────┬──────────┬───────────┐            │
+│ │ Date     │ Avg Temp │ Max Temp │ Peak Gas  │  ← striped │
+│ ├──────────┼──────────┼──────────┼───────────┤    table,  │
+│ │ ...      │          │          │           │    header  │
+│ └──────────┴──────────┴──────────┴───────────┘    repeats │
+│                                                           │
+│ Prepared by:                Noted by:                     │
+│                                                           │
+│ ____________________        ____________________          │
+│ Signature over              Signature over                │
+│  printed name                printed name                 │
+│ Date: ______________        Date: ______________          │
+└──────────────────────────────────────────────────────────┘
 ```
 
 Paper size **A4**. Timestamps in **UTC**. No page numbers. No control/reference number.
+Signature lines are **blank** — no names printed. The letterhead appears on **page 1
+only**; the signature block on the **last page only**.
 
 ---
 
@@ -73,13 +109,16 @@ Paper size **A4**. Timestamps in **UTC**. No page numbers. No control/reference 
 
 ## Section 2 — Header & identity
 
-> **Why:** the dashboard already carries the official CSPC logo, but the PDF currently
-> prints only the plain text "CSPC-ICTU Monitoring". Easy to change — we just need to
-> know what's correct.
+> **Why:** the PDF now prints both logos with a centred wordmark, but we chose that
+> arrangement ourselves from the marks we had on hand. We need to know what's *correct*
+> — including whether the wording below is the right way to name the office.
 
 | Question | Your answer |
 |---|---|
-| Should the **CSPC logo** appear on the report? | ☐ Yes ☐ No |
+| Is the current letterhead acceptable as-is? | ☐ Yes, keep it ☐ No, use ours (send the template) |
+| Should the **CSPC logo** appear on the report? | ☐ Yes (current) ☐ No |
+| Should the **ICTU logo** appear on the report? | ☐ Yes (current) ☐ No |
+| Is the logo placement right? (CSPC left, ICTU right) | ☐ Yes ☐ No — describe: |
 | Exact office name to print (e.g. "Information and Communications Technology Unit") | |
 | Should the full college name appear above it? | ☐ Yes ☐ No |
 | Any required **letterhead** we should copy? (attach or point us to a sample) | |
@@ -89,17 +128,21 @@ Paper size **A4**. Timestamps in **UTC**. No page numbers. No control/reference 
 
 ## Section 3 — Signature block ⭐
 
-> **Why this one matters most:** institutional reports in the Philippines are usually
-> not accepted without *Prepared by / Noted by / Approved by* lines. Our reports have
-> **none**. If yours need them, this is the single biggest change — and it is easier to
-> build now than after you've already filed reports without it.
+> **Why this one still matters most:** institutional reports in the Philippines are
+> usually not accepted without *Prepared by / Noted by / Approved by* lines. We have
+> added **Prepared by / Noted by** with blank rules, but we guessed both the wording and
+> the number of signatories. Getting this wrong means reprinting everything already
+> filed, so it is worth a moment of your time.
 
 | Question | Your answer |
 |---|---|
-| Does the report need signature lines? | ☐ Yes ☐ No |
+| Does the report need signature lines? | ☐ Yes (current) ☐ No, remove them |
+| Are **Prepared by / Noted by** the right roles, in that order? | ☐ Yes ☐ No — correct wording/order: |
+| Is a third line needed (e.g. **Approved by**)? | ☐ No ☐ Yes — role: |
+| Should the block appear on the **last page only** (current) or every page? | ☐ Last page ☐ Every page |
 | Which roles, in order? (e.g. Prepared by → Noted by → Approved by) | |
 | Should **"Prepared by"** be filled automatically with the logged-in user's name? | ☐ Yes ☐ No |
-| Should names/positions of the approvers be **pre-printed** or left blank to sign? | ☐ Pre-printed ☐ Blank lines |
+| Should names/positions be **pre-printed** or left blank to sign? | ☐ Pre-printed ☐ Blank lines (current) |
 | Names + exact positions to pre-print, if any | |
 
 ---
