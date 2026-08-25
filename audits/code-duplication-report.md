@@ -1,5 +1,13 @@
 # Code Duplication Audit — CSPC-ICTU Monitoring System
 
+> ⚠️ **SUPERSEDED (2026-08-25)** by
+> [`code-duplication-report-2026-08-25.md`](./code-duplication-report-2026-08-25.md).
+> Most findings below are still open, and **three have grown**: D-03 went from 3 copies to 14,
+> D-07 from 2 to 5, D-12 from 2 to 3. The re-audit re-checks every ID in its §7. Note also that
+> three of the utility modules promised in §7 below were deleted as unused scaffolding — the
+> re-audit wires its modules instead of only writing them.
+
+
 **Date:** 2026-06-06
 **Scope:** `backend/` + `frontend/src/` (firmware `.ino` excluded — single file).
 **Method:** pattern search + manual diff of the files read this session. Line numbers
