@@ -23,7 +23,7 @@ import Reveal from "./Reveal";
 function Placeholder({ photo, index }: { photo: LandingPhoto; index: number }) {
   return (
     <div
-      className="flex flex-col justify-between p-4"
+      className="flex flex-col justify-between h-full p-4"
       style={{
         aspectRatio: "3 / 2",
         background: "var(--gf-bg)",
@@ -99,9 +99,9 @@ export default function PhotoGallery() {
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {items.map((photo, i) => (
-            <Reveal key={photo.id} delay={i * 70}>
+            <Reveal key={photo.id} delay={i * 70} className="h-full">
               {photo.src ? (
-                <figure className="gf-panel overflow-hidden">
+                <figure className="gf-panel overflow-hidden h-full flex flex-col">
                   <img
                     src={photo.src}
                     alt={photo.alt}
@@ -111,9 +111,15 @@ export default function PhotoGallery() {
                     style={{ aspectRatio: "3 / 2", display: "block" }}
                   />
                   <figcaption
-                    className="px-3 py-2.5"
+                    className="px-3 py-2.5 flex-1"
                     style={{
                       fontSize: 12.5,
+                      lineHeight: 1.4,
+                      // Two lines' worth, reserved whether the caption needs them or
+                      // not: "DHT11, two MQ-2 sensors, IR transmitters" wraps at this
+                      // column width and the other three do not, so without a floor that
+                      // one panel stands 18px taller than its neighbours.
+                      minHeight: 55,
                       color: "var(--gf-text-muted)",
                       borderTop: "1px solid var(--gf-divider)",
                     }}

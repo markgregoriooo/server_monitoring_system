@@ -35,7 +35,7 @@ export interface LandingPhoto {
 export const LANDING_PHOTOS: LandingPhoto[] = [
   {
     id: "esp32-installed",
-    src: "",
+    src: "/landing/esp32-installed.jpg",
     alt: "The ESP32 environment node mounted in the CSPC ICTU server room",
     caption: "The environment node, installed",
     brief:
@@ -43,7 +43,7 @@ export const LANDING_PHOTOS: LandingPhoto[] = [
   },
   {
     id: "sensor-board",
-    src: "",
+    src: "/landing/sensor-board.jpg",
     alt: "DHT11, two MQ-2 gas sensors and the infrared transmitters on the ESP32 board",
     caption: "DHT11, two MQ-2 sensors, IR transmitters",
     brief:
@@ -51,7 +51,7 @@ export const LANDING_PHOTOS: LandingPhoto[] = [
   },
   {
     id: "rack",
-    src: "",
+    src: "/landing/rack.jpg",
     alt: "The CSPC ICTU server rack with indicator lights lit",
     caption: "The rack the agents report from",
     brief:
@@ -59,7 +59,7 @@ export const LANDING_PHOTOS: LandingPhoto[] = [
   },
   {
     id: "aircon-ir",
-    src: "",
+    src: "/landing/aircon-ir.jpg",
     alt: "An infrared transmitter aimed at the server room air conditioner",
     caption: "IR transmitter aimed at the aircon",
     brief:
