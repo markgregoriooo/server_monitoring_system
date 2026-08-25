@@ -7,7 +7,8 @@ import { useTheme } from "../context/ThemeContext";
 import RangePicker, { DEFAULT_RANGE, rangeSpanSec, presetLabel } from "../components/ui/RangePicker";
 import { withGaps, gapIndices } from "../utils/seriesGaps";
 import type { RangeValue } from "../components/ui/RangePicker";
-import type { Volume } from "./ServerMetrics";
+import type { Volume } from "../types/server";
+import { fmtAxisTime as fmtTime, fmtDateTime, rateMBs, MULTI_DAY_SEC } from "../utils/format";
 
 interface Server {
   id: string;
@@ -60,28 +61,8 @@ interface HistoryPoint {
 // Windows spanning more than a day need the DATE on the axis — bare "14:00" repeats
 // every day and makes a 30d chart unreadable. Driven by the window's actual SPAN
 // rather than a list of preset keys, so a custom 5-day window gets dates too.
-const MULTI_DAY_SEC = 86400 * 2;
-
-function fmtTime(iso: string, spanSec: number) {
-  const d = new Date(iso);
-  if (spanSec >= MULTI_DAY_SEC) {
-    return d.toLocaleString("en-PH", {
-      timeZone: "Asia/Manila", month: "short", day: "2-digit", hour: "2-digit", hour12: false,
-    });
-  }
-  return d.toLocaleTimeString("en-PH", {
-    timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false,
-  });
-}
 
 // Throughput in MB/s between two cumulative byte counters (clamps counter resets).
-function rateMBs(curr: number | null, prev: number | null, currT: string, prevT: string) {
-  if (curr == null || prev == null) return 0;
-  const dt = (new Date(currT).getTime() - new Date(prevT).getTime()) / 1000;
-  if (dt <= 0) return 0;
-  return +(Math.max(0, curr - prev) / dt / 1024 / 1024).toFixed(2);
-}
-
 interface DeviceLog {
   log_level: "info" | "warning" | "critical" | "error";
   message: string;
@@ -92,13 +73,6 @@ function logColor(level: string) {
   if (level === "critical" || level === "error") return "#E24B4A";
   if (level === "warning") return "#EF9F27";
   return "#5794F2"; // info
-}
-
-function fmtDateTime(iso: string) {
-  return new Date(iso).toLocaleString("en-PH", {
-    timeZone: "Asia/Manila", month: "short", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hour12: false,
-  });
 }
 
 function useChart(

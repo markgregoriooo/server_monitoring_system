@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { animate } from "animejs";
 import { useInView, prefersReducedMotion, EASE, DUR } from "./motion";
+import { STATUS } from "../../theme/gf";
+const { orange: ORANGE, critical: RED } = STATUS;
 
 /**
  * The forecast: history, then a projection past the last reading to the ceiling
@@ -17,8 +19,6 @@ import { useInView, prefersReducedMotion, EASE, DUR } from "./motion";
  * the picture should carry the same caution the code does.
  */
 
-const ORANGE = "#FF780A";
-const RED = "#E02F44";
 const ACCENT = "#5794F2";
 
 const VB_W = 520;

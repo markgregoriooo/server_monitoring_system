@@ -5,6 +5,10 @@ import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 import MikrotikDetail from "./MikrotikDetail";
 import type { MkDevice } from "./MikrotikDetail";
+import { GF as gf, STATUS } from "../theme/gf";
+import { formatUptime } from "../utils/format";
+import { GhostButton, StatPanel, Meta } from "../components/ui/primitives";
+const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── MikroTik list page ───────────────────────────────────────────────────────
 // First page = the fleet list (one compact row per router, with "View"); clicking
@@ -14,21 +18,7 @@ import type { MkDevice } from "./MikrotikDetail";
 
 // ─── Grafana tokens (match NetworkMonitoring.tsx) ─────────────────────────────
 
-const gf = {
-  bg: "var(--gf-bg)",
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  divider: "var(--gf-divider)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-} as const;
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
-const BLUE = "#5794F2";
 
 function loadColor(v: number) {
   if (v >= 85) return RED;
@@ -40,17 +30,6 @@ function statusColor(s: string) {
   if (s === "Warning") return ORANGE;
   return RED;
 }
-function formatUptime(sec: number | null): string {
-  if (sec == null || !Number.isFinite(sec)) return "—";
-  const s = Math.floor(sec);
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-
 // ─── Mapping ──────────────────────────────────────────────────────────────────
 
 function mapMk(r: any): MkDevice {
@@ -145,48 +124,11 @@ function Panel({
   );
 }
 
-function StatPanel({ label, value, unit, color, sub }: { label: string; value: string; unit?: string; color: string; sub?: string }) {
-  return (
-    <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 88 }}>
-      <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
-        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
-      </div>
-      <div className="px-3 pt-1.5">
-        <span className="text-[26px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
-      </div>
-    </div>
-  );
-}
-
 // ─── Ghost button (matches ServerMetrics / NetworkMonitoring "View") ──────────
-
-function GhostButton({ children, onClick, danger }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void; danger?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      className="gf-btn text-[13px] font-medium px-2.5 py-1"
-      style={{ color: danger ? RED : gf.textMuted }}
-    >
-      {children}
-    </button>
-  );
-}
 
 // One labelled fact in a drawer's summary strip. The strip used to be bare values —
 // "RB951G-2HnD", "monitor-ro", "8729 · TLS" — which only reads if you already know
 // which field is which. The key is what makes a value information.
-function Meta({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  return (
-    <span className="inline-flex items-baseline gap-1.5 min-w-0">
-      <span className="text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textDim }}>{label}</span>
-      <span className={`text-[12px] truncate ${mono ? "font-mono" : ""}`} style={{ color: gf.textMuted }}>{value}</span>
-    </span>
-  );
-}
-
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
 // Same pattern as ServerMetrics' ServerDrawerRow: the row carries what you scan, the
 // drawer the ports and identity you'd otherwise open the detail page for.

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useNotifications } from "../../context/NotificationContext";
-import type { AppNotification } from "../../context/NotificationContext";
+import type { AppNotification } from "../../types/notification";
 import { SEVERITY_COLOR, routeFor } from "./notificationUtils";
 
 const TOAST_MS = 6000;   // auto-dismiss after 6s

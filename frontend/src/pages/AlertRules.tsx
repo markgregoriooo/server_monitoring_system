@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/api";
+import { GF as gf, STATUS } from "../theme/gf";
+const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
 // Admin-only page for the configurable alert thresholds (alert_rules). A rule with
 // deviceId = null is a GLOBAL default (every server / the room); a deviceId is a
@@ -103,25 +105,8 @@ const COMPARISONS = [">=", ">", "<=", "<"];
 const SEVERITIES = ["info", "warning", "critical"];
 const SEV_COLOR: Record<string, string> = { critical: "#E02F44", warning: "#FF780A", info: "#5794F2" };
 const SEV_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
-const GREEN = "#73BF69";
 const PURPLE = "#B877D9";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
 
-const gf = {
-  bg: "var(--gf-bg)",
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  divider: "var(--gf-divider)",
-  header: "var(--gf-header)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-  hoverStrong: "var(--gf-hover-strong)",
-  accent: "var(--gf-accent)",
-  accentDim: "var(--gf-accent-dim)",
-} as const;
 
 const EMPTY_FORM: FormState = {
   deviceId: "",

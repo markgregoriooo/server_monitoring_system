@@ -1,4 +1,6 @@
 import db from "../config/mysql.js";
+// Validation vocabulary + the rule gate — pure, so tests reach it with no MySQL.
+import { cleanRule, ruleError, COMPARISONS, SEVERITIES } from "./alertRuleValidation.js";
 
 // ─── Configurable alert thresholds (alert_rules) ────────────────────────────────
 // Replaces the old hardcoded 80/90 (server) and firmware-mirrored env thresholds.
@@ -16,8 +18,6 @@ import db from "../config/mysql.js";
 //   server:      'cpu', 'mem', 'disk'   (agentService.checkThresholds)
 //   environment: 'temperature', 'gas', 'humidity'  (sensorHandler, device_id NULL)
 
-const COMPARISONS = [">", "<", ">=", "<="]; // '=' intentionally unsupported in v1 (no useful hysteresis)
-const SEVERITIES = ["info", "warning", "critical"];
 const SEV_RANK = { normal: 0, info: 1, warning: 2, critical: 3 };
 
 // ─── In-memory cache ────────────────────────────────────────────────────────────
@@ -147,83 +147,13 @@ async function getRoomThresholds() {
 }
 
 // ─── CRUD (admin-only routes) ───────────────────────────────────────────────────
-function err(status, message) {
-  const e = new Error(message);
-  e.status = status;
-  return e;
-}
-
-// Validate + normalize an incoming rule. `partial` allows missing fields (PUT patch).
-// `existing` is the current row on a PATCH, so cross-field validation can reason about
-// the MERGED result rather than only what the caller happened to send.
-function clean(data, { partial = false, existing = null } = {}) {
-  const out = {};
-
-  if (data.deviceId !== undefined) {
-    out.device_id =
-      data.deviceId === null || data.deviceId === "" ? null : Number(data.deviceId);
-    if (out.device_id !== null && !Number.isInteger(out.device_id))
-      throw err(400, "deviceId must be an integer or null (null = global default).");
-  } else if (!partial) {
-    out.device_id = null; // omitted on create = global default
-  }
-
-  // Optional per-port scope. Only meaningful alongside a device — a global rule can't
-  // name a port, because ports only exist in the context of one router.
-  if (data.interfaceName !== undefined) {
-    const raw = data.interfaceName;
-    const name = raw === null || raw === "" ? null : String(raw).trim();
-    if (name && name.length > 50) throw err(400, "interfaceName must be 50 characters or fewer.");
-    out.interface_name = name || null;
-  } else if (!partial) {
-    out.interface_name = null;
-  }
-
-  if (data.metricName !== undefined) {
-    const m = String(data.metricName ?? "").trim().toLowerCase();
-    if (!m || m.length > 50) throw err(400, "metricName is required (max 50 chars).");
-    out.metric_name = m;
-  } else if (!partial) {
-    throw err(400, "metricName is required.");
-  }
-
-  if (data.thresholdValue !== undefined) {
-    const v = Number(data.thresholdValue);
-    if (!Number.isFinite(v)) throw err(400, "thresholdValue must be a number.");
-    out.threshold_value = v;
-  } else if (!partial) {
-    throw err(400, "thresholdValue is required.");
-  }
-
-  if (data.comparison !== undefined) {
-    if (!COMPARISONS.includes(data.comparison))
-      throw err(400, `comparison must be one of: ${COMPARISONS.join(" ")}`);
-    out.comparison = data.comparison;
-  } else if (!partial) {
-    throw err(400, "comparison is required.");
-  }
-
-  if (data.severity !== undefined) {
-    if (!SEVERITIES.includes(data.severity))
-      throw err(400, `severity must be one of: ${SEVERITIES.join(", ")}`);
-    out.severity = data.severity;
-  } else if (!partial) {
-    throw err(400, "severity is required.");
-  }
-
-  if (data.isActive !== undefined) out.is_active = data.isActive ? 1 : 0;
-  else if (!partial) out.is_active = 1;
-
-  // A port-scoped rule is meaningless without the device that owns the port. Checked
-  // against the merged view so a PATCH that sets only one of the two still validates.
-  const finalDevice = out.device_id !== undefined ? out.device_id : existing?.device_id ?? null;
-  const finalIface = out.interface_name !== undefined ? out.interface_name : existing?.interface_name ?? null;
-  if (finalIface && finalDevice == null) {
-    throw err(400, "A port-scoped rule needs a device — pick the router the port belongs to.");
-  }
-
-  return out;
-}
+// Validation lives in ./alertRuleValidation.js — pure and import-free, so
+// backend/tests can exercise the only gate on alert thresholds with no MySQL. It was
+// 55 lines of one repeated shape here (cyclomatic 34, cognitive 62); it is a field
+// table there. Behaviour is unchanged — the two were differential-tested across 297
+// input combinations before the swap. See audits/code-complexity-report-2026-08-25.md — C-01.
+const clean = cleanRule;
+const err = ruleError;
 
 // snake_case row → camelCase client shape (mirrors the device list / notifications style).
 function toClient(r) {

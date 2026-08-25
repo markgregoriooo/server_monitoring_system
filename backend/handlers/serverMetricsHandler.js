@@ -3,6 +3,7 @@ import agentService from "../services/agentService.js";
 import notificationService from "../services/notificationService.js";
 import alertsService from "../services/alertsService.js";
 import backupService from "../services/backupService.js";
+import { logDevice } from "../services/deviceLogs.js";
 import {
   backfillTimestamp,
   formatUptime,
@@ -141,7 +142,7 @@ export async function serverMetricsHandler(req, res) {
     const io = req.app.get("io");
     const events = [];
     if (cameOnline) {
-      events.push(await agentService.logDevice(device.device_id, "info", "Server came online"));
+      events.push(await logDevice(device.device_id, "info", "Server came online"));
 
       // Symmetric to the offline-sweep alert: notify on a (re)connect. Covers both a
       // reconnect (offline→online) and a brand-new server's first report (approve()

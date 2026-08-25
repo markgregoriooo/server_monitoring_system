@@ -152,7 +152,7 @@ if (snmpReachable) {
       if (src != null) {
         const state = upsOutputState(src);
         const line = `      output       ${state}`;
-        console.log(state === "normal" ? line : warn(`${line}  ⚠ NOT on mains-through-inverter`));
+        console.log(state === "normal" ? line : warn(`${line} NOT on mains-through-inverter`));
       }
     } else {
       console.log(dim("no") + dim("  (not a UPS, or it doesn't implement RFC 1628)"));

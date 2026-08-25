@@ -65,7 +65,13 @@ async function authMiddleware(req, res, next) {
         `expiredBySec=${claims.exp ? now - claims.exp : "?"} ` +
         `from=${req.ip} ua="${ua}")`,
     );
-    return res.status(403).json({ error: "Invalid or expired token." });
+    // 401, not 403. The credential is missing, malformed or expired, so the client
+    // should RE-AUTHENTICATE — that is what 401 means. 403 means "authenticated, but
+    // not allowed", which is a different situation with a different remedy, and this
+    // middleware already answers 401 for a missing token (:36) and for a dead session
+    // (below). The 403 here was the odd one out, and the frontend had to special-case
+    // it by matching this exact message TEXT across package boundaries.
+    return res.status(401).json({ error: "Invalid or expired token." });
   }
 
   // F-02: enforce live session state. A token is only valid while the account is
@@ -73,11 +79,7 @@ async function authMiddleware(req, res, next) {
   // disable, role change, and password change all bump token_version, which
   // immediately invalidates previously-issued tokens.
   try {
-    const [[user]] = await db.query(
-      "SELECT status, token_version FROM users WHERE user_id = ? LIMIT 1",
-      [decoded.id],
-    );
-    if (!user || user.status !== "active" || user.token_version !== decoded.tv) {
+    if (!sessionIsLive(await fetchSessionRow(decoded.id), decoded.tv)) {
       return res.status(401).json({ error: "Session is no longer valid." });
     }
   } catch (err) {
@@ -87,6 +89,40 @@ async function authMiddleware(req, res, next) {
   req.user = decoded;
   maybeRenewToken(res, decoded); // sliding session: extend an active user's token
   next();
+}
+
+
+// ─── The one definition of "this token still corresponds to a live session" ────
+//
+// Enforced in three places that must never disagree: this middleware (every HTTP
+// request), the Socket.IO handshake (src/server.js), and the revocation sweep that
+// re-checks already-connected sockets (services/socketSessions.js). Three hand-written
+// copies of the rule is three places to miss when a fifth `users.status` value appears —
+// and it is the AUTHORISATION rule, so a miss is a security bug rather than a glitch.
+//
+// Returns WHICH condition failed, because the sweep reports the reason to the client
+// while the HTTP path only needs pass/fail. See audits/code-duplication-report-2026-08-25.md — R-03.
+
+/** The columns a liveness check needs. One query shape, so it cannot drift either. */
+export async function fetchSessionRow(userId) {
+  const [[row]] = await db.query(
+    "SELECT status, token_version FROM users WHERE user_id = ? LIMIT 1",
+    [userId],
+  );
+  return row ?? null;
+}
+
+/** null = the session is live. Otherwise the reason it is not. */
+export function sessionRevocationReason(userRow, tvClaim) {
+  if (!userRow) return "account_removed";
+  if (userRow.status !== "active") return "account_inactive";
+  if (userRow.token_version !== tvClaim) return "session_revoked";
+  return null;
+}
+
+/** Convenience wrapper for callers that only need pass/fail. */
+export function sessionIsLive(userRow, tvClaim) {
+  return sessionRevocationReason(userRow, tvClaim) === null;
 }
 
 // role guard - coarse access

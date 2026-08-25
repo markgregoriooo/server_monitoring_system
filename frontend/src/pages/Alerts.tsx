@@ -3,6 +3,8 @@ import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useNotifications } from "../context/NotificationContext";
 import { relativeTime } from "../components/notifications/notificationUtils";
+import { GF as gf, STATUS } from "../theme/gf";
+const { green: GREEN } = STATUS;
 
 // Shared incident list (alerts table) with lifecycle: active → acknowledged → resolved.
 // Distinct from the per-user bell feed (NotificationContext). Admin + IT staff.
@@ -31,19 +33,7 @@ const STATUS_COLOR: Record<string, string> = {
   acknowledged: "#5794F2",
   resolved: "#73BF69",
 };
-const GREEN = "#73BF69";
 
-const gf = {
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  header: "var(--gf-header)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-  accent: "var(--gf-accent)",
-  accentDim: "var(--gf-accent-dim)",
-} as const;
 
 const sourceLabel = (a: Alert) =>
   a.deviceName ?? (a.deviceId == null ? "Server room" : `Device ${a.deviceId}`);

@@ -1,4 +1,5 @@
 import db from "../config/mysql.js";
+import { describeError } from "../utils/httpError.js";
 
 // Append a user/admin action to `system_logs` — the audit trail the History page
 // reads (alongside aircon_logs, alerts and device_logs). Best-effort BY DESIGN:
@@ -26,7 +27,7 @@ export async function audit({
       [userId, module, action, description, ip, userAgent, level],
     );
   } catch (err) {
-    console.error("[audit] failed to record action:", err.message);
+    console.error("[audit] failed to record action:", describeError(err));
   }
 }
 

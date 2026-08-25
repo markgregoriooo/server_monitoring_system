@@ -20,6 +20,8 @@ import Faq from "../../components/landing/Faq";
 import { ScrollProgress, Parallax, SplitHeading, SectionRail } from "../../components/landing/ScrollFx";
 import { useIsNarrow, useScrolled } from "../../components/landing/motion";
 import { COVERAGE_VISUALS, type CoverageVisualKey } from "../../components/landing/CoverageVisuals";
+import { STATUS } from "../../theme/gf";
+const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
 // Topbar height. The fold subtracts it so the hero still fills exactly one screen,
 // and the content sections use it as scroll-margin so the sticky bar never covers
@@ -27,9 +29,6 @@ import { COVERAGE_VISUALS, type CoverageVisualKey } from "../../components/landi
 const NAV_H = 52;
 
 // Grafana status colors (match the rest of the dashboard).
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
 const ACCENT = "#5794F2";
 
 // Blue TEXT uses the --gf-accent-text token (see index.css), which darkens in light

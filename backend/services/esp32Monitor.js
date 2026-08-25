@@ -1,6 +1,7 @@
 import { queryClient, bucket } from "../config/influx.js";
 import notificationService from "./notificationService.js";
 import alertsService from "./alertsService.js";
+import { describeError } from "../utils/httpError.js";
 
 // ─── ESP32 liveness (the environment sensor's heartbeat) ─────────────────────────
 // The ESP32 pushes `sensorData` every ~3s. Nothing else proves it is alive, and it is
@@ -73,7 +74,7 @@ async function setOnline(next) {
       await alertsService.autoResolveMetric(null, ALERT_TYPE);
     }
   } catch (err) {
-    console.error("[ESP32] status alert error:", err.message);
+    console.error("[ESP32] status alert error:", describeError(err));
   }
 }
 
@@ -108,7 +109,7 @@ export function sweep() {
 //   • no data at all  → offline silently. Nothing has ever reported, so there is no
 //     outage to report — this is a fresh install or a dev box with no hardware.
 //
-// ⚠️ The query is awaited, so a live reading can land WHILE it is in flight. That live
+// The query is awaited, so a live reading can land WHILE it is in flight. That live
 // reading is strictly better evidence than anything historical, so it wins and the seed
 // result is discarded. Without this guard the seed clobbered `lastSeen` and forced the
 // sensor Offline moments after it had correctly come Online — and because that
@@ -140,7 +141,7 @@ export async function seed() {
     });
   } catch (err) {
     // No Influx / empty bucket: treat the sensor as unproven rather than failing boot.
-    console.error("[ESP32] liveness seed failed:", err.message);
+    console.error("[ESP32] liveness seed failed:", describeError(err));
     seen = null;
   }
 
@@ -164,7 +165,7 @@ export async function seed() {
     try {
       await raiseOfflineAlert(new Date(seen).toISOString());
     } catch (err) {
-      console.error("[ESP32] seed alert error:", err.message);
+      console.error("[ESP32] seed alert error:", describeError(err));
     }
   }
 }

@@ -1,4 +1,6 @@
 import db from "../config/mysql.js";
+import { sessionRevocationReason } from "../middleware/auth.js";
+import { describeError } from "../utils/httpError.js";
 
 /**
  * Live-socket session revocation.
@@ -18,7 +20,7 @@ import db from "../config/mysql.js";
  * The cost is a bounded delay — SWEEP_MS — and one indexed SELECT per sweep, only
  * when browser sockets are actually connected.
  *
- * ⚠️ Deliberately NOT checked: the token's own `exp`. HTTP sessions SLIDE — the auth
+ * Deliberately NOT checked: the token's own `exp`. HTTP sessions SLIDE — the auth
  * middleware re-issues a token once it passes its half-life — so an actively-used
  * session is legitimately alive long past the exp of the token its socket was
  * opened with. Kicking on exp would black out the live dashboard of a perfectly
@@ -74,13 +76,10 @@ async function sweep() {
   for (const socket of sockets) {
     const row = live.get(socket.user.id);
 
-    // Same three conditions the handshake and the HTTP auth middleware enforce —
-    // account gone, no longer active, or its tokens revoked since this one was
-    // minted. Kept in step with middleware/auth.js on purpose.
-    let reason = null;
-    if (!row) reason = "account_removed";
-    else if (row.status !== "active") reason = "account_inactive";
-    else if (row.token_version !== socket.user.tv) reason = "session_revoked";
+    // The SAME predicate the handshake and the HTTP auth middleware enforce — not a
+    // third hand-written copy of it. This is the one caller that needs to know WHICH
+    // condition failed, so it takes the reason rather than the boolean.
+    const reason = sessionRevocationReason(row, socket.user.tv);
 
     if (reason) {
       kick(socket, reason);
@@ -99,7 +98,7 @@ function init(server) {
   if (timer) clearInterval(timer);
   timer = setInterval(() => {
     // A DB blip must not take the process down — the next sweep retries.
-    sweep().catch((err) => console.error("[sessions] sweep error:", err.message));
+    sweep().catch((err) => console.error("[sessions] sweep error:", describeError(err)));
   }, SWEEP_MS);
   timer.unref?.(); // never hold the process open just for this
   console.log(`[sessions] live-socket revocation sweep every ${SWEEP_MS}ms`);

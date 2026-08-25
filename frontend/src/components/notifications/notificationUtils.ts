@@ -1,4 +1,4 @@
-import type { AppNotification, Severity } from "../../context/NotificationContext";
+import type { AppNotification, Severity } from "../../types/notification";
 
 // Grafana status palette (see CLAUDE.md → Status Colors). Shared by the bell
 // panel and the toast host.

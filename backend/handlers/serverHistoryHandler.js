@@ -1,5 +1,6 @@
 import { queryClient, bucket } from "../config/influx.js";
-import { resolveRange } from "../services/historyRange.js";
+import { resolveHistoryRequest, historyEnvelope } from "../services/historyRange.js";
+import { describeError } from "../utils/httpError.js";
 
 // GET /api/servers/:id/history?range=-1h  (JWT, via authMiddleware)
 //   ...or an absolute window: ?start=<ISO>&stop=<ISO>
@@ -13,20 +14,9 @@ import { resolveRange } from "../services/historyRange.js";
 // whitelist and custom bounds are re-serialised from Date, so no user text ever
 // reaches the query string built below.
 export function serverHistoryHandler(req, res) {
-  const deviceId = parseInt(req.params.id, 10);
-  if (!Number.isInteger(deviceId)) {
-    return res.status(400).json({ error: "Invalid server id." });
-  }
-
-  // A malformed CUSTOM window is a 400 — silently charting the wrong period is
-  // worse than saying the input was rejected. An unknown PRESET still falls back
-  // to -1h, as it always has.
-  let resolved;
-  try {
-    resolved = resolveRange(req.query);
-  } catch (err) {
-    return res.status(err.status ?? 400).json({ error: err.message });
-  }
+  const parsed = resolveHistoryRequest(req, res, "server");
+  if (!parsed) return;
+  const { deviceId, resolved } = parsed;
   const { rangeExpr, every } = resolved;
 
   // Gauges (cpu/mem/disk %) average cleanly over a window. The network fields are
@@ -71,7 +61,7 @@ export function serverHistoryHandler(req, res) {
       });
     },
     error(error) {
-      console.error("[SERVER_HISTORY] query error:", error.message);
+      console.error("[SERVER_HISTORY] query error:", describeError(error));
       if (!res.headersSent) res.status(500).json({ error: "History query failed." });
     },
     complete() {
@@ -79,14 +69,7 @@ export function serverHistoryHandler(req, res) {
       // span, and the window that was chosen — so the client can label the axis
       // (a multi-day window needs DATES on it) without re-deriving any of it.
       if (!res.headersSent) {
-        res.json({
-          range: resolved.custom ? "custom" : resolved.preset,
-          start: resolved.startISO ?? null,
-          stop: resolved.stopISO ?? null,
-          spanSec: resolved.spanSec ?? null,
-          every,
-          history,
-        });
+        res.json(historyEnvelope(resolved, { history }));
       }
     },
   });

@@ -36,7 +36,8 @@ export const DEFAULTS = Object.freeze({
   humDeadband: 2,
 });
 
-const num = (v, fallback) => {
+// Returns the caller's fallback for null/undefined/""/non-finite. N-03.
+const numOrFallback = (v, fallback) => {
   if (v === undefined || v === null || v === "") return fallback;
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -45,10 +46,10 @@ const num = (v, fallback) => {
 /** Read the policy out of a process.env-shaped object. Blank/absent → the defaults above. */
 export function resolveOptions(env = {}) {
   return {
-    intervalMs: Math.max(0, num(env.ENV_PERSIST_INTERVAL_MS, DEFAULTS.intervalMs)),
-    gasDeadband: Math.max(0, num(env.ENV_PERSIST_DEADBAND_GAS, DEFAULTS.gasDeadband)),
-    tempDeadband: Math.max(0, num(env.ENV_PERSIST_DEADBAND_TEMP, DEFAULTS.tempDeadband)),
-    humDeadband: Math.max(0, num(env.ENV_PERSIST_DEADBAND_HUM, DEFAULTS.humDeadband)),
+    intervalMs: Math.max(0, numOrFallback(env.ENV_PERSIST_INTERVAL_MS, DEFAULTS.intervalMs)),
+    gasDeadband: Math.max(0, numOrFallback(env.ENV_PERSIST_DEADBAND_GAS, DEFAULTS.gasDeadband)),
+    tempDeadband: Math.max(0, numOrFallback(env.ENV_PERSIST_DEADBAND_TEMP, DEFAULTS.tempDeadband)),
+    humDeadband: Math.max(0, numOrFallback(env.ENV_PERSIST_DEADBAND_HUM, DEFAULTS.humDeadband)),
   };
 }
 

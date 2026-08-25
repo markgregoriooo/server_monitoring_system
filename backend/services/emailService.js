@@ -1,5 +1,6 @@
 import "../config/env.js";
 import nodemailer from "nodemailer";
+import { describeError } from "../utils/httpError.js";
 
 // Alert + report email over SMTP (nodemailer).
 //
@@ -45,7 +46,7 @@ if (!ENABLED) {
 } else {
   console.log(
     `[email] SMTP ${SMTP_HOST}:${SMTP_PORT} as ${SMTP_USER} — from ${FROM}` +
-      (TO_OVERRIDE ? ` — ⚠ ALL mail forced to ${TO_OVERRIDE}` : ""),
+      (TO_OVERRIDE ? ` — ALL mail forced to ${TO_OVERRIDE}` : ""),
   );
 }
 
@@ -96,7 +97,7 @@ async function send({ to, subject, html, text, attachments }) {
     await transporter().sendMail({ from: FROM, to: recipient, subject, html, text, attachments });
     return true;
   } catch (err) {
-    console.error("[email] send failed:", err.message);
+    console.error("[email] send failed:", describeError(err));
     return false;
   }
 }

@@ -2,6 +2,7 @@ import express from "express";
 import reportService from "../services/reportService.js";
 import { audit, clientInfo } from "../services/auditService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
+import { describeError } from "../utils/httpError.js";
 
 const router = express.Router();
 
@@ -78,7 +79,7 @@ router.post(
       // unexpected rejection can't become an unhandled rejection and take down the
       // process — this runs after the response is already sent.
       reportService.build(report.id).catch((err) => {
-        console.error("[REPORTS] background build error:", err.message);
+        console.error("[REPORTS] background build error:", describeError(err));
       });
     } catch (err) {
       if (err.status) return res.status(err.status).json({ error: err.message });

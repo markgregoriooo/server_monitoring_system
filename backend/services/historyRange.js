@@ -111,4 +111,61 @@ export function resolveRange({ range, start, stop } = {}) {
   };
 }
 
-export default { resolveRange, windowForSpan, badRequest, PRESET_WINDOW, DEFAULT_RANGE };
+
+// ─── The envelope every history endpoint repeats ──────────────────────────────
+//
+// serverHistoryHandler, upsHistoryHandler and networkHistoryHandler each opened with the
+// same id guard and the same resolveRange try/catch, and each closed by hand-assembling
+// the same response object. The copies had already drifted: only the SERVER handler
+// returned `spanSec`, which is what lets the client decide whether the x-axis needs
+// DATES — so the same range choice labelled differently depending on the page.
+//
+// See audits/code-duplication-report-2026-08-25.md — R-08.
+
+/**
+ * Parse `:id` and resolve the range in one step.
+ *
+ * Answers the request itself and returns null when the input is bad, so the caller's
+ * first two lines become `const p = resolveHistoryRequest(req, res); if (!p) return;`.
+ *
+ * A malformed CUSTOM window is a 400 — silently charting the wrong period is worse than
+ * saying the input was rejected. An unknown PRESET still falls back to the default.
+ */
+export function resolveHistoryRequest(req, res, label = "device") {
+  const deviceId = parseInt(req.params.id, 10);
+  if (!Number.isInteger(deviceId)) {
+    res.status(400).json({ error: `Invalid ${label} id.` });
+    return null;
+  }
+  try {
+    return { deviceId, resolved: resolveRange(req.query) };
+  } catch (err) {
+    res.status(err.status ?? 400).json({ error: err.message });
+    return null;
+  }
+}
+
+/**
+ * Echo what was actually served, so the client can label its axis without re-deriving
+ * any of it. `extra` carries the per-endpoint payload (`history`, `icmp`, …).
+ */
+export function historyEnvelope(resolved, extra) {
+  return {
+    range: resolved.custom ? "custom" : resolved.preset,
+    start: resolved.startISO ?? null,
+    stop: resolved.stopISO ?? null,
+    spanSec: resolved.spanSec ?? null,
+    every: resolved.every,
+    ...extra,
+  };
+}
+
+export default {
+  resolveRange,
+  resolveHistoryRequest,
+  historyEnvelope,
+  windowForSpan,
+  badRequest,
+  PRESET_WINDOW,
+  DEFAULT_RANGE,
+};

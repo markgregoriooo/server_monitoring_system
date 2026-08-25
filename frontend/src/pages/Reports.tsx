@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
+import { GF as gf, STATUS } from "../theme/gf";
+import { Field } from "../components/ui/primitives";
+const { green: GREEN, red: RED } = STATUS;
 
 // Reports are real now: MySQL `reports` + an on-disk CSV/PDF per report, built on
 // generate from the live stores (InfluxDB sensor_environment / server_metrics /
@@ -73,25 +76,9 @@ const RANGES = [
   { value: "custom", label: "Custom", ms: 0 },
 ];
 
-const GREEN = "#73BF69";
 const AMBER = "#FF780A";
-const RED = "#F2495C";
 const ACCENT = "#5794F2";
 
-const gf = {
-  bg: "var(--gf-bg)",
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  divider: "var(--gf-divider)",
-  header: "var(--gf-header)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-  hoverStrong: "var(--gf-hover-strong)",
-  accent: "var(--gf-accent)",
-  accentDim: "var(--gf-accent-dim)",
-} as const;
 
 const inputStyle: React.CSSProperties = {
   background: gf.bg,
@@ -812,15 +799,6 @@ function DownloadBtn({ label, disabled, onClick }: { label: string; disabled?: b
       </svg>
       {label}
     </button>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[11px] tracking-wider uppercase" style={{ color: gf.textDim }}>{label}</span>
-      {children}
-    </div>
   );
 }
 

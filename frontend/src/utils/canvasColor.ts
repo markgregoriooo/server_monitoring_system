@@ -26,7 +26,7 @@ const FALLBACK = "#8E95A0";
  * Anything that is already a literal colour is returned untouched, so this is safe to
  * call on every colour rather than only the ones suspected of being tokens.
  */
-export function resolveColor(color: string): string {
+export function resolveColor(color: string, hops = 0): string {
   const raw = (color ?? "").trim();
   const m = /^var\(\s*(--[\w-]+)\s*(?:,\s*([^)]*))?\)$/.exec(raw);
   if (!m) return raw || FALLBACK;
@@ -37,8 +37,11 @@ export function resolveColor(color: string): string {
   } catch {
     /* no document (SSR / test) — fall through to the literal fallback below */
   }
-  // A var() may itself name another var(); one hop is all this codebase uses.
-  if (value.startsWith("var(")) return resolveColor(value);
+  // A var() may itself name another var(); one hop is all this codebase uses. BOUNDED
+  // anyway: a self-referential or mutually-referential custom property (--a: var(--b);
+  // --b: var(--a)) would otherwise recurse forever inside a canvas draw, which hangs the
+  // tab rather than merely painting the wrong colour.
+  if (value.startsWith("var(") && hops < 4) return resolveColor(value, hops + 1);
   return value || (m[2] ?? "").trim() || FALLBACK;
 }
 

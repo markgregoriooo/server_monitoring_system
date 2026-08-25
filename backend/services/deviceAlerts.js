@@ -2,9 +2,10 @@ import alertRulesService from "./alertRulesService.js";
 import alertBandState from "./alertBandState.js";
 import alertsService from "./alertsService.js";
 import notificationService from "./notificationService.js";
-import agentService from "./agentService.js";
 import { isLinkFault } from "./linkAlertPolicy.js";
 import db from "../config/mysql.js";
+import { logDevice } from "./deviceLogs.js";
+import { describeError } from "../utils/httpError.js";
 
 // ─── Router / UPS threshold alerting (REAL alerts, not just device_logs) ─────────
 //
@@ -33,7 +34,9 @@ import db from "../config/mysql.js";
 // raised directly — like server 'offline' — not via alert_rules.
 
 const SEV_RANK = alertRulesService.SEV_RANK;
-const num = (v) => (v == null || !Number.isFinite(Number(v)) ? NaN : Number(v));
+// Returns NaN (not null, not a default) for an unusable value, so a comparison
+// against a threshold is simply false rather than accidentally passing. N-03.
+const numOrNaN = (v) => (v == null || !Number.isFinite(Number(v)) ? NaN : Number(v));
 
 // ─── Which ports are allowed to alert (network_interfaces) ──────────────────────
 // Replaces an in-memory `seenLink` Set that skipped the first sighting of every port.
@@ -88,7 +91,7 @@ async function loadLinkGate(deviceId) {
     // Alerting must not depend on this read succeeding. Leaving the device unloaded
     // means every port falls back to DEFAULT_GATE — silent — and the next poll retries.
     // Failing quiet is the right direction: a DB hiccup should not invent an outage.
-    console.error("[deviceAlerts] link gate load failed:", err.message);
+    console.error("[deviceAlerts] link gate load failed:", describeError(err));
   }
 }
 
@@ -124,7 +127,7 @@ async function noteLinkUp(deviceId, name) {
       );
     }
   } catch (err) {
-    console.error("[deviceAlerts] ever_up write failed:", err.message);
+    console.error("[deviceAlerts] ever_up write failed:", describeError(err));
     linkGate.set(gateKey(id, name), gate); // roll back so the next poll retries
   }
 }
@@ -173,7 +176,7 @@ async function evalMetric({ deviceId, metricName, type, value, label, unit = "",
   // the swings that clear the margin but still aren't a real recovery — exactly the
   // shape of bursty traffic on link_util / link_errors.
   //
-  // ⚠️ Counts SAMPLES, not seconds, so the wall-clock differs per source: ~3 min on the
+  // Counts SAMPLES, not seconds, so the wall-clock differs per source: ~3 min on the
   // 60s SNMP poll and ~1.5 min on the 30s MikroTik poll, vs ~30s for a default Go
   // agent. That is a delayed ALL-CLEAR only; nothing is detected later because of it.
   let effectiveBand = band;
@@ -196,7 +199,7 @@ async function evalMetric({ deviceId, metricName, type, value, label, unit = "",
     : band === "critical" ? "critical" : "high";
   const message = `${label} ${word}: ${shown}`;
 
-  const log = await agentService.logDevice(deviceId, band, message);
+  const log = await logDevice(deviceId, band, message);
   await notificationService.raiseAlert({
     deviceId, type, severity: band, title: `${label} ${word}`, message,
     metricValue: value, alertRuleId: rule?.alert_rule_id ?? null,
@@ -231,7 +234,7 @@ async function evalEvent({ deviceId, type, active, severity, title, message }) {
 
   if (SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) return null;
 
-  const log = await agentService.logDevice(deviceId, severity, message);
+  const log = await logDevice(deviceId, severity, message);
   await notificationService.raiseAlert({ deviceId, type, severity, title, message });
   return log;
 }
@@ -241,7 +244,7 @@ async function evalEvent({ deviceId, type, active, severity, title, message }) {
 // repeats. Returns the device_log row for the caller's batch emit.
 async function raiseTransient(deviceId, { type, severity, title, message, metricValue = null }) {
   await notificationService.raiseAlert({ deviceId, type, severity, title, message, metricValue });
-  return agentService.logDevice(deviceId, severity, message);
+  return logDevice(deviceId, severity, message);
 }
 
 // sample: { cpuPercent, memPercent, connectedClients, uptimeSeconds,
@@ -252,9 +255,9 @@ async function checkRouter(io, device, sample) {
   await loadLinkGate(id); // cached after the first poll
   const cleared = []; // link_down types to reconcile on this process's first pass
 
-  events.push(await evalMetric({ deviceId: id, metricName: "router_cpu", type: "router_cpu", value: num(sample.cpuPercent), label: "Router CPU", unit: "%" }));
-  events.push(await evalMetric({ deviceId: id, metricName: "router_mem", type: "router_mem", value: num(sample.memPercent), label: "Router memory", unit: "%" }));
-  events.push(await evalMetric({ deviceId: id, metricName: "router_clients", type: "router_clients", value: num(sample.connectedClients), label: "Connected clients" }));
+  events.push(await evalMetric({ deviceId: id, metricName: "router_cpu", type: "router_cpu", value: numOrNaN(sample.cpuPercent), label: "Router CPU", unit: "%" }));
+  events.push(await evalMetric({ deviceId: id, metricName: "router_mem", type: "router_mem", value: numOrNaN(sample.memPercent), label: "Router memory", unit: "%" }));
+  events.push(await evalMetric({ deviceId: id, metricName: "router_clients", type: "router_clients", value: numOrNaN(sample.connectedClients), label: "Connected clients" }));
 
   // ── ICMP link quality ────────────────────────────────────────────────────────
   // The two things SNMP structurally cannot report. An SNMP walk either answers or
@@ -265,12 +268,12 @@ async function checkRouter(io, device, sample) {
   // "unreachable": working or dead, with no degraded state in between.
   //
   // Both come from icmpPing via the poller, on SNMP and ping devices alike.
-  events.push(await evalMetric({ deviceId: id, metricName: "router_latency", type: "router_latency", value: num(sample.latencyMs), label: "Latency", unit: " ms" }));
-  events.push(await evalMetric({ deviceId: id, metricName: "router_loss", type: "router_loss", value: num(sample.packetLossPct), label: "Packet loss", unit: "%" }));
+  events.push(await evalMetric({ deviceId: id, metricName: "router_latency", type: "router_latency", value: numOrNaN(sample.latencyMs), label: "Latency", unit: " ms" }));
+  events.push(await evalMetric({ deviceId: id, metricName: "router_loss", type: "router_loss", value: numOrNaN(sample.packetLossPct), label: "Packet loss", unit: "%" }));
 
   // Unexpected reboot — uptime went backwards vs the last poll. The 60s slack absorbs
   // poll jitter and TimeTicks rounding, so only a genuine restart trips it.
-  const up = num(sample.uptimeSeconds);
+  const up = numOrNaN(sample.uptimeSeconds);
   if (!Number.isNaN(up)) {
     const lastUp = prevUptime.get(id);
     if (lastUp != null && up < lastUp - 60) {
@@ -292,7 +295,7 @@ async function checkRouter(io, device, sample) {
     // Falls back to the device-wide rule, then global, when no per-port rule exists.
     events.push(await evalMetric({
       deviceId: id, metricName: "link_util", type: `link_util:${i.name}`, iface: i.name,
-      value: num(i.utilizationPct), label: `Link ${ifaceLabel}`, unit: "%",
+      value: numOrNaN(i.utilizationPct), label: `Link ${ifaceLabel}`, unit: "%",
     }));
     // A port carrying a link right now becomes alert-eligible from here on — this is
     // the fact that separates "a building went dark" from "that socket is empty".
@@ -316,7 +319,7 @@ async function checkRouter(io, device, sample) {
     // Rising rx/tx errors — the classic failing-cable / duplex-mismatch signal. Uses
     // the per-poll DELTA, not the lifetime counter, so a long-running router doesn't
     // sit permanently in alarm over errors from months ago.
-    const errDelta = errorDelta(id, i.name, (num(i.rxErrors) || 0) + (num(i.txErrors) || 0));
+    const errDelta = errorDelta(id, i.name, (numOrNaN(i.rxErrors) || 0) + (numOrNaN(i.txErrors) || 0));
     events.push(await evalMetric({
       deviceId: id, metricName: "link_errors", type: `link_errors:${i.name}`, iface: i.name,
       value: errDelta, label: `Link ${ifaceLabel} errors`,
@@ -332,7 +335,7 @@ async function checkRouter(io, device, sample) {
       try {
         await alertsService.autoResolveMetric(id, type);
       } catch (err) {
-        console.error("[deviceAlerts] link reconcile failed:", err.message);
+        console.error("[deviceAlerts] link reconcile failed:", describeError(err));
       }
     }
   }
@@ -384,15 +387,15 @@ async function checkUps(io, device, sample) {
   // adding a second alert would double-report one condition. It is carried through
   // to the dashboard as `outputState: "avr"` so it can still be SEEN.
 
-  events.push(await evalMetric({ deviceId: id, metricName: "ups_charge", type: "ups_charge", value: num(sample.batteryChargePct), label: "UPS battery", unit: "%", low: true }));
-  events.push(await evalMetric({ deviceId: id, metricName: "ups_runtime", type: "ups_runtime", value: num(sample.runtimeRemainingMin), label: "UPS runtime", unit: " min", low: true }));
-  events.push(await evalMetric({ deviceId: id, metricName: "ups_load", type: "ups_load", value: num(sample.loadPct), label: "UPS load", unit: "%" }));
+  events.push(await evalMetric({ deviceId: id, metricName: "ups_charge", type: "ups_charge", value: numOrNaN(sample.batteryChargePct), label: "UPS battery", unit: "%", low: true }));
+  events.push(await evalMetric({ deviceId: id, metricName: "ups_runtime", type: "ups_runtime", value: numOrNaN(sample.runtimeRemainingMin), label: "UPS runtime", unit: " min", low: true }));
+  events.push(await evalMetric({ deviceId: id, metricName: "ups_load", type: "ups_load", value: numOrNaN(sample.loadPct), label: "UPS load", unit: "%" }));
 
   // Battery needs replacing — RFC 1628 upsBatteryStatus: 2 normal, 3 low, 4 depleted.
   // Battery HEALTH, distinct from charge level: a pack at 100% can still report
   // "replace", and that is the warning that matters most, since a UPS only fails at
   // the moment you actually need it.
-  const st = num(sample.batteryStatus);
+  const st = numOrNaN(sample.batteryStatus);
   if (!Number.isNaN(st)) {
     events.push(await evalEvent({
       deviceId: id, type: "ups_replace_battery", active: st === 3 || st === 4,
@@ -403,7 +406,7 @@ async function checkUps(io, device, sample) {
 
   // High battery temperature — direct event with hysteresis (trip >40°C, clear <37°C)
   // so a reading hovering on the boundary can't flap the alert.
-  const t = num(sample.temperature);
+  const t = numOrNaN(sample.temperature);
   if (!Number.isNaN(t)) {
     const hot = alertBandState.getBand(id, "ups_temp") !== "normal" ? t > 37 : t > 40;
     events.push(await evalEvent({
@@ -414,7 +417,7 @@ async function checkUps(io, device, sample) {
 
   // Abnormal input voltage — trip outside 180–260 V, clear back inside 185–255 V
   // (nominal ~230 V here). Mains sagging before it fails is the early warning.
-  const v = num(sample.inputVoltage);
+  const v = numOrNaN(sample.inputVoltage);
   if (!Number.isNaN(v) && v > 0) {
     const bad = alertBandState.getBand(id, "ups_input_voltage") !== "normal"
       ? (v < 185 || v > 255)

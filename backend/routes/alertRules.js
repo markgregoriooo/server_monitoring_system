@@ -3,6 +3,7 @@ import asyncHandler from "../utils/asyncHandler.js";
 import alertRulesService from "../services/alertRulesService.js";
 import { audit, clientInfo } from "../services/auditService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
+import { describeError } from "../utils/httpError.js";
 
 const router = express.Router();
 
@@ -33,7 +34,7 @@ async function pushEnvConfig(io) {
     io.to("devices").emit("envConfig", thresholds);
     io.emit("envConfigUpdated", { thresholds });
   } catch (err) {
-    console.error("[envConfig push error]", err.message);
+    console.error("[envConfig push error]", describeError(err));
   }
 }
 

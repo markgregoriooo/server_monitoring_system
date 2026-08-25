@@ -2,7 +2,8 @@ import express from "express";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import { networkHistoryHandler } from "../handlers/networkHistoryHandler.js";
 import mikrotikPollerService from "../services/mikrotikPollerService.js";
-import agentService from "../services/agentService.js";
+import { getDeviceLogs } from "../services/deviceLogs.js";
+import { describeError } from "../utils/httpError.js";
 
 const router = express.Router();
 
@@ -17,7 +18,7 @@ async function emitDevice(io, id) {
     const device = devices.find((d) => Number(d.id) === Number(id));
     if (device) io.emit("networkMetrics", { device });
   } catch (err) {
-    console.error("[mikrotik] emitDevice error:", err.message);
+    console.error("[mikrotik] emitDevice error:", describeError(err));
   }
 }
 
@@ -99,7 +100,7 @@ router.get("/:id/logs", authMiddleware, async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid device id." });
   try {
-    res.json({ logs: await agentService.getDeviceLogs(id) });
+    res.json({ logs: await getDeviceLogs(id) });
   } catch (err) {
     next(err);
   }

@@ -5,6 +5,9 @@ import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 import UpsDetail, { batteryHealth } from "./UpsDetail";
 import type { UpsDevice } from "./UpsDetail";
+import { GF as gf, STATUS } from "../theme/gf";
+import { GhostButton, StatPanel, Field, Meta } from "../components/ui/primitives";
+const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── UPS list page ────────────────────────────────────────────────────────────
 // Fleet list (one card per UPS, with "View"); clicking through swaps in UpsDetail.
@@ -13,21 +16,7 @@ import type { UpsDevice } from "./UpsDetail";
 
 // ─── Grafana tokens ───────────────────────────────────────────────────────────
 
-const gf = {
-  bg: "var(--gf-bg)",
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  divider: "var(--gf-divider)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-} as const;
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
-const BLUE = "#5794F2";
 const TRACK = "rgba(127,127,127,0.18)";
 const BAR_GRADIENT = "linear-gradient(90deg,#73BF69 0%,#73BF69 55%,#FF780A 78%,#F2495C 95%)";
 
@@ -130,22 +119,6 @@ function Panel({ title, right, children, noPad }: { title?: string; right?: Reac
   );
 }
 
-function StatPanel({ label, value, unit, color, sub }: { label: string; value: string; unit?: string; color: string; sub?: string }) {
-  return (
-    <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 88 }}>
-      <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
-        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
-      </div>
-      <div className="px-3 pt-1.5">
-        <span className="text-[26px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
-      </div>
-    </div>
-  );
-}
-
 function Bar({ value, color }: { value: number; color?: string }) {
   const v = Math.min(Math.max(value, 0), 100);
   return (
@@ -156,27 +129,6 @@ function Bar({ value, color }: { value: number; color?: string }) {
 }
 
 // ─── Ghost button (matches ServerMetrics "View") ──────────────────────────────
-
-function GhostButton({ children, onClick, danger }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void; danger?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      className="gf-btn text-[13px] font-medium px-2.5 py-1"
-      style={{ color: danger ? RED : gf.textMuted }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[11px] tracking-wider uppercase" style={{ color: gf.textDim }}>{label}</span>
-      {children}
-    </div>
-  );
-}
 
 // ─── UPS card ─────────────────────────────────────────────────────────────────
 
@@ -235,7 +187,7 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
           protected, with no clock at all — so it must not read as the milder case. */}
       {onBypass && (
         <div className="px-3 py-1.5 text-[13px] font-medium" style={{ background: "rgba(242,73,92,0.12)", color: RED }}>
-          ⚠ ON BYPASS — load on raw mains, no battery protection
+           ON BYPASS — load on raw mains, no battery protection
         </div>
       )}
       {onBattery && (
@@ -282,15 +234,6 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
 
 // One labelled fact in the drawer's summary strip. Bare values like "APC Smart-UPS"
 // or a lone health word only read if you already know which field is which.
-function Meta({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  return (
-    <span className="inline-flex items-baseline gap-1.5 min-w-0">
-      <span className="text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textDim }}>{label}</span>
-      <span className={`text-[12px] truncate ${mono ? "font-mono" : ""}`} style={{ color: gf.textMuted }}>{value}</span>
-    </span>
-  );
-}
-
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
 // The bars and voltages that used to fill every card, shown only for the unit you
 // actually clicked. Same max-height slide as ServerMetrics' drawer.
@@ -553,7 +496,7 @@ export default function UpsMonitoring() {
           runtime behind it. */}
       {onBypassCount > 0 && (
         <div className="rounded-lg px-3 py-2 text-[14px] font-medium" style={{ background: "rgba(242,73,92,0.12)", border: "1px solid rgba(242,73,92,0.3)", color: RED }}>
-          ⚠ {onBypassCount} UPS {onBypassCount === 1 ? "is" : "are"} on BYPASS — the load is on raw mains with no battery protection. A mains dip now takes it down instantly.
+           {onBypassCount} UPS {onBypassCount === 1 ? "is" : "are"} on BYPASS — the load is on raw mains with no battery protection. A mains dip now takes it down instantly.
         </div>
       )}
 
@@ -672,7 +615,7 @@ export default function UpsMonitoring() {
                             {u.name}
                             <span className="ml-1.5 text-[12px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === u.id ? "rotate(180deg)" : "none" }}>▾</span>
                           </div>
-                          {onBypass && <div className="text-[12px] font-medium" style={{ color: RED }}>⚠ on bypass</div>}
+                          {onBypass && <div className="text-[12px] font-medium" style={{ color: RED }}> on bypass</div>}
                           {onBattery && <div className="text-[12px] font-medium" style={{ color: RED }}>⚡ on battery</div>}
                         </td>
                         <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{u.ip}</td>

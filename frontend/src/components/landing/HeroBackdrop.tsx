@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { animate } from "animejs";
 import { prefersReducedMotion, EASE } from "./motion";
+import { STATUS } from "../../theme/gf";
+const { green: GREEN } = STATUS;
 
 /**
  * Two telemetry series drifting across the back of the fold.
@@ -17,7 +19,7 @@ import { prefersReducedMotion, EASE } from "./motion";
  * identical to the frame before it — so there is no visible jump and no need to
  * shift any data. One transform, running forever, composited on the GPU.
  *
- * ⚠️ Opacity is deliberately tiny. This sits BEHIND the headline and the CTA,
+ * Opacity is deliberately tiny. This sits BEHIND the headline and the CTA,
  * and the fold already carries a grid pattern and an accent glow; a third
  * background layer that competes for attention makes the copy harder to read,
  * which is the one thing the hero cannot afford. If it is hard to see, it is
@@ -25,7 +27,6 @@ import { prefersReducedMotion, EASE } from "./motion";
  */
 
 const ACCENT = "#5794F2";
-const GREEN = "#73BF69";
 
 const W = 1200;
 const H = 300;

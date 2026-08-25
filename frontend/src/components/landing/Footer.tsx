@@ -10,7 +10,7 @@ import CopyableEmail from "./CopyableEmail";
  * someone lands on when they cannot get in, and the one place they look for a
  * human to ask.
  *
- * ⚠️ The Support link used to be the word "Support" wrapped in a `mailto:`. That
+ * The Support link used to be the word "Support" wrapped in a `mailto:`. That
  * silently does NOTHING on a machine with no registered mail handler — the
  * normal state of a fresh Windows install without Outlook configured — so the
  * one contact route on the page appeared broken to exactly the people who

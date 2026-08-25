@@ -1,12 +1,14 @@
 import db from "../config/mysql.js";
-import agentService from "./agentService.js";
+import { loadInterfaceLabels } from "./interfaceLabels.js";
 import mikrotikClient from "./mikrotikClient.js";
-import { writeNetworkSample } from "../handlers/networkMetricsHandler.js";
+import { writeNetworkSample } from "./writeNetworkMetrics.js";
 import icmpPing from "./icmpPing.js";
 import { encrypt, decrypt } from "./mikrotikCrypto.js";
 import deviceAlerts from "./deviceAlerts.js";
 import alertBandState from "./alertBandState.js";
 import { computeUtilizationPct, counterDelta } from "./snmpUtils.js";
+import { logDevice } from "./deviceLogs.js";
+import { describeError } from "../utils/httpError.js";
 
 // ─── MikroTik poller: ONE campus router via the RouterOS API, pull-based ───────
 //
@@ -24,11 +26,33 @@ const latest = new Map(); // id -> shaped summary for GET /api/mikrotik
 
 const STATUS_LABEL = { online: "Online", offline: "Offline", warning: "Warning", maintenance: "Maintenance" };
 const labelStatus = (s) => STATUS_LABEL[s] ?? "Offline";
+// A decrypt failure here is almost always ONE thing: MIKROTIK_ENC_KEY changed since
+// the password was saved, so every stored credential is undecryptable. CLAUDE.md warns
+// about exactly this and describes the symptom as "the poller then fails to log in with
+// no obvious cause" — and this catch was the reason there was no obvious cause. It
+// returned "" silently, so RouterOS rejected an empty password and the log showed an
+// authentication error, pointing at the credentials rather than at the key.
+//
+// Logged once per process: the poller runs every 30s and would otherwise fill the log.
+// See audits/error-flow-report-2026-08-25.md — F-02.
+let decryptFailureReported = false;
 const safeDecrypt = (v) => {
   if (!v) return "";
   try {
     return decrypt(v);
-  } catch {
+  } catch (err) {
+    if (!decryptFailureReported) {
+      decryptFailureReported = true;
+      console.error(
+        `[MIKROTIK] Cannot decrypt a stored API password: ${err.message}
+` +
+          `[MIKROTIK] This almost always means MIKROTIK_ENC_KEY in backend/.env is not the key
+` +
+          `[MIKROTIK] the password was encrypted under. Logins will fail with an empty password
+` +
+          `[MIKROTIK] until the key is restored, or the credentials are re-entered in the dashboard.`,
+      );
+    }
     return "";
   }
 };
@@ -46,16 +70,6 @@ async function loadDevices() {
   );
   // Pollable = has an IP + a username configured.
   return rows.filter((r) => r.ip && r.apiUser);
-}
-
-async function loadInterfaceLabels(deviceId) {
-  const [rows] = await db.query(
-    `SELECT interface_name, location_label FROM network_interfaces WHERE device_id = ?`,
-    [deviceId],
-  );
-  const m = {};
-  for (const r of rows) m[r.interface_name] = r.location_label ?? "";
-  return m;
 }
 
 const connFor = (d) => ({
@@ -115,9 +129,9 @@ async function setReachable(io, d, online) {
   try {
     await db.query(`UPDATE devices SET status = ?, updated_at = NOW() WHERE device_id = ?`, [newStatus, d.id]);
   } catch (err) {
-    console.error("[MIKROTIK_POLLER] status update error:", err.message);
+    console.error("[MIKROTIK_POLLER] status update error:", describeError(err));
   }
-  const log = await agentService.logDevice(
+  const log = await logDevice(
     d.id,
     online ? "info" : "warning",
     online ? "MikroTik reachable" : "MikroTik unreachable — no API response",
@@ -200,7 +214,7 @@ async function pollDevice(io, d) {
       [sample.version ?? null, sample.boardName ?? null, d.id],
     );
   } catch (err) {
-    console.error("[MIKROTIK_POLLER] last_seen update error:", err.message);
+    console.error("[MIKROTIK_POLLER] last_seen update error:", describeError(err));
   }
 }
 
@@ -227,7 +241,7 @@ async function pollAll(io) {
       }
     }
   } catch (err) {
-    console.error("[MIKROTIK_POLLER] load error:", err.message);
+    console.error("[MIKROTIK_POLLER] load error:", describeError(err));
   } finally {
     polling = false;
   }

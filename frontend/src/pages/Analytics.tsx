@@ -3,6 +3,9 @@ import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
 import { socket } from "../socket/socket";
 import { pathWithGaps } from "../utils/seriesGaps";
+import { GF as gf, STATUS } from "../theme/gf";
+import { usePersistedState as useSharedPersistedState } from "../hooks/usePersistedState";
+const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
 // Predictive Analytics: disk-full ETA (linear regression) + alert analytics
 // (Phase 1), trend/projection (seasonal Holt-Winters, Phase 2), anomaly detection
@@ -203,22 +206,7 @@ interface Recommendation {
   status: "ok" | "insufficient_data";
 }
 
-const gf = {
-  bg: "var(--gf-bg)",
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  divider: "var(--gf-divider)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-  hoverStrong: "var(--gf-hover-strong)",
-  accent: "var(--gf-accent)",
-} as const;
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
 const GRAY = "#6B7280";
 const SEV_COLOR: Record<string, string> = { critical: "#E02F44", warning: "#FF780A", info: "#5794F2" };
 const CONF_COLOR: Record<Confidence, string> = { high: GREEN, medium: ORANGE, low: GRAY };
@@ -400,31 +388,17 @@ const LINK_STATUS_LABEL: Record<LinkForecast["status"], string> = {
 // or send a 400 to the API on mount.
 const VIEW_KEY = "cspc_analytics_view";
 
-function usePersistedState<T>(
+// The implementation now lives in hooks/usePersistedState (the Dashboard needs it too).
+// This thin wrapper keeps the SHORT keys the call sites below already use, which also
+// keeps every already-stored preference working — switching to full keys would silently
+// reset everyone's saved lookbacks and tab.
+const usePersistedState = <T,>(
   key: string,
   initial: T,
   isValid?: (v: unknown) => boolean,
-): [T, React.Dispatch<React.SetStateAction<T>>] {
-  const [value, setValue] = useState<T>(() => {
-    try {
-      const raw = localStorage.getItem(`${VIEW_KEY}.${key}`);
-      if (raw == null) return initial;
-      const parsed: unknown = JSON.parse(raw);
-      if (isValid && !isValid(parsed)) return initial;
-      return parsed as T;
-    } catch {
-      return initial; // corrupt JSON or storage disabled must never break the page
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(`${VIEW_KEY}.${key}`, JSON.stringify(value));
-    } catch {
-      /* private mode / quota — persistence is a convenience, not a requirement */
-    }
-  }, [key, value]);
-  return [value, setValue];
-}
+): [T, React.Dispatch<React.SetStateAction<T>>] =>
+  useSharedPersistedState<T>(`${VIEW_KEY}.${key}`, initial, isValid);
+
 
 const isTabKey = (v: unknown): boolean => TABS.some((t) => t.key === v);
 const isMetricKey = (v: unknown): boolean => METRIC_OPTIONS.some((m) => m.key === v);
@@ -598,7 +572,7 @@ export default function Analytics() {
     () => forecasts.map((f) => ({ id: f.deviceId, name: f.name, typeLabel: f.typeLabel })),
     [forecasts],
   );
-  // ⚠️ This list was built from `linkForecasts` — every device that reports INTERFACE
+  // This list was built from `linkForecasts` — every device that reports INTERFACE
   // traffic. That silently excluded exactly one class of device: a PING-ONLY router has
   // no interfaces at all, so it produced no link forecast and never appeared in the
   // picker — making Latency and Packet Loss unreachable for the one device whose ONLY
@@ -1965,7 +1939,7 @@ function DataQualityNotice({ quality }: { quality: MetricTrend["dataQuality"] })
       style={{ background: "rgba(255,120,10,0.06)", border: "1px solid rgba(255,120,10,0.3)" }}
     >
       <div className="font-semibold" style={{ color: ORANGE }}>
-        ⚠ Not enough data to forecast
+         Not enough data to forecast
       </div>
       <div style={{ color: gf.textPrimary }}>
         {quality.message} {FIX[quality.reason] ?? ""}

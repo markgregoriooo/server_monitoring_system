@@ -52,7 +52,7 @@ export type TempStatus = "TOO_COLD" | EnvStatus;
 /** Firmware before 2026-08-15 named the top band DANGER on `smoke_status` and
  *  `environment_status`, and carried a fourth, middle DANGER band on `temp_status`.
  *
- *  ⚠️ Those strings are InfluxDB **TAGS**, so every point written before the change keeps
+ * Those strings are InfluxDB **TAGS**, so every point written before the change keeps
  *  them — this is not a migration window that eventually closes, it is how history reads
  *  forever. Any range that reaches back past the reflash returns both spellings, and the
  *  most recent history row seeds the live tiles on page load.
@@ -93,7 +93,7 @@ const MUTED = "#6B7280";
  *  `humidity` rule uses, the one the firmware applies (`t >= TEMP_WARNING`), and the one
  *  `alertRulesService.compare` evaluates the same rows with server-side.
  *
- *  ⚠️ It previously INFERRED the direction from the bounds: `crit < warn` was read as
+ * It previously INFERRED the direction from the bounds: `crit < warn` was read as
  *  "lower is worse" and flipped both comparisons. That inference was wrong in the exact
  *  situation it mattered — TESTING a rule. To make a clean room show critical you have to
  *  drop the critical threshold below the live reading, which leaves it under the untouched
@@ -173,7 +173,7 @@ export function alertTint(
  * `>= 30` warning, `>= 34` critical) — and the firmware says why: `TEMP_COLD` is the one
  * threshold `envConfig` does not overwrite, so the device keeps its compiled 22 °C and
  * lights its LED blue there. This mirrors that constant so the dashboard and the box on
- * the wall call the same room too cold. ⚠️ Change one and change the other
+ * the wall call the same room too cold. Change one and change the other
  * (`iot/esp32/env_monitor_v2.ino`, `TEMP_COLD`).
  */
 export const TEMP_COLD_BELOW = 22;

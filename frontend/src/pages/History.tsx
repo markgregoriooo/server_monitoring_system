@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
+import { GF as gf, STATUS } from "../theme/gf";
+const { green: GREEN } = STATUS;
 
 // ─── History — two views ──────────────────────────────────────────────────────
 // "Activity": one accountable timeline merged from system_logs + aircon_logs +
@@ -14,19 +16,7 @@ import { socket } from "../socket/socket";
 // period, which is why they share a page rather than a query.
 
 // ── Grafana design tokens ──
-const gf = {
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  header: "var(--gf-header)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-  accent: "var(--gf-accent)",
-  accentDim: "var(--gf-accent-dim)",
-} as const;
 
-const GREEN = "#73BF69";
 
 // ── Types ──
 type ActorType = "admin" | "staff" | "system";

@@ -216,11 +216,31 @@ function splitLabel(raw: string, isMobile = false): string[] {
 
 // ─── Chart helpers ────────────────────────────────────────────────────────────
 
-function makeCombinedOptions(
-  isDark: boolean,
-  isMobile: boolean,
-  minTemp: number, maxTemp: number,
-  minHum: number,  maxHum: number,
+/**
+ * Takes ONE options object, not seven positional arguments.
+ *
+ * It used to be called as
+ *   makeCombinedOptions(isDark, isMobile, minTempY, maxTempY, minHumY, maxHumY, colors)
+ * — four adjacent numbers with identical types. Transposing any two of them is silently
+ * wrong: the chart renders with the wrong axis bounds and nothing errors. Two adjacent
+ * booleans had the same problem. Named fields make a transposition impossible.
+ * See audits/naming-readability-report-2026-08-25.md — N-01.
+ */
+function makeCombinedOptions({
+  isDark,
+  isMobile,
+  minTemp,
+  maxTemp,
+  minHum,
+  maxHum,
+  colors,
+}: {
+  isDark: boolean;
+  isMobile: boolean;
+  minTemp: number;
+  maxTemp: number;
+  minHum: number;
+  maxHum: number;
   /** Colours resolved from live data by the component, since this builder sits outside it.
    *  `tempAxis`/`humAxis` are each series' colour RIGHT NOW (a multi-coloured line needs an
    *  axis that still matches some part of it); `at` resolves the colour of one hovered
@@ -230,8 +250,8 @@ function makeCombinedOptions(
     tempAxis: string;
     humAxis: string;
     at: (datasetIndex: number, y: number | null) => string;
-  },
-): ChartOptions<"line"> {
+  };
+}): ChartOptions<"line"> {
   const gridColor = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.06)";
   const dateColor = isDark ? "#4B5563" : "#9CA3AF";
   const timeColor = isDark ? "#9CA3AF" : "#6B7280";
@@ -276,7 +296,7 @@ function makeCombinedOptions(
                   : timeColor)) as unknown as string,
           font: { size: isMobile ? 8 : 9, family: "monospace" },
           maxTicksLimit: isMobile ? 4 : 7, maxRotation: 0,
-          // ⚠️ `value` is the DATA index on a category scale. `index` is only the position
+          // `value` is the DATA index on a category scale. `index` is only the position
           // among the ticks Chart.js decided to DRAW (0…maxTicksLimit-1), so passing it to
           // getLabelForValue labelled all seven ticks from the first seven samples — which
           // is why a tick could read "Jun" while the tooltip for that same point read
@@ -304,18 +324,25 @@ function makeCombinedOptions(
   };
 }
 
-function makeSmokeOptions(
-  isDark: boolean,
-  isMobile: boolean,
-  minPPM: number,
-  maxPPM: number,
+/** One options object — same reasoning as makeCombinedOptions (N-01). */
+function makeSmokeOptions({
+  isDark,
+  isMobile,
+  minPPM,
+  maxPPM,
+  colors,
+}: {
+  isDark: boolean;
+  isMobile: boolean;
+  minPPM: number;
+  maxPPM: number;
   /** `ppmAxis` = the WORSE of the two MQ-2 sensors, since one axis serves both lines.
    *  `at` resolves one hovered point's colour for the tooltip swatch — see makeCombinedOptions. */
   colors: {
     ppmAxis: string;
     at: (datasetIndex: number, y: number | null) => string;
-  },
-): ChartOptions<"line"> {
+  };
+}): ChartOptions<"line"> {
   const gridColor = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.06)";
   const dateColor = isDark ? "#4B5563" : "#9CA3AF";
   const timeColor = isDark ? "#9CA3AF" : "#6B7280";
@@ -361,7 +388,7 @@ function makeSmokeOptions(
                   : timeColor)) as unknown as string,
           font: { size: isMobile ? 8 : 9, family: "monospace" },
           maxTicksLimit: isMobile ? 4 : 7, maxRotation: 0,
-          // ⚠️ `value` is the DATA index on a category scale. `index` is only the position
+          // `value` is the DATA index on a category scale. `index` is only the position
           // among the ticks Chart.js decided to DRAW (0…maxTicksLimit-1), so passing it to
           // getLabelForValue labelled all seven ticks from the first seven samples — which
           // is why a tick could read "Jun" while the tooltip for that same point read
@@ -1018,11 +1045,20 @@ export default function Environment() {
   // live-stat re-render would otherwise produce new object references and make
   // react-chartjs-2 call chart.update() on both charts several times a second.
   const combinedOpts = useMemo(
-    () => makeCombinedOptions(isDark, isMobile, minTempY, maxTempY, minHumY, maxHumY, combinedColors),
+    () => makeCombinedOptions({
+      isDark, isMobile,
+      minTemp: minTempY, maxTemp: maxTempY,
+      minHum: minHumY, maxHum: maxHumY,
+      colors: combinedColors,
+    }),
     [isDark, isMobile, minTempY, maxTempY, minHumY, maxHumY, combinedColors],
   );
   const smokeOpts = useMemo(
-    () => makeSmokeOptions(isDark, isMobile, minSmokeY, maxSmokeY, smokeColors),
+    () => makeSmokeOptions({
+      isDark, isMobile,
+      minPPM: minSmokeY, maxPPM: maxSmokeY,
+      colors: smokeColors,
+    }),
     [isDark, isMobile, minSmokeY, maxSmokeY, smokeColors],
   );
 
@@ -1088,7 +1124,7 @@ export default function Environment() {
       //
       // That identity is what lets you watch the two disagree, which is the whole point of
       // having two. Painting both green when clean merged them into one indistinct band
-      // for the majority of the time the chart is on screen. ⚠️ They DO converge on the
+      // for the majority of the time the chart is on screen. They DO converge on the
       // same red if both go critical at once; the legend labels and values separate them
       // there, and a `borderDash` on MQ2-2 is the fix if that case ever needs to be read at
       // a glance.

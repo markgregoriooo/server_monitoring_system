@@ -6,6 +6,10 @@ import RangePicker, { DEFAULT_RANGE, rangeSpanSec } from "../components/ui/Range
 import type { RangeValue } from "../components/ui/RangePicker";
 import { withGaps } from "../utils/seriesGaps";
 import { formatBps } from "../utils/format";
+import { GF as gf, STATUS } from "../theme/gf";
+import { formatUptime, fmtDateTime, formatSpeed, fmtAxisTime, MULTI_DAY_SEC } from "../utils/format";
+import { Stat, Th } from "../components/ui/primitives";
+const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── Per-MikroTik detail view (throughput + ports + log) ──────────────────────
 // Reached from MikrotikMonitoring via "View". In-page swap (Back button), mirroring
@@ -78,52 +82,18 @@ export interface MkDevice {
 interface HistPoint { time: string; rxBytesPerSec: number | null; txBytesPerSec: number | null; }
 interface DeviceLog { log_level: "info" | "warning" | "critical" | "error"; message: string; recorded_at: string; }
 
-const gf = {
-  bg: "var(--gf-bg)", panel: "var(--gf-panel)", border: "var(--gf-panel-border)", divider: "var(--gf-divider)",
-  textPrimary: "var(--gf-text-primary)", textMuted: "var(--gf-text-muted)", textDim: "var(--gf-text-dim)", hover: "var(--gf-hover)",
-} as const;
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
-const BLUE = "#5794F2";
 
 // Windows spanning more than a day need the DATE on the axis — bare "14:00" repeats
 // every day, which makes a 7d/30d chart unreadable. Driven by the window's actual
 // SPAN rather than a list of preset keys, so a custom 5-day window gets dates too.
 // Same rule as ServerDetail, so the two pages label an incident identically.
-const MULTI_DAY_SEC = 86400 * 2;
-
-function fmtAxisTime(iso: string, spanSec: number) {
-  const d = new Date(iso);
-  if (spanSec >= MULTI_DAY_SEC) {
-    return d.toLocaleString("en-PH", {
-      timeZone: "Asia/Manila", month: "short", day: "2-digit", hour: "2-digit", hour12: false,
-    });
-  }
-  return d.toLocaleTimeString("en-PH", {
-    timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false,
-  });
-}
 
 function loadColor(v: number) { if (v >= 85) return RED; if (v >= 65) return ORANGE; return GREEN; }
 function statusColor(s: string) { if (s === "Online") return GREEN; if (s === "Warning") return ORANGE; return RED; }
 function logColor(level: string) { if (level === "critical" || level === "error") return RED; if (level === "warning") return ORANGE; return BLUE; }
 // formatBps moved to utils/format.ts. The Dashboard's network panel needs the identical
 // scaling — three copies is how the same router starts reading differently per page.
-function formatUptime(sec: number | null): string {
-  if (sec == null || !Number.isFinite(sec)) return "—";
-  const s = Math.floor(sec), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-function fmtDateTime(iso: string) {
-  return new Date(iso).toLocaleString("en-PH", {
-    timeZone: "Asia/Manila", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
-  });
-}
-
 // Chart.js line chart — same config as NetworkDetail so both network pages read alike.
 function ThroughputChart({ history, spanSec }: { history: HistPoint[]; spanSec: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -206,29 +176,6 @@ function Panel({ title, right, children, noPad }: { title: string; right?: React
   );
 }
 
-function Stat({ label, value, unit, color, sub }: { label: string; value: string; unit?: string | undefined; color: string; sub?: string | undefined }) {
-  return (
-    <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 84 }}>
-      <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
-        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
-      </div>
-      <div className="px-3 pt-1.5">
-        <span className="text-[24px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
-      </div>
-    </div>
-  );
-}
-
-function formatSpeed(mbps: number | null | undefined): string | null {
-  if (mbps == null || !Number.isFinite(mbps) || mbps <= 0) return null;
-  return mbps >= 1000
-    ? `${(mbps / 1000).toFixed(mbps % 1000 === 0 ? 0 : 1)} Gb/s`
-    : `${Math.round(mbps)} Mb/s`;
-}
-
 // ─── Interface table (WinBox "Interface List" style) ──────────────────────────
 // Deliberately a dense table of NUMBERS rather than progress bars. Two reasons:
 //  • an idle port is the normal state here, and a wide empty bar track reads as a
@@ -237,17 +184,6 @@ function formatSpeed(mbps: number | null | undefined): string | null {
 //    the `R` running flag, Tx/Rx rate columns and right-aligned figures all carry over.
 // Every colour is either a --gf-* token or a status colour, so it holds up in light and
 // dark mode without hardcoded greys.
-
-function Th({ children, right, w }: { children: React.ReactNode; right?: boolean; w?: number }) {
-  return (
-    <th
-      className={`text-[11px] tracking-widest uppercase font-medium px-2 py-1.5 ${right ? "text-right" : "text-left"}`}
-      style={{ color: gf.textMuted, width: w, whiteSpace: "nowrap" }}
-    >
-      {children}
-    </th>
-  );
-}
 
 function PortRow({ i, rate }: { i: MkIface; rate?: PortRate | undefined }) {
   const hasUtil = i.utilizationPct != null && Number.isFinite(i.utilizationPct);

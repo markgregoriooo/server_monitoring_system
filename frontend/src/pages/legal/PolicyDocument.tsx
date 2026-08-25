@@ -10,7 +10,7 @@ import { BRAND } from "../../branding";
  * notice to state: what is collected, why, who sees it, how long it is kept, where
  * it lives, who it is shared with, and how a data subject exercises their rights.
  *
- * ⚠️ Everything here describes what the code actually does today. If you change
+ * Everything here describes what the code actually does today. If you change
  * what the system collects, keeps, or sends, change this text AND bump
  * POLICY_VERSION in backend/services/policyService.js so everyone re-accepts.
  */

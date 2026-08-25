@@ -5,8 +5,7 @@ import { Server } from "socket.io";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import jwt from "jsonwebtoken";
 import { handleConnection } from "../sockets/connectionHandler.js";
-import { JWT_SECRET } from "../middleware/auth.js";
-import db from "../config/mysql.js";
+import { JWT_SECRET, fetchSessionRow, sessionIsLive } from "../middleware/auth.js";
 import agentService from "../services/agentService.js";
 import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
@@ -38,6 +37,7 @@ import alertRuleRoutes from "../routes/alertRules.js";
 import widgetLayoutRoutes from "../routes/widgetLayout.js";
 import historyRoutes from "../routes/history.js";
 import analyticsRoutes from "../routes/analytics.js";
+import { describeError } from "../utils/httpError.js";
 
 // Surface missing auth config at BOOT rather than at the first sign-in attempt.
 // Login is Google-only, so an unset client id/secret means nobody can get into
@@ -57,7 +57,7 @@ if (missingAuthEnv.length > 0) {
   );
 }
 
-// ⚠️ Size this from what ONE DASHBOARD LOAD actually costs, not from a feel for what
+// Size this from what ONE DASHBOARD LOAD actually costs, not from a feel for what
 // "a lot of requests" is. The old value was 500/15min with a comment claiming headroom
 // for multi-panel page loads; it did not have it, and the failure mode is ugly — every
 // panel 429s at once and the Dashboard renders empty, which reads as a crash rather than
@@ -96,7 +96,7 @@ const RATE_IPV6_SUBNET = 56;
 // runs before it (the limiter is global, and some routes are public), and duplicating a
 // microsecond of HMAC is the right trade against threading auth state through the limiter.
 //
-// ⚠️ The IP fallback must go through `ipKeyGenerator`, not `req.ip`. Returning a raw IP
+// The IP fallback must go through `ipKeyGenerator`, not `req.ip`. Returning a raw IP
 // silently discards the ipv6Subnet setting below, and an attacker with any IPv6 /64 could
 // then rotate addresses for unlimited budget — which is the whole reason that option is set.
 function userOrIpKey(req) {
@@ -117,7 +117,11 @@ const globalLimiter = rateLimit({
   max: RATE_MAX,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  ipv6Subnet: RATE_IPV6_SUBNET,
+  // No `ipv6Subnet` here on purpose: express-rate-limit IGNORES it whenever a custom
+  // keyGenerator is set, and warned about the contradiction at every boot
+  // (ERR_ERL_IPV6SUBNET_OR_KEYGENERATOR). userOrIpKey applies RATE_IPV6_SUBNET itself
+  // via ipKeyGenerator, so the grouping is real — it was just declared twice, once
+  // where it did nothing.
   keyGenerator: userOrIpKey,
   // Agent metric ingestion has its own (more generous) limiter in routes/servers.js.
   // Exempt it here so a busy fleet of agents never consumes the dashboard's budget.
@@ -201,12 +205,9 @@ io.use(async (socket, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
-    //  reject sockets whose session has since been revoked/disabled.
-    const [[user]] = await db.query(
-      "SELECT status, token_version FROM users WHERE user_id = ? LIMIT 1",
-      [decoded.id],
-    );
-    if (!user || user.status !== "active" || user.token_version !== decoded.tv) {
+    //  reject sockets whose session has since been revoked/disabled. Same predicate
+    //  the HTTP middleware and the revocation sweep use — see middleware/auth.js.
+    if (!sessionIsLive(await fetchSessionRow(decoded.id), decoded.tv)) {
       return next(new Error("Session is no longer valid"));
     }
     socket.user = decoded;
@@ -216,7 +217,7 @@ io.use(async (socket, next) => {
     // Same reasoning as middleware/auth.js: the client gets a bare "Invalid token",
     // the log gets the actual cause. A rejected handshake surfaces in the browser as
     // an opaque 403 on /socket.io/, which says nothing about why.
-    console.warn(`[AUTH] socket handshake rejected — ${err.name}: ${err.message}`);
+    console.warn(`[AUTH] socket handshake rejected — ${err.name}: ${describeError(err)}`);
     next(new Error("Invalid token"));
   }
 });
@@ -281,22 +282,138 @@ app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" })
 })
 
-// error handler
-app.use((err, req, res, next) => {
-  console.error(err);
-
+// ─── Central error handler ────────────────────────────────────────────────────
+//
+// `message` used to be set from `err.message` for EVERY status, including 5xx —
+// directly under a comment claiming "5xx stays generic so unexpected internals aren't
+// leaked". Only `error` was gated. So an unexpected failure sent its raw text to the
+// client: a mysql2 error carries the SQL state and table name
+// ("ER_NO_SUCH_TABLE: Table 'cspc.reports' doesn't exist"), and a filesystem error
+// carries an absolute server path. The client never read `message` either — api.ts's
+// handleError reads `data.error` — so it was leakage with no consumer.
+app.use((err, req, res, _next) => {
   const status = err.status || 500;
 
-  // Surface intentional (4xx) messages to the client — the frontend reads `error`.
-  // 5xx stays generic so unexpected internals aren't leaked.
-  const body = { message: err.message || "Internal Server Error" };
-  if (status >= 400 && status < 500) body.error = err.message;
+  // Log the FULL error server-side regardless — that is where the detail belongs.
+  // 4xx are expected (bad input, wrong role) so they log at warn without a stack;
+  // 5xx are not, and the stack is the whole point.
+  if (status >= 500) {
+    console.error(`[ERR] ${status} ${req.method} ${req.originalUrl}`, err);
+  } else {
+    console.warn(`[ERR] ${status} ${req.method} ${req.originalUrl} — ${describeError(err)}`);
+  }
+
+  // WHICH messages cross the wire.
+  //
+  // Two ways an error can be safe to show: a 4xx status (validation, not found, wrong
+  // role — the message was written for a user), or an explicit `expose: true`, which is
+  // how a DELIBERATE 5xx says "this text is for the operator". Gating on the status range
+  // ALONE swallowed exactly those: `ServiceUnavailable` and reportService's
+  // "Email is not configured on this server (SMTP_USER / SMTP_PASS)." both reached the
+  // admin as a bare "Internal Server Error", which is the opposite of their purpose.
+  // See audits/solid-report-2026-08-25.md — L-01.
+  const showMessage = err.expose === true || (status >= 400 && status < 500);
+  const body = showMessage
+    ? { error: err.message, message: err.message }
+    : { error: "Internal Server Error", message: "Internal Server Error" };
 
   res.status(status).json(body);
 });
 
 
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
+//
+// Owned here, at the composition root, rather than by whichever service happened to
+// register a signal handler first. backupService used to do it and called
+// process.exit(0) straight after its flush, so server.close() never ran and in-flight
+// responses were cut mid-write.
+//
+// Order matters. The on-site backup is the thing that must survive a power event, and a
+// UPS low-battery SIGTERM gives seconds, not minutes — so the SYNCHRONOUS flush goes
+// first, before anything that can block. Everything after it is best-effort.
+let shuttingDown = false;
+function shutdown(sig) {
+  if (shuttingDown) return; // a second Ctrl+C must not re-enter
+  shuttingDown = true;
+  console.log(`[shutdown] ${sig} — flushing and closing`);
+
+  // 1. Buffered samples → disk. Synchronous and first: this is the copy that exists
+  //    precisely for the case where the power is going away.
+  try {
+    backupService.flushSync();
+  } catch (err) {
+    console.error("[shutdown] backup flush failed:", err?.message ?? err);
+  }
+
+  // 2. Stop accepting new work and let in-flight responses finish.
+  server.close(() => {
+    console.log("[shutdown] http closed");
+    process.exit(0);
+  });
+
+  // 3. Hard cap. A held-open socket (an idle keep-alive, a long poll) would otherwise
+  //    keep server.close() pending forever — and on a dying UPS there is no forever.
+  //    unref() so this timer alone never keeps the process alive.
+  setTimeout(() => {
+    console.warn("[shutdown] close timed out — exiting anyway");
+    process.exit(0);
+  }, 3000).unref();
+}
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+// ─── Process-level safety net ─────────────────────────────────────────────────
+//
+// Node 22 terminates the process on an unhandled rejection (the default has been
+// `--unhandled-rejections=throw` since Node 15). Verified on this machine: a
+// fire-and-forget async call that rejects exits with code 1.
+//
+// That matters because several hot paths ARE fire-and-forget by design — the socket
+// handlers (`sensorData` arrives every ~3s from the ESP32), the report builder, and the
+// audit writes. Any one of them rejecting used to take the whole backend down, which on
+// a monitoring system means the alarms stop with it.
+//
+// These handlers do NOT swallow the error. They make sure it is written down — with the
+// context needed to find it — before the process goes. Restart is left to the process
+// supervisor, which is the right owner: a process that keeps running after an unknown
+// exception is in an unknown state.
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[FATAL] Unhandled promise rejection — the process will exit.");
+  console.error("  reason:", reason instanceof Error ? reason.stack : reason);
+  console.error("  promise:", promise);
+  // Re-throw so the default behaviour (and the uncaughtException handler below) runs,
+  // rather than silently continuing in an unknown state.
+  throw reason;
+});
+
+process.on("uncaughtException", (err, origin) => {
+  console.error(`[FATAL] Uncaught exception (origin: ${origin}) — the process will exit.`);
+  console.error(err?.stack ?? err);
+  // backupService's 'exit' listener DOES fire on this path, so buffered samples still
+  // reach the micro SD before we go.
+  process.exit(1);
+});
+
 const PORT = process.env.PORT || 3000;
+
+// ─── HTTP server timeouts ─────────────────────────────────────────────────────
+//
+// Node's defaults were in force: requestTimeout 300 s, headersTimeout 60 s,
+// keepAliveTimeout 5 s. Two problems with that here.
+//
+// 1. A request held open for FIVE MINUTES occupies a socket and, if it is mid-query, a
+//    MySQL pool connection — of which there are only 10, shared by the pollers, the
+//    agent POSTs and every dashboard request (see S-03). Nothing this API does
+//    legitimately takes minutes: reports are built asynchronously and answered 202.
+//
+// 2. keepAliveTimeout must be LONGER than the reverse proxy's. nginx defaults to
+//    75 s; with Node closing an idle connection at 5 s, nginx can hand a request to a
+//    socket Node is closing and return a 502 the logs cannot explain. The deployment
+//    puts this behind a proxy (deployment-guide.md), so the ordering matters.
+//    headersTimeout must exceed keepAliveTimeout or Node warns and clamps.
+server.requestTimeout = Number(process.env.HTTP_REQUEST_TIMEOUT_MS) || 60_000;
+server.headersTimeout = Number(process.env.HTTP_HEADERS_TIMEOUT_MS) || 90_000;
+server.keepAliveTimeout = Number(process.env.HTTP_KEEPALIVE_TIMEOUT_MS) || 80_000;
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT} (0.0.0.0 — all interfaces)`);
@@ -349,7 +466,7 @@ const runAnalyticsAlerts = async () => {
     const raised = await analyticsAlerts.runForecastAlerts();
     if (raised) console.log(`[analytics-alerts] ${raised} forecast alert(s) raised/refreshed`);
   } catch (err) {
-    console.error("[analytics-alerts] error:", err.message);
+    console.error("[analytics-alerts] error:", describeError(err));
   }
 };
 setTimeout(() => {
@@ -367,7 +484,7 @@ const runNotificationPurge = async () => {
     const purged = await notificationService.purgeOld(RETENTION_DAYS);
     if (purged) console.log(`[notifications] purged ${purged} alert(s) older than ${RETENTION_DAYS}d`);
   } catch (err) {
-    console.error("[notifications] purge error:", err.message);
+    console.error("[notifications] purge error:", describeError(err));
   }
 };
 runNotificationPurge();
@@ -383,7 +500,7 @@ const runReportPurge = async () => {
     const purged = await reportService.purgeOld(REPORT_RETENTION_DAYS);
     if (purged) console.log(`[reports] purged ${purged} report(s) older than ${REPORT_RETENTION_DAYS}d`);
   } catch (err) {
-    console.error("[reports] purge error:", err.message);
+    console.error("[reports] purge error:", describeError(err));
   }
 };
 runReportPurge();
@@ -400,7 +517,7 @@ const runAuditPurge = async () => {
     const purged = await auditService.purgeOld(SYSTEM_LOG_RETENTION_DAYS);
     if (purged) console.log(`[audit] purged ${purged} log row(s) older than ${SYSTEM_LOG_RETENTION_DAYS}d`);
   } catch (err) {
-    console.error("[audit] purge error:", err.message);
+    console.error("[audit] purge error:", describeError(err));
   }
 };
 runAuditPurge();

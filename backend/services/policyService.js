@@ -1,5 +1,6 @@
 import db from "../config/mysql.js";
 import { audit } from "./auditService.js";
+import { notFound } from "../utils/httpError.js";
 
 /**
  * Privacy Notice & Terms of Use acceptance.
@@ -56,7 +57,7 @@ const policyService = {
       `SELECT user_id, username FROM users WHERE user_id = ? LIMIT 1`,
       [userId],
     );
-    if (rows.length === 0) throw new Error("User not found.");
+    if (rows.length === 0) throw notFound("User not found.");
     const user = rows[0];
 
     const conn = await db.getConnection();

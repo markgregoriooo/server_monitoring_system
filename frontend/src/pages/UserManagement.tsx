@@ -4,6 +4,10 @@ import { roleConfig } from "../data/users";
 import { useAuth } from "../context/AuthContext";
 import { socket } from "../socket/socket";
 import { avatarUrl } from "../utils/format";
+// Aliased: this file already owns a `STATUS` map (user account states, line ~53),
+// which is a different idea entirely from the design system's status palette.
+import { STATUS as PALETTE } from "../theme/gf";
+const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = PALETTE;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,10 +45,6 @@ interface PendingUser {
 
 // ─── Grafana status colors ────────────────────────────────────────────────────
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
-const BLUE = "#5794F2";
 const GOLD = "#F5C400";
 const GREY = "#6B7280";
 

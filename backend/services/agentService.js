@@ -9,6 +9,13 @@ import {
   OFFLINE_FLOOR_SEC,
   offlineWindowSec,
 } from "./serverMetricUtils.js";
+// Was a byte-identical private copy here. snmpUtils is pure and import-free, so
+// taking it from there costs nothing and keeps device_network.network_segment
+// written the same way whether the row came from an agent or the SNMP poller —
+// which is what the comment on the other copy already claimed was true.
+import { networkSegment } from "./snmpUtils.js";
+import { logDevice, getDeviceLogs } from "./deviceLogs.js";
+import { describeError } from "../utils/httpError.js";
 
 // ─── All Go-agent + server-device DB logic (devices + server_specs +
 //     device_network + agent_tokens). Mirrors the airconService pattern. ───────
@@ -20,12 +27,6 @@ const STATUS_LABEL = {
   maintenance: "Maintenance",
 };
 const label = (s) => STATUS_LABEL[s] ?? s;
-
-// Derive a /24 segment string from an IPv4 address ("" if unknown).
-function networkSegment(ip) {
-  const m = typeof ip === "string" && ip.match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
-  return m ? `${m[1]}.${m[2]}.${m[3]}.0/24` : "";
-}
 
 // A server counts as offline when no metric POST has refreshed its last_seen
 // within its own window — three missed posts at that agent's reported cadence,
@@ -383,7 +384,7 @@ async function recordHeartbeat(deviceId, uptimeLabel, intervalSec = null) {
   // every reboot left a permanently open alert inflating the sidebar badge.
   if (cameOnline) {
     await alertsService.autoResolveMetric(deviceId, "offline").catch((err) =>
-      console.error("[agent] offline auto-resolve failed:", err.message),
+      console.error("[agent] offline auto-resolve failed:", describeError(err)),
     );
   }
   return { cameOnline, maintenance };
@@ -424,46 +425,16 @@ async function setMaintenance(deviceId, enabled) {
   // it: entering the window suppresses the heartbeat's cameOnline auto-resolve,
   // and a server that recovers WHILE parked never produces that transition at all.
   await alertsService.autoResolveMetric(id, "offline").catch((err) =>
-    console.error("[agent] offline auto-resolve failed:", err.message),
+    console.error("[agent] offline auto-resolve failed:", describeError(err)),
   );
 
   return { id, name: row.name, status: label(status) };
 }
 
-// ─── Device event log (device_logs) ───────────────────────────────────────────
+// Device logging moved to ./deviceLogs.js — it needs only the database, so the
+// pollers and handlers that write log lines no longer pull in all of agentService.
+// Re-exported below so existing agentService.logDevice(...) callers keep working.
 
-// Best-effort insert of one device event. Returns the row shape for live emit,
-// or null on failure (logging must never break a metric POST).
-async function logDevice(deviceId, level, message) {
-  try {
-    await db.query(`INSERT INTO device_logs (device_id, log_level, message) VALUES (?, ?, ?)`, [
-      deviceId,
-      level,
-      message,
-    ]);
-    return { device_id: Number(deviceId), log_level: level, message, recorded_at: new Date().toISOString() };
-  } catch (err) {
-    console.error("[device_logs] insert error:", err.message);
-    return null;
-  }
-}
-
-async function getDeviceLogs(deviceId, limit = 50) {
-  const n = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
-  const [rows] = await db.query(
-    `SELECT log_level, message, recorded_at
-       FROM device_logs
-      WHERE device_id = ?
-      ORDER BY recorded_at DESC, device_log_id DESC
-      LIMIT ${n}`,
-    [deviceId],
-  );
-  return rows;
-}
-
-// Threshold alerting — thresholds are now CONFIGURABLE (alert_rules), resolved per
-// server (per-device override else global). We track the last band per device+metric
-// and act only on the ONSET of a worse band; alertRulesService.nextBand applies
 // hysteresis so a value flapping at a boundary doesn't churn device_logs. With no
 // matching rule the band is "normal" (rules-only → silent). See alertRulesService.js.
 const SEV_RANK = alertRulesService.SEV_RANK;

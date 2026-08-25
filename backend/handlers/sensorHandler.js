@@ -6,6 +6,7 @@ import alertBandState from "../services/alertBandState.js";
 import esp32Monitor from "../services/esp32Monitor.js";
 import backupService from "../services/backupService.js";
 import envPersistPolicy from "../services/envPersistPolicy.js";
+import { describeError } from "../utils/httpError.js";
 
 const SEV_RANK = alertRulesService.SEV_RANK;
 
@@ -37,32 +38,46 @@ const ENV_METRICS = {
   humidity: { value: (d) => d.humidity, unit: "%", label: "Server room humidity" },
 };
 
+/**
+ * Resolve the band to ACT on for one room metric, applying recovery confirmation.
+ *
+ * Recovery needs CONFIRMATION — see agentService.checkThresholds. It matters most for
+ * GAS: the MQ-2 is an analog sensor with genuinely noisy readings, so a single dip below
+ * the threshold is weak evidence the smoke has cleared. This only ever delays the
+ * ALL-CLEAR — escalation stays instant, so the fail-safe direction is preserved for a
+ * smoke alarm.
+ *
+ * Extracted from the loop in maybeRaiseEnvAlert, where it was the depth-4 branch in one
+ * of only two functions in the codebase that nest that deep. It is also the subtle,
+ * safety-relevant part, so it is worth being a named thing that can be tested on its own.
+ * See audits/code-complexity-report-2026-08-25.md — C-06.
+ */
+async function settleBand(key, value) {
+  const rules = await alertRulesService.getEffectiveRules(null, key);
+  const prev = alertBandState.getBand(null, key);
+  const { band, rule } = alertRulesService.nextBand(rules, value, prev);
+
+  let effective = band;
+  if (band === "normal" && prev !== "normal") {
+    if (alertBandState.confirmRecovery(null, key)) {
+      await alertsService.autoResolveMetric(null, key);
+    } else {
+      effective = prev; // not convinced yet — hold the alert open
+    }
+  } else if (band !== "normal") {
+    alertBandState.breakRecovery(null, key);
+  }
+  alertBandState.setBand(null, key, effective);
+  return { band, effective, prev, rule };
+}
+
 async function maybeRaiseEnvAlert(data) {
   try {
     for (const [key, meta] of Object.entries(ENV_METRICS)) {
       const v = meta.value(data);
       if (typeof v !== "number" || Number.isNaN(v)) continue;
 
-      const rules = await alertRulesService.getEffectiveRules(null, key);
-      const prev = alertBandState.getBand(null, key);
-      const { band, rule } = alertRulesService.nextBand(rules, v, prev);
-
-      // Recovery needs CONFIRMATION — see agentService.checkThresholds. It matters most
-      // for GAS here: the MQ-2 is an analog sensor with genuinely noisy readings, so a
-      // single dip below the threshold is weak evidence the smoke has cleared. Note this
-      // only delays the ALL-CLEAR — escalation stays instant, so the fail-safe direction
-      // is preserved for a smoke alarm.
-      let effectiveBand = band;
-      if (band === "normal" && prev !== "normal") {
-        if (alertBandState.confirmRecovery(null, key)) {
-          await alertsService.autoResolveMetric(null, key);
-        } else {
-          effectiveBand = prev; // not convinced yet — hold the alert open
-        }
-      } else if (band !== "normal") {
-        alertBandState.breakRecovery(null, key);
-      }
-      alertBandState.setBand(null, key, effectiveBand);
+      const { band, effective: effectiveBand, prev, rule } = await settleBand(key, v);
 
       if (SEV_RANK[effectiveBand] <= SEV_RANK[prev]) continue; // only act on escalation
 
@@ -85,7 +100,7 @@ async function maybeRaiseEnvAlert(data) {
       });
     }
   } catch (err) {
-    console.error("[SENSOR] env alert error:", err.message);
+    console.error("[SENSOR] env alert error:", describeError(err));
   }
 }
 

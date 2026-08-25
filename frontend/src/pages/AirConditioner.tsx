@@ -5,6 +5,8 @@ import { useAuth } from "../context/AuthContext";
 import { tempZone, tempColor, zoneOf, zoneColor, ZONE_DEFAULTS } from "../utils/tempZone";
 import type { IRZones, TempZone } from "../utils/tempZone";
 import { resolveColor, alphaColor } from "../utils/canvasColor";
+import { STATUS } from "../theme/gf";
+const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 interface Aircon {
   id: number;
@@ -48,10 +50,6 @@ const GF = {
   accentDim:   "var(--gf-accent-dim)",
 } as const;
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
-const BLUE = "#5794F2";
 const MUTED = "#6B7280";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

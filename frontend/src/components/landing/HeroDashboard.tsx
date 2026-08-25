@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { animate, utils } from "animejs";
 import { useInView, prefersReducedMotion, EASE, DUR } from "./motion";
+import { STATUS } from "../../theme/gf";
+const { green: GREEN, orange: ORANGE, critical: RED } = STATUS;
 
 /**
  * The hero set-piece: a miniature of the real dashboard, drawn in code.
@@ -29,9 +31,6 @@ import { useInView, prefersReducedMotion, EASE, DUR } from "./motion";
 // ServerFocus's series identities: the same hue means the same metric here as there.
 const CPU = "#378ADD";
 const MEM = "#7F77DD";
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#E02F44";
 
 const W = 560;
 const H = 180;

@@ -2,7 +2,7 @@ import express from "express";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import { networkHistoryHandler } from "../handlers/networkHistoryHandler.js";
 import snmpPollerService from "../services/snmpPollerService.js";
-import agentService from "../services/agentService.js";
+import { getDeviceLogs } from "../services/deviceLogs.js";
 
 const router = express.Router();
 
@@ -71,7 +71,7 @@ router.get("/:id/logs", authMiddleware, async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid device id." });
   try {
-    res.json({ logs: await agentService.getDeviceLogs(id) });
+    res.json({ logs: await getDeviceLogs(id) });
   } catch (err) {
     next(err);
   }

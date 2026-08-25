@@ -5,6 +5,8 @@ import Reveal from "./Reveal";
 import { SplitHeading, SectionRail } from "./ScrollFx";
 import BrowserFrame from "./BrowserFrame";
 import ScaledStage from "./ScaledStage";
+import { STATUS } from "../../theme/gf";
+const { green: GREEN, orange: ORANGE, critical: RED } = STATUS;
 
 /**
  * The walkthrough: signing in, then actually using the thing.
@@ -25,9 +27,6 @@ import ScaledStage from "./ScaledStage";
  */
 
 const ACCENT = "#5794F2";
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#E02F44";
 
 interface Scene {
   n: string;

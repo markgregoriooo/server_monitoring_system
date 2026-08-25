@@ -28,7 +28,7 @@ export const BRAND = {
      a footer is where an institution's real-world details go, and a placeholder
      like "123 Main St" reaching a live page is worse than no address at all.
 
-     ⚠️ `campus` ships with a default that needs CONFIRMING before go-live. The
+      `campus` ships with a default that needs CONFIRMING before go-live. The
      others ship blank because inventing a phone number or a room is worse than
      leaving it out. Set them in frontend/.env (VITE_*) — Vite inlines them at
      BUILD time, so restart the dev server after editing. */
@@ -36,7 +36,7 @@ export const BRAND = {
   /** Office responsible for the system. Shown as the contact's name. */
   supportUnit:
     env.VITE_SUPPORT_UNIT?.trim() || "ICT Unit — Help Desk",
-  /** ⚠️ CONFIRM before go-live. Campus / city line under the contact. */
+  /** CONFIRM before go-live. Campus / city line under the contact. */
   campus: env.VITE_CAMPUS?.trim() || "Camarines Sur Polytechnic Colleges",
   /** Optional street or building line. Blank = omitted. */
   addressLine: env.VITE_ADDRESS_LINE?.trim() || "",

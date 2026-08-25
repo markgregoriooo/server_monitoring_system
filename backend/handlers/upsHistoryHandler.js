@@ -1,5 +1,6 @@
 import { queryClient, bucket } from "../config/influx.js";
-import { resolveRange } from "../services/historyRange.js";
+import { resolveHistoryRequest, historyEnvelope } from "../services/historyRange.js";
+import { describeError } from "../utils/httpError.js";
 
 // GET /api/ups/:id/history?range=-1h  (JWT, via authMiddleware)
 //   ...or an absolute window: ?start=<ISO>&stop=<ISO>  (see historyRange.resolveRange)
@@ -11,17 +12,9 @@ import { resolveRange } from "../services/historyRange.js";
 // the network page always offer the same choices — a battery discharge and the
 // traffic during the same outage have to be comparable over the same period.
 export function upsHistoryHandler(req, res) {
-  const deviceId = parseInt(req.params.id, 10);
-  if (!Number.isInteger(deviceId)) {
-    return res.status(400).json({ error: "Invalid device id." });
-  }
-
-  let resolved;
-  try {
-    resolved = resolveRange(req.query);
-  } catch (err) {
-    return res.status(err.status ?? 400).json({ error: err.message });
-  }
+  const parsed = resolveHistoryRequest(req, res);
+  if (!parsed) return;
+  const { deviceId, resolved } = parsed;
   const { rangeExpr, every } = resolved;
 
   const flux = `
@@ -56,18 +49,13 @@ export function upsHistoryHandler(req, res) {
       });
     },
     error(error) {
-      console.error("[UPS_HISTORY] query error:", error.message);
+      console.error("[UPS_HISTORY] query error:", describeError(error));
       if (!res.headersSent) res.status(500).json({ error: "History query failed." });
     },
     complete() {
       if (!res.headersSent) {
-        res.json({
-          range: resolved.custom ? "custom" : resolved.preset,
-          start: resolved.startISO ?? null,
-          stop: resolved.stopISO ?? null,
-          every,
-          history,
-        });
+        // Now carries spanSec too — it always should have. See R-08.
+        res.json(historyEnvelope(resolved, { history }));
       }
     },
   });

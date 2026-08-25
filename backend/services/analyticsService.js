@@ -811,7 +811,7 @@ async function fetchSeriesGrouped(measurement, field, { deviceId = null, days = 
 // RFC 1628 upsBatteryStatus. The UPS's OWN verdict on its battery, which is worth more
 // than a regression when it disagrees: a manufacturer saying "low" is a measurement, while
 // our runtime trend is an inference from data that also moves with load. Stored by
-// upsMetricsHandler precisely because it is the signal that reveals itself over months.
+// writeUpsMetrics precisely because it is the signal that reveals itself over months.
 const BATTERY_STATUS = { 1: "unknown", 2: "normal", 3: "low", 4: "depleted" };
 
 async function fetchBatteryStatus(deviceId, days) {

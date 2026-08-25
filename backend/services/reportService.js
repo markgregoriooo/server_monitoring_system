@@ -3,8 +3,16 @@ import path from "path";
 import db from "../config/mysql.js";
 import { queryClient, bucket } from "../config/influx.js";
 import { toCSV, toPDFBuffer } from "./reportRenderer.js";
+import { HttpError, unavailable } from "../utils/httpError.js";
 import emailService from "./emailService.js";
 import analyticsService from "./analyticsService.js";
+import {
+  REPORT_TYPES,
+  TYPE_LABEL,
+  SCOPE_TYPES,
+  assertBuildersComplete,
+} from "./reportTypes.js";
+import { describeError } from "../utils/httpError.js";
 
 // Real reports: persisted in MySQL `reports`, with a CSV + PDF written to disk per
 // report (file_path = stem, the route appends .csv/.pdf). Data is built on generate
@@ -39,32 +47,39 @@ fs.mkdirSync(REPORTS_DIR, { recursive: true });
 let _io = null;
 function init(io) {
   _io = io;
+  // Fire-and-forget, like the build it cleans up after.
+  failStuckBuilds().catch((e) => console.error("[reports] stuck-build sweep failed:", e.message));
 }
 
-export const REPORT_TYPES = ["environment", "server", "network", "ups", "alerts", "aircon", "forecast"];
-const TYPE_LABEL = {
-  environment: "Environment",
-  server: "Server Metrics",
-  network: "Network Traffic",
-  ups: "UPS Power",
-  alerts: "Alert History",
-  aircon: "Aircon Activity",
-  forecast: "Capacity Forecast",
-};
+/**
+ * Mark `pending` rows that can no longer be building.
+ *
+ * create() writes a `pending` row, the route answers 202, and build() runs
+ * fire-and-forget — so a backend restart mid-build strands that row as `pending`
+ * FOREVER: nothing ever revisits it, and the Reports page shows a spinner that will
+ * never resolve. build() itself never throws, so this is the only path that can
+ * reconcile them.
+ *
+ * A build is minutes at worst, so anything still pending after 15 is orphaned. Run once
+ * at startup rather than on a timer: a restart is the only thing that can create one.
+ * See audits/design-patterns-report-2026-08-25.md — P-11.
+ */
+async function failStuckBuilds() {
+  const [r] = await db.query(
+    `UPDATE reports
+        SET status = 'failed'
+      WHERE status = 'pending'
+        AND created_at < (NOW() - INTERVAL 15 MINUTE)`,
+  );
+  if (r.affectedRows) {
+    console.warn(`[reports] marked ${r.affectedRows} stuck build(s) failed (orphaned by a restart)`);
+  }
+  return r.affectedRows;
+}
 
-// Which device_type a report of each kind can be scoped to. `environment` is absent
-// on purpose: it describes the server room itself (one sensor cluster), so "which
-// device" is not a meaningful question — scoping it is rejected rather than ignored.
-export const SCOPE_TYPES = {
-  server: ["server"],
-  network: ["router", "mikrotik"],
-  ups: ["ups"],
-  aircon: ["aircon"],
-  alerts: ["server", "router", "mikrotik", "ups", "aircon", "esp32"],
-  // A forecast can be narrowed to one device, but it spans three classes when unscoped
-  // (disk, battery, link) — so every forecastable type is offered.
-  forecast: ["server", "router", "mikrotik", "ups"],
-};
+// Type list, labels and scopes all come from ./reportTypes.js — one registry row per
+// report type instead of four parallel maps that had to be kept in step by hand.
+export { REPORT_TYPES } from "./reportTypes.js";
 
 function badRequest(msg) {
   const err = new Error(msg);
@@ -101,7 +116,9 @@ function fluxRows(flux) {
   });
 }
 
-const num = (v, d = 1) => (typeof v === "number" && !Number.isNaN(v) ? +v.toFixed(d) : null);
+// Rounds to `d` decimals, or null when the value is not a real number — report
+// cells show a blank rather than NaN. N-03.
+const roundOrNull = (v, d = 1) => (typeof v === "number" && !Number.isNaN(v) ? +v.toFixed(d) : null);
 const dayKey = (iso) => String(iso).slice(0, 10);
 // Decimal GB, the convention for link throughput (not GiB).
 const gb = (bytes) => +((Number(bytes) || 0) / 1e9).toFixed(2);
@@ -130,17 +147,17 @@ async function buildEnvironment(start, stop) {
   };
   for (const r of means) {
     const s = slot(dayKey(r._time));
-    s.avgTemp = num(r.temperature);
-    s.avgHum = num(r.humidity, 0);
+    s.avgTemp = roundOrNull(r.temperature);
+    s.avgHum = roundOrNull(r.humidity, 0);
   }
   for (const r of maxes) {
     const s = slot(dayKey(r._time));
-    s.maxTemp = num(r.temperature);
-    s.maxGas = num(Math.max(r.mq2_1_ppm ?? 0, r.mq2_2_ppm ?? 0), 0);
+    s.maxTemp = roundOrNull(r.temperature);
+    s.maxGas = roundOrNull(Math.max(r.mq2_1_ppm ?? 0, r.mq2_2_ppm ?? 0), 0);
   }
   for (const r of mins) {
     const s = slot(dayKey(r._time));
-    s.minTemp = num(r.temperature);
+    s.minTemp = roundOrNull(r.temperature);
   }
 
   const days = [...byDay.values()].sort((a, b) => b.date.localeCompare(a.date));
@@ -185,8 +202,8 @@ async function buildServer(start, stop, deviceId) {
     return byDev.get(id);
   };
   const F = { cpu_percent: "Cpu", mem_percent: "Mem", disk_percent: "Disk" };
-  for (const r of means) slot(r.device_id)[`avg${F[r._field]}`] = num(r._value, 0);
-  for (const r of maxes) slot(r.device_id)[`max${F[r._field]}`] = num(r._value, 0);
+  for (const r of means) slot(r.device_id)[`avg${F[r._field]}`] = roundOrNull(r._value, 0);
+  for (const r of maxes) slot(r.device_id)[`max${F[r._field]}`] = roundOrNull(r._value, 0);
 
   // Resolve device_id → name from MySQL.
   const [devices] = await db.query(
@@ -325,8 +342,8 @@ async function buildNetwork(start, stop, deviceId) {
     cpu_percent: "Cpu", mem_percent: "Mem", connected_clients: "Clients",
     latency_ms: "Latency", packet_loss_pct: "Loss",
   };
-  for (const r of means) dev(r.device_id)[`avg${G[r._field]}`] = num(r._value, 0);
-  for (const r of maxes) dev(r.device_id)[`max${G[r._field]}`] = num(r._value, 0);
+  for (const r of means) dev(r.device_id)[`avg${G[r._field]}`] = roundOrNull(r._value, 0);
+  for (const r of maxes) dev(r.device_id)[`max${G[r._field]}`] = roundOrNull(r._value, 0);
 
   // ── Per-interface breakdown ──
   const byIface = new Map();
@@ -349,8 +366,8 @@ async function buildNetwork(start, stop, deviceId) {
     else if (r._field === "tx_bytes") { i.txBytes = v; dev(r.device_id).txBytes += v; }
     else i.errors += v; // rx_errors + tx_errors — one "did this link misbehave" number
   }
-  for (const r of utils) iface(r).peakUtil = num(r._value, 0);
-  for (const r of links) iface(r).upPct = num(Number(r._value) * 100, 0);
+  for (const r of utils) iface(r).peakUtil = roundOrNull(r._value, 0);
+  for (const r of links) iface(r).upPct = roundOrNull(Number(r._value) * 100, 0);
 
   const nameOf = (id) => meta.get(id)?.device_name ?? `#${id}`;
   // Influx outlives MySQL rows — a device deleted from the dashboard still has its
@@ -505,10 +522,10 @@ async function buildUps(start, stop, deviceId) {
     battery_voltage: "BattV",
     temperature: "Temp",
   };
-  for (const r of means) dev(r.device_id)[`avg${F[r._field]}`] = num(r._value, 0);
-  for (const r of mins) dev(r.device_id)[`min${F[r._field]}`] = num(r._value, 0);
-  for (const r of maxes) dev(r.device_id)[`max${F[r._field]}`] = num(r._value, 0);
-  for (const r of batt) dev(r.device_id).onBattPct = num(Number(r._value) * 100, 1);
+  for (const r of means) dev(r.device_id)[`avg${F[r._field]}`] = roundOrNull(r._value, 0);
+  for (const r of mins) dev(r.device_id)[`min${F[r._field]}`] = roundOrNull(r._value, 0);
+  for (const r of maxes) dev(r.device_id)[`max${F[r._field]}`] = roundOrNull(r._value, 0);
+  for (const r of batt) dev(r.device_id).onBattPct = roundOrNull(Number(r._value) * 100, 1);
 
   const nameOf = (id) => meta.get(id)?.device_name ?? `#${id}`;
   const rows = [...byDev.values()].sort((a, b) =>
@@ -736,6 +753,11 @@ const BUILDERS = {
   forecast: buildForecast,
 };
 
+// Fail on BOOT if the registry and the builders disagree, rather than when someone
+// finally generates that report — build() is fire-and-forget, so a missing builder would
+// otherwise surface only as a row silently flipping to `failed`.
+assertBuildersComplete(BUILDERS);
+
 // ─── Client shaping ──────────────────────────────────────────────────────────
 function toClient(r) {
   const iso = (v) => (v instanceof Date ? v.toISOString() : v);
@@ -899,7 +921,7 @@ async function build(id) {
       [stem, id],
     );
   } catch (err) {
-    console.error("[REPORTS] build failed:", err.message);
+    console.error("[REPORTS] build failed:", describeError(err));
     try {
       await db.query("UPDATE reports SET status = 'failed' WHERE report_id = ?", [id]);
     } catch (dbErr) {
@@ -981,9 +1003,7 @@ async function email(id, { toUserId } = {}) {
     throw badRequest("Report is not ready to send yet.");
   }
   if (!emailService.isEnabled()) {
-    const err = new Error("Email is not configured on this server (SMTP_USER / SMTP_PASS).");
-    err.status = 503;
-    throw err;
+    throw unavailable("Email is not configured on this server (SMTP_USER / SMTP_PASS).");
   }
 
   const [[user]] = await db.query("SELECT email, name FROM users WHERE user_id = ? LIMIT 1", [
@@ -1008,9 +1028,9 @@ async function email(id, { toUserId } = {}) {
     fs.readFileSync(file.absPath),
   );
   if (!ok) {
-    const err = new Error("The email provider rejected the message.");
-    err.status = 502;
-    throw err;
+    // 502: we reached the provider and it refused. Exposed — an admin needs to know the
+    // send failed at the far end rather than in our code.
+    throw new HttpError(502, "The email provider rejected the message.", { expose: true });
   }
   // `report` rides along so the route can audit WHAT was sent, not just "#<id>".
   return { sentTo: user.email, report: toClient(row) };
@@ -1042,6 +1062,6 @@ async function purgeOld(days) {
 }
 
 export default {
-  init, list, create, build, generate, fileFor, remove, purgeOld, scopeOptions, email,
+  init, failStuckBuilds, list, create, build, generate, fileFor, remove, purgeOld, scopeOptions, email,
   REPORT_TYPES, SCOPE_TYPES,
 };

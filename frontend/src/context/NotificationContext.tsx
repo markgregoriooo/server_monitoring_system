@@ -15,33 +15,12 @@ import { socket } from "../socket/socket.js";
 import { useAuth } from "./AuthContext.js";
 import { fireDesktopNotification } from "../utils/browserNotify.js";
 import { playNotificationSound } from "../utils/notificationSound.js";
+import type { AppNotification, Severity } from "../types/notification";
 
-export type Severity = "info" | "warning" | "critical";
-
-// Mirrors the backend toClient() shape (camelCase). `id` is the per-user
-// alert_notifications row — the thing we mark read.
-export interface AppNotification {
-  id: number;
-  alertId: number;
-  deviceId: number;
-  deviceName: string | null;
-  // devices.device_type (server|router|mikrotik|ups|esp32|aircon), or null for alerts
-  // with no device row. Drives which page a notification click opens — see routeFor.
-  deviceType: string | null;
-  type: string;
-  title: string;
-  message: string;
-  severity: Severity;
-  isRead: boolean;
-  createdAt: string;
-  sentAt: string;
-  // Shared lifecycle (acknowledge/resolve) — kept live via the alertUpdated event.
-  status?: "active" | "acknowledged" | "resolved";
-  acknowledgedByName?: string | null;
-  acknowledgedByRole?: string | null;
-  acknowledgedAt?: string | null;
-  resolvedAt?: string | null;
-}
+// Shapes moved to ../types/notification: this file imports routeFor from
+// notificationUtils, which needs these types — owning them here made a cycle.
+// Re-exported so the existing `from "../context/NotificationContext"` imports resolve.
+export type { Severity, AppNotification } from "../types/notification";
 
 type IncomingListener = (n: AppNotification) => void;
 

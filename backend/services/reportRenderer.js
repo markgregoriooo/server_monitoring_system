@@ -243,7 +243,7 @@ export function toPDFBuffer(report) {
     doc.on("error", reject);
 
     // ── Letterhead ──
-    // ⚠️ PLACEHOLDER ARRANGEMENT. ICTU had not supplied their official report
+    // PLACEHOLDER ARRANGEMENT. ICTU had not supplied their official report
     // template when this was written — the marks and the wording are real, the
     // layout is ours. Expect to replace this whole block, not tweak it.
     // See assets/branding/README.md.

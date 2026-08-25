@@ -5,6 +5,10 @@ import Chart from "../chart/ChartConfig";
 import RangePicker from "../components/ui/RangePicker";
 import type { RangeValue } from "../components/ui/RangePicker";
 import { withGaps } from "../utils/seriesGaps";
+import { GF as gf, STATUS } from "../theme/gf";
+import { fmtDateTime } from "../utils/format";
+import { Stat } from "../components/ui/primitives";
+const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── Per-UPS detail view (live values + discharge history + event log) ────────
 // Reached from UpsMonitoring via "View". In-page swap (Back button), and laid out
@@ -65,21 +69,7 @@ interface DeviceLog {
   recorded_at: string;
 }
 
-const gf = {
-  bg: "var(--gf-bg)",
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  divider: "var(--gf-divider)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-} as const;
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
-const BLUE = "#5794F2";
 
 const fmt = (v: number | null | undefined, unit = "", digits = 0) =>
   v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(digits)}${unit}`;
@@ -114,12 +104,6 @@ export function batteryHealth(v: number | null | undefined): { text: string; col
     default: return { text: "—", color: gf.textDim };
   }
 }
-function fmtDateTime(iso: string) {
-  return new Date(iso).toLocaleString("en-PH", {
-    timeZone: "Asia/Manila", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
-  });
-}
-
 // Battery + load over time. Two y-axes would over-complicate it: both are percentages,
 // so they share one 0–100 axis and read directly against each other — load is what
 // determines how fast the battery line falls.
@@ -199,22 +183,6 @@ function Panel({ title, right, children, noPad }: { title: string; right?: React
         {right && <div className="flex items-center gap-2 flex-wrap">{right}</div>}
       </div>
       <div className="flex-1 min-h-0" style={{ padding: noPad ? 0 : 12 }}>{children}</div>
-    </div>
-  );
-}
-
-function Stat({ label, value, unit, color, sub }: { label: string; value: string; unit?: string | undefined; color: string; sub?: string | undefined }) {
-  return (
-    <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 84 }}>
-      <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
-        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
-      </div>
-      <div className="px-3 pt-1.5">
-        <span className="text-[24px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
-      </div>
     </div>
   );
 }
@@ -366,7 +334,7 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
           below a banner that talks about minutes remaining. */}
       {onBypass && (
         <div className="rounded-lg px-3 py-2 text-[14px] font-medium" style={{ background: "rgba(242,73,92,0.12)", border: "1px solid rgba(242,73,92,0.3)", color: RED }}>
-          ⚠ ON BYPASS — the load is on raw mains with the inverter and battery cut out of the path.
+           ON BYPASS — the load is on raw mains with the inverter and battery cut out of the path.
           <span style={{ color: gf.textPrimary }}> There is no backup time at all: a mains dip now drops the load instantly.</span>
           <span style={{ color: gf.textMuted }}> Check for an overload, an over-temperature, or a maintenance bypass switch left engaged.</span>
         </div>

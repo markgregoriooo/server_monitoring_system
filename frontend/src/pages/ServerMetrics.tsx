@@ -6,16 +6,16 @@ import InstallKeysPanel from "../components/servers/InstallKeysPanel";
 import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 import { resolveColor, alphaColor } from "../utils/canvasColor";
+import type { Volume } from "../types/server";
+import { GF as gf, STATUS } from "../theme/gf";
+import { GhostButton } from "../components/ui/primitives";
+const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
-// One mounted fixed volume, as reported by the agent. Exported so ServerDetail
-// shares the shape instead of redeclaring it (type-only import — no runtime cycle).
-export interface Volume {
-  mount: string;
-  fstype: string;
-  total_gb: number;
-  used_gb: number;
-  percent: number;
-}
+// Volume now lives in ../types/server — ServerDetail needs the shape and this file
+// imports ServerDetail as a value, so owning the type here formed an import cycle
+// (type-only, therefore erased, but one value-import away from being real). Re-exported
+// so nothing that already reaches for it from here breaks.
+export type { Volume } from "../types/server";
 
 interface Server {
   id: string;
@@ -112,21 +112,7 @@ function mergeLive(prev: Server | undefined, p: any): Server {
 
 // ─── Grafana design tokens (match Dashboard.tsx) ──────────────────────────────
 
-const gf = {
-  bg:          "var(--gf-bg)",
-  panel:       "var(--gf-panel)",
-  border:      "var(--gf-panel-border)",
-  divider:     "var(--gf-divider)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted:   "var(--gf-text-muted)",
-  textDim:     "var(--gf-text-dim)",
-  hover:       "var(--gf-hover)",
-} as const;
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
-const BLUE = "#5794F2";
 const TRACK = "rgba(127,127,127,0.18)";
 const BAR_GRADIENT = "linear-gradient(90deg,#73BF69 0%,#73BF69 55%,#FF780A 78%,#F2495C 95%)";
 
@@ -316,18 +302,6 @@ function StatusDot({ status }: { status: string }) {
 }
 
 // ─── Buttons ──────────────────────────────────────────────────────────────────
-
-function GhostButton({ children, onClick, danger }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void; danger?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      className="gf-btn text-[13px] font-medium px-2.5 py-1"
-      style={{ color: danger ? RED : gf.textMuted }}
-    >
-      {children}
-    </button>
-  );
-}
 
 // ─── ServerCard (mobile) ──────────────────────────────────────────────────────
 

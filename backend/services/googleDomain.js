@@ -7,7 +7,7 @@
 // Deliberately DEPENDENCY-FREE (no env, no mysql, no google-auth-library): it can
 // be imported and exercised without starting a database.
 //
-// ⚠️ If you ever change isAllowedDomain, keep it an EXACT match. Rewriting it as
+// If you ever change isAllowedDomain, keep it an EXACT match. Rewriting it as
 // `email.endsWith(domain)` looks equivalent and is not — it would admit
 // "attacker@notcspc.edu.ph", and nothing would appear to break.
 

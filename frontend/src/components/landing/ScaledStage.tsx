@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
  * would mean a second layout per scene, so instead they are laid out once at a
  * design width (a narrower one on phones, see useIsNarrow) and scaled.
  *
- * ⚠️ This component CLIPS (`overflow: hidden`). That is deliberate — a mock must
+ * This component CLIPS (`overflow: hidden`). That is deliberate — a mock must
  * never spill over the copy beside it — but it makes every measurement bug look
  * identical from the outside: content simply cut off. Three ways that happened,
  * all guarded below:

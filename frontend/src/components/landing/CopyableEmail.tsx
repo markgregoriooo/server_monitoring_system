@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from "react";
  * gets their composer as before; anyone without gets the address on their
  * clipboard and a visible "Copied" instead of silence.
  *
- * ⚠️ `navigator.clipboard` is a secure-context API and this dashboard is served
+ * `navigator.clipboard` is a secure-context API and this dashboard is served
  * over plain HTTP on the campus LAN, so it is simply absent in the deployment
  * that matters most. The `execCommand` path is not legacy cruft to be cleaned up
  * later — it is the one that will actually run on site. Same reasoning as the

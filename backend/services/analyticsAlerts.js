@@ -3,6 +3,7 @@ import db from "../config/mysql.js";
 import analyticsService from "./analyticsService.js";
 import notificationService from "./notificationService.js";
 import alertsService from "./alertsService.js";
+import { describeError } from "../utils/httpError.js";
 
 // ─── Predictive alerting ──────────────────────────────────────────────────────
 //
@@ -29,19 +30,22 @@ export const TYPE_UPS = "ups_battery_forecast";
 export const TYPE_LINK = "link_forecast";
 const FORECAST_TYPES = [TYPE_DISK, TYPE_UPS, TYPE_LINK];
 
-const num = (v, dflt) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : dflt);
+// Env-var parse that also REJECTS zero and negatives — an interval or a day-count
+// of 0 is a misconfiguration, not a value. Distinct from the other num() helpers:
+// see audits/naming-readability-report-2026-08-25.md — N-03.
+const positiveEnvNum = (v, dflt) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : dflt);
 
 // An ETA inside CRITICAL_DAYS needs action now; inside WARNING_DAYS needs planning.
 // Beyond that there is nothing to do yet, so nothing is raised.
-const CRITICAL_DAYS = num(process.env.ANALYTICS_ALERT_CRITICAL_DAYS, 7);
-const WARNING_DAYS = num(process.env.ANALYTICS_ALERT_WARNING_DAYS, 30);
-const COOLDOWN_MIN = num(process.env.ANALYTICS_ALERT_COOLDOWN_MIN, 1440); // 24h
+const CRITICAL_DAYS = positiveEnvNum(process.env.ANALYTICS_ALERT_CRITICAL_DAYS, 7);
+const WARNING_DAYS = positiveEnvNum(process.env.ANALYTICS_ALERT_WARNING_DAYS, 30);
+const COOLDOWN_MIN = positiveEnvNum(process.env.ANALYTICS_ALERT_COOLDOWN_MIN, 1440); // 24h
 
 // Lookback per forecast — the same windows the page defaults to (predictive-analytics.md
 // §16), since those are sized to each phenomenon's real timescale.
-const DISK_DAYS = num(process.env.ANALYTICS_ALERT_DISK_DAYS, 30);
-const LINK_DAYS = num(process.env.ANALYTICS_ALERT_LINK_DAYS, 90);
-const UPS_DAYS = num(process.env.ANALYTICS_ALERT_UPS_DAYS, 180);
+const DISK_DAYS = positiveEnvNum(process.env.ANALYTICS_ALERT_DISK_DAYS, 30);
+const LINK_DAYS = positiveEnvNum(process.env.ANALYTICS_ALERT_LINK_DAYS, 90);
+const UPS_DAYS = positiveEnvNum(process.env.ANALYTICS_ALERT_UPS_DAYS, 180);
 
 const severityForEta = (etaDays) => {
   if (etaDays == null) return null;
@@ -170,10 +174,10 @@ async function checkLinkForecasts() {
 // De-dup is therefore by FRESHNESS rather than by the open-alert cooldown: only anomalies
 // newer than the last pass are considered, so a given spike is announced exactly once.
 const ANOMALY_ENABLED = String(process.env.ANALYTICS_ANOMALY_ALERTS ?? "true").toLowerCase() !== "false";
-const ANOMALY_DAYS = num(process.env.ANALYTICS_ANOMALY_DAYS, 14);
+const ANOMALY_DAYS = positiveEnvNum(process.env.ANALYTICS_ANOMALY_DAYS, 14);
 // Freshness window, with a margin so an anomaly landing near a pass boundary is not lost
 // between two runs.
-const FRESH_MS = num(process.env.ANALYTICS_ALERT_INTERVAL_H, 6) * 3_600_000 * 1.1;
+const FRESH_MS = positiveEnvNum(process.env.ANALYTICS_ALERT_INTERVAL_H, 6) * 3_600_000 * 1.1;
 
 const SERVER_ANOMALY_METRICS = ["cpu", "mem", "disk"];
 const ROUTER_ANOMALY_METRICS = ["router_cpu", "router_mem", "router_clients"];
@@ -214,7 +218,7 @@ async function checkAnomalies() {
         metric: t.metric, deviceId: t.deviceId, lookbackDays: ANOMALY_DAYS,
       });
     } catch (err) {
-      console.error(`[analytics-alerts] anomaly scan failed (${t.metric}):`, err.message);
+      console.error(`[analytics-alerts] anomaly scan failed (${t.metric}):`, describeError(err));
       continue;
     }
     if (!result || result.status !== "ok" || !result.anomalies.length) continue;

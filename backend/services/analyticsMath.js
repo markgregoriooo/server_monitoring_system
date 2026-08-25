@@ -197,7 +197,7 @@ export function ewma(values, alpha = 0.3) {
 // Holt's linear method (double exponential smoothing): tracks a level + a trend — the
 // NON-seasonal case of Holt-Winters. forecast(h) extrapolates h steps past the last point.
 //
-// ⚠️ USE THIS ONLY FOR HORIZONS SHORTER THAN THE DATA'S CYCLE. It extrapolates the slope
+// USE THIS ONLY FOR HORIZONS SHORTER THAN THE DATA'S CYCLE. It extrapolates the slope
 // it currently sees, forever, in a straight line. On a server room's temperature — which
 // is dominated by a 24 h cycle — a 12 h projection made at 11 PM catches the evening's
 // falling limb and runs it straight through dawn into midday, forecasting the coolest

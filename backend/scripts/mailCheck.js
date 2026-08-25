@@ -36,7 +36,7 @@ if (!recipient) {
 
 const override = (process.env.NOTIFY_EMAIL_TO || "").trim();
 if (override && override !== recipient) {
-  console.log(`\n⚠ NOTIFY_EMAIL_TO is set — this will be delivered to ${override}, NOT ${recipient}.`);
+  console.log(`\n NOTIFY_EMAIL_TO is set — this will be delivered to ${override}, NOT ${recipient}.`);
 }
 
 console.log(`\nSending test alert to ${recipient} …`);

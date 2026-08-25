@@ -15,7 +15,7 @@ import {
 // The format + usability rules live in installKeyUtils.js (pure, tested). This file
 // is the MySQL side: mint, list, revoke, and the enrollment-path lookup.
 //
-// ⚠️ An install key authorises ENROLLMENT ONLY. Revoking one must never touch
+// An install key authorises ENROLLMENT ONLY. Revoking one must never touch
 // agent_tokens — the servers it enrolled keep reporting on their own approved_token.
 // See migrations/2026-08-15_agent_install_keys.sql for the full reasoning.
 
@@ -140,7 +140,7 @@ function toClient(r, now = new Date()) {
 // `enrolled_count` is DERIVED, never stored. It is the live answer to "how many servers
 // is this key holding up right now", counted from agent_tokens on every read.
 //
-// ⚠️ Do NOT serve this column from `use_count`. That is a monotonic tally bumped by
+// Do NOT serve this column from `use_count`. That is a monotonic tally bumped by
 // noteUsed() at each enrollment and nothing ever decrements it, so removing a server left
 // the dashboard claiming a key still had enrolments that no longer existed. Deleting a
 // server drops its `devices` row and agent_tokens CASCADEs with it (fk_agent_tokens_devices1),
@@ -262,7 +262,7 @@ export async function enrolledServers(id) {
  * exits (see agent/cmd/agent/main.go). This is the branch model — one key per office,
  * revoke the key and that office's servers stop reporting.
  *
- * ⚠️ It is a SEPARATE, opt-in flag rather than an automatic consequence. Both meanings
+ * It is a SEPARATE, opt-in flag rather than an automatic consequence. Both meanings
  * are legitimate — "stop issuing this key" and "de-authorise everything it let in" — and
  * they differ by a whole fleet's worth of monitoring. Making it automatic would mean an
  * admin can never tidy up an old rollout key without taking servers dark, so in practice
@@ -327,7 +327,7 @@ export async function revoke(id, userId = null, { revokeAgents = false } = {}) {
  * Returns { key, label } or null when there is no such key; { unavailable: true } when
  * the row predates key_cipher or no encryption key is configured.
  *
- * ⚠️ The ONLY path that ever returns a key after creation. It is admin-gated and the
+ * The ONLY path that ever returns a key after creation. It is admin-gated and the
  * route audits every call — reading a credential back is precisely the kind of action an
  * audit trail exists for, and it is the difference between "the key is recoverable" and
  * "the key is recoverable and nobody knows who looked".
@@ -371,7 +371,7 @@ export async function reveal(id) {
  * ones enrolled before install keys existed. They can be re-filed under another key by
  * re-running the installer with `-ReEnroll`.
  *
- * ⚠️ This is the one operation that loses history — "this key existed, enrolled 4
+ * This is the one operation that loses history — "this key existed, enrolled 4
  * servers, was revoked by X" goes with the row. The audit entry in `system_logs` is what
  * survives, which is why the route writes one.
  *

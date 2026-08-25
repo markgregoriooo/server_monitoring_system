@@ -9,7 +9,7 @@ import { useState, useEffect, useRef } from "react";
 // (see CLAUDE.md "Page Style Status"): most pages use the Grafana `--gf-*` tokens, while
 // ServerDetail is `slate-*` + `dark:` overrides.
 //
-// ⚠️ EVERY consumer now uses the default `slate`, including the Grafana pages, so `gf` is
+// EVERY consumer now uses the default `slate`, including the Grafana pages, so `gf` is
 // currently unreferenced. That is deliberate and specifically about the POPOVER: the `gf`
 // popover paints `--gf-panel` — the same colour as the panel behind it — with a
 // rgba(255,255,255,0.07) border, so it barely separated from the page it floated over. The

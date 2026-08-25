@@ -1,10 +1,11 @@
 import { queryClient, bucket } from "../config/influx.js";
+import { describeError } from "../utils/httpError.js";
 
 const VALID_QUICK_RANGES = new Set([
   "-30m", "-1h", "-3h", "-6h", "-12h", "-24h", "-2d", "-7d", "-30d",
 ]);
 
-// ⚠️ No window may be SMALLER than the store cadence in services/envPersistPolicy.js
+// No window may be SMALLER than the store cadence in services/envPersistPolicy.js
 // (ENV_PERSIST_INTERVAL_MS, 30s default). A stable room now yields one point per 30s, so a
 // 10s or 20s window would mostly contain nothing, and `createEmpty: false` drops empty
 // windows — the chart would come back with two thirds of its points missing. -30m and -1h
@@ -102,7 +103,7 @@ export function sendSensorHistory(socket, range = "-1h") {
       });
     },
     error(error) {
-      console.error("[HISTORY] Numeric query error:", error.message);
+      console.error("[HISTORY] Numeric query error:", describeError(error));
     },
     complete() {
       queryClient.queryRows(tagQuery, {
@@ -116,7 +117,7 @@ export function sendSensorHistory(socket, range = "-1h") {
           }
         },
         error(error) {
-          console.error("[HISTORY] Tag query error:", error.message);
+          console.error("[HISTORY] Tag query error:", describeError(error));
         },
         complete() {
           // Belt and braces on the Flux `sort` above: this array's order is really the

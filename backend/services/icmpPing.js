@@ -7,7 +7,7 @@ import { pingArgs, parsePingOutput, pingDeadlineMs } from "./pingOutput.js";
 // The design doc (router-ups-monitoring.md §4) calls ICMP "the universal fallback"
 // and "the one metric a no-SNMP router still gives". This is that module. It fills
 // the three `router_metrics` fields the SNMP collector has always returned as null:
-// `reachable`, `latency_ms`, `packet_loss_pct` — which networkMetricsHandler has
+// `reachable`, `latency_ms`, `packet_loss_pct` — which writeNetworkMetrics has
 // been ready to write since it was first built.
 //
 // Two callers, two different jobs:

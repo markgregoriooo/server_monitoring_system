@@ -46,6 +46,6 @@ doc.image(path.join(BRANDING, "cspc-logo.png"), 40, 36, { height: 44 });
 doc.image(path.join(BRANDING, "ictu-logo.jpg"), 92, 36, { height: 44 });
 ```
 
-⚠️ `doc.image()` **throws** if the file is missing, and `build()` in reportService is
+`doc.image()` **throws** if the file is missing, and `build()` in reportService is
 fire-and-forget — a throw there flips the report to `failed` with no obvious cause. Guard
 with `fs.existsSync()` if the logo is ever optional.

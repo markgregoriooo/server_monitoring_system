@@ -17,6 +17,9 @@ import { useRoomThresholds } from "../hooks/useRoomThresholds";
 import {
   gasColor, gasLabel, temperatureColor, temperatureLabel, alertTint, withAlpha,
 } from "../utils/envThresholds";
+import { GF as gf, STATUS } from "../theme/gf";
+import { usePersistedState, usePersistedFocus } from "../hooks/usePersistedState";
+const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
 Chart.register(...registerables);
 
@@ -156,22 +159,7 @@ interface Aircon {
 
 // ─── Grafana design tokens ──────────────────────────────────────────────────────
 
-const gf = {
-  bg:          "var(--gf-bg)",
-  panel:       "var(--gf-panel)",
-  border:      "var(--gf-panel-border)",
-  divider:     "var(--gf-divider)",
-  header:      "var(--gf-header)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted:   "var(--gf-text-muted)",
-  textDim:     "var(--gf-text-dim)",
-  accent:      "#5794F2",
-  hover:       "var(--gf-hover)",
-} as const;
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
 // Environment series palette — deliberately the SAME hexes as pages/Environment.tsx, so a
 // series means the same thing on both pages. Reading one chart should not require
 // re-learning the colours on the other.
@@ -184,7 +172,7 @@ const RED = "#F2495C";
 // within the rules and switches to orange/red when it is not (`alertTint`), because it
 // shares this chart with temperature and two green lines would be unreadable. The
 // humidity TILE has no such neighbour and goes full green/orange/red.
-// ⚠️ ENV_HUM is a near neighbour of the TOO COLD blue (#5794F2), so on an over-cooled room
+// ENV_HUM is a near neighbour of the TOO COLD blue (#5794F2), so on an over-cooled room
 // the two lines are told apart by the legend labels rather than by hue.
 const ENV_TEMP = "#F59E0B";
 const ENV_HUM  = "#38BDF8";
@@ -324,7 +312,7 @@ function Panel({
       <div
         className="min-h-0"
         style={{
-          // ⚠️ A body with an explicit height must NOT also be `flex: 1 1 0%`. This div
+          // A body with an explicit height must NOT also be `flex: 1 1 0%`. This div
           // used to carry Tailwind's `flex-1`, and in a COLUMN flex container flex-basis:0
           // wins over height — so `bodyStyle.height` was silently ignored and the panel
           // sized to its CONTENT instead. A chart hid it (it fills whatever it is given),
@@ -482,6 +470,20 @@ function StatPanel({
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
+
+// One namespace for everything the Dashboard remembers, so a stale key is easy to spot
+// in devtools and easy to clear.
+const FOCUS_KEY = "cspc_dashboard_focus";
+
+/** A stored range must still be a shape RangePicker understands — an old preset that has
+ *  since been removed would otherwise be handed straight to the history endpoint. */
+function isRangeValue(v: unknown): boolean {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as { kind?: unknown; preset?: unknown; start?: unknown; stop?: unknown };
+  if (r.kind === "preset") return typeof r.preset === "string";
+  if (r.kind === "custom") return typeof r.start === "string" && typeof r.stop === "string";
+  return false;
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -747,22 +749,19 @@ export default function Dashboard() {
 
   // Which server the focus panel is charting, and over what window. Kept here rather
   // than inside ServerFocus so the table's selected-row highlight and the panel agree.
-  const [focusId, setFocusId] = useState<number | null>(null);
-  const [focusRange, setFocusRange] = useState<RangeValue>(DEFAULT_RANGE);
+  // Remembered across reloads. Refreshing used to drop the user back onto whichever
+  // device happened to be first in the list, silently discarding the one they had chosen
+  // to watch — on a monitoring wall that reads as the dashboard changing its mind.
+  // usePersistedFocus still falls back to the first device when the remembered one is
+  // gone, so a decommissioned server never leaves an empty panel.
+  const [focusId, setFocusId] = usePersistedFocus(`${FOCUS_KEY}.server`, servers);
+  const [focusRange, setFocusRange] = usePersistedState<RangeValue>(
+    `${FOCUS_KEY}.range`,
+    DEFAULT_RANGE,
+    isRangeValue,
+  );
 
-  // Land on a server without a click, and never keep pointing at one that has been
-  // removed — a stale id would leave the panel empty with no clue why.
-  useEffect(() => {
-    if (!servers.length) {
-      if (focusId !== null) setFocusId(null);
-      return;
-    }
-    if (focusId === null || !servers.some((s) => s.id === focusId)) {
-      setFocusId(servers[0]!.id);
-    }
-  }, [servers, focusId]);
-
-  const focusServer = servers.find((s) => s.id === focusId) ?? null;
+  const focusServer = servers.find((s) => String(s.id) === focusId) ?? null;
 
   // The network and UPS panels follow the same select-then-chart pattern. One range is
   // shared by all three: an incident is read ACROSS them — a CPU spike, the traffic that
@@ -775,25 +774,11 @@ export default function Dashboard() {
   const routers = netDevices.filter((d) => d.type !== "mikrotik");
   const mikrotiks = netDevices.filter((d) => d.type === "mikrotik");
 
-  const [routerFocusId, setRouterFocusId] = useState<string | null>(null);
-  const [mtFocusId, setMtFocusId] = useState<string | null>(null);
-  const [upsFocusId, setUpsFocusId] = useState<string | null>(null);
-
-  // Land on a device without a click, and never keep pointing at one that has been
-  // removed — a stale id leaves the chart empty with no clue why.
-  const useAutoPick = (
-    list: { id: number | string }[],
-    id: string | null,
-    set: (v: string | null) => void,
-  ) => {
-    useEffect(() => {
-      if (!list.length) { if (id !== null) set(null); return; }
-      if (id === null || !list.some((d) => String(d.id) === id)) set(String(list[0]!.id));
-    }, [list, id, set]);
-  };
-  useAutoPick(routers, routerFocusId, setRouterFocusId);
-  useAutoPick(mikrotiks, mtFocusId, setMtFocusId);
-  useAutoPick(upsDevices, upsFocusId, setUpsFocusId);
+  // Same treatment as the server panel: remembered across reloads, and still falls back
+  // to the first device when the remembered one no longer exists.
+  const [routerFocusId, setRouterFocusId] = usePersistedFocus(`${FOCUS_KEY}.router`, routers);
+  const [mtFocusId, setMtFocusId] = usePersistedFocus(`${FOCUS_KEY}.mikrotik`, mikrotiks);
+  const [upsFocusId, setUpsFocusId] = usePersistedFocus(`${FOCUS_KEY}.ups`, upsDevices);
 
   // The environment chart follows the shared range too, so the whole page is showing one
   // period. Previously it was pinned to "-1h" while every other chart moved, which is the
@@ -1096,7 +1081,9 @@ export default function Dashboard() {
           </span>
           <span
             className="text-[11px] px-1.5 py-0.5 rounded-[2px] tracking-widest uppercase"
-            style={{ color: gf.accent, background: "rgba(87,148,242,0.12)" }}
+            // accentText, not accent: --gf-accent is 2.76:1 on the LIGHT page background,
+            // below WCAG AA for text. accentDim is the same rgba, minus the hardcoding.
+            style={{ color: gf.accentText, background: gf.accentDim }}
           >
             CSPC · ICTU
           </span>
@@ -1265,7 +1252,7 @@ export default function Dashboard() {
                 type="button"
                 onClick={() => navigate("/alerts")}
                 className="text-[11px] tracking-wide"
-                style={{ color: gf.accent }}
+                style={{ color: gf.accentText }}
               >
                 View all →
               </button>
@@ -1346,8 +1333,8 @@ export default function Dashboard() {
             <>
               <DevicePicker
                 devices={servers}
-                value={focusId == null ? null : String(focusId)}
-                onChange={(id) => setFocusId(Number(id))}
+                value={focusId}
+                onChange={(id) => setFocusId(id)}
                 label="Server"
               />
               <ServerFocus server={focusServer} range={focusRange} isDark={isDark} />

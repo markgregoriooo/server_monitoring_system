@@ -1,5 +1,5 @@
 import express from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import { agentAuthMiddleware } from "../middleware/agentAuth.js";
 import {
@@ -54,8 +54,16 @@ const metricsAgentLimiter = rateLimit({
   // Runs after agentAuthMiddleware, so req.device is set. It cannot be absent here —
   // an unauthenticated request never reaches this middleware — but fall back to the IP
   // rather than to a single shared `undefined` bucket if the order is ever changed.
+  // The IP fallback goes through ipKeyGenerator, never raw req.ip. A raw IPv6 address
+  // is one address out of a /64 the same host owns, so an attacker could rotate through
+  // them for unlimited budget — the exact hazard CLAUDE.md documents for the global
+  // limiter. express-rate-limit detects the raw form and warned about it at every boot
+  // (ERR_ERL_KEY_GEN_IPV6). Unreachable in practice (agentAuthMiddleware runs first), but
+  // an unreachable branch is exactly where this kind of thing survives a refactor.
   keyGenerator: (req) =>
-    req.device?.device_id != null ? `agent:${req.device.device_id}` : `ip:${req.ip}`,
+    req.device?.device_id != null
+      ? `agent:${req.device.device_id}`
+      : `ip:${ipKeyGenerator(req.ip, 56)}`,
   handler: (req, res) => {
     console.warn(
       `[RATE] 429 agent ingest device=${req.device?.device_id} — over ${AGENT_DEVICE_MAX}/15min. ` +

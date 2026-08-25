@@ -3,7 +3,7 @@ import rateLimit from "express-rate-limit";
 import authService from "../services/authService.js";
 import googleAuthService from "../services/googleAuthService.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { isClientSafe } from "../utils/httpErrors.js";
+import { isClientSafe } from "../utils/httpError.js";
 
 const router = express.Router();
 
@@ -74,7 +74,7 @@ router.post("/google", googleLimiter, async (req, res) => {
     // not be dressed up as "sign-in failed": that sends people hunting through
     // their account settings during an outage (which is exactly what happened).
     // It also stops raw driver output ("connect ECONNREFUSED 127.0.0.1:3306")
-    // reaching the browser. See utils/httpErrors.js.
+    // reaching the browser. See utils/httpError.js.
     if (isClientSafe(error)) {
       return res.status(error.status).json({ error: error.message });
     }

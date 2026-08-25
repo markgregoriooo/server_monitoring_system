@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { animate, svg, stagger } from "animejs";
 import { useInView, prefersReducedMotion, EASE } from "./motion";
+import { STATUS } from "../../theme/gf";
+const { green: GREEN } = STATUS;
 
 /**
  * The architecture, as a diagram data actually moves through.
@@ -21,7 +23,6 @@ import { useInView, prefersReducedMotion, EASE } from "./motion";
  */
 
 const ACCENT = "#5794F2";
-const GREEN = "#73BF69";
 
 const VB_W = 940;
 const VB_H = 250;
@@ -36,7 +37,7 @@ interface Box {
   tone?: string;
 }
 
-// ⚠️ The three source boxes share a width on purpose — a column of boxes that are
+// The three source boxes share a width on purpose — a column of boxes that are
 // nearly-but-not-quite the same size reads as a mistake. It is 152 rather than 130
 // because the Pollers label now names three protocols: at 10.5px monospace,
 // "SNMP · RouterOS · ICMP" is ~139px and spilled out of the old 130px box. Widening the

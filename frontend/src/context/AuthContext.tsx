@@ -136,7 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // away for a coffee, reads as a crash. The user gets a notice they have to
   // acknowledge instead.
   //
-  // ⚠️ The session is destroyed HERE, not when OK is clicked. Token gone, socket
+  // The session is destroyed HERE, not when OK is clicked. Token gone, socket
   // closed, storage cleared — all of it, immediately, at the 15-minute mark. The
   // modal is only an explanation, and it must never be the thing keeping a session
   // alive, or an idle timeout could be defeated by simply never clicking OK. `user`
@@ -178,7 +178,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // rejects one of our requests. Act only if we still hold a token, so a stray event
   // after logout is a no-op. The login page shows a notice via the flag.
   //
-  // ⚠️ A single rejected request is NOT proof the session is dead, and treating it as
+  // A single rejected request is NOT proof the session is dead, and treating it as
   // proof is what made this destructive. Any one response can be rejected for reasons
   // that have nothing to do with the session still being valid — it was sent under a
   // token that has since been replaced by the sliding renewal, it raced a reconnect,
@@ -234,6 +234,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     socket.on("sessionRevoked", onRevoked);
     return () => {
       socket.off("sessionRevoked", onRevoked);
+    };
+  }, [endSession]);
+
+  // A REJECTED handshake had no listener at all.
+  //
+  // src/server.js's io.use() rejects with next(new Error("Unauthorized")) or
+  // next(new Error("Session is no longer valid")) — both arrive here as connect_error.
+  // With nobody listening, Socket.IO retried forever in silence: HTTP kept working, so
+  // the dashboard looked fine while every live panel quietly stopped updating. On a
+  // monitoring wall that is indistinguishable from "nothing is happening".
+  //
+  // An auth rejection gets the same treatment as sessionRevoked. Anything else (backend
+  // down, network drop) is left alone deliberately — Socket.IO's own reconnection
+  // handles it, and signing someone out because the LAN blipped would be worse.
+  // See audits/error-handling-report-2026-08-25.md — E-06.
+  useEffect(() => {
+    const AUTH_REJECTIONS = ["Unauthorized", "Session is no longer valid"];
+    const onConnectError = (err: Error) => {
+      const msg = err?.message ?? String(err);
+      if (AUTH_REJECTIONS.includes(msg)) {
+        if (!sessionStorage.getItem("cspc_user")) return;
+        endSession("socket handshake rejected", msg);
+        return;
+      }
+      // Transport-level: log once per failure so a silently dead feed is at least
+      // diagnosable from the console, but do not touch the session.
+      console.warn("[socket] connect_error —", msg);
+    };
+    socket.on("connect_error", onConnectError);
+    return () => {
+      socket.off("connect_error", onConnectError);
     };
   }, [endSession]);
 

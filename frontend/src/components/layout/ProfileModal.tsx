@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { api } from "../../api/api";
 import { initials, avatarUrl } from "../../utils/format";
+import { STATUS } from "../../theme/gf";
+const { red: RED } = STATUS;
 
 // Login is Google-only, and googleAuthService re-syncs name + photo (and the email,
 // on a Google-side rename) from the ID token on EVERY sign-in. Editing those here
@@ -19,7 +21,6 @@ interface ProfileModalProps {
   onSaved?: (msg: string) => void;
 }
 
-const RED = "#F2495C";
 
 const inputCls =
   "w-full px-3 py-2.5 rounded-[2px] text-sm font-mono outline-none transition " +

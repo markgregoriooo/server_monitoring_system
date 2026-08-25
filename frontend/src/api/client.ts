@@ -231,10 +231,15 @@ apiClient.interceptors.response.use(
     const url: string = error?.config?.url ?? "";
     const isAuthEndpoint = url.includes("/auth/google") || url.includes("/auth/logout");
 
-    const isAuthFailure =
-      (status === 401 ||
-        (status === 403 && serverError === "Invalid or expired token.")) &&
-      !isAuthEndpoint;
+    // 401 only. Every authentication failure the backend produces is a 401:
+    // no token, malformed token, expired token, and a session revoked elsewhere.
+    // This used to carry `|| (status === 403 && serverError === "Invalid or expired
+    // token.")` because middleware/auth.js answered an expired JWT with 403 — which
+    // coupled these two files by a literal message string, in different packages, with
+    // nothing checking they agreed. Rewording that message would have silently stopped
+    // expiry logouts. The backend now returns 401 and the special case is gone.
+    // A 403 means "you are signed in but may not do this" and must NOT end the session.
+    const isAuthFailure = status === 401 && !isAuthEndpoint;
 
     // A response can outlive the session that produced it, and an auth failure
     // belonging to a DEAD session must never log out the LIVE one.

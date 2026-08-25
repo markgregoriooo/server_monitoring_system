@@ -212,7 +212,7 @@ const char* deviceSecret = DEVICE_SECRET;
  *   • none stored → calibrateRo() measures one after a settle period, and SAVES it
  *   • moved location → trigger the "calibrateGas" socket event; no reflash needed
  *
- * ⚠️ Deliberately NOT recalibrated on every boot. Ro means "clean air" — if the ESP32
+ * Deliberately NOT recalibrated on every boot. Ro means "clean air" — if the ESP32
  * rebooted during a gas event (brownout, power blip) it would record polluted air as
  * the baseline and then under-report smoke permanently. Stored once, reused after that.
  * ---------------------------------------------------------------------------- */
@@ -453,7 +453,7 @@ const uint16_t IR_22C_HIGH[] = {
 // structural invariant every verified frame obeys (bits 61-63 are the exact complement of
 // bits 53-55). Nothing here looks like contamination.
 //
-// ⚠️ What the data CANNOT confirm is that this is the right BUTTON. Bits 53-55 differ
+// What the data CANNOT confirm is that this is the right BUTTON. Bits 53-55 differ
 // between this frame (010) and 22C_HIGH (000); if that field were purely fan speed the
 // two High-fan frames would agree. It may not be fan (POWER ON/OFF carry 001 there and
 // have no fan meaning, and no checksum scheme fits all six frames), but the only

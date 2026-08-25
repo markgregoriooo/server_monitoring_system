@@ -40,12 +40,9 @@ export function fmtTime(iso: string, spanSec: number) {
  * Math.max clamps a counter reset — an agent restart or host reboot — to 0 rather than
  * graphing a large negative spike.
  */
-export function rateMBs(curr: number | null, prev: number | null, currT: string, prevT: string) {
-  if (curr == null || prev == null) return 0;
-  const dt = (new Date(currT).getTime() - new Date(prevT).getTime()) / 1000;
-  if (dt <= 0) return 0;
-  return +(Math.max(0, curr - prev) / dt / 1024 / 1024).toFixed(2);
-}
+// rateMBs now lives in utils/format — ServerDetail had a byte-identical copy.
+// Re-exported so the dashboard focus panels keep importing it from here.
+export { rateMBs } from "../../utils/format";
 
 /** Green / orange / red for a 0-100 utilisation figure. Matches the Dashboard's table. */
 export function loadColor(v: number) {

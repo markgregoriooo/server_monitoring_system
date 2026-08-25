@@ -1,6 +1,7 @@
 import express from "express";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import airconService from "../services/airconService.js";
+import { describeError } from "../utils/httpError.js";
 
 const router = express.Router();
 
@@ -43,7 +44,7 @@ async function pushACConfig(io) {
   try {
     io.to("devices").emit("acConfig", await airconService.getDeviceIRConfig());
   } catch (err) {
-    console.error("[acConfig push error]", err.message);
+    console.error("[acConfig push error]", describeError(err));
   }
 }
 

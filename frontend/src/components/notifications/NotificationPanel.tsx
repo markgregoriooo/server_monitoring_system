@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useNotifications } from "../../context/NotificationContext";
-import type { AppNotification } from "../../context/NotificationContext";
+import type { AppNotification } from "../../types/notification";
 import { SEVERITY_COLOR, routeFor, relativeTime } from "./notificationUtils";
 import { desktopPermission, requestDesktopPermission } from "../../utils/browserNotify";
 import { isSoundEnabled, setSoundEnabled } from "../../utils/notificationSound";

@@ -2,8 +2,9 @@ import "../config/env.js";
 import { OAuth2Client } from "google-auth-library";
 import userService from "./userService.js";
 import authService from "./authService.js";
-import { AuthRejection, ServiceUnavailable, isTransportError } from "../utils/httpErrors.js";
+import { AuthRejection, ServiceUnavailable, isTransportError } from "../utils/httpError.js";
 import { parseAllowedDomains, isAllowedDomain } from "./googleDomain.js";
+import { describeError } from "../utils/httpError.js";
 
 // ─── Google "Sign in with Google" (OAuth 2.0 / OpenID Connect) ────────────────
 // The frontend (custom "CSPC Mail" button) runs the OAuth 2.0 AUTHORIZATION CODE
@@ -57,7 +58,7 @@ async function recordDenial(reason, { email = null, userId = null, ip = null, us
 // can act on: a missing/invalid code, wrong audience, unverified email, non-CSPC
 // domain. Everything else — Google unreachable, missing credentials, a database
 // failure from the calls below — throws ServiceUnavailable or propagates unmarked,
-// so the route answers 503 instead of blaming the user's account. See utils/httpErrors.js.
+// so the route answers 503 instead of blaming the user's account. See utils/httpError.js.
 async function authenticate(code, { ip = null, userAgent = null } = {}) {
   if (!CLIENT_ID || !CLIENT_SECRET) {
     // A deployment mistake, not a sign-in problem. 401 here used to send admins
@@ -84,7 +85,7 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
     // Google (DNS, no route, timeout) that is OUR outage — telling the user their
     // sign-in couldn't be verified would be a lie that hides a network problem.
     if (isTransportError(err)) {
-      console.error("[AUTH] cannot reach Google to verify sign-in:", err.message);
+      console.error("[AUTH] cannot reach Google to verify sign-in:", describeError(err));
       throw new ServiceUnavailable(
         "Could not reach Google to verify your sign-in. Check the server's internet connection.",
       );

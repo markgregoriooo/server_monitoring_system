@@ -1,4 +1,5 @@
 import db from "../config/mysql.js";
+import { loadInterfaceLabels } from "./interfaceLabels.js";
 import client, {
   SYS_OID,
   IF_OID,
@@ -13,8 +14,9 @@ import icmpPing from "./icmpPing.js";
 import agentService from "./agentService.js";
 import deviceAlerts from "./deviceAlerts.js";
 import alertBandState from "./alertBandState.js";
-import { writeNetworkSample } from "../handlers/networkMetricsHandler.js";
-import { writeUpsSample } from "../handlers/upsMetricsHandler.js";
+import { writeNetworkSample } from "./writeNetworkMetrics.js";
+import { writeUpsSample } from "./writeUpsMetrics.js";
+import { logDevice } from "./deviceLogs.js";
 import {
   badRequest,
   numOrNull,
@@ -26,6 +28,7 @@ import {
   computeUtilizationPct,
   counterDelta,
 } from "./snmpUtils.js";
+import { describeError } from "../utils/httpError.js";
 
 // ─── SNMP poller: routers (IF-MIB) + UPS (UPS-MIB), pull-based ─────────────────
 //
@@ -255,16 +258,6 @@ async function loadDevices() {
     .map((r) => ({ ...r, pingOnly: r.type === "router" && !r.community }));
 }
 
-async function loadInterfaceLabels(deviceId) {
-  const [rows] = await db.query(
-    `SELECT interface_name, location_label FROM network_interfaces WHERE device_id = ?`,
-    [deviceId],
-  );
-  const m = {};
-  for (const r of rows) m[r.interface_name] = r.location_label ?? "";
-  return m;
-}
-
 // Record the interfaces this poll discovered. Nothing used to write this table, so
 // `location_label` could never be set for a dashboard-registered router — the admin
 // had no list of port names to label in the first place. Now each poll upserts what
@@ -363,13 +356,13 @@ async function setReachable(io, d, online) {
   try {
     await db.query(`UPDATE devices SET status = ?, updated_at = NOW() WHERE device_id = ?`, [newStatus, d.id]);
   } catch (err) {
-    console.error("[SNMP_POLLER] status update error:", err.message);
+    console.error("[SNMP_POLLER] status update error:", describeError(err));
   }
   // Name the protocol that actually fell silent. "no SNMP response" on a ping-only
   // router describes a poll that was never attempted, and sends whoever reads the log
   // off to check a community string the device does not have.
   const silent = d.pingOnly ? "no ICMP reply" : "no SNMP response";
-  const log = await agentService.logDevice(
+  const log = await logDevice(
     d.id,
     online ? "info" : "warning",
     online ? `${typeLabel(d)} reachable` : `${typeLabel(d)} unreachable — ${silent}`,
@@ -551,12 +544,12 @@ async function pollAll(io) {
         // firewalled), "Unknown community" (wrong credential) and a genuine bug in
         // the collector all previously looked identical from outside — every one just
         // showed up as a device silently sitting Offline with no way to tell which.
-        console.error(`[SNMP_POLLER] ${d.type} "${d.name}" (${d.ip}) poll failed:`, err.message);
+        console.error(`[SNMP_POLLER] ${d.type} "${d.name}" (${d.ip}) poll failed:`, describeError(err));
         await setReachable(io, d, false);
       }
     }
   } catch (err) {
-    console.error("[SNMP_POLLER] load error:", err.message);
+    console.error("[SNMP_POLLER] load error:", describeError(err));
   } finally {
     polling = false;
   }
@@ -750,7 +743,7 @@ async function addNetworkDevice(input) {
       [deviceId, networkSegment(ip), snmpPort, community],
     );
     await conn.commit();
-    await agentService.logDevice(
+    await logDevice(
       deviceId,
       "info",
       community
@@ -816,7 +809,7 @@ async function addUpsDevice(input) {
       [deviceId, brand, model, batteryCapacity, commType, serialNumber],
     );
     await conn.commit();
-    await agentService.logDevice(deviceId, "info", "UPS registered for SNMP monitoring");
+    await logDevice(deviceId, "info", "UPS registered for SNMP monitoring");
     return {
       id: deviceId,
       name,

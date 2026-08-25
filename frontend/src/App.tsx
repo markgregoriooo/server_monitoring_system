@@ -38,6 +38,7 @@ import UserManagement from "./pages/UserManagement";
 import AlertRules from "./pages/AlertRules";
 import Alerts from "./pages/Alerts";
 import Analytics from "./pages/Analytics";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 const pageTitles: Record<string, string> = {
   "/": "Server Infrastructure Monitoring System",
@@ -158,6 +159,11 @@ function AppShell() {
         />
 
         <main className="flex-1 overflow-y-auto">
+          {/* Keyed on the path so navigating away CLEARS a caught error — otherwise the
+              boundary keeps showing the failed page after the user has moved on. Placed
+              inside <main> on purpose: the sidebar and header stay usable, so a broken
+              page is something you can navigate out of rather than a dead tab. */}
+          <ErrorBoundary key={location.pathname} label={location.pathname}>
           <Routes>
             <Route path="/" element={
               <ProtectedRoute>
@@ -247,6 +253,7 @@ function AppShell() {
             <Route path="*" element={<Navigate to="/" />} />
 
           </Routes>
+          </ErrorBoundary>
         </main>
       </div>
 

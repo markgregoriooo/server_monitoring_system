@@ -110,8 +110,38 @@ const handleChangeRange = (socket, range) => {
   // this once on mount and once per range change, so answering every time is cheap.
   socket.lastRange = range;
   console.log("Range changed:", range);
-  sendSensorHistory(socket, range);
+  try {
+    sendSensorHistory(socket, range);
+  } catch (err) {
+    console.error("[socket:changeRange] handler threw —", err?.stack ?? err);
+  }
 };
 
-const handleSensorData   = (socket, data) => sensorHandler(socket, data);
-const handleOfflineData  = (socket, data) => offlineDataHandler(socket, data);
+// ─── Async socket handlers must not be able to kill the process ───────────────
+//
+// Socket.IO does not await a handler and has nowhere to send a rejection, so an async
+// handler invoked fire-and-forget leaks an unhandled rejection — and Node 22 terminates
+// the process on one (verified: exit code 1). `sensorData` arrives every ~3 s from the
+// ESP32, so a single transient DB or InfluxDB blip inside it would have taken the whole
+// backend down, stopping every alarm in the system.
+//
+// src/server.js now has a process-level net that logs and exits deliberately. This is
+// the layer that stops it getting that far: one bad reading is logged and dropped, and
+// the next one three seconds later is handled normally. Losing one sample is the correct
+// trade for a telemetry stream; losing the backend is not.
+//
+// See audits/error-handling-report-2026-08-25.md — E-03.
+const guard = (name, fn) => (socket, payload) => {
+  try {
+    const r = fn(socket, payload);
+    if (r && typeof r.then === "function") {
+      r.catch((err) => console.error(`[socket:${name}] handler rejected —`, err?.stack ?? err));
+    }
+  } catch (err) {
+    // A synchronous throw before the first await lands here, not in the .catch above.
+    console.error(`[socket:${name}] handler threw —`, err?.stack ?? err);
+  }
+};
+
+const handleSensorData   = guard("sensorData", (socket, data) => sensorHandler(socket, data));
+const handleOfflineData  = guard("offlineData", (socket, data) => offlineDataHandler(socket, data));

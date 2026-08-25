@@ -23,7 +23,7 @@
  *  that with a bare `new Date(...)` adopts the BACKEND's timezone instead, so the same
  *  card replayed on a UTC machine would land every row 8 hours early. Pinning it here
  *  keeps a reading where it was actually taken, whatever the server is set to.
- *  ⚠️ Must match the firmware's configTime offset. */
+ * Must match the firmware's configTime offset. */
 export const DEVICE_UTC_OFFSET = "+08:00";
 
 /** Ahead of now by more than this = a clock fault, not a late arrival. */

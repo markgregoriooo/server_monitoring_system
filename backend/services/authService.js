@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import permissionService from "./permissionService.js";
 import policyService from "./policyService.js";
 import { JWT_SECRET } from "../middleware/auth.js";
+import { notFound } from "../utils/httpError.js";
 
 const authService = {
   // Build + sign a JWT session for an already-resolved, ACTIVE user. The only
@@ -82,7 +83,7 @@ const authService = {
     );
 
     if (rows.length === 0) {
-      throw new Error("User not found.");
+      throw notFound("User not found.");
     }
 
     const user = rows[0];
@@ -117,7 +118,7 @@ const authService = {
     );
 
     if (rows.length === 0) {
-      throw new Error("User not found.");
+      throw notFound("User not found.");
     }
 
     const user = rows[0];

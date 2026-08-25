@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api/api";
 import { API_URL } from "../../config";
 import { socket } from "../../socket/socket";
+import { GF as gf, STATUS } from "../../theme/gf";
+const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
 // ─── Agent install keys (admin) ─────────────────────────────────────────────────
 //
@@ -10,35 +12,14 @@ import { socket } from "../../socket/socket";
 // expiry, no revocation and no record of who issued it. Now an admin mints one per
 // rollout here, copies the ready-made install command, and revokes it when done.
 //
-// ⚠️ Revoking a key blocks NEW enrollments only. Servers already enrolled with it keep
+// Revoking a key blocks NEW enrollments only. Servers already enrolled with it keep
 // reporting on their own agent token; to stop one of those, remove the server.
 
-const gf = {
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  divider: "var(--gf-divider)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-  accent: "var(--gf-accent)",
-  // Accent that is legible as TYPE. --gf-accent is a surface colour: it measures
-  // 2.76:1 on the light page background, so it must not be used for text.
-  accentText: "var(--gf-accent-text)",
-  accentDim: "var(--gf-accent-dim)",
-  // The page tone, one step BELOW --gf-panel in both themes. Used for the code wells,
-  // which previously hardcoded rgba(0,0,0,0.25) — a dark-mode assumption that painted
-  // a near-black block onto a white panel the moment the theme was switched.
-  well: "var(--gf-bg)",
-} as const;
 
 // A translucent accent, so it tints whatever surface is under it rather than replacing
 // it — the reason one value works in both themes.
 const ACCENT_EDGE = "rgba(87,148,242,0.32)";
 
-const GREEN = "#73BF69"; // status badge only — the design system's Online/NORMAL
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
 
 export interface InstallKey {
   id: number;

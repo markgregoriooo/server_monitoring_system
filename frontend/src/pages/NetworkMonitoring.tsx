@@ -5,6 +5,10 @@ import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 import NetworkDetail from "./NetworkDetail";
 import type { NetDevice } from "./NetworkDetail";
+import { GF as gf, STATUS } from "../theme/gf";
+import { formatUptime } from "../utils/format";
+import { GhostButton, StatPanel, Field, Meta } from "../components/ui/primitives";
+const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── Router list page ─────────────────────────────────────────────────────────
 //
@@ -22,21 +26,7 @@ import type { NetDevice } from "./NetworkDetail";
 
 // ─── Grafana tokens (match ServerMetrics.tsx) ─────────────────────────────────
 
-const gf = {
-  bg: "var(--gf-bg)",
-  panel: "var(--gf-panel)",
-  border: "var(--gf-panel-border)",
-  divider: "var(--gf-divider)",
-  textPrimary: "var(--gf-text-primary)",
-  textMuted: "var(--gf-text-muted)",
-  textDim: "var(--gf-text-dim)",
-  hover: "var(--gf-hover)",
-} as const;
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
-const BLUE = "#5794F2";
 
 const inputStyle: React.CSSProperties = {
   background: gf.bg,
@@ -71,17 +61,6 @@ function statusColor(s: string) {
   if (s === "Warning") return ORANGE;
   return RED;
 }
-function formatUptime(sec: number | null): string {
-  if (sec == null || !Number.isFinite(sec)) return "—";
-  const s = Math.floor(sec);
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-
 // ─── Mapping ──────────────────────────────────────────────────────────────────
 
 function mapNet(r: any): NetDevice {
@@ -156,44 +135,7 @@ function Panel({
   );
 }
 
-function StatPanel({ label, value, unit, color, sub }: { label: string; value: string; unit?: string; color: string; sub?: string }) {
-  return (
-    <div className="relative overflow-hidden rounded-lg flex flex-col" style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 88 }}>
-      <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-[12px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{label}</span>
-        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
-      </div>
-      <div className="px-3 pt-1.5">
-        <span className="text-[26px] font-bold leading-none" style={{ color }}>{value}</span>
-        {unit && <span className="text-[15px] ml-1" style={{ color: color + "AA" }}>{unit}</span>}
-        {sub && <div className="text-[11px] mt-1 tracking-widest uppercase" style={{ color: gf.textDim }}>{sub}</div>}
-      </div>
-    </div>
-  );
-}
-
 // ─── Ghost button (matches ServerMetrics "View") ──────────────────────────────
-
-function GhostButton({ children, onClick, danger }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void; danger?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      className="gf-btn text-[13px] font-medium px-2.5 py-1"
-      style={{ color: danger ? RED : gf.textMuted }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[11px] tracking-wider uppercase" style={{ color: gf.textDim }}>{label}</span>
-      {children}
-    </div>
-  );
-}
 
 // ─── Port chip (compact per-port state for the LIST card) ─────────────────────
 // The list only needs an at-a-glance "which ports are up"; the full per-port table
@@ -223,15 +165,6 @@ function PortChip({ label, up, util }: { label: string; up: boolean; util?: numb
 // One labelled fact in a drawer's summary strip. The strip used to be bare values
 // separated by gaps — "dev-router-01", "RB951G-2HnD", "4h 16m" — which only reads if
 // you already know the schema. The key is what makes a value information.
-function Meta({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  return (
-    <span className="inline-flex items-baseline gap-1.5 min-w-0">
-      <span className="text-[10px] tracking-widest uppercase shrink-0" style={{ color: gf.textDim }}>{label}</span>
-      <span className={`text-[12px] truncate ${mono ? "font-mono" : ""}`} style={{ color: gf.textMuted }}>{value}</span>
-    </span>
-  );
-}
-
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
 // Mirrors ServerMetrics' ServerDrawerRow: the table shows what you SCAN, the drawer
 // holds what you'd otherwise have to open the detail page for. Animated by max-height

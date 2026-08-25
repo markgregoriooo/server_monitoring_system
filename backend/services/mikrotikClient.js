@@ -8,20 +8,38 @@
 // poller can hand it straight to writeNetworkSample() (shared with the SNMP path) —
 // except MikroTik fills cpuPercent / memPercent / connectedClients (SNMP leaves null).
 //
-// ⚠️ The exact RouterOS command words/props below are best-effort and should be
+// The exact RouterOS command words/props below are best-effort and should be
 //    confirmed against the dev MikroTik in Phase 2 (see mikrotik-dev-setup.md).
 
 import { readFileSync } from "fs";
+import { describeError } from "../utils/httpError.js";
 
-const num = (v) => {
+// Returns null for an unreadable field, so the sample omits it rather than
+// storing a wrong zero. N-03.
+const numOrNull = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
 
+// Returns 0n on a parse failure, and that is NOT the same as a counter reading zero.
+// rx-byte/tx-byte are cumulative counters: downstream, counterDelta sees the value drop
+// from (say) 5 000 000 to 0 and reads it as a counter RESET, discarding the interval. So
+// an unreadable counter looked exactly like a rebooted router — and silently, because
+// this swallowed the reason. It still returns 0n (throwing would abort the whole poll
+// over one bad field) but it now says so once.
+// See audits/error-flow-report-2026-08-25.md — F-03.
+let bigParseFailureReported = false;
 function toBig(v) {
   try {
     return BigInt(String(v ?? "0").trim() || "0");
-  } catch {
+  } catch (err) {
+    if (!bigParseFailureReported) {
+      bigParseFailureReported = true;
+      console.warn(
+        `[MIKROTIK] unparseable counter value ${JSON.stringify(v)} — treating as 0. ` +
+          `Traffic for this interval will read as a counter reset, not as real zero traffic. (${err.message})`,
+      );
+    }
     return 0n;
   }
 }
@@ -49,7 +67,7 @@ function parseCount(res) {
   // count-only returns [{ ret: "12" }] (or "count")
   const row = Array.isArray(res) ? res[0] : res;
   const v = row?.ret ?? row?.count;
-  return num(v);
+  return numOrNull(v);
 }
 
 // ─── API-SSL (port 8729) ────────────────────────────────────────────────────────
@@ -67,7 +85,7 @@ function tlsOptions() {
     try {
       opts.ca = readFileSync(caPath);
     } catch (err) {
-      console.error("[MIKROTIK] cannot read MIKROTIK_TLS_CA:", err.message);
+      console.error("[MIKROTIK] cannot read MIKROTIK_TLS_CA:", describeError(err));
     }
   }
   return opts;
@@ -90,7 +108,7 @@ async function openApi(conn) {
     timeout: Math.max(1, Math.ceil((conn.timeout || 5000) / 1000)), // node-routeros uses seconds
     tls: conn.tls ? tlsOptions() : undefined,
   });
-  // ⚠️ Crash guard — see the sequence below. Without this, a router that can't be
+  // Crash guard — see the sequence below. Without this, a router that can't be
   // reached over TLS takes down the WHOLE backend process rather than failing one poll.
   //
   // node-routeros registers only `once` listeners for 'error', and its Connector.onError
@@ -141,8 +159,8 @@ function physicalOnly(ifaces, ethNames) {
 }
 
 function shape(res, ifaces, speeds, connectedClients, ethNames, clientsByIface = {}) {
-  const totalMem = num(res?.["total-memory"]);
-  const freeMem = num(res?.["free-memory"]);
+  const totalMem = numOrNull(res?.["total-memory"]);
+  const freeMem = numOrNull(res?.["free-memory"]);
   const memPercent =
     totalMem && freeMem != null ? Math.max(0, Math.min(100, ((totalMem - freeMem) / totalMem) * 100)) : null;
 
@@ -150,8 +168,8 @@ function shape(res, ifaces, speeds, connectedClients, ethNames, clientsByIface =
     name: i.name ?? "",
     rxBytes: toBig(i["rx-byte"]),
     txBytes: toBig(i["tx-byte"]),
-    rxErrors: num(i["rx-error"]) ?? 0,
-    txErrors: num(i["tx-error"]) ?? 0,
+    rxErrors: numOrNull(i["rx-error"]) ?? 0,
+    txErrors: numOrNull(i["tx-error"]) ?? 0,
     // Carrier and admin state are SEPARATE facts and must not be folded together.
     // Folding them made `disabled=yes` — an operator deliberately switching a port off
     // — indistinguishable from a cable falling out, so the ports ICTU had shut down on
@@ -168,7 +186,7 @@ function shape(res, ifaces, speeds, connectedClients, ethNames, clientsByIface =
   return {
     reachable: true,
     uptimeSeconds: parseUptime(res?.uptime),
-    cpuPercent: num(res?.["cpu-load"]),
+    cpuPercent: numOrNull(res?.["cpu-load"]),
     memPercent,
     connectedClients,
     version: res?.version ?? null,

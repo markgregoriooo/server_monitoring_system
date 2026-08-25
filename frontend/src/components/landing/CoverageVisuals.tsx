@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { animate, stagger } from "animejs";
 import { useInView, prefersReducedMotion, EASE, DUR } from "./motion";
+import { STATUS } from "../../theme/gf";
+const { green: GREEN, orange: ORANGE, critical: RED } = STATUS;
 
 /**
  * One small animated visual per coverage card.
@@ -16,9 +18,6 @@ import { useInView, prefersReducedMotion, EASE, DUR } from "./motion";
  * metric.
  */
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#E02F44";
 const ACCENT = "#5794F2";
 
 const VB_W = 240;

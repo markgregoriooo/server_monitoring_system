@@ -1,6 +1,7 @@
 import "../config/env.js";
 import db from "../config/mysql.js";
 import emailService from "./emailService.js";
+import { describeError } from "../utils/httpError.js";
 
 // Notifications = the bell feed. One `alerts` row is the EVENT; we fan it out to
 // one `alert_notifications` row PER active user (the per-user read state + feed).
@@ -136,6 +137,16 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
       for (const r of rows) {
         _io.to(`user:${r.user_id}`).emit("notification", toClient(r));
       }
+    } else {
+      // init(io) is called once at startup (src/server.js). Reaching here means the
+      // wiring is broken, and the old `if (_io)` swallowed that silently — the alert row
+      // and the email still go out, but no bell, no toast, no OS popup, with nothing in
+      // the log to say why. A dropped ALERT is the most expensive silent failure in this
+      // system, so it says so. See audits/design-patterns-report-2026-08-25.md — P-09.
+      console.error(
+        `[notify] alert ${alertId}: raiseAlert() ran before init(io) — ` +
+          `${rows.length} in-app notification(s) dropped (row + email unaffected)`,
+      );
     }
 
     // 5) email channel — severity-gated, per-user pref. Only when SMTP is
@@ -158,7 +169,7 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
 
     return alertId;
   } catch (err) {
-    console.error("[notifications] raiseAlert error:", err.message);
+    console.error("[notifications] raiseAlert error:", describeError(err));
     return null;
   }
 }

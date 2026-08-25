@@ -1,5 +1,25 @@
 import db from "../config/mysql.js";
 import bcrypt from "bcryptjs";
+// Statusless throws defaulted to 500, which the central handler refuses to describe to
+// the client — so "Email already exists." reached the user as "Server error. Please try
+// again later." See audits/error-handling-report-2026-08-25.md — E-04.
+import { badRequest, notFound, conflict } from "../utils/httpError.js";
+
+// ─── Role & status vocabularies ───────────────────────────────────────────────
+// `validRoles` was written out three times and `validStatuses` twice — and the two
+// status lists DIFFER. That looked like a copy that had drifted; it is not, and naming
+// them is how that stops being ambiguous. See audits/code-duplication-report-2026-08-25.md — R-15.
+
+/** Every role a user row may hold. */
+export const ROLES = Object.freeze(["admin", "it_staff"]);
+
+/** Every state a user row may hold. */
+export const USER_STATUSES = Object.freeze(["pending", "active", "inactive", "rejected"]);
+
+/** The subset an admin may TOGGLE between — deliberately narrower than USER_STATUSES.
+ *  `pending` and `rejected` are outcomes of the approval flow, reached by approving or
+ *  rejecting a registration, never by flipping a switch on an existing account. */
+export const TOGGLEABLE_STATUSES = Object.freeze(["active", "inactive"]);
 
 // ─── Last-admin invariant (best practice) ─────────────────────────────────────
 // The system must always retain at least one ACTIVE admin. These helpers back the
@@ -163,12 +183,11 @@ const userService = {
 
   // Admin: approve a pending registration and assign its role.
   async approveUser(id, role) {
-    const validRoles = ["admin", "it_staff"];
-    if (!validRoles.includes(role)) throw new Error("Invalid role.");
+    if (!ROLES.includes(role)) throw badRequest("Invalid role.");
 
     const [[user]] = await db.query("SELECT status FROM users WHERE user_id = ? LIMIT 1", [id]);
-    if (!user) throw new Error("User not found.");
-    if (user.status !== "pending") throw new Error("User is not awaiting approval.");
+    if (!user) throw notFound("User not found.");
+    if (user.status !== "pending") throw conflict("User is not awaiting approval.");
 
     await db.query("UPDATE users SET status = 'active', role = ?, updated_at = NOW() WHERE user_id = ?", [
       role,
@@ -188,8 +207,8 @@ const userService = {
   // the row is not required, and would throw the audit trail away with it.
   async rejectUser(id) {
     const [[user]] = await db.query("SELECT status FROM users WHERE user_id = ? LIMIT 1", [id]);
-    if (!user) throw new Error("User not found.");
-    if (user.status !== "pending") throw new Error("User is not awaiting approval.");
+    if (!user) throw notFound("User not found.");
+    if (user.status !== "pending") throw conflict("User is not awaiting approval.");
 
     await db.query("UPDATE users SET status = 'rejected', updated_at = NOW() WHERE user_id = ?", [id]);
     return true;
@@ -200,14 +219,11 @@ const userService = {
     const { name, username, email, password, role, status = "active" } = data;
 
     if (!name || !username || !email || !password || !role) {
-      throw new Error(
-        "Name, username, email, password, and role are required.",
-      );
+      throw badRequest("Name, username, email, password, and role are required.");
     }
 
-    const validRoles = ["admin", "it_staff"];
-    if (!validRoles.includes(role)) {
-      throw new Error("Invalid role.");
+    if (!ROLES.includes(role)) {
+      throw badRequest("Invalid role.");
     }
 
     // check duplicate email
@@ -217,7 +233,7 @@ const userService = {
     );
 
     if (existing.length > 0) {
-      throw new Error("Email already exists.");
+      throw conflict("Email already exists.");
     }
 
     // hash password
@@ -271,17 +287,14 @@ const userService = {
   async updateUser(id, data) {
     const { username, role, status } = data;
 
-    const validRoles    = ["admin", "it_staff"];
-    const validStatuses = ["pending", "active", "inactive", "rejected"];
-
-    if (role !== undefined && !validRoles.includes(role)) {
-      throw new Error("Invalid role.");
+    if (role !== undefined && !ROLES.includes(role)) {
+      throw badRequest("Invalid role.");
     }
-    if (status !== undefined && !validStatuses.includes(status)) {
-      throw new Error("Invalid status.");
+    if (status !== undefined && !USER_STATUSES.includes(status)) {
+      throw badRequest("Invalid status.");
     }
     if (username !== undefined && !String(username).trim()) {
-      throw new Error("Username cannot be empty.");
+      throw badRequest("Username cannot be empty.");
     }
 
     const nextUsername = username === undefined ? null : String(username).trim();
@@ -292,7 +305,7 @@ const userService = {
         "SELECT user_id FROM users WHERE username = ? AND user_id != ? LIMIT 1",
         [nextUsername, id],
       );
-      if (taken) throw new Error("Username already taken.");
+      if (taken) throw conflict("Username already taken.");
     }
 
     // F-02: a role downgrade or disable must invalidate the user's existing token.
@@ -341,10 +354,10 @@ const userService = {
 
   // UPDATE USER STATUS -admin
   async updateUserStatus(id, status, currentUserId) {
-    const validStatuses = ["active", "inactive"];
-
-    if (!validStatuses.includes(status)) {
-      throw new Error("Invalid status.");
+    // TOGGLEABLE_STATUSES, not USER_STATUSES: this endpoint flips an existing account
+    // on or off. Moving one INTO pending/rejected is the approval flow's job.
+    if (!TOGGLEABLE_STATUSES.includes(status)) {
+      throw badRequest("Invalid status.");
     }
 
     if (status === "inactive") {
@@ -397,11 +410,11 @@ const userService = {
   // DELETE USER -admin
   async deleteUser(id, currentUserId) {
     if (!id || isNaN(id)) {
-      throw new Error("Invalid user ID.");
+      throw badRequest("Invalid user ID.");
     }
 
     if (id === currentUserId) {
-      throw new Error("Cannot delete your own account.");
+      throw conflict("Cannot delete your own account.");
     }
 
     const [rows] = await db.query(
@@ -410,7 +423,7 @@ const userService = {
     );
 
     if (rows.length === 0) {
-      throw new Error("User not found.");
+      throw notFound("User not found.");
     }
 
     // Never delete the last active admin — the system would be left with no admins.
@@ -440,13 +453,13 @@ const userService = {
     ]);
 
     if (rows.length === 0) {
-      throw new Error("User not found.");
+      throw notFound("User not found.");
     }
 
     const user = rows[0];
 
     if (username === undefined || !String(username).trim()) {
-      throw new Error("Username cannot be empty.");
+      throw badRequest("Username cannot be empty.");
     }
 
     const nextUsername = String(username).trim();
@@ -459,7 +472,7 @@ const userService = {
       );
 
       if (existingUsername.length > 0) {
-        throw new Error("Username already taken.");
+        throw conflict("Username already taken.");
       }
     }
 
@@ -493,11 +506,11 @@ const userService = {
   // CHANGE OWN PASSWORD
   async changeOwnPassword(userId, currentPassword, newPassword) {
     if (!currentPassword || !newPassword) {
-      throw new Error("Current password and new password are required.");
+      throw badRequest("Current password and new password are required.");
     }
 
     if (newPassword.length < 6) {
-      throw new Error("New password must be at least 6 characters.");
+      throw badRequest("New password must be at least 6 characters.");
     }
 
     // get user
@@ -506,7 +519,7 @@ const userService = {
     ]);
 
     if (rows.length === 0) {
-      throw new Error("User not found.");
+      throw notFound("User not found.");
     }
 
     const user = rows[0];
@@ -518,7 +531,7 @@ const userService = {
     );
 
     if (!validPassword) {
-      throw new Error("Current password is incorrect.");
+      throw badRequest("Current password is incorrect.");
     }
 
     // hash new password

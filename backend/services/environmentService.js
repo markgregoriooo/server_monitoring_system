@@ -10,7 +10,7 @@ import { queryClient, bucket } from "../config/influx.js";
 // MQ-2 sensors, matching how sensorHandler alerts on `max(mq2_1, mq2_2)`), plus a count
 // of environment alerts raised that day.
 //
-// ⚠️ Day boundaries are UTC, because `aggregateWindow(every: 1d)` buckets in UTC. On a
+// Day boundaries are UTC, because `aggregateWindow(every: 1d)` buckets in UTC. On a
 // UTC+8 campus a "day" therefore runs 08:00–08:00 local. That is acceptable for a
 // summary view, but it MUST be consistent across both stores — so the MySQL event
 // counts are bucketed in UTC too (via UNIX_TIMESTAMP + JS), not with DATE(created_at),

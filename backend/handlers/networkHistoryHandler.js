@@ -1,5 +1,6 @@
 import { queryClient, bucket } from "../config/influx.js";
-import { resolveRange } from "../services/historyRange.js";
+import { resolveHistoryRequest, historyEnvelope } from "../services/historyRange.js";
+import { describeError } from "../utils/httpError.js";
 
 // GET /api/network/:id/history?range=-1h[&interface=ether1]  (JWT, via authMiddleware)
 //   ...or an absolute window: ?start=<ISO>&stop=<ISO>  (see historyRange.resolveRange)
@@ -31,19 +32,9 @@ import { resolveRange } from "../services/historyRange.js";
 // Flux code, so it can't break out of the literal (the range/window pair stays
 // whitelisted in resolveRange for the same reason).
 export function networkHistoryHandler(req, res) {
-  const deviceId = parseInt(req.params.id, 10);
-  if (!Number.isInteger(deviceId)) {
-    return res.status(400).json({ error: "Invalid device id." });
-  }
-
-  // Preset (-1h … -30d) or an absolute start/stop window; throws a 400 on a
-  // malformed custom window rather than silently charting the wrong period.
-  let resolved;
-  try {
-    resolved = resolveRange(req.query);
-  } catch (err) {
-    return res.status(err.status ?? 400).json({ error: err.message });
-  }
+  const parsed = resolveHistoryRequest(req, res);
+  if (!parsed) return;
+  const { deviceId, resolved } = parsed;
   const { rangeExpr, every } = resolved;
 
   // JSON.stringify gives a safely quoted+escaped Flux string literal.
@@ -128,18 +119,12 @@ export function networkHistoryHandler(req, res) {
       // Echo what was actually served (incl. the resolved custom bounds + the window
       // that was chosen) so the client can label the axis without re-deriving it.
       if (!res.headersSent) {
-        res.json({
-          range: resolved.custom ? "custom" : resolved.preset,
-          start: resolved.startISO ?? null,
-          stop: resolved.stopISO ?? null,
-          every,
-          history,
-          icmp: icmpHistory,
-        });
+        // Now carries spanSec too — it always should have. See R-08.
+        res.json(historyEnvelope(resolved, { history, icmp: icmpHistory }));
       }
     })
     .catch((error) => {
-      console.error("[NETWORK_HISTORY] query error:", error.message);
+      console.error("[NETWORK_HISTORY] query error:", describeError(error));
       if (!res.headersSent) res.status(500).json({ error: "History query failed." });
     });
 }

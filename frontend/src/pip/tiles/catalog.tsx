@@ -3,6 +3,8 @@ import type { FC, ReactNode } from "react";
 import { useLiveSummary } from "../LiveSummaryContext";
 import { useNotifications } from "../../context/NotificationContext";
 import { SEVERITY_COLOR } from "../../components/notifications/notificationUtils";
+import { STATUS } from "../../theme/gf";
+const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ── The tile catalog: every tile a user can put on the widget. Each is a tiny FC
 // that reads the shared live hooks. The saved layout is just an ordered list of these
@@ -10,10 +12,6 @@ import { SEVERITY_COLOR } from "../../components/notifications/notificationUtils
 
 // Grafana status colors (CLAUDE.md). Thresholds mirror Dashboard's helpers — which
 // aren't exported — kept here so the PiP bundle doesn't import the whole Dashboard.
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#F2495C";
-const BLUE = "#5794F2";
 const T_MUTED = "var(--gf-text-muted)";
 const T_DIM = "var(--gf-text-dim)";
 

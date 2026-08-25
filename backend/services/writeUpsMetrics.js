@@ -1,5 +1,15 @@
 import { writeClient, Point } from "../config/influx.js";
-import backupService from "../services/backupService.js";
+import backupService from "./backupService.js";
+
+// ─── Moved out of handlers/ ───────────────────────────────────────────────────
+//
+// This is a SINK, not a request handler. Nothing routes to it: the SNMP and MikroTik
+// pollers call it with a collected sample, and it writes InfluxDB + the on-site backup
+// and broadcasts to dashboards. It lived in handlers/ alongside genuine inbound request
+// handlers (serverHistoryHandler, sensorHandler), which made every poller look like it
+// depended UPWARD on the handler layer — three of the four layering violations in the
+// backend were this one misplacement.
+// See audits/architecture-report-2026-08-25.md — A-02.
 
 // ─── UPS sample → InfluxDB + Socket.IO ────────────────────────────────────────
 //

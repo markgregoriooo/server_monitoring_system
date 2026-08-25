@@ -5,6 +5,8 @@ import Reveal from "./Reveal";
 import { SplitHeading, SectionRail } from "./ScrollFx";
 import BrowserFrame from "./BrowserFrame";
 import ScaledStage from "./ScaledStage";
+import { STATUS } from "../../theme/gf";
+const { green: GREEN, orange: ORANGE, critical: RED } = STATUS;
 
 /**
  * "See it work" — the alert loop, end to end.
@@ -22,9 +24,6 @@ import ScaledStage from "./ScaledStage";
  * order, and how quickly, without claiming to be footage.
  */
 
-const GREEN = "#73BF69";
-const ORANGE = "#FF780A";
-const RED = "#E02F44";
 const ACCENT = "#5794F2";
 
 const W = 520;

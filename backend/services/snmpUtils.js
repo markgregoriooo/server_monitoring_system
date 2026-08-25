@@ -62,7 +62,7 @@ export const UPS_OUTPUT_SOURCE = {
 //
 //   normal   mains, through the inverter — protected
 //   battery  mains lost, running down the battery. You have N minutes.
-//   bypass   ⚠️ load wired straight to RAW MAINS, around the inverter and battery.
+// bypass load wired straight to RAW MAINS, around the inverter and battery.
 //            It keeps running, so nothing looks wrong — but protection is GONE:
 //            if mains drops now, everything dies instantly with zero runtime.
 //            Reached by overload, overheating, an internal fault, or someone
@@ -94,7 +94,7 @@ export const isOnBattery = (v) => upsOutputState(v) === "battery";
 
 // True when the load is running on raw mains with NO protection behind it.
 //
-// ⚠️ This was the gap: the enum has named `bypass` since it was written, but the
+// This was the gap: the enum has named `bypass` since it was written, but the
 // only interpreter was isOnBattery, which tests for battery(5) alone. A UPS in
 // bypass therefore reported onBattery:false and read as perfectly normal — green
 // tile, no alert — while the racks behind it had zero seconds of runtime. Exactly
@@ -133,8 +133,10 @@ export function isValidIp(ip) {
   return Boolean(m) && m.slice(1).every((o) => Number(o) >= 0 && Number(o) <= 255);
 }
 
-// Derive a /24 segment string from an IPv4 address ("" if unknown) — mirrors
-// agentService.networkSegment so device_network.network_segment stays consistent.
+// Derive a /24 segment string from an IPv4 address ("" if unknown). THE one copy:
+// agentService used to carry a byte-identical private version, so a Go-agent host and
+// an SNMP-polled router wrote device_network.network_segment through two functions
+// that only happened to agree. It imports this now.
 export function networkSegment(ip) {
   const m = typeof ip === "string" && ip.match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
   return m ? `${m[1]}.${m[2]}.${m[3]}.0/24` : "";

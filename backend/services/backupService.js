@@ -4,6 +4,7 @@ import path from "path";
 import crypto from "crypto";
 import notificationService from "./notificationService.js";
 import alertsService from "./alertsService.js";
+import { describeError } from "../utils/httpError.js";
 
 // ─── On-site backup writer ────────────────────────────────────────────────────
 //
@@ -87,7 +88,7 @@ function record(stream, payload) {
     if (arr) arr.push(line);
     else buffer.set(file, [line]);
   } catch (err) {
-    console.error("[BACKUP] record error:", err.message);
+    console.error("[BACKUP] record error:", describeError(err));
   }
 }
 
@@ -105,7 +106,7 @@ async function flush() {
       await fsp.appendFile(file, lines.join("\n") + "\n");
     } catch (err) {
       failed = err;
-      console.error("[BACKUP] flush error:", err.message);
+      console.error("[BACKUP] flush error:", describeError(err));
       const remaining = buffer.get(file);
       let merged = remaining ? lines.concat(remaining) : lines;
       // Keep the NEWEST rows if we've backed up past the cap (drop oldest to avoid OOM).
@@ -158,7 +159,7 @@ function flushSync() {
     try {
       fs.appendFileSync(file, lines.join("\n") + "\n");
     } catch (err) {
-      console.error("[BACKUP] flushSync error:", err.message);
+      console.error("[BACKUP] flushSync error:", describeError(err));
     }
   }
   buffer.clear();
@@ -178,7 +179,7 @@ async function purgeOld() {
       }
     }
   } catch (err) {
-    if (err.code !== "ENOENT") console.error("[BACKUP] purge error:", err.message);
+    if (err.code !== "ENOENT") console.error("[BACKUP] purge error:", describeError(err));
   }
 }
 
@@ -208,7 +209,7 @@ async function readManifest() {
       if (m) map.set(m[2], m[1]);
     }
   } catch (err) {
-    if (err.code !== "ENOENT") console.error("[BACKUP] manifest read error:", err.message);
+    if (err.code !== "ENOENT") console.error("[BACKUP] manifest read error:", describeError(err));
   }
   return map;
 }
@@ -230,7 +231,7 @@ async function updateChecksums() {
   try {
     files = await fsp.readdir(BACKUP_DIR);
   } catch (err) {
-    if (err.code !== "ENOENT") console.error("[BACKUP] checksum readdir error:", err.message);
+    if (err.code !== "ENOENT") console.error("[BACKUP] checksum readdir error:", describeError(err));
     return { added: 0, rotted: [] };
   }
   const sealed = files.filter((f) => {
@@ -249,7 +250,15 @@ async function updateChecksums() {
     let hash;
     try {
       hash = await sha256File(path.join(BACKUP_DIR, name));
-    } catch {
+    } catch (err) {
+      // This is the ROT DETECTOR. Silently skipping a file it cannot read means the
+      // one file most likely to be damaged is the one excluded from the integrity check —
+      // an unreadable backup would pass "no rot detected" simply by not being looked at.
+      // See audits/error-flow-report-2026-08-25.md — F-04.
+      console.error(
+        `[BACKUP] cannot checksum ${name}: ${err.message} — EXCLUDED from the integrity ` +
+          `manifest. An unreadable backup file is exactly what this check exists to catch.`,
+      );
       continue;
     }
     const known = manifest.get(name);
@@ -297,7 +306,7 @@ async function checkOffsite() {
     const t = Date.parse((await fsp.readFile(OFFSITE_MARKER, "utf8")).trim());
     if (Number.isFinite(t)) stampMs = t;
   } catch (err) {
-    if (err.code !== "ENOENT") console.error("[BACKUP] offsite marker read error:", err.message);
+    if (err.code !== "ENOENT") console.error("[BACKUP] offsite marker read error:", describeError(err));
   }
   const stale = stampMs == null || Date.now() - stampMs > OFFSITE_MAX_AGE_HOURS * 60 * 60 * 1000;
   if (stale) {
@@ -318,6 +327,14 @@ async function checkOffsite() {
 
 // Call once at startup (server.js). Creates the dir, starts the flush + maintenance
 // timers, and wires a shutdown flush so nothing buffered is lost on a clean stop.
+/** False when the backup directory could not be created — see init(). */
+let dirReady = false;
+
+/** Is the on-site backup actually able to write? Distinct from ENABLED, which is config. */
+function isHealthy() {
+  return ENABLED && dirReady;
+}
+
 function init() {
   if (!ENABLED) {
     console.log("[BACKUP] disabled (BACKUP_ENABLED=false)");
@@ -326,14 +343,33 @@ function init() {
   if (started) return;
   started = true;
 
+  // Do NOT print the reassuring "on-site backup → …" line when the directory could
+  // not be created. It used to print unconditionally, one line BELOW the error — so a
+  // detached backup drive produced a boot log that said "cannot create dir" and then
+  // immediately "on-site backup → D:/backups", and the second line is the one people
+  // read. The backup that exists specifically to survive a DB wipe plus a power cut can
+  // be completely non-functional while the log looks healthy.
+  // See audits/error-handling-report-2026-08-25.md — E-13.
   try {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    dirReady = true;
   } catch (err) {
-    console.error("[BACKUP] cannot create dir:", BACKUP_DIR, err.message);
+    dirReady = false;
+    console.error(
+      `[BACKUP] NOT RUNNING — cannot write to ${BACKUP_DIR}: ${err.message}
+` +
+        `[BACKUP] Samples will buffer in memory and be DROPPED at the ${MAX_BUFFER_LINES}-line cap.
+` +
+        `[BACKUP] This is the on-site copy that survives a database wipe and a power cut.
+` +
+        `[BACKUP] Attach the drive, or point BACKUP_DIR at a path that exists, then restart.`,
+    );
   }
-  console.log(
-    `[BACKUP] on-site backup → ${BACKUP_DIR} (flush ${FLUSH_MS}ms, retain ${RETENTION_DAYS}d)`,
-  );
+  if (dirReady) {
+    console.log(
+      `[BACKUP] on-site backup → ${BACKUP_DIR} (flush ${FLUSH_MS}ms, retain ${RETENTION_DAYS}d)`,
+    );
+  }
 
   const flushTimer = setInterval(() => flush().catch(() => {}), FLUSH_MS);
   flushTimer.unref?.(); // the HTTP server keeps the process alive, not this timer
@@ -351,17 +387,20 @@ function init() {
     offsiteTimer.unref?.();
   }
 
-  // Flush the last buffered samples on shutdown. A UPS low-battery event typically
-  // triggers an OS shutdown (SIGTERM); Ctrl+C sends SIGINT. Node does NOT emit
-  // 'exit' for an unhandled signal, so we must catch the signals ourselves.
-  const shutdown = (sig) => {
-    flushSync();
-    console.log(`[BACKUP] flushed on ${sig}`);
-    process.exit(0);
-  };
-  process.once("SIGINT", () => shutdown("SIGINT"));
-  process.once("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("exit", flushSync); // final safety net for a normal event-loop exit
+  // Flush the last buffered samples on shutdown.
+  //
+  // This module no longer handles SIGINT/SIGTERM itself. It used to — and the flush
+  // was right — but it also called process.exit(0) immediately after, which meant a
+  // BACKUP WRITER decided when the whole process died: server.close() never ran,
+  // in-flight HTTP responses were cut mid-write, and any other service that later
+  // registered a signal handler could be killed before it finished. Shutdown is now
+  // owned by src/server.js, the composition root, which calls flushSync() FIRST and
+  // then closes everything else. See audits/error-handling-report-2026-08-25.md — E-10.
+  //
+  // The 'exit' listener stays as the last-resort net: Node does NOT emit 'exit' for an
+  // unhandled signal, but it DOES on a normal event-loop exit and on the
+  // uncaughtException path in src/server.js.
+  process.on("exit", flushSync);
 }
 
-export default { init, record, flush, flushSync, purgeOld, updateChecksums, checkOffsite, BACKUP_DIR };
+export default { init, isHealthy, record, flush, flushSync, purgeOld, updateChecksums, checkOffsite, BACKUP_DIR };

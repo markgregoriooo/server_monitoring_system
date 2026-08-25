@@ -1,5 +1,15 @@
 import { writeClient, Point } from "../config/influx.js";
-import backupService from "../services/backupService.js";
+import backupService from "./backupService.js";
+
+// ─── Moved out of handlers/ ───────────────────────────────────────────────────
+//
+// This is a SINK, not a request handler. Nothing routes to it: the SNMP and MikroTik
+// pollers call it with a collected sample, and it writes InfluxDB + the on-site backup
+// and broadcasts to dashboards. It lived in handlers/ alongside genuine inbound request
+// handlers (serverHistoryHandler, sensorHandler), which made every poller look like it
+// depended UPWARD on the handler layer — three of the four layering violations in the
+// backend were this one misplacement.
+// See audits/architecture-report-2026-08-25.md — A-02.
 
 // ─── Router/switch sample → InfluxDB + Socket.IO ──────────────────────────────
 //
@@ -128,7 +138,7 @@ export async function writeNetworkSample(io, device, sample) {
           // the UI shows the per-poll DELTA, since a lifetime total says nothing about
           // whether a cable is failing now.
           //
-          // ⚠️ These three (rxErrors/txErrors/speedMbps) were each declared TWICE in
+          // These three (rxErrors/txErrors/speedMbps) were each declared TWICE in
           // this object literal: once as `?? null` and again below as `?? 0`. A
           // duplicate key is not an error in JS — the last one silently wins — so the
           // first set was dead code, and reading the file suggested errors could arrive

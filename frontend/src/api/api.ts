@@ -29,19 +29,26 @@ export interface ApiResult<T = any> {
   error?: string;
 }
 
+/** Message shown when the server sent no `error` field of its own. Keyed by HTTP status;
+ *  anything absent falls through to the network-level message. */
+const STATUS_FALLBACK: Record<number, string> = {
+  401: "Unauthorized. Please log in again.",
+  403: "You don't have permission to do that.",
+  404: "Resource not found.",
+  429: "Too many requests. Please wait.",
+  500: "Server error. Please try again later.",
+  503: "Service temporarily unavailable. Please try again shortly.",
+};
+
 // error handler
 const handleError = (err: any): ApiResult<never> => {
   const status = err?.response?.status;
   const serverMessage = err?.response?.data?.error;
 
-  const fallback =
-    status === 429 ? "Too many requests. Please wait." :
-      status === 401 ? "Unauthorized. Please log in again." :
-        status === 403 ? "You don't have permission to do that." :
-          status === 404 ? "Resource not found." :
-            status === 500 ? "Server error. Please try again later." :
-              status === 503 ? "Service temporarily unavailable. Please try again shortly." :
-                "Cannot connect to server.";
+  // A lookup table, written as a lookup table. This was a six-deep ternary ladder —
+  // readable, but a chain of equality tests against one variable IS a map, and saying so
+  // makes adding a status a one-line data change instead of another rung.
+  const fallback = STATUS_FALLBACK[status ?? 0] ?? "Cannot connect to server.";
 
   return {
     success: false,
