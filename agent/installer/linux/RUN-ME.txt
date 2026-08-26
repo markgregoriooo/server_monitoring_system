@@ -62,7 +62,13 @@ BEFORE YOU START
 -----------------------------------------------------------------------
 INSTALL
 -----------------------------------------------------------------------
-  1) Install (from inside this folder):
+  1) Install (from inside this folder). Put the key in a VARIABLE first, so it does
+     not sit in the process list or in your shell history:
+       export CSPC_INSTALL_KEY='<INSTALL_KEY>'
+       sudo -E bash install.sh http://192.168.100.9:3000
+       unset CSPC_INSTALL_KEY
+     The -E is what carries the variable through sudo; without it the installer will
+     say the key is missing. Passing the key as an argument still works if you prefer:
        sudo bash install.sh http://192.168.100.9:3000 <INSTALL_KEY>
      It installs to /opt/cspc-agent, registers, and waits.
 
@@ -83,7 +89,9 @@ UPGRADING AN AGENT THAT IS ALREADY INSTALLED
   swapping the program file.
 
        sudo systemctl stop cspc-agent
-       sudo bash install.sh http://192.168.100.9:3000 <INSTALL_KEY>
+       export CSPC_INSTALL_KEY='<INSTALL_KEY>'
+       sudo -E bash install.sh http://192.168.100.9:3000
+       unset CSPC_INSTALL_KEY
 
   It warns that the key was not used — that is expected, and nothing needs
   approving again. To move this server onto a DIFFERENT install key (only if an
@@ -118,3 +126,7 @@ TROUBLESHOOTING
 KEEP THIS FOLDER PRIVATE — the install key is a shared secret. On Google Drive
 share it to named people, never "anyone with the link". Never share an agent.conf
 file: it holds that machine's own device token.
+
+Do not paste an install key into a chat, a ticket or a shared document. If one gets
+out, an admin revokes it on the dashboard (Server Metrics -> Agent install keys) and
+issues a new one — revoking a key does NOT stop the servers it already enrolled.

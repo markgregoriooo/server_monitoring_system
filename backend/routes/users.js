@@ -35,25 +35,21 @@ router.patch("/me", authMiddleware, asyncHandler(async (req, res) => {
   }),
 );
 
-// Logged-in user changes own password
-router.patch(
-  "/me/password",
-  authMiddleware,
-  asyncHandler(async (req, res) => {
-    const { currentPassword, newPassword } = req.body;
-
-    await userService.changeOwnPassword(
-      req.user.id,
-      currentPassword,
-      newPassword,
-    );
-
-    res.json({
-      success: true,
-      message: "Password updated successfully",
-    });
-  }),
-);
+// ─── No password endpoints ────────────────────────────────────────────────────
+//
+// `PATCH /users/me/password` and the password half of `POST /users` were removed on
+// 2026-08-25. They were DEAD auth code: sign-in has been Google-only since the
+// password login was deleted, so nothing reads `users.hash_password` and no password
+// set here could ever authenticate anyone.
+//
+// It was not merely unused, it was broken — every account is a Google account, so
+// `hash_password` is NULL, and `bcrypt.compare(input, null)` THROWS
+// ("Illegal arguments: string, object"). The endpoint answered 500 for every user who
+// could reach it. Nothing in the frontend called it; the UI had already gone.
+//
+// Removed rather than left alone because a live authentication endpoint nobody uses,
+// nobody tests and nobody looks at is exactly where a real vulnerability survives.
+// `bcryptjs` went with it. See audits/auth-flow-security-2026-08-25.md — AF-03.
 
 // Admin: list registrations awaiting approval.
 // MUST be declared before "/:id" so "pending" isn't captured as an :id param.
@@ -84,20 +80,10 @@ router.get(
   }),
 );
 
-// Create user
-router.post(
-  "/",
-  authMiddleware,
-  requireRole("admin"),
-  asyncHandler(async (req, res) => {
-    const result = await userService.createUser(req.body);
-
-    res.status(201).json({
-      message: "User created successfully",
-      user: result.user,
-    });
-  }),
-);
+// `POST /users` (admin-created account with a password) was removed with the password
+// endpoints above — same reason: the password it demanded could never authenticate
+// anyone. Accounts arrive by Google self-registration and are approved below; the very
+// first admin is promoted by hand (deployment-guide.md §4.3).
 
 // Update user
 router.patch(

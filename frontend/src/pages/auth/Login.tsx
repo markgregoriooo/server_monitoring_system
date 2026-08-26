@@ -235,16 +235,39 @@ export default function Login() {
   const [info, setInfo] = useState<string>(""); // pending / informational
   const [loading, setLoading] = useState<boolean>(false);
 
-  // Shown once when the user was auto-logged-out by an expired/invalid session.
-  // Read the flag here (pure — no side effect), then clear it in the effect below.
-  const [notice, setNotice] = useState<string>(() =>
-    sessionStorage.getItem("cspc_session_expired")
-      ? "Your session expired. Please sign in again."
-      : "",
-  );
+  // Shown once when the user was auto-logged-out. Read the flag here (pure — no side
+  // effect), then clear it in the effect below.
+  //
+  // The flag's VALUE says which of the two endings happened, because they are different
+  // events to the person reading it: "expired" is the credential running out on its own,
+  // "idle" is the system having signed them out on purpose. Telling someone their session
+  // expired when they know full well they only stepped away reads as a fault rather than
+  // as the policy it is. Any other truthy value falls back to the generic wording, so an
+  // older flag left in storage by a previous build still says something sensible.
+  const [notice, setNotice] = useState<string>(() => {
+    const why = sessionStorage.getItem("cspc_session_expired");
+    if (!why) return "";
+    return why === "idle"
+      ? "You were signed out after a period of inactivity. Please sign in again."
+      : "Your session expired. Please sign in again.";
+  });
 
   useEffect(() => {
-    sessionStorage.removeItem("cspc_session_expired");
+    // ⚠️ `cspc_session_expired` is deliberately NOT cleared here.
+    //
+    // It used to be, and that made the notice above disappear on any remount: the message
+    // is derived in a useState INITIALISER, so a second mount re-reads a flag this effect
+    // has already deleted and comes back with "". The user is then dropped on a bare
+    // sign-in form seconds after being told the session ended — which reads as the page
+    // having refreshed and lost its place, and is exactly what it was reported as.
+    //
+    // Nothing needs it cleared here anyway: AuthContext's loginWithGoogle drops it on a
+    // successful sign-in (`fresh login — drop any expiry notice`), which is the moment the
+    // message stops being true. Until then it SHOULD keep showing — someone who lands back
+    // on this page without signing in has not stopped being signed out.
+    //
+    // The credential wipe below is a different concern and stays: it runs for its own
+    // reason, not to tidy up the notice.
 
     // Reaching the sign-in page means, by definition, that there is no usable
     // session — so any credentials still sitting in storage are dead by definition

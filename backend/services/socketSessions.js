@@ -1,5 +1,5 @@
 import db from "../config/mysql.js";
-import { sessionRevocationReason } from "../middleware/auth.js";
+import { sessionRevocationReason, sessionPastHardLimit } from "../middleware/auth.js";
 import { describeError } from "../utils/httpError.js";
 
 /**
@@ -26,6 +26,27 @@ import { describeError } from "../utils/httpError.js";
  * opened with. Kicking on exp would black out the live dashboard of a perfectly
  * valid session every hour. Idle expiry is already the client's job (AuthContext's
  * proactive-expiry and away timers), and both disconnect the socket themselves.
+ *
+ * ⚠️ CHECKED SINCE 2026-08-26: the ABSOLUTE session cap (SESSION_MAX_HOURS). Not
+ * checking `exp` was right; not checking the cap either was not, and the two were
+ * being conflated. `middleware/auth.js` stops renewing past the cap, so an HTTP
+ * session ends within one token lifetime of it — but that mechanism works by simply
+ * declining to mint a new token, and a socket does not need new tokens. It
+ * authenticated once, at the handshake, and Socket.IO never asks again. So the cap
+ * had NO effect here: a connection opened with a valid token kept streaming live
+ * sensor, server, UPS and alert data indefinitely, bounded only by the account being
+ * disabled or someone bumping token_version.
+ *
+ * That matters most in exactly the case the cap exists for. CLAUDE.md's reasoning for
+ * SESSION_MAX_HOURS is that "a stolen token could be kept alive indefinitely by simply
+ * using it" — and a non-browser client holding a stolen token does not have to keep
+ * using it at all. It opens one socket and reads the live feed forever, making no HTTP
+ * request that could be refused.
+ *
+ * The bound used is `sessionHardExpirySec` — cap PLUS one token lifetime — not the cap
+ * itself. That is the documented worst case ("worst case a session lives this + 1h"),
+ * so this can never disconnect a session that HTTP would still be serving; it only
+ * closes the window that had no ceiling at all.
  */
 
 // How often connected sockets are re-validated. 30s keeps revocation prompt without
@@ -79,7 +100,16 @@ async function sweep() {
     // The SAME predicate the handshake and the HTTP auth middleware enforce — not a
     // third hand-written copy of it. This is the one caller that needs to know WHICH
     // condition failed, so it takes the reason rather than the boolean.
-    const reason = sessionRevocationReason(row, socket.user.tv);
+    //
+    // The absolute cap is a SEPARATE question from revocation and is kept separate:
+    // sessionRevocationReason answers "is this account still entitled to a session",
+    // which the HTTP middleware answers with a 401, while the cap answers "has this
+    // session run too long", which the HTTP middleware deliberately answers by
+    // declining to renew rather than by 401-ing. Folding the cap into that predicate
+    // would silently change the HTTP behaviour into a hard mid-session logout.
+    const reason =
+      sessionRevocationReason(row, socket.user.tv) ??
+      (sessionPastHardLimit(socket.user) ? "session_expired" : null);
 
     if (reason) {
       kick(socket, reason);

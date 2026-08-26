@@ -107,3 +107,39 @@ test("the reports.type SQL enum matches the registry exactly", () => {
     "Either add a registry entry (with a builder) or narrow the enum.",
   );
 });
+
+// ─── Report period width (BL-05) ──────────────────────────────────────────────
+//
+// `reportService.create` is not import-free (MySQL + InfluxDB), so the RULE is pinned
+// here rather than the function. Both must agree; the constant and the comparison are
+// duplicated deliberately and kept side by side so a drift is visible in one file.
+//
+// Why the rule exists: `start < end` alone accepts "2000-01-01", scheduling Flux
+// queries over 26 years of history. The build is asynchronous and never throws, so the
+// request looks fine while a long query holds one of ten shared pool connections.
+
+const MAX_PERIOD_DAYS = Number(process.env.REPORT_MAX_PERIOD_DAYS) || 366;
+const spanDays = (start, end) => (new Date(end) - new Date(start)) / 86_400_000;
+
+test("the default cap is a year — wider than anything the system retains", () => {
+  // NOTIFY_RETENTION_DAYS 30 / REPORT_RETENTION_DAYS 90 / SYSTEM_LOG_RETENTION_DAYS 365.
+  // The cap must exceed the longest of those or it would refuse a legitimate report.
+  assert.ok(MAX_PERIOD_DAYS >= 365, `cap ${MAX_PERIOD_DAYS} is narrower than log retention`);
+});
+
+test("an ordinary period is accepted", () => {
+  assert.ok(spanDays("2026-08-01", "2026-08-25") <= MAX_PERIOD_DAYS);
+  assert.ok(spanDays("2025-09-01", "2026-08-25") <= MAX_PERIOD_DAYS); // ~year, still fine
+});
+
+test("the 26-year span that motivated the cap is refused", () => {
+  assert.ok(spanDays("2000-01-01", "2026-08-25") > MAX_PERIOD_DAYS);
+});
+
+test("the boundary is exclusive — exactly the cap is allowed, one day more is not", () => {
+  const base = new Date("2026-01-01T00:00:00Z");
+  const atCap = new Date(base.getTime() + MAX_PERIOD_DAYS * 86_400_000);
+  const overCap = new Date(base.getTime() + (MAX_PERIOD_DAYS + 1) * 86_400_000);
+  assert.ok(!(spanDays(base, atCap) > MAX_PERIOD_DAYS), "exactly the cap must pass");
+  assert.ok(spanDays(base, overCap) > MAX_PERIOD_DAYS, "one day over must fail");
+});

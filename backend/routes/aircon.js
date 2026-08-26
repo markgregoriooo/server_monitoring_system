@@ -22,14 +22,22 @@ router.get("/", authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── GET /api/aircon/channels — ESP32 boot-time config fetch (no auth) ─────────
-router.get("/channels", async (req, res, next) => {
-  try {
-    res.json(await airconService.getChannelConfig());
-  } catch (err) {
-    next(err);
-  }
-});
+// ── GET /api/aircon/channels — REMOVED 2026-08-25 ────────────────────────────
+//
+// It was the only UNAUTHENTICATED route in this file, labelled "ESP32 boot-time config
+// fetch", and **nothing called it**: not the firmware (grep of env_monitor_v2.ino finds
+// no such request — the ESP32 receives its channel map as the `irConfig` socket event,
+// on a connection already authenticated with DEVICE_SECRET) and not the dashboard
+// (which reads the same data from `GET /api/aircon/`, behind a JWT).
+//
+// So it served no client while disclosing the room's AC inventory — how many units
+// exist, their IR channel numbers and whether each is currently on — to anyone who
+// could reach port 3000. Low value to an attacker, but it is exactly the shape of the
+// `/uploads` finding: a reader left behind after its consumer went away.
+//
+// If a future firmware really does need an HTTP bootstrap, give it the device-secret
+// check the socket handshake uses; do not restore an open one.
+// See audits/authorization-review-2026-08-25.md — AZ-01.
 
 // Push the auto-cooling IR zone thresholds to the ESP32 (its getIRZone() boundaries) so
 // changing WHEN IR fires needs no reflash — mirrors envConfig in routes/alertRules.js.

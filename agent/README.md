@@ -178,7 +178,8 @@ Everything is driven by command-line flags parsed in `main.go`:
 | `--register` | Enroll if not already enrolled, **wait** for admin approval, then **start the metric loop** (one command does it all). |
 | `--register-only` | Enroll and **exit** after approval. Used by the installers — the service then runs the loop separately. |
 | `-api-url URL` | Backend base URL, e.g. `http://192.168.100.9:3000`. Required for enrollment. |
-| `-install-key KEY` | The enrollment key (`AIK-…`), minted by an admin on **Server Metrics → Agent install keys**. Required for enrollment. Used once — the agent then runs on the `AGT-…` token it gets at approval. Revoking the install key blocks new installs; the admin can *also* choose to de-authorise the servers it enrolled, in which case this agent gets a 403, deletes its `agent.conf` and exits (re-run with a live key to come back). |
+| `CSPC_INSTALL_KEY` (env) | **The preferred way to pass the enrollment key** (`AIK-…`), minted by an admin on **Server Metrics → Agent install keys**. Required for enrollment. Used once — the agent then runs on the `AGT-…` token it gets at approval, and **unsets the variable as soon as it has read it** so the long-lived metric process and anything it spawns do not inherit it. Revoking the install key blocks new installs; the admin can *also* choose to de-authorise the servers it enrolled, in which case this agent gets a 403, deletes its `agent.conf` and exits (re-run with a live key to come back). |
+| `-install-key KEY` | ⚠️ **Deprecated** — same value, worse channel. A command-line argument is visible in `ps aux` / `Get-CimInstance Win32_Process` to anyone on the box for as long as enrollment runs, lands in the invoking shell's history file, and is captured by process-creation auditing (Linux auditd `execve`, Windows event 4688). Still accepted so existing runbooks keep working, and it warns when used. `CSPC_INSTALL_KEY` **wins** if both are set, so a stale flag in an old script cannot override a deliberately-set variable. |
 | `-conf PATH` | Path to `agent.conf`. Defaults to **next to the executable** so the installed service finds it regardless of working directory. |
 | `-interval N` | Seconds between metric posts (default **10**). Saved into `agent.conf` at enrollment. |
 
@@ -186,7 +187,7 @@ So in practice:
 
 ```bash
 # Brand-new machine: enroll, wait for approval, then run forever
-cspc-agent --register -api-url http://192.168.100.9:3000 -install-key <KEY> -conf agent.conf
+CSPC_INSTALL_KEY=<KEY> cspc-agent --register -api-url http://192.168.100.9:3000 -conf agent.conf
 
 # Already enrolled (agent.conf exists): just run the loop
 cspc-agent -conf agent.conf
@@ -642,7 +643,9 @@ pauses until you approve in the dashboard, then creates and starts the OS servic
 
 ```powershell
 # Windows — run from an ELEVATED PowerShell, binary in the same folder
-.\install.ps1 -ApiUrl "http://192.168.100.9:3000" -InstallKey "<INSTALL_KEY>"
+$env:CSPC_INSTALL_KEY = '<INSTALL_KEY>'
+.\install.ps1 -ApiUrl "http://192.168.100.9:3000"
+Remove-Item Env:\CSPC_INSTALL_KEY
 ```
 
 - Copies the binary to `C:\Program Files\cspc-agent\`.
@@ -656,7 +659,10 @@ pauses until you approve in the dashboard, then creates and starts the OS servic
 
 ```bash
 # Linux — systemd, binary in the same folder (auto-picks amd64 vs arm64)
-sudo bash install.sh http://192.168.100.9:3000 <INSTALL_KEY>
+# -E carries CSPC_INSTALL_KEY through sudo; without it the installer reports no key.
+export CSPC_INSTALL_KEY='<INSTALL_KEY>'
+sudo -E bash install.sh http://192.168.100.9:3000
+unset CSPC_INSTALL_KEY
 ```
 
 - Copies the binary to `/opt/cspc-agent/`, writes `/etc/systemd/system/cspc-agent.service`,
@@ -685,7 +691,7 @@ sudo systemctl disable --now cspc-agent   # remove
 
 ```bash
 # one-time enrollment (blocks until you Approve it in the dashboard), then runs
-go run ./cmd/agent --register -api-url http://192.168.100.9:3000 -install-key <KEY> -conf ./agent.conf
+CSPC_INSTALL_KEY=<KEY> go run ./cmd/agent --register -api-url http://192.168.100.9:3000 -conf ./agent.conf
 
 # already enrolled — just run the loop
 make run     # == go run ./cmd/agent -conf ./agent.conf

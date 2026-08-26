@@ -94,7 +94,16 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
     // belonging to a different client, an already-used or expired code, audience
     // mismatch, clock skew — collapses into one opaque user-facing message, so
     // without this line a misconfigured deployment is undiagnosable server-side.
-    console.error("[GOOGLE_AUTH] code exchange / ID-token verification failed:", err);
+    // describeError, NOT the raw error. Dumping `err` here wrote ~9.5 KB per failed
+    // sign-in and included the one-time AUTH CODE (verified: the client secret is not in
+    // it, but the code is). The code is short-lived and already spent by the time we are
+    // in this catch — but it is still a credential, this path is reachable 30 times per
+    // IP per window, and the transport branch two lines above already does it properly.
+    // `err.code`/`err.status` carry what actually diagnoses this (invalid_grant, 400).
+    console.error(
+      `[GOOGLE_AUTH] code exchange / ID-token verification failed: ${describeError(err)}` +
+        (err?.status ? ` (http ${err.status})` : ""),
+    );
     await recordDenial("token_verification_failed", { ip, userAgent });
     throw new AuthRejection("Could not verify your Google sign-in. Please try again.");
   }

@@ -153,14 +153,10 @@ export const api = {
     }
   },
 
-  createUser: async (data: any): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.post("/users", data);
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
+  // createUser / changePassword removed 2026-08-25 — their backend endpoints are gone.
+  // Login is Google-only, so no password stored through them could ever authenticate
+  // anyone, and nothing in this app called either function. See
+  // audits/auth-flow-security-2026-08-25.md — AF-03.
 
   updateUser: async (id: number, data: any): Promise<ApiResult> => {
     try {
@@ -219,16 +215,6 @@ export const api = {
     }
   },
 
-
-  // PATCH /api/users/me/password — change own password (requires current password)
-  changePassword: async (currentPassword: string, newPassword: string): Promise<ApiResult> => {
-    try {
-      const res = await apiClient.patch("/users/me/password", {currentPassword,newPassword,});
-      return { success: true, data: res.data };
-    } catch (err: any) {
-      return handleError(err);
-    }
-  },
 
   // Servers (live metrics from the Go monitoring agents)
   getServers: async (): Promise<ApiResult> => {

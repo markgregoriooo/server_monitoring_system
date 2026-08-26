@@ -6,6 +6,7 @@ import installKeyService from "../services/installKeyService.js";
 import alertsService from "../services/alertsService.js";
 import alertBandState from "../services/alertBandState.js";
 import { audit, clientInfo } from "../services/auditService.js";
+import { logSafe } from "../utils/logSafe.js";
 
 const router = express.Router();
 
@@ -26,6 +27,27 @@ const enrollLimiter = rateLimit({
   },
 });
 
+// The approval-polling endpoint had NO limiter at all — it was the one unauthenticated
+// route in this file without one. It exchanges a pending token for the permanent AGT-
+// credential, so it deserves a budget even though the token is now 192 bits of CSPRNG
+// (unguessable) and stored only as a hash.
+//
+// Sized for POLLING, not for a credential guess: registration.Run polls every 10 s while
+// it waits for an admin, so one agent costs ~90 requests per window, and several machines
+// can be enrolling from behind the same campus NAT at once. 600 is roughly six agents
+// polling continuously for a full window — generous for real use, and still a bound.
+const statusLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.AGENT_STATUS_RATE_MAX) || 600,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  ipv6Subnet: 56,
+  handler: (req, res) => {
+    console.warn(`[RATE] 429 agent status poll from ${req.ip}`);
+    res.status(429).json({ error: "Too many status checks. Please try again later." });
+  },
+});
+
 // ── POST /api/agents/register ─ first-run enrollment (install key, no JWT) ─────
 router.post("/register", enrollLimiter, async (req, res, next) => {
   // Keys live in `agent_install_keys` (admin-managed, revocable). AGENT_INSTALL_KEY in
@@ -43,7 +65,7 @@ router.post("/register", enrollLimiter, async (req, res, next) => {
     // the admin reading this log needs to know whether to re-issue or extend.
     console.warn(
       `[install-keys] enrollment refused (${resolved.reason}) from ${req.ip} ` +
-        `host="${String(req.body?.hostname ?? "?").slice(0, 60)}"`,
+        `host="${logSafe(req.body?.hostname ?? "?", 60)}"`,
     );
     return res.status(401).json({ error: "Invalid install key." });
   }
@@ -88,7 +110,7 @@ router.post("/register", enrollLimiter, async (req, res, next) => {
 // No extra rate limiter: the token is 24 random bytes (192 bits, agentService.register),
 // so there is nothing to guess, and `enrollLimiter`'s budget would cut off a legitimate
 // agent polling every 10s well before an admin got round to approving it.
-router.post("/status", async (req, res, next) => {
+router.post("/status", statusLimiter, async (req, res, next) => {
   const token = req.body?.pending_token;
   if (!token) return res.status(400).json({ error: "pending_token is required." });
   try {

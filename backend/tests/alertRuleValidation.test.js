@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanRule, COMPARISONS, SEVERITIES } from "../services/alertRuleValidation.js";
+import {
+  cleanRule,
+  COMPARISONS,
+  SEVERITIES,
+  severityOrderError,
+  duplicateSeverityError,
+  scopeConflictError,
+} from "../services/alertRuleValidation.js";
 
 // Characterisation tests for the alert-rule gate. Written to pin the behaviour of the
 // original alertRulesService.clean() BEFORE it was turned into a spec table, so the
@@ -120,4 +127,117 @@ test("cross-field validation sees the MERGED row on a patch", () => {
     () => cleanRule({ interfaceName: "ether1" }, { partial: true, existing: { device_id: null } }),
     (e) => e.status === 400,
   );
+});
+
+// ─── Severity ordering within one scope ───────────────────────────────────────
+//
+// Every test above validates ONE rule in isolation, which is exactly the gap this
+// closes: nothing compared a rule against its siblings, so `temperature warning >= 29`
+// and `temperature critical >= 29` could both exist. At equal thresholds the warning
+// rule is unreachable — worstBreach always returns the more severe band — so it is a
+// row that looks like a setting and changes nothing.
+
+const up = (severity, v) => ({ severity, threshold_value: v, comparison: ">=" });
+const down = (severity, v) => ({ severity, threshold_value: v, comparison: "<=" });
+
+test("equal thresholds across severities are rejected", () => {
+  // The reported case: temperature warning and critical both at 29.
+  const why = severityOrderError(up("warning", 29), [up("critical", 29)]);
+  assert.ok(why, "expected a rejection");
+  assert.match(why, /both be 29/);
+});
+
+test("equal is rejected from either direction of the edit", () => {
+  // Editing the critical row down onto the warning row is the same fault, and an admin
+  // can arrive at it either way round.
+  assert.ok(severityOrderError(up("critical", 30), [up("warning", 30)]));
+});
+
+test("higher-is-worse: critical must exceed warning", () => {
+  assert.equal(severityOrderError(up("warning", 29), [up("critical", 35)]), null);
+  const why = severityOrderError(up("warning", 40), [up("critical", 35)]);
+  assert.match(why, /must be HIGHER/);
+});
+
+test("lower-is-worse: critical must fall below warning", () => {
+  // ⚠️ The reason direction is read from `comparison` instead of assumed. ups_runtime /
+  // ups_charge use `<=`, where warning 20 / critical 10 is the CORRECT ladder — a
+  // hard-coded "critical is the bigger number" would forbid the UPS rules outright.
+  assert.equal(severityOrderError(down("warning", 20), [down("critical", 10)]), null);
+  const why = severityOrderError(down("warning", 5), [down("critical", 10)]);
+  assert.match(why, /must be LOWER/);
+});
+
+test("the full info < warning < critical ladder is enforced", () => {
+  const siblings = [up("warning", 30), up("critical", 35)];
+  assert.equal(severityOrderError(up("info", 25), siblings), null);
+  assert.ok(severityOrderError(up("info", 32), siblings), "info above warning must be rejected");
+});
+
+test("a scope whose rules disagree on direction is rejected", () => {
+  // Ordering a mixed-direction scope is meaningless, and picking the incoming rule's
+  // direction would make the verdict depend on which row happened to be edited last.
+  const why = severityOrderError(up("warning", 30), [down("critical", 10)]);
+  assert.match(why, /must agree on whether a higher or a lower reading is worse/);
+});
+
+test("a rule with no siblings is always fine", () => {
+  assert.equal(severityOrderError(up("critical", 35), []), null);
+  assert.equal(severityOrderError(up("critical", 35)), null);
+});
+
+test("same-severity siblings are not an ordering fault", () => {
+  // Two rules at the same severity are a duplicate, which is a different problem with a
+  // different fix. This check must not mis-report it as an ordering error.
+  assert.equal(severityOrderError(up("warning", 30), [up("warning", 31)]), null);
+});
+
+test("unparseable siblings and candidates are skipped, not crashed on", () => {
+  // The field parsers reject these first; this only proves the ordering check cannot be
+  // the thing that throws, since it runs on already-validated input in production but on
+  // whatever the caller passes in a test.
+  assert.equal(severityOrderError({ severity: "nope", threshold_value: 1, comparison: ">=" }, [up("critical", 2)]), null);
+  assert.equal(severityOrderError(up("warning", 30), [{ severity: "critical", threshold_value: "abc", comparison: ">=" }]), null);
+});
+
+// ─── Duplicate severity within one scope ──────────────────────────────────────
+//
+// A different fault from the ladder, with a different fix. Two `temperature warning`
+// rules are not additive — `getRoomThresholds` resolves a severity with `.find()`, so the
+// value pushed to the ESP32 is decided by row order and editing the losing row changes
+// nothing. Backed by a DB uniqueness index too (2026-08-26_alert_rule_scope_uniqueness.sql).
+
+test("a second rule at the same severity is rejected", () => {
+  const why = duplicateSeverityError(up("warning", 28), [up("warning", 30)]);
+  assert.ok(why);
+  assert.match(why, /already exists/);
+});
+
+test("a different severity in the same scope is fine", () => {
+  assert.equal(duplicateSeverityError(up("info", 25), [up("warning", 30)]), null);
+  assert.equal(duplicateSeverityError(up("critical", 35), [up("warning", 30)]), null);
+});
+
+test("the duplicate message names the existing threshold, so it can be found", () => {
+  // "A rule already exists" with no value sends an admin hunting through a list. The
+  // number is what identifies which row they are colliding with.
+  assert.match(duplicateSeverityError(up("warning", 28), [up("warning", 31)]), /31/);
+});
+
+test("scopeConflictError reports the duplicate BEFORE the ladder", () => {
+  // A duplicate is the more actionable of the two: while two warning rules exist, any
+  // ladder complaint is about a row that may not even be the one in force. Ordering the
+  // messages this way means fixing what the admin is told to fix resolves the next one.
+  const siblings = [up("warning", 30), up("critical", 35)];
+  const why = scopeConflictError(up("warning", 99), siblings);
+  assert.match(why, /already exists/, "duplicate should win over the ladder complaint");
+});
+
+test("scopeConflictError still reports a pure ladder fault", () => {
+  const why = scopeConflictError(up("warning", 40), [up("critical", 35)]);
+  assert.match(why, /must be HIGHER/);
+});
+
+test("an unknown severity is left to the field parser", () => {
+  assert.equal(duplicateSeverityError({ severity: "fatal", threshold_value: 1 }, [up("warning", 30)]), null);
 });

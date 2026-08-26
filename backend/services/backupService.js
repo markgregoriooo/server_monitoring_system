@@ -5,6 +5,7 @@ import crypto from "crypto";
 import notificationService from "./notificationService.js";
 import alertsService from "./alertsService.js";
 import { describeError } from "../utils/httpError.js";
+import { BACKEND_ROOT } from "../config/env.js";
 
 // ─── On-site backup writer ────────────────────────────────────────────────────
 //
@@ -36,7 +37,7 @@ import { describeError } from "../utils/httpError.js";
 
 const ENABLED = (process.env.BACKUP_ENABLED ?? "true").toLowerCase() !== "false";
 const BACKUP_DIR =
-  (process.env.BACKUP_DIR ?? "").trim() || path.resolve(process.cwd(), "backups");
+  (process.env.BACKUP_DIR ?? "").trim() || path.resolve(BACKEND_ROOT, "backups");
 const RETENTION_DAYS = Number(process.env.BACKUP_RETENTION_DAYS) || 30;
 const FLUSH_MS = Number(process.env.BACKUP_FLUSH_MS) || 5_000;
 const DAY_MS = 24 * 60 * 60 * 1000;

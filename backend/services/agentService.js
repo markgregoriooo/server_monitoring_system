@@ -15,7 +15,14 @@ import {
 // which is what the comment on the other copy already claimed was true.
 import { networkSegment } from "./snmpUtils.js";
 import { logDevice, getDeviceLogs } from "./deviceLogs.js";
-import { describeError } from "../utils/httpError.js";
+// The SAME hash the install keys use. Deliberately imported rather than re-implemented:
+// two hashing schemes for two credential tables in one codebase is how one of them ends
+// up wrong. See migrations/2026-08-25_agent_token_hash.sql for why SHA-256 and not bcrypt.
+import { hashKey } from "./installKeyUtils.js";
+// AES-256-GCM, keyed by SECRET_ENC_KEY (falling back to MIKROTIK_ENC_KEY). Used ONLY for
+// the copy that has to be readable again — see approve()/getStatusByPendingToken below.
+import secretCrypto from "./secretCrypto.js";
+import { describeError, unavailable } from "../utils/httpError.js";
 
 // ─── All Go-agent + server-device DB logic (devices + server_specs +
 //     device_network + agent_tokens). Mirrors the airconService pattern. ───────
@@ -93,12 +100,15 @@ function withLive(r) {
 // history, which is tagged by device_id. ('rejected' is NOT included — agentService.
 // reject deletes the device outright, so no such row survives to match.)
 //
-// Returns { pendingToken, deviceId, status, tokenId } or null.
+// Returns { deviceId, status, tokenId, installKeyId } or null.
+// Deliberately does NOT return a pending token: it is stored only as a hash now, and
+// register() mints a fresh one for every caller anyway. See
+// migrations/2026-08-25b_agent_pending_token_hash.sql.
 async function findExistingEnrollment(mac, hostname) {
   const LIVE = "('pending', 'approved', 'revoked')";
   if (mac) {
     const [[byMac]] = await db.query(
-      `SELECT t.id AS tokenId, t.token AS pendingToken, t.device_id AS deviceId, t.status,
+      `SELECT t.id AS tokenId, t.device_id AS deviceId, t.status,
               t.install_key_id AS installKeyId
          FROM device_network n
          JOIN agent_tokens t ON t.device_id = n.device_id
@@ -111,7 +121,7 @@ async function findExistingEnrollment(mac, hostname) {
   }
   if (hostname) {
     const [[byHost]] = await db.query(
-      `SELECT t.id AS tokenId, t.token AS pendingToken, t.device_id AS deviceId, t.status,
+      `SELECT t.id AS tokenId, t.device_id AS deviceId, t.status,
               t.install_key_id AS installKeyId
          FROM devices d
          JOIN agent_tokens t ON t.device_id = d.device_id
@@ -146,10 +156,11 @@ async function register(host, installKeyId = null) {
     const pendingToken = crypto.randomBytes(24).toString("hex");
     await db.query(
       `UPDATE agent_tokens
-          SET token = ?, approved_token = NULL, status = 'pending',
+          SET pending_token_hash = ?, approved_token_hash = NULL, approved_token_cipher = NULL,
+              status = 'pending',
               install_key_id = ?, created_at = NOW(), last_used_at = NOW(), approved_at = NULL
         WHERE id = ?`,
-      [pendingToken, installKeyId, existing.tokenId],
+      [hashKey(pendingToken), installKeyId, existing.tokenId],
     );
     await refreshHostInfo(existing.deviceId, host);
     return { pendingToken, deviceId: existing.deviceId, reused: true, reEnrolled: true };
@@ -170,13 +181,22 @@ async function register(host, installKeyId = null) {
     // re-running the installer with that key. Presenting a valid install key is already
     // the authority to enrol a machine, so it is the right authority to re-file one; and
     // this grants no data access on its own, because metrics still need the AGT- token.
-    if (installKeyId != null && existing.installKeyId !== installKeyId) {
-      await db.query(`UPDATE agent_tokens SET install_key_id = ? WHERE id = ?`, [
-        installKeyId,
-        existing.tokenId,
-      ]);
-    }
-    return { pendingToken: existing.pendingToken, deviceId: existing.deviceId, reused: true };
+    // A FRESH pending token every time, rather than handing back the stored one.
+    //
+    // This is what makes hashing the column possible at all — you cannot return a hash.
+    // Nothing depended on the token being stable: the agent holds it only in memory for
+    // the duration of registration.Run and never writes it to agent.conf, so a returning
+    // machine simply uses whichever token it was just given.
+    //
+    // Reaching this line already required presenting a valid AIK- install key, which is
+    // the real authorisation to re-collect a credential. The pending token is just the
+    // ticket for that one exchange.
+    const pendingToken = crypto.randomBytes(24).toString("hex");
+    await db.query(
+      `UPDATE agent_tokens SET pending_token_hash = ?, install_key_id = COALESCE(?, install_key_id) WHERE id = ?`,
+      [hashKey(pendingToken), installKeyId ?? null, existing.tokenId],
+    );
+    return { pendingToken, deviceId: existing.deviceId, reused: true };
   }
 
   const pendingToken = crypto.randomBytes(24).toString("hex");
@@ -215,9 +235,9 @@ async function register(host, installKeyId = null) {
     );
 
     await conn.query(
-      `INSERT INTO agent_tokens (device_id, install_key_id, token, status, last_used_at)
+      `INSERT INTO agent_tokens (device_id, install_key_id, pending_token_hash, status, last_used_at)
        VALUES (?, ?, ?, 'pending', NOW())`,
-      [deviceId, installKeyId, pendingToken],
+      [deviceId, installKeyId, hashKey(pendingToken)],
     );
 
     await conn.commit();
@@ -263,16 +283,40 @@ async function refreshHostInfo(deviceId, host) {
 
 // Agent polls this with its pending token until status flips to approved.
 async function getStatusByPendingToken(token) {
+  // Looked up by HASH — the column holds no readable token. One indexed comparison,
+  // the same shape the plaintext compare had.
   const [[row]] = await db.query(
-    `SELECT status, approved_token, device_id FROM agent_tokens WHERE token = ? LIMIT 1`,
-    [token],
+    `SELECT status, approved_token_cipher, device_id
+       FROM agent_tokens WHERE pending_token_hash = ? LIMIT 1`,
+    [hashKey(token)],
   );
   if (!row) return null;
   return {
     status: row.status,
-    approved_token: row.approved_token || "",
+    // THE re-delivery point — what a machine that lost its agent.conf comes back for, and
+    // what the ADOPT workflow rides on. A decrypt failure is deliberately NOT fatal: it
+    // means the encryption key changed since this token was stored, and the right answer
+    // is an empty string (the agent keeps polling, an operator re-enrolls it) rather than
+    // a 500 on an endpoint every pending agent hits every 10 seconds.
+    approved_token: readApprovedToken(row),
     device_id: row.device_id,
   };
+}
+
+/** The token in readable form, or "" when it cannot be produced. */
+function readApprovedToken(row) {
+  if (!row.approved_token_cipher) return ""; // approved before the cipher column existed
+  try {
+    return secretCrypto.decrypt(row.approved_token_cipher) || "";
+  } catch (err) {
+    console.error(
+      `[agent-tokens] cannot decrypt approved_token_cipher for device ${row.device_id} — ` +
+        `${describeError(err)}. The encryption key changed since it was stored, so that ` +
+        "server must be re-enrolled (it keeps its id, logs and history). Already-running " +
+        "agents are UNAFFECTED — they hold their own token and lookup is by hash.",
+    );
+    return "";
+  }
 }
 
 // ─── Admin approval ───────────────────────────────────────────────────────────
@@ -296,11 +340,31 @@ async function listPending() {
 // pending enrollment for that device (already approved / unknown id).
 async function approve(deviceId) {
   const approvedToken = "AGT-" + crypto.randomBytes(24).toString("hex");
+
+  // Two columns, two jobs — a hash cannot do both.
+  //   approved_token_hash   the LOOKUP value, checked on every metric POST.
+  //   approved_token_cipher a recoverable copy, because the token must be DELIVERABLE more
+  //                         than once: the agent is asleep polling /api/agents/status when
+  //                         this runs, and a machine that later loses agent.conf collects
+  //                         it the same way (that path also carries the ADOPT workflow).
+  //
+  // Encryption is REQUIRED, not a fallback. There is deliberately no "store it readable if
+  // no key is configured" branch: that branch is how the plaintext column existed in the
+  // first place, and a silent downgrade to readable storage is exactly what this change is
+  // undoing. Failing loudly at approval — one admin action, with a message naming the fix —
+  // is far cheaper than a credential quietly landing in the nightly offsite dump.
+  if (!secretCrypto.isConfigured()) {
+    throw unavailable(
+      "Cannot approve: no encryption key is configured. Set SECRET_ENC_KEY (or " +
+        "MIKROTIK_ENC_KEY) in backend/.env to 64 hex characters and restart the backend.",
+    );
+  }
   const [result] = await db.query(
     `UPDATE agent_tokens
-        SET approved_token = ?, status = 'approved', approved_at = NOW()
+        SET approved_token_hash = ?, approved_token_cipher = ?,
+            status = 'approved', approved_at = NOW()
       WHERE device_id = ? AND status = 'pending'`,
-    [approvedToken, deviceId],
+    [hashKey(approvedToken), secretCrypto.encrypt(approvedToken), deviceId],
   );
   if (result.affectedRows === 0) return null;
 
@@ -335,20 +399,27 @@ async function reject(deviceId) {
 // Used by agentAuthMiddleware. Returns the device identity for a valid,
 // approved token, or null. Best-effort bumps last_used_at without blocking.
 async function validateToken(token) {
+  // Lookup is by HASH — one unique-indexed comparison, the same shape the plaintext
+  // compare had, so the hottest query in the system (every agent, every 10 s) costs what
+  // it always did. `migrations/2026-08-25_agent_token_hash.sql` must be applied before
+  // this code runs; there is deliberately no plaintext fallback, because the column it
+  // would fall back to no longer exists.
   const [[row]] = await db.query(
     `SELECT t.device_id, d.device_name, d.display_name, d.ip_address, d.location, s.os
        FROM agent_tokens t
        JOIN devices d ON d.device_id = t.device_id
        LEFT JOIN server_specs s ON s.device_id = t.device_id
-      WHERE t.approved_token = ? AND t.status = 'approved'
+      WHERE t.approved_token_hash = ? AND t.status = 'approved'
       LIMIT 1`,
-    [token],
+    [hashKey(token)],
   );
   if (!row) return null;
 
-  db.query(`UPDATE agent_tokens SET last_used_at = NOW() WHERE approved_token = ?`, [token]).catch(
-    () => {},
-  );
+  // Best-effort, never awaited — a failed counter must not fail an ingest that already
+  // authenticated.
+  db.query(`UPDATE agent_tokens SET last_used_at = NOW() WHERE approved_token_hash = ?`, [
+    hashKey(token),
+  ]).catch(() => {});
   return row;
 }
 

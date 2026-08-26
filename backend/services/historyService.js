@@ -127,9 +127,18 @@ function buildWhere({ category, severity, actorType, userId, search }) {
     clauses.push("h.actor_user_id = ?");
     params.push(uid);
   }
-  const term = String(search ?? "").trim();
+  // Escape the LIKE metacharacters before wrapping the term in wildcards of our own.
+  // Binding the parameter stops INJECTION, but it does not stop the term from being
+  // interpreted: `_` matches any single character and `%` matches everything, so a search
+  // for "server_01" quietly also matched "server-01", and a search for "%" matched every
+  // row in the table. Backslash first, or it would escape the escapes.
+  //
+  // Also length-capped. Each term is compared against FOUR columns with a leading
+  // wildcard, which cannot use an index — a very long string is pure scan cost, and 120
+  // characters is far more than any real audit-log search.
+  const term = String(search ?? "").trim().slice(0, 120);
   if (term) {
-    const like = `%${term}%`;
+    const like = `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
     clauses.push(
       "(h.message LIKE ? OR h.action LIKE ? OR h.device_name LIKE ? OR h.actor_name LIKE ?)",
     );

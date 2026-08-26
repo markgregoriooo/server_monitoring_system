@@ -2,7 +2,7 @@ import db from "../config/mysql.js";
 import jwt from "jsonwebtoken";
 import permissionService from "./permissionService.js";
 import policyService from "./policyService.js";
-import { JWT_SECRET } from "../middleware/auth.js";
+import { JWT_SECRET, JWT_SIGN_OPTS } from "../middleware/auth.js";
 import { notFound } from "../utils/httpError.js";
 
 const authService = {
@@ -21,9 +21,14 @@ const authService = {
       profile_image: user.profile_image,
       permissions: permissions ?? [],
       tv: user.token_version ?? 0,   // F-02: session-revocation version
+      // When this SESSION began, as opposed to when the current token was minted.
+      // Carried unchanged across every sliding renewal so middleware/auth.js can cap
+      // total session age — without it a renewed token looks brand new forever and
+      // the sliding window has no ceiling. See maybeRenewToken.
+      ist: Math.floor(Date.now() / 1000),
     };
 
-    const token = jwt.sign(payload, JWT_SECRET, { algorithm: "HS256", expiresIn: "1h" });
+    const token = jwt.sign(payload, JWT_SECRET, { ...JWT_SIGN_OPTS, expiresIn: "1h" });
 
     // Deliberately NOT in the signed payload. The token lives an hour, so a version
     // baked into it would still read "not accepted" for the rest of that hour after

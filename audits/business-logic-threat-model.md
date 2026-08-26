@@ -1,6 +1,10 @@
 # Business Logic Security Threat Model — CSPC-ICTU Monitoring System
 
 **Date:** 2026-06-05
+> ⚠️ **SUPERSEDED by `audits/business-logic-review-2026-08-25.md`.** This pass predates the Go
+> agents, the SNMP/MikroTik pollers, reports, analytics, install keys and the policy gate — it
+> reviewed a system roughly a third of the current size. Its F-01…F-07 findings remain closed
+> and are still accurate history; it is kept for that record, not as a current assessment.
 **Branch:** EnvironmentMonitor
 **Scope reviewed:** `backend/` — auth/session, RBAC middleware, user management, aircon
 control (REST + Socket.IO), upload, server bootstrap.

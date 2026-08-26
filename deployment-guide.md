@@ -123,10 +123,33 @@ no devices, no history.
 Create a dedicated app user (don't run the app as root):
 
 ```sql
-CREATE USER 'cspc_app'@'%' IDENTIFIED BY 'a-strong-password';
-GRANT SELECT, INSERT, UPDATE, DELETE ON cspc_ictu_monitoring.* TO 'cspc_app'@'%';
+-- 'localhost', NOT '%'. The backend runs on this same machine, so the account never
+-- needs to accept a connection from anywhere else — and '%' would let it be used from
+-- any host that can reach port 3306.
+CREATE USER 'cspc_app'@'localhost' IDENTIFIED BY 'a-strong-password';
+
+-- SELECT/INSERT/UPDATE/DELETE only. Deliberately NO: DROP, ALTER, CREATE, GRANT,
+-- FILE or SUPER. The app never changes its own schema — migrations are run by hand
+-- (§2.1, migrations/) — so giving it DDL rights only widens what a bug or an
+-- injection could reach.
+GRANT SELECT, INSERT, UPDATE, DELETE ON cspc_ictu_monitoring.* TO 'cspc_app'@'localhost';
 FLUSH PRIVILEGES;
 ```
+
+Then point `backend/.env` at it — `DB_USER=cspc_app`, `DB_PASSWORD=…`.
+
+> ⚠️ **Check what you are actually connecting as before go-live.** During development it is
+> easy to leave `DB_USER=root`, and a `.env` gets copied to the server along with everything
+> else. Verify on the deployed box:
+>
+> ```sql
+> SELECT CURRENT_USER();   -- expect cspc_app@localhost, NOT root@localhost
+> SHOW GRANTS;             -- expect only SELECT, INSERT, UPDATE, DELETE on this one schema
+> ```
+>
+> On the machine this guide was audited against, that returned
+> `GRANT ALL PRIVILEGES ON *.* TO root@localhost WITH GRANT OPTION` — every right MariaDB
+> has, on every database. See `audits/database-security-2026-08-25.md` — DB-01.
 
 > **Re-exporting later:** export from **phpMyAdmin**, not by forward-engineering the
 > MySQL Workbench `.mwb` model. The model is a design artifact and drifts — the previous
@@ -271,22 +294,48 @@ pm2 start src/server.js --name cspc-backend --cwd "$(pwd)"
 pm2 save && pm2 startup        # restart on boot
 ```
 
-```ini
-# Option B — systemd  (/etc/systemd/system/cspc-backend.service)
-[Unit]
-Description=CSPC-ICTU Monitoring Backend
-After=network.target mysql.service influxdb.service
+**Option B — systemd (recommended).** A complete, commented unit ships in the repo:
 
-[Service]
-WorkingDirectory=/opt/cspc/backend
-ExecStart=/usr/bin/node src/server.js
-EnvironmentFile=/opt/cspc/backend/.env
-Restart=on-failure
-User=cspc
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp ops/systemd/cspc-monitoring.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cspc-monitoring
+journalctl -u cspc-monitoring -f
 ```
+
+Full install, verification and troubleshooting: **`ops/systemd/README.md`**.
+
+> ⚠️ **An earlier sketch in this guide had two defects — don't copy it from an old revision.**
+>
+> 1. **`EnvironmentFile=/opt/cspc/backend/.env`** — the app already loads that file itself
+>    (`config/env.js` → `dotenv.config()`). Pointing systemd at it too parses it twice with two
+>    different parsers, and systemd's is stricter: it does not strip inline `#` comments and
+>    quotes differently, so a value dotenv reads correctly can reach the process mangled. One
+>    loader, one set of rules — the shipped unit sets only `NODE_ENV`.
+> 2. **`Restart=on-failure`** — `src/server.js` exits on an uncaught exception *by design*
+>    ("Restart is left to the process supervisor, which is the right owner"). `Restart=always`
+>    with a start-limit is what makes that decision safe.
+>
+> Two traps the unit used to carry warnings about have since been **fixed in the
+> application**, so the unit is safer than the warnings implied:
+>
+> - **`.env` no longer depends on the working directory.** `config/env.js` exports
+>   `BACKEND_ROOT`, resolved from the module's own path, and `.env`, `REPORTS_DIR` and the
+>   default `BACKUP_DIR` all anchor to it. Starting the backend from any directory works.
+>   Set `WorkingDirectory` anyway — it is still good hygiene — but a wrong value is no
+>   longer the silent misconfiguration it was.
+> - **`NoNewPrivileges=true` no longer invents an outage.** It still blocks the
+>   setuid/`cap_net_raw` that `ping` needs, but `icmpPing` now separates "could not run the
+>   probe" from "no reply": packet loss is reported as **null** instead of 100, `[ICMP]` is
+>   logged once, and the poller skips the sample rather than marking every router Offline.
+>   Enabling it still *disables* latency/loss monitoring — check the journal for `[ICMP]`.
+
+**Why a supervisor at all, beyond restarts:** it decides where `console.*` output goes. Under
+`npm run dev` that is a terminal which eventually closes. Under systemd it is **journald** —
+captured, rotated, and kept across restarts — which is what makes the `[AUTH]`, `[AUTHZ]`,
+`[RATE]` and `[POLICY]` lines usable during an incident. See
+`audits/logging-monitoring-2026-08-25.md` §8. Bound the journal's size with
+`ops/systemd/README.md` §4.
 
 On boot the backend also starts two background jobs (no setup needed): a **15 s offline
 sweep** (flips silent servers to Offline + raises an alert) and a **daily retention purge**.
@@ -394,8 +443,7 @@ two different people. Confusing them is the most common source of "wait, is that
   YOUR campus server — nginx :80  ←── YOU configure this (§5)
       ├─ /              → frontend/dist   (static React files)
       ├─ /api/*         → 127.0.0.1:3000
-      ├─ /socket.io/*   → 127.0.0.1:3000  (WebSocket)
-      └─ /uploads/*     → 127.0.0.1:3000
+      └─ /socket.io/*   → 127.0.0.1:3000  (WebSocket)
       │
       ▼
   Node backend :3000  →  MySQL · InfluxDB   ←── YOU (§2, §3)
@@ -458,8 +506,9 @@ server {
 
     # Headroom only. The avatar-upload path (and middleware/upload.js) is gone —
     # profile photos now come from Google — so nothing the app accepts is anywhere
-    # near this: agent metric batches are deliberately kept under express.json()'s
-    # 100kb default. Safe to drop to nginx's 1m default; kept as slack.
+    # near this: agent metric batches are deliberately kept under the backend's
+    # explicit `express.json({ limit: '100kb' })`. Safe to drop to nginx's 1m default;
+    # kept as slack.
     client_max_body_size 4m;
 
     # React SPA — serve the file if it exists, else fall back to index.html
@@ -488,10 +537,67 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Uploaded avatars (backend serves /uploads as static)
-    location /uploads/ { proxy_pass http://127.0.0.1:3000; }
 }
 ```
+
+> ⚠️ **The `/uploads/` location is gone on purpose.** It used to proxy to the backend's
+> `express.static("uploads")`, which served real staff profile photos to anyone who asked,
+> with no token and no role check. The avatar-upload feature was deleted when login went
+> Google-only, and that reader has now been removed from the backend too
+> (`audits/api-infra-security-2026-08-25.md` — A-02). Avatars are absolute Google URLs.
+> If you copied this config from an earlier revision, delete that line.
+
+### 5.3.1 Security headers for the dashboard PAGE
+
+The backend sets its own headers on every API response (`middleware/securityHeaders.js`),
+but **it never serves the HTML** — nginx does, from `frontend-dist`. So the Content-Security
+Policy that governs the dashboard has to live here; a CSP set by the API applies only to
+API responses.
+
+Add this inside the `server { }` block, above the `location` blocks:
+
+```nginx
+    # Applies to everything nginx serves from this vhost, including the SPA shell.
+    add_header X-Content-Type-Options  "nosniff"            always;
+    add_header X-Frame-Options         "DENY"               always;
+    add_header Referrer-Policy         "no-referrer"        always;
+    add_header Permissions-Policy      "camera=(), microphone=(), geolocation=()" always;
+
+    # Enable ONLY once §6's certificate is in place. Over plain HTTP this pins the
+    # hostname to HTTPS in every staff browser — on a host with no certificate that is
+    # a self-inflicted outage, and it is not quickly undoable.
+    # add_header Strict-Transport-Security "max-age=15552000" always;
+
+    # Built up with `set` rather than written as one 400-character line. nginx has no
+    # line-continuation inside a quoted string — a quoted value split across lines keeps
+    # the newlines, and a header value containing a newline is not a valid header.
+    set $csp "default-src 'self'";
+    set $csp "${csp}; script-src 'self' https://accounts.google.com";
+    set $csp "${csp}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com";
+    set $csp "${csp}; font-src 'self' https://fonts.gstatic.com";
+    set $csp "${csp}; img-src 'self' data: blob: https://*.googleusercontent.com";
+    set $csp "${csp}; connect-src 'self' https://accounts.google.com";
+    set $csp "${csp}; frame-src https://accounts.google.com";
+    set $csp "${csp}; frame-ancestors 'none'; base-uri 'self'";
+    set $csp "${csp}; form-action 'self'; object-src 'none'";
+    add_header Content-Security-Policy $csp always;
+```
+
+Where each allowance comes from — **do not trim these without checking**:
+
+| Directive | Why it is there |
+|-----------|-----------------|
+| `script-src … accounts.google.com` | `@react-oauth/google` injects `https://accounts.google.com/gsi/client`. Without it the **sign-in button never loads** and nobody can log in |
+| `style-src 'unsafe-inline'` | The pages use React `style={{…}}` attributes throughout. A CSP-safe alternative is a per-response nonce, which Vite's static build cannot provide |
+| `style-src`/`font-src … fonts.g*` | JetBrains Mono (`src/index.css` `@import`) and Share Tech Mono (`index.html`) are loaded from Google Fonts |
+| `img-src … *.googleusercontent.com` | Profile photos come from the Google ID token (`lh3.googleusercontent.com`, but the host varies) |
+| `connect-src 'self'` | **Only correct when `VITE_API_URL` points at this same origin.** Left to auto-detect, `config.ts` builds `http://<host>:3000` — a *different* origin — and every API call and the socket are blocked. §5.2 already tells you to set `VITE_API_URL=/`; this is the second reason it matters |
+
+> ⚠️ **Verify before go-live, don't assume.** Load the dashboard, open DevTools ▸ Console
+> and look for `Refused to load …` / `Refused to connect …`. Then sign out and sign in
+> again — the Google button is the piece most likely to be blocked, and it is the piece
+> that locks everyone out. `add_header` in nginx is **replaced, not merged**, by any
+> `add_header` in a nested `location`, so if you add one later you must repeat these.
 
 ### 5.4 Enable it
 
@@ -537,7 +643,9 @@ this stage — that's expected**, because Google rejects a bare LAN IP as an OAu
 | **404 on every deep link** (`/dashboard`) | `try_files $uri /index.html;` missing — the SPA fallback |
 | **502 Bad Gateway** on `/api/` | backend isn't running, or not on `:3000`. Check `curl http://127.0.0.1:3000/api/auth/me` on the server itself |
 | **Page loads, live data never arrives** | `/socket.io/` block missing the `Upgrade`/`Connection` headers or `proxy_http_version 1.1` |
-| **413 on avatar upload** | `client_max_body_size` too low (see the config above) |
+| **413 on an agent metric batch** | `client_max_body_size` too low, or a proxy in front capping below 100 KB |
+| **Sign-in button never appears** | the CSP is blocking `https://accounts.google.com/gsi/client` — check DevTools ▸ Console (§5.3.1) |
+| **Page loads, every API call fails** | `connect-src 'self'` with `VITE_API_URL` left to auto-detect → the app calls `:3000`, a different origin (§5.3.1) |
 | **nginx welcome page instead of the dashboard** | the `default` site is still enabled — remove the symlink (§5.4) |
 
 ### 5.7 Notes
@@ -625,7 +733,8 @@ Required headers:
 
 WebSocket:        allow HTTP/1.1 Upgrade on /socket.io/ (long-lived connections;
                   read timeout well above the ~25 s Socket.IO ping interval)
-Max body size:    at least 2 MB (profile photo uploads)
+Max body size:    at least 1 MB (report downloads stream out; the largest
+                  request IN is an agent metric batch, capped at 100 KB)
 
 Requested:        restrict /api/agents/ and /api/servers/metrics to campus LAN sources
 ```
@@ -636,8 +745,9 @@ Requested:        restrict /api/agents/ and /api/servers/metrics to campus LAN s
 > looking in the wrong place. One sentence upfront prevents it.
 
 Two others bite quietly if missed. **Path rewriting** — if their proxy strips a prefix, every
-`/api/...` call 404s. **Body size** — both proxies must allow 2 MB or avatar uploads fail with
-413 (§5 sets `client_max_body_size` on our side for exactly this reason).
+`/api/...` call 404s. **Body size** — nothing this
+system accepts is large (the biggest request in is a 100 KB agent metric batch), but a proxy
+capped below that turns an agent's post-outage backfill into a silent 413.
 
 **Draft message** — a complete, ready-to-send version, including the seven questions to ask
 them, is in **`https_hostname&reverse_proxy_req_letter.md`** (and as a Word document,
@@ -885,8 +995,46 @@ captured from the real remote (see `CLAUDE.md` → Air Conditioner System).
 - **Nothing is exposed to the internet from this server.** ICTU's edge is the only
   public-facing component; it reaches nginx over the campus LAN on port 80. Any inbound 443
   rule lives at their edge, not here.
-- On the LAN, allow the agent/ESP32 subnets to reach the server on **3000**.
 - Keep MySQL (3306) and InfluxDB (8086) bound to localhost / the backend host only.
+
+### 9.1 Restrict port 3000 to the agent subnets — do this on deploy day
+
+The backend listens on `0.0.0.0:3000` (`src/server.js`), and it **has to**: the Go agents and
+the ESP32 connect to it directly, not through nginx. So port 3000 is reachable by anything on
+the campus LAN, and *that is the bypass* — a client talking to `:3000` skips nginx entirely,
+which means it also writes its own `X-Forwarded-For`. With `TRUST_PROXY=2` the backend believes
+two of those entries, so such a client picks its own `req.ip`: its own bucket in every IP-keyed
+rate limiter (sign-in, agent enrollment, metric ingest) and its own value in
+`system_logs.ip_address` — the row that is the evidence for a Privacy Notice acceptance.
+
+No code can close this, because the port must stay open to the LAN. It is a firewall rule:
+
+```bash
+sudo ufw allow 80/tcp                                        # nginx — browsers
+sudo ufw allow from <AGENT_SUBNET> to any port 3000 proto tcp # e.g. 10.10.20.0/24
+sudo ufw allow from <ESP32_SUBNET> to any port 3000 proto tcp # if it differs
+sudo ufw deny 3000                                            # everyone else
+sudo ufw enable && sudo ufw status numbered
+```
+
+Replace `<AGENT_SUBNET>` / `<ESP32_SUBNET>` with the ranges those devices actually sit on — ask
+ICTU which VLAN the server room and the monitored servers are on; do not guess a /8.
+
+**Browsers are unaffected** — they reach the API through nginx on 80/443 and never touch 3000.
+Verify from a machine outside the allowed range:
+
+```bash
+curl -m 5 http://<campus-server-ip>:3000/api/policy/version   # expect: timeout / refused
+curl -I  http://<campus-server-ip>/                            # expect: 200 (nginx still fine)
+```
+
+Then re-check that an agent still reports in (Server Metrics → the host goes Online). If it
+does not, its subnet is not in the allow list.
+
+> ⚠️ Run `ufw allow 22/tcp` (or your SSH port) **before** `ufw enable` if you are on SSH —
+> enabling a default-deny firewall over SSH without it locks you out of the box.
+
+See `audits/api-infra-security-2026-08-25.md` — A-03.
 
 ---
 
@@ -904,9 +1052,10 @@ captured from the real remote (see `CLAUDE.md` → Air Conditioner System).
 >    authenticate. There's no password to guess and no local account to brute-force.
 > 2. **Admin approval** — a valid CSPC account still lands `status='pending'` and cannot hold a
 >    session until an admin approves it ([§4.3](#43-bootstrap-the-first-admin-important--chicken-and-egg)).
-> 3. **Rate limiting** — 30 sign-in attempts / 15 min per IP (failures only), 500 requests /
->    15 min globally. These depend on `trust proxy` being correct, or the whole internet shares
->    one bucket.
+> 3. **Rate limiting** — 30 sign-in attempts / 15 min per IP (failures only), 3000 requests /
+>    15 min keyed **per user** where the request carries a verified JWT and per IP otherwise,
+>    plus 50 failed Socket.IO handshakes / 15 min per IP. These depend on `TRUST_PROXY` being
+>    correct AND on §9.1's firewall rule, or a client can choose its own bucket.
 >
 > **Worth asking ICTU for:** restrict `/api/agents/` and `/api/servers/metrics` to campus LAN
 > sources at their proxy. Go agents and the ESP32 always connect over the LAN
@@ -918,10 +1067,10 @@ captured from the real remote (see `CLAUDE.md` → Air Conditioner System).
   keep working — they use per-device tokens).
 - **CORS:** set `WEB_ORIGIN` to the exact public dashboard origin (the ICTU hostname);
   avoid `*` outside a trusted LAN.
-- **`trust proxy`** is enabled (`app.set("trust proxy", 1)`) so rate limiting sees the real
-  client IP behind **one** proxy hop (nginx). With ICTU's edge in front of nginx that's
-  **two** hops — set it to `2`, or `req.ip` reports their proxy and every user shares one
-  apparent IP (§6.1).
+- **`TRUST_PROXY`** (backend/.env) is how many proxy hops may be believed when they claim a
+  client's address. Default **2** = ICTU's edge → campus nginx → backend, which is this
+  deployment. Set it to the REAL hop count: too low and every user shares one apparent IP
+  (their proxy's); too high and the surplus entries are attacker-supplied (§9.1).
 - **DB user:** least-privilege app user ([§2.1](#21-mysql)), not root.
 - **Backups:** a full on-site + offsite (cloud) backup runbook is in
   [§11](#11-backups--on-site--offsite-cloud) — an NDJSON stream mirror, a nightly

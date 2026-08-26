@@ -2,7 +2,6 @@
 // See audits/code-duplication-report.md (D-04, D-06) and the 2026-08-25 re-audit
 // (R-04: formatUptime had FIVE copies, fmtDateTime four, and two of them disagreed).
 
-import { API_URL } from "../config";
 
 /** Two-letter uppercase initials from a name, e.g. "Mark Angelo" → "MA". */
 export function initials(name: string): string {
@@ -10,12 +9,21 @@ export function initials(name: string): string {
 }
 
 /** Resolve a stored `profile_image` to a usable <img> src, or null (→ show initials).
- *  - Google/OAuth photos are ABSOLUTE urls (https://lh3.googleusercontent.com/…) → use as-is.
- *  - Uploaded files are server-relative paths (/uploads/…) → prefix with the backend URL.
- *  The old code prefixed everything with API_URL, which broke Google photos. */
+ *
+ *  ABSOLUTE urls only — every live avatar is a Google photo
+ *  (https://lh3.googleusercontent.com/…), re-synced from the ID token on EVERY
+ *  sign-in by `googleAuthService`.
+ *
+ *  A server-relative `/uploads/…` value now returns null and the caller falls back to
+ *  initials. That path served the deleted avatar-upload feature, whose reader
+ *  (`app.use("/uploads", express.static(...))`) was an unauthenticated read of real
+ *  staff photos and has been removed — see audits/api-infra-security-2026-08-25.md
+ *  A-02. Building a URL to a route that no longer exists would render a broken image;
+ *  initials are the correct degradation, and only a row that has never completed a
+ *  Google sign-in can still hold one. */
 export function avatarUrl(profileImage?: string | null): string | null {
   if (!profileImage) return null;
-  return /^https?:\/\//i.test(profileImage) ? profileImage : `${API_URL}${profileImage}`;
+  return /^https?:\/\//i.test(profileImage) ? profileImage : null;
 }
 
 /** Manila wall-clock time, 24-hour. Mirrors the toLocaleTimeString calls used across pages. */

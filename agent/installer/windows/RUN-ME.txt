@@ -40,7 +40,12 @@ INSTALL
   2) If you get an execution-policy error, run this once:
        Set-ExecutionPolicy -Scope Process Bypass
 
-  3) Install:
+  3) Install. Put the key in a VARIABLE first, so it does not sit in the process
+     list or in PowerShell's saved history:
+       $env:CSPC_INSTALL_KEY = '<INSTALL_KEY>'
+       .\install.ps1 -ApiUrl "http://192.168.100.9:3000"
+       Remove-Item Env:\CSPC_INSTALL_KEY
+     Passing the key as a parameter still works if you prefer:
        .\install.ps1 -ApiUrl "http://192.168.100.9:3000" -InstallKey "<INSTALL_KEY>"
      It installs to C:\Program Files\CSPC Monitoring Agent, registers, and waits.
 
@@ -61,7 +66,9 @@ UPGRADING AN AGENT THAT IS ALREADY INSTALLED
   swapping the program file. Stop it first (Windows locks a running .exe):
 
        Stop-Process -Name cspc-agent -Force
-       .\install.ps1 -ApiUrl "http://192.168.100.9:3000" -InstallKey "<INSTALL_KEY>"
+       $env:CSPC_INSTALL_KEY = '<INSTALL_KEY>'
+       .\install.ps1 -ApiUrl "http://192.168.100.9:3000"
+       Remove-Item Env:\CSPC_INSTALL_KEY
 
   It warns that the key was not used — that is expected, and nothing needs
   approving again. To move this PC onto a DIFFERENT install key (only if an admin
@@ -97,3 +104,7 @@ TROUBLESHOOTING
 KEEP THIS FOLDER PRIVATE — the install key is a shared secret. On Google Drive
 share it to named people, never "anyone with the link". Never share an agent.conf
 file: it holds that machine's own device token.
+
+Do not paste an install key into a chat, a ticket or a shared document. If one gets
+out, an admin revokes it on the dashboard (Server Metrics -> Agent install keys) and
+issues a new one — revoking a key does NOT stop the PCs it already enrolled.

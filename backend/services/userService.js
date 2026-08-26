@@ -1,5 +1,4 @@
 import db from "../config/mysql.js";
-import bcrypt from "bcryptjs";
 // Statusless throws defaulted to 500, which the central handler refuses to describe to
 // the client — so "Email already exists." reached the user as "Server error. Please try
 // again later." See audits/error-handling-report-2026-08-25.md — E-04.
@@ -27,12 +26,54 @@ export const TOGGLEABLE_STATUSES = Object.freeze(["active", "inactive"]);
 // via a direct API call (the UI button-hiding is only a convenience on top).
 
 // Count active admins OTHER than `excludeId`.
-async function countOtherActiveAdmins(excludeId) {
-  const [[row]] = await db.query(
-    "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active' AND user_id <> ?",
+// ─── The last-admin guard, made atomic ────────────────────────────────────────
+//
+// Counting admins and then writing is a check-then-act race. Two admins demoting,
+// disabling or deleting *each other* at the same moment each read "1 other admin
+// exists", each passed the guard, and both writes landed — leaving ZERO admins.
+//
+// That is not a recoverable state from inside the app: no admin means nobody can
+// approve a registration or promote anyone, and the documented way out is editing
+// MySQL by hand (deployment-guide.md §4.3). Rare, but the cost of losing the race is
+// the whole administrative surface of the system.
+//
+// `FOR UPDATE` is what actually fixes it — not the count. It takes write locks on the
+// surviving admin rows, so a second transaction attempting the same demotion BLOCKS
+// until the first commits, then re-reads and correctly sees zero. A plain SELECT in
+// REPEATABLE READ would happily give both transactions the same stale snapshot, which
+// is precisely how the bug worked.
+//
+// Callers pass their own connection so the guard and the write share one transaction;
+// a guard in a different transaction from its write is the same race with extra steps.
+async function assertNotLastAdmin(conn, excludeId) {
+  const [[row]] = await conn.query(
+    `SELECT COUNT(*) AS n FROM users
+      WHERE role = 'admin' AND status = 'active' AND user_id <> ?
+      FOR UPDATE`,
     [excludeId],
   );
-  return Number(row?.n ?? 0);
+  if (Number(row?.n ?? 0) === 0) throw lastAdminError();
+}
+
+// Run `fn` inside a transaction, rolling back on any throw. Keeps the three callers
+// below from each hand-rolling begin/commit/rollback and forgetting a release.
+async function inTransaction(fn) {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const out = await fn(conn);
+    await conn.commit();
+    return out;
+  } catch (err) {
+    try {
+      await conn.rollback();
+    } catch {
+      /* the connection is already broken; the original error is what matters */
+    }
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 function lastAdminError() {
@@ -214,67 +255,19 @@ const userService = {
     return true;
   },
 
-  // CREATE USER -admin
-  async createUser(data) {
-    const { name, username, email, password, role, status = "active" } = data;
-
-    if (!name || !username || !email || !password || !role) {
-      throw badRequest("Name, username, email, password, and role are required.");
-    }
-
-    if (!ROLES.includes(role)) {
-      throw badRequest("Invalid role.");
-    }
-
-    // check duplicate email
-    const [existing] = await db.query(
-      "SELECT user_id FROM users WHERE email = ?",
-      [email],
-    );
-
-    if (existing.length > 0) {
-      throw conflict("Email already exists.");
-    }
-
-    // hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // avatar
-    const avatar = name
-      .split(" ")
-      .map((w) => w[0])
-      .join("")
-      .toUpperCase()
-      .slice(0, 2);
-
-    const profileImage = null;
-
-    const [result] = await db.query(
-      `INSERT INTO users 
-    (name, username, email, hash_password, role, status, profile_image, avatar, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [
-        name,
-        username,
-        email,
-        hashedPassword,
-        role,
-        status,
-        profileImage,
-        avatar,
-      ],
-    );
-
-    // fetch full user AFTER insert
-    const [rows] = await db.query(
-      "SELECT user_id AS id, name, username, email, role, status, profile_image, avatar FROM users WHERE user_id = ?",
-      [result.insertId],
-    );
-
-    return {
-      user: rows[0],
-    };
-  },
+  // ─── createUser / changeOwnPassword REMOVED (2026-08-25) ────────────────────
+  //
+  // Both were password code with no login path behind them. Sign-in has been
+  // Google-only since the password login was deleted, so nothing reads
+  // `users.hash_password` — every row has it NULL, which also made
+  // `changeOwnPassword` throw on `bcrypt.compare(input, null)` and answer 500 for
+  // every user who could reach it. Neither had a caller in the frontend.
+  //
+  // Deleted rather than left dormant: an authentication code path that nobody calls,
+  // nobody tests and nobody reads is where a real vulnerability goes unnoticed. The
+  // `bcryptjs` dependency went with them. `users.hash_password` stays as a nullable,
+  // all-NULL column — dropping it is a migration with no security value, since there
+  // is nothing in it. See audits/auth-flow-security-2026-08-25.md — AF-03.
 
   // UPDATE USER -admin — username / role / status only.
   //
@@ -314,29 +307,30 @@ const userService = {
       [id],
     );
 
-    // Best practice: never let an edit demote or disable the LAST active admin.
+    // Never let an edit demote or disable the LAST active admin.
     const wasActiveAdmin = before?.role === "admin" && before?.status === "active";
     const willBeActiveAdmin =
       (role ?? before?.role) === "admin" && (status ?? before?.status) === "active";
-    if (wasActiveAdmin && !willBeActiveAdmin && (await countOtherActiveAdmins(id)) === 0) {
-      throw lastAdminError();
-    }
 
     const mustRevoke =
       (role !== undefined && role !== before?.role) ||
       (status === "inactive" && before?.status !== "inactive");
 
-    // update user
-    await db.query(
-      `UPDATE users SET
-         username = COALESCE(?, username),
-         role     = COALESCE(?, role),
-         status   = COALESCE(?, status),
-         token_version = token_version + ?,
-         updated_at = NOW()
-       WHERE user_id = ?`,
-      [nextUsername, role ?? null, status ?? null, mustRevoke ? 1 : 0, id],
-    );
+    // Guard and write in ONE transaction — two admins demoting each other at the same
+    // moment would otherwise both pass a separate count and leave zero admins.
+    await inTransaction(async (conn) => {
+      if (wasActiveAdmin && !willBeActiveAdmin) await assertNotLastAdmin(conn, id);
+      await conn.query(
+        `UPDATE users SET
+           username = COALESCE(?, username),
+           role     = COALESCE(?, role),
+           status   = COALESCE(?, status),
+           token_version = token_version + ?,
+           updated_at = NOW()
+         WHERE user_id = ?`,
+        [nextUsername, role ?? null, status ?? null, mustRevoke ? 1 : 0, id],
+      );
+    });
 
     // get updated user
     const [rows] = await db.query(
@@ -360,36 +354,39 @@ const userService = {
       throw badRequest("Invalid status.");
     }
 
+    let needsLastAdminGuard = false;
     if (status === "inactive") {
       if (currentUserId !== undefined && id === currentUserId) {
         const err = new Error("Cannot disable your own account.");
         err.status = 400;
         throw err;
       }
-      // Never disable the last active admin.
-      const [[target]] = await db.query(
-        "SELECT role, status FROM users WHERE user_id = ?",
-        [id],
-      );
-      if (
-        target?.role === "admin" &&
-        target?.status === "active" &&
-        (await countOtherActiveAdmins(id)) === 0
-      ) {
-        throw lastAdminError();
-      }
+      // Checked inside the transaction below, not here — see assertNotLastAdmin.
+      needsLastAdminGuard = true;
     }
 
     // F-02: disabling an account revokes its live token immediately.
-    await db.query(
-      `UPDATE users
-     SET
-       status = ?,
-       token_version = token_version + IF(? = 'inactive', 1, 0),
-       updated_at = NOW()
-     WHERE user_id = ?`,
-      [status, status, id],
-    );
+    // Guard + write share ONE transaction: two concurrent disables would otherwise
+    // both pass a separate count and leave the system with no admins.
+    await inTransaction(async (conn) => {
+      if (needsLastAdminGuard) {
+        const [[target]] = await conn.query(
+          "SELECT role, status FROM users WHERE user_id = ?",
+          [id],
+        );
+        if (target?.role === "admin" && target?.status === "active") {
+          await assertNotLastAdmin(conn, id);
+        }
+      }
+      await conn.query(
+        `UPDATE users
+            SET status = ?,
+                token_version = token_version + IF(? = 'inactive', 1, 0),
+                updated_at = NOW()
+          WHERE user_id = ?`,
+        [status, status, id],
+      );
+    });
 
     const [rows] = await db.query(
       `SELECT
@@ -426,17 +423,16 @@ const userService = {
       throw notFound("User not found.");
     }
 
-    // Never delete the last active admin — the system would be left with no admins.
+    // Never delete the last active admin — the system would be left with no admins,
+    // and no way back except editing MySQL by hand. Guard and write share ONE
+    // transaction so two concurrent deletes cannot both pass. See assertNotLastAdmin.
     const target = rows[0];
-    if (
-      target.role === "admin" &&
-      target.status === "active" &&
-      (await countOtherActiveAdmins(id)) === 0
-    ) {
-      throw lastAdminError();
-    }
-
-    return await db.query("DELETE FROM users WHERE user_id = ?", [id]);
+    return await inTransaction(async (conn) => {
+      if (target.role === "admin" && target.status === "active") {
+        await assertNotLastAdmin(conn, id);
+      }
+      return await conn.query("DELETE FROM users WHERE user_id = ?", [id]);
+    });
   },
 
   // UPDATE OWN PROFILE — USERNAME ONLY.
@@ -501,55 +497,6 @@ const userService = {
     );
 
     return updatedRows[0];
-  },
-
-  // CHANGE OWN PASSWORD
-  async changeOwnPassword(userId, currentPassword, newPassword) {
-    if (!currentPassword || !newPassword) {
-      throw badRequest("Current password and new password are required.");
-    }
-
-    if (newPassword.length < 6) {
-      throw badRequest("New password must be at least 6 characters.");
-    }
-
-    // get user
-    const [rows] = await db.query("SELECT * FROM users WHERE user_id = ?", [
-      userId,
-    ]);
-
-    if (rows.length === 0) {
-      throw notFound("User not found.");
-    }
-
-    const user = rows[0];
-
-    // verify current password
-    const validPassword = await bcrypt.compare(
-      currentPassword,
-      user.hash_password,
-    );
-
-    if (!validPassword) {
-      throw badRequest("Current password is incorrect.");
-    }
-
-    // hash new password
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    // update password — F-02: a password change invalidates older tokens. The
-    // client must re-authenticate after this call (the current token is revoked too).
-    await db.query(
-      `UPDATE users
-       SET
-         hash_password = ?,
-         token_version = token_version + 1,
-         updated_at = NOW()
-       WHERE user_id = ?`,
-      [hashedPassword, userId],
-    );
-
-    return true;
   },
 };
 

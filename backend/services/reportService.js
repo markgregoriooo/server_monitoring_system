@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import db from "../config/mysql.js";
+import { BACKEND_ROOT } from "../config/env.js";
 import { queryClient, bucket } from "../config/influx.js";
 import { toCSV, toPDFBuffer } from "./reportRenderer.js";
 import { HttpError, unavailable } from "../utils/httpError.js";
@@ -32,7 +33,13 @@ import { describeError } from "../utils/httpError.js";
 // the dashboard reads the same in a PDF as it does on screen. Aliased back to
 // `device_name` so every consumer below is unchanged.
 
-const REPORTS_DIR = path.resolve(process.cwd(), "reports");
+// Anchored to the backend root, not process.cwd() — a service manager sets the working
+// directory and can set it wrong, which would silently write reports somewhere nobody
+// looks while everything still appeared to succeed. See config/env.js BACKEND_ROOT.
+const REPORTS_DIR = path.resolve(BACKEND_ROOT, "reports");
+
+// Widest period one report may cover, in days. Override with REPORT_MAX_PERIOD_DAYS.
+const MAX_PERIOD_DAYS = Number(process.env.REPORT_MAX_PERIOD_DAYS) || 366;
 fs.mkdirSync(REPORTS_DIR, { recursive: true });
 
 // Injected once at startup (init) so the lifecycle can be pushed to browsers. Same
@@ -845,6 +852,26 @@ async function create({ userId, type, title, periodStart, periodEnd, deviceId })
   const start = periodStart ? new Date(periodStart) : new Date(end.getTime() - 7 * 24 * 3600 * 1000);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
     throw badRequest("Invalid period: start must be before end.");
+  }
+
+  // Width, not just order. `start < end` alone accepts periodStart: "2000-01-01", which
+  // schedules Flux queries across 26 years. The build is asynchronous — the route has
+  // already answered 202 — and build() never throws, so the request looks fine while the
+  // cost lands out of sight: a long query holding one of ten shared pool connections, and
+  // a report file on the micro SD sized by however much history came back.
+  //
+  // A year is wider than anything this system retains (NOTIFY_RETENTION_DAYS 30,
+  // REPORT_RETENTION_DAYS 90, SYSTEM_LOG_RETENTION_DAYS 365), so the cap removes no real
+  // capability — it only refuses spans that could never have been fully populated.
+  //
+  // Rejected, not clamped: silently narrowing the requested period would produce a report
+  // whose title claims one range and whose contents are another, which is worse than an
+  // error because it is believable. See audits/business-logic-review-2026-08-25.md — BL-05.
+  const spanDays = (end.getTime() - start.getTime()) / 86_400_000;
+  if (spanDays > MAX_PERIOD_DAYS) {
+    throw badRequest(
+      `Report period cannot exceed ${MAX_PERIOD_DAYS} days (requested ${Math.round(spanDays)}).`,
+    );
   }
 
   // Device scope: validated HERE, at the boundary, so everything downstream reads an

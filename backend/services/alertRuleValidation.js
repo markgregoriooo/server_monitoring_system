@@ -136,4 +136,133 @@ export function cleanRule(data, { partial = false, existing = null } = {}) {
   return checkCrossField(out, existing);
 }
 
-export default { cleanRule, checkCrossField, RULE_FIELDS, COMPARISONS, SEVERITIES, ruleError, INVALID };
+// ─── Severity ordering within one scope ───────────────────────────────────────
+//
+// Every check above validates ONE field of ONE rule. Nothing compared a rule against its
+// siblings, so a scope could hold `temperature warning >= 29` and `temperature critical
+// >= 29` at the same time — and worse, `warning >= 30` with `critical >= 25`.
+//
+// WHY EQUAL IS NOT MERELY UNTIDY. Alerting picks the WORST band a reading breaches
+// (`worstBreach` / `nextBand`). With both rules at 29, every reading that reaches 29
+// satisfies both, critical always outranks warning, and the warning rule can never be
+// the outcome of anything. It is not a warning threshold — it is a row that looks like a
+// setting, appears in the admin table, and changes nothing. Inverted bounds are the same
+// failure with the added twist that the *device* disagrees: firmware evaluates
+// `t >= TEMP_CRITICAL` before `t >= TEMP_WARNING`, so the LED and buzzer would sit on
+// CRITICAL across a span the dashboard still calls a warning.
+//
+// ⚠️ DIRECTION IS NOT ASSUMED. `bandFor` in the frontend is documented as always
+// higher-is-worse, but alert_rules genuinely carries both: `ups_runtime` / `ups_charge`
+// use `<=`, where a LOWER number is worse and `warning 20 / critical 10` is the correct
+// ordering. Hard-coding "critical must be the bigger number" would forbid exactly the
+// rules the UPS page depends on, so the direction is read from `comparison`.
+
+/** Comparisons where a bigger reading is worse. The rest are lower-is-worse. */
+export const HIGHER_IS_WORSE = new Set([">", ">="]);
+
+/** info < warning < critical. Shared with the ordering check below. */
+export const SEVERITY_RANK = { info: 1, warning: 2, critical: 3 };
+
+const dirOf = (comparison) => (HIGHER_IS_WORSE.has(comparison) ? "up" : "down");
+
+/**
+ * Check one rule against the other rules in its scope.
+ *
+ * Scope = the exact (device_id, interface_name, metric_name) triple, matching
+ * `getEffectiveRules`: a per-device rule set REPLACES the global one wholesale rather
+ * than merging with it, so a global `warning 30` and a per-device `critical 25` are two
+ * independent ladders and must not be compared with each other.
+ *
+ * @param candidate {{severity, threshold_value, comparison}} the rule as it will be stored
+ * @param siblings  other rules in the same scope, SELF EXCLUDED by the caller
+ * @returns {string|null} null when the ladder is coherent, otherwise the reason
+ */
+export function severityOrderError(candidate, siblings = []) {
+  const rank = SEVERITY_RANK[candidate.severity];
+  if (!rank) return null; // severity already rejected by the field parser
+  const value = Number(candidate.threshold_value);
+  if (!Number.isFinite(value)) return null; // ditto for the threshold
+  const dir = dirOf(candidate.comparison);
+
+  for (const other of siblings) {
+    const otherRank = SEVERITY_RANK[other.severity];
+    if (!otherRank) continue;
+    const otherValue = Number(other.threshold_value);
+    if (!Number.isFinite(otherValue)) continue;
+
+    // A scope whose rules disagree about which way is worse cannot be ordered at all,
+    // and silently ordering it by the incoming rule's direction would produce a verdict
+    // that flips depending on which row was edited last.
+    if (dirOf(other.comparison) !== dir) {
+      return (
+        `The ${other.severity} rule for this metric uses "${other.comparison}" while this one uses ` +
+        `"${candidate.comparison}". Rules for the same metric must agree on whether a higher or a ` +
+        `lower reading is worse.`
+      );
+    }
+
+    if (otherRank === rank) continue; // same severity — a duplicate, not an ordering fault
+
+    if (otherValue === value) {
+      return (
+        `${candidate.severity} and ${other.severity} would both be ${value} for this metric. ` +
+        `Give them different values — at the same number the ${
+          rank > otherRank ? other.severity : candidate.severity
+        } rule can never fire, because a reading that crosses one crosses both and the more ` +
+        `severe one always wins.`
+      );
+    }
+
+    // The more severe rule must sit further along the worsening direction.
+    const severeIsCandidate = rank > otherRank;
+    const severeValue = severeIsCandidate ? value : otherValue;
+    const milderValue = severeIsCandidate ? otherValue : value;
+    const ordered = dir === "up" ? severeValue > milderValue : severeValue < milderValue;
+    if (!ordered) {
+      const severeName = severeIsCandidate ? candidate.severity : other.severity;
+      const milderName = severeIsCandidate ? other.severity : candidate.severity;
+      return dir === "up"
+        ? `${severeName} (${severeValue}) must be HIGHER than ${milderName} (${milderValue}) for this ` +
+          `metric — with "${candidate.comparison}", a bigger reading is worse.`
+        : `${severeName} (${severeValue}) must be LOWER than ${milderName} (${milderValue}) for this ` +
+          `metric — with "${candidate.comparison}", a smaller reading is worse.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Reject a SECOND rule at the same severity in the same scope.
+ *
+ * A different fault from severityOrderError with a different fix, so it is a different
+ * function — "your two warnings disagree" and "your warning outranks your critical" are
+ * not the same message to an admin.
+ *
+ * WHY IT MATTERS RATHER THAN BEING MERELY UNTIDY. Two `temperature warning` rules in one
+ * scope are not additive; one of them is dead. `getRoomThresholds` resolves a severity
+ * with `.find()`, which takes whichever row the cache happens to hold first, so the value
+ * pushed to the ESP32 as `tempWarn` — and therefore the LED, the buzzer and the reported
+ * status — is decided by row order, not by anything the admin chose. Editing the losing
+ * row changes nothing at all, and which row loses can shift on the next `reload()`.
+ *
+ * @param candidate {{severity}} the rule as it will be stored
+ * @param siblings  other rules in the same scope, SELF EXCLUDED by the caller
+ * @returns {string|null}
+ */
+export function duplicateSeverityError(candidate, siblings = []) {
+  if (!SEVERITY_RANK[candidate.severity]) return null; // already rejected by the field parser
+  const clash = siblings.find((o) => o.severity === candidate.severity);
+  if (!clash) return null;
+  return (
+    `A ${candidate.severity} rule already exists for this metric at this scope ` +
+    `(threshold ${clash.threshold_value}). Edit that rule instead of adding a second one — ` +
+    `two rules at the same severity do not both apply, one of them is simply ignored.`
+  );
+}
+
+/** Both scope-level checks, in the order an admin can act on them. */
+export function scopeConflictError(candidate, siblings = []) {
+  return duplicateSeverityError(candidate, siblings) ?? severityOrderError(candidate, siblings);
+}
+
+export default { cleanRule, checkCrossField, RULE_FIELDS, COMPARISONS, SEVERITIES, ruleError, INVALID, severityOrderError, duplicateSeverityError, scopeConflictError, SEVERITY_RANK, HIGHER_IS_WORSE };

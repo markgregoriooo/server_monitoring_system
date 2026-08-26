@@ -1,0 +1,134 @@
+# ============================================================================
+#  CSPC-ICTU Monitoring System — backend service unit
+# ----------------------------------------------------------------------------
+#  Install:  see ops/systemd/README.md   (deployment-guide.md §3.3)
+#
+#  This exists to answer a question the audits kept deferring: WHERE DOES THE
+#  BACKEND'S STDOUT GO? Under nodemon it goes to a terminal that closes. Under
+#  systemd it goes to journald, which captures it, rotates it, and keeps it
+#  across restarts — see audits/logging-monitoring-2026-08-25.md §8.
+#
+#  ⚠️ Adjust User/Group and the three paths below to match the deployment.
+#     Everything else is deliberate; the comments say why.
+# ============================================================================
+
+[Unit]
+Description=CSPC-ICTU Monitoring System (backend API + pollers)
+Documentation=file:/opt/cspc/deployment-guide.md
+
+# `network-online` rather than `network`: the SNMP and MikroTik pollers dial out
+# on their first tick, and the backend binds 0.0.0.0 for the Go agents and the
+# ESP32. Starting before an address exists produces a confusing first minute.
+After=network-online.target mariadb.service influxdb.service
+Wants=network-online.target
+
+# Deliberately NOT `Requires=`. The backend is designed to survive its stores
+# being down — every ingest path degrades independently and the boot sequence
+# logs a clear error rather than exiting. `Requires` would make a MariaDB blip
+# stop the monitoring system, which is exactly when you want it running.
+After=nginx.service
+
+[Service]
+Type=simple
+
+# ── Identity ────────────────────────────────────────────────────────────────
+# NEVER root. This account needs: read on the app + .env, write on reports/ and
+# BACKUP_DIR. Create it with:  sudo useradd --system --home /opt/cspc cspc
+User=cspc
+Group=cspc
+
+# ── WorkingDirectory ────────────────────────────────────────────────────────
+# Set it correctly, but it is no longer load-bearing. It used to be: .env, the
+# reports directory and the default backup directory all resolved against
+# process.cwd(), so a wrong value here meant the service could not read its own
+# configuration. That is fixed in the app — config/env.js now exports BACKEND_ROOT,
+# resolved from the module's own location, and all three anchor to it. Starting the
+# backend from any directory now works.
+#
+# Still set here because relative paths in future code, core dumps and any child
+# process inherit it, and because a service whose cwd is / is harder to reason about.
+WorkingDirectory=/opt/cspc/backend
+ExecStart=/usr/bin/node src/server.js
+
+# ── Environment ─────────────────────────────────────────────────────────────
+# NO EnvironmentFile= here, on purpose. The app loads its own .env via dotenv
+# (config/env.js is imported first by every config module), so pointing systemd
+# at the same file would parse it twice with two different parsers. systemd's is
+# the stricter one — it does not strip inline `#` comments and handles quoting
+# differently — so a value dotenv reads correctly can reach the process mangled.
+# One loader, one set of rules.
+Environment=NODE_ENV=production
+
+# ── Restart policy ──────────────────────────────────────────────────────────
+# src/server.js exits on an uncaught exception BY DESIGN, with the reasoning in
+# its own comment: "a process that keeps running after an unknown exception is
+# in an unknown state ... Restart is left to the process supervisor, which is
+# the right owner." This is that supervisor. Without `Restart=always` that
+# design decision turns into an outage.
+Restart=always
+RestartSec=5s
+
+# Don't let a crash-loop hammer MariaDB: 5 starts in 60s, then stop and stay
+# stopped so a human looks at the journal.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# ── Shutdown ────────────────────────────────────────────────────────────────
+# systemd sends SIGTERM, which server.js handles: it flushes buffered backup
+# samples SYNCHRONOUSLY first (the copy that must survive a power event), then
+# closes the HTTP server, with its own 3s hard cap. This must exceed that cap or
+# systemd would SIGKILL mid-flush and lose the very samples the flush protects.
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+# ── Logging — the reason this file exists ───────────────────────────────────
+# Everything the app writes with console.* is captured by journald, which
+# rotates it and keeps it across restarts. Follow it with:
+#     journalctl -u cspc-monitoring -f
+# Filter by the app's own tags:
+#     journalctl -u cspc-monitoring | grep -E '\[AUTH|\[AUTHZ|\[RATE|\[POLICY'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cspc-monitoring
+
+# ── Hardening ───────────────────────────────────────────────────────────────
+# Conservative on purpose. See the ⚠️ block below before adding more.
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=false
+
+# ⚠️ DO NOT ADD `NoNewPrivileges=true` WITHOUT READING THIS.
+#
+# services/icmpPing.js shells out to the OS `ping` to measure router latency and
+# packet loss — the two things an SNMP walk structurally cannot report. On Linux
+# /bin/ping is either setuid-root or carries cap_net_raw+ep, and
+# NoNewPrivileges=true blocks BOTH mechanisms.
+#
+# This USED to fail silently — every router reading as 100% packet loss, a
+# fleet-wide outage that existed only in the monitoring. That is now fixed in the
+# application: icmpPing distinguishes "could not run the probe" from "no reply",
+# reports packet loss as NULL rather than 100 when nothing was measured, logs
+# `[ICMP] ping could not be started (...)` once, and the poller skips the sample
+# entirely instead of marking the device Offline.
+#
+# So enabling this no longer invents an outage — but it still DISABLES latency and
+# packet-loss monitoring, which are the only two things an SNMP walk structurally
+# cannot report. Check the journal for [ICMP] after turning it on.
+#
+# If you want it, first confirm unprivileged ICMP is permitted on the host:
+#     sysctl net.ipv4.ping_group_range          # must include the cspc group's GID
+#     sudo -u cspc ping -c1 <a-router-ip>       # must succeed
+# then add NoNewPrivileges=true and RE-VERIFY with:
+#     sudo -u cspc bash -c 'cd /opt/cspc/backend && npm run probe -- <router-ip>'
+# The probe prints a VERDICT naming what it could and could not reach.
+#
+# Similarly, ProtectSystem=strict needs ReadWritePaths for reports/ and
+# BACKUP_DIR (which may be a removable mount) or report generation and the
+# on-site backup both fail. Uncomment together, and test:
+# ProtectSystem=strict
+# ReadWritePaths=/opt/cspc/backend/reports /mnt/backup
+
+[Install]
+WantedBy=multi-user.target

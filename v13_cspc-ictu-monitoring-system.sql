@@ -31,7 +31,9 @@ SET time_zone = "+00:00";
 -- lookup on the enrollment path) and a short prefix for display.
 --
 -- ⚠️ Revoking an install key does NOT revoke any already-enrolled agent: the runtime
--- credential is agent_tokens.approved_token, a separate row with a separate lifecycle.
+-- credential is the agent's AGT- token, a separate row with a separate lifecycle
+-- (agent_tokens — stored the same way as this table since 2026-08-25: a SHA-256 hash for
+-- lookup plus an AES-256-GCM copy for re-delivery, never the plaintext).
 --
 
 CREATE TABLE `agent_install_keys` (
@@ -55,12 +57,23 @@ CREATE TABLE `agent_install_keys` (
 -- Table structure for table `agent_tokens`
 --
 
+-- ⚠️ NO readable credential is stored in this table at all. The PENDING token is a
+-- SHA-256 hash too (`pending_token_hash`) — it was plaintext until 2026-08-25b, and because
+-- POST /agents/status exchanges it for the permanent credential (repeatedly, with no
+-- auth), a database dump was one HTTP call away from live agent credentials.
+-- ⚠️ The permanent AGT- credential is NEVER stored in readable form. `approved_token_hash`
+-- is the lookup path; `approved_token_cipher` is an encrypted copy that exists only because
+-- an agent which loses agent.conf must be able to collect its token again (the same path
+-- carries the ADOPT workflow). The old plaintext `approved_token` column was dropped by
+-- migrations/2026-08-25_agent_token_hash.sql — see audits/api-infra-security-2026-08-25.md A-05.
+
 CREATE TABLE `agent_tokens` (
   `id` int(11) NOT NULL,
   `device_id` int(11) NOT NULL,
   `install_key_id` int(11) DEFAULT NULL COMMENT 'Which install key enrolled this agent; NULL = legacy/.env enrollment',
-  `token` varchar(255) NOT NULL,
-  `approved_token` varchar(128) DEFAULT NULL,
+  `pending_token_hash` char(64) DEFAULT NULL COMMENT 'SHA-256 hex of the pending enrollment token — the lookup path for POST /agents/status',
+  `approved_token_hash` char(64) DEFAULT NULL COMMENT 'SHA-256 hex of the AGT- token — the lookup path for every metric POST',
+  `approved_token_cipher` varchar(255) DEFAULT NULL COMMENT 'AES-256-GCM of the token, for re-delivery to an agent that lost agent.conf. NULL = not recoverable',
   `status` enum('pending','approved','rejected','revoked') DEFAULT NULL COMMENT 'revoked = authorisation withdrawn by revoking the install key; row kept so the device and its history survive',
   `created_at` datetime NOT NULL DEFAULT current_timestamp(),
   `last_used_at` datetime NOT NULL,
@@ -182,7 +195,18 @@ CREATE TABLE `alert_rules` (
   `is_active` tinyint(4) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp(),
-  `updated_by` int(11) DEFAULT NULL
+  `updated_by` int(11) DEFAULT NULL,
+  -- Derived scope keys, written by nobody. They exist ONLY so the uniqueness index below
+  -- can compare rules whose device_id / interface_name are NULL — which is the DEFAULT
+  -- case here, not an edge case: a GLOBAL rule is precisely one with device_id IS NULL.
+  -- A UNIQUE index treats NULLs as distinct, so a plain
+  --   UNIQUE (device_id, interface_name, metric_name, severity)
+  -- permits unlimited duplicate global rules. Verified on MariaDB 10.4.32. Folding NULL
+  -- to a sentinel is what makes the constraint real.
+  -- -1 is safe: device_id is an AUTO_INCREMENT key, never negative.
+  -- '' is safe: alertRuleValidation's nullableStr() stores an empty port name as NULL.
+  `scope_device` int(11) AS (IFNULL(`device_id`, -1)) PERSISTENT COMMENT 'Derived. NULL device_id folded to -1 for uq_alert_rules_scope_severity.',
+  `scope_iface` varchar(50) AS (IFNULL(`interface_name`, '')) PERSISTENT COMMENT 'Derived. NULL interface_name folded to an empty string, same reason.'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 
 --
@@ -565,8 +589,8 @@ ALTER TABLE `agent_install_keys`
 --
 ALTER TABLE `agent_tokens`
   ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `token_UNIQUE` (`token`),
-  ADD UNIQUE KEY `approved_token_UNIQUE` (`approved_token`),
+  ADD UNIQUE KEY `uq_agent_tokens_pending_hash` (`pending_token_hash`),
+  ADD UNIQUE KEY `uq_agent_tokens_approved_hash` (`approved_token_hash`),
   ADD KEY `fk_agent_tokens_devices1_idx` (`device_id`),
   ADD KEY `idx_agent_tokens_install_key` (`install_key_id`);
 
@@ -627,7 +651,16 @@ ALTER TABLE `alert_rules`
   ADD KEY `idx_rules_active` (`is_active`),
   ADD KEY `idx_rules_dev_active` (`device_id`,`is_active`),
   ADD KEY `idx_rules_updated_by` (`updated_by`),
-  ADD KEY `idx_rules_dev_iface_metric` (`device_id`,`interface_name`,`metric_name`,`is_active`);
+  ADD KEY `idx_rules_dev_iface_metric` (`device_id`,`interface_name`,`metric_name`,`is_active`),
+  -- One rule per (scope, metric, severity). Two `temperature`/`warning` rows in one scope
+  -- are not additive — getRoomThresholds resolves a severity with .find(), so the value
+  -- pushed to the ESP32 is decided by row order and editing the losing row changes
+  -- nothing. Enforced in the app too (alertRuleValidation.duplicateSeverityError); this is
+  -- the backstop for the hand-edited row, which deployment-guide.md §4.3 documents as a
+  -- real practice. Built on the folded scope_* columns — see the note on the table above
+  -- for why the obvious index would not have worked.
+  -- See migrations/2026-08-26_alert_rule_scope_uniqueness.sql
+  ADD UNIQUE KEY `uq_alert_rules_scope_severity` (`scope_device`,`scope_iface`,`metric_name`,`severity`);
 
 --
 -- Indexes for table `devices`

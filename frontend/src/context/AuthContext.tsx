@@ -145,15 +145,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // would have travelled with are already gone.
   const beginIdleLogout = useCallback(() => {
     console.warn("[session] ended — idle: tab hidden for 15 minutes");
+
+    // Revoke SERVER-SIDE first, then clear locally.
+    //
+    // This used to clear sessionStorage and stop there — which ends the session for
+    // this browser but leaves the token itself perfectly valid for the rest of its
+    // life (up to an hour). An idle timeout is the one teardown where that gap is
+    // real: the token has NOT expired, and nothing has bumped token_version, so a
+    // copy taken from this machine keeps working for an hour after the screen was
+    // supposedly secured. The explicit Sign out button has always called this; the
+    // automatic timeout is the case where nobody is present to press it.
+    //
+    // Fire-and-forget, and the local teardown does not wait on it: an offline or slow
+    // backend must never delay securing an unattended screen. `api.logout()` reads
+    // the token from storage, so it is issued BEFORE the keys are removed.
+    void api.logout().catch(() => {
+      /* best effort — the local session is torn down regardless */
+    });
+
     socket.disconnect();
     sessionStorage.removeItem("cspc_user");
     sessionStorage.removeItem("cspc_token");
     sessionStorage.removeItem("cspc_token_at");
+
+    // Tell the sign-in page WHY, so the banner there matches the modal instead of the
+    // user arriving at a bare login form a moment after being told something happened.
+    //
+    // Set HERE and not in confirmIdleLogout, because the modal is not the only way out
+    // of this state: the session is already destroyed by this point, so a reload — or a
+    // restored tab — lands straight on /login without OK ever being clicked. Setting it
+    // at the moment of logout covers every exit; setting it on the button would cover
+    // only the tidy one.
+    //
+    // The VALUE distinguishes the two ways a session ends, since they read differently
+    // to whoever is standing there: "expired" is the token running out, "idle" is the
+    // system deciding nobody was watching.
+    sessionStorage.setItem("cspc_session_expired", "idle");
+
     setIdleLogout(true);
   }, []);
 
-  // OK on the notice: finish the job. No `cspc_session_expired` flag — the modal has
-  // already said why, and the login page would repeat it in a banner.
+  // OK on the notice: finish the job. The `cspc_session_expired` flag was already set by
+  // beginIdleLogout (see there for why it is set at logout rather than here), so the
+  // sign-in page carries the reason through.
   const confirmIdleLogout = useCallback(() => {
     setIdleLogout(false);
     setUser(null); // AppShell redirects to /login
@@ -284,7 +318,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // on a dead token until the next request. Re-runs on login / restore-from-storage /
   // token renewal, reading exp from the current token.
   useEffect(() => {
-    if (!user) return;
+    // `idleLogout` is in the condition AND the deps for the same reason it is on the
+    // heartbeat effect below: the session is already gone while the notice is up. Without
+    // it the timeout armed before the idle logout stays pending, and if the token happened
+    // to expire behind the modal it would fire endSession("token lifetime reached") and
+    // overwrite the "idle" reason with the generic one — so the user would be told their
+    // session expired when what actually happened is that they stepped away. Listing it in
+    // the deps is what re-runs the effect and lets the cleanup clear that pending timer.
+    if (!user || idleLogout) return;
     const msLeft = msUntilTokenExpiry();
     if (msLeft === null) return;
 
@@ -297,7 +338,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const t = setTimeout(() => endSession("token lifetime reached"), msLeft);
     return () => clearTimeout(t);
-  }, [user, endSession, renewTick]);
+  }, [user, idleLogout, endSession, renewTick]);
 
   // Activity-based session lifetime — two rules, both keyed on whether the user is
   // actually WATCHING the dashboard:

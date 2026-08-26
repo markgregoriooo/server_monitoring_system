@@ -1,11 +1,20 @@
 import express from "express";
 import http from "http";
+import crypto from "node:crypto";
 import cors from "cors";
 import { Server } from "socket.io";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import jwt from "jsonwebtoken";
 import { handleConnection } from "../sockets/connectionHandler.js";
-import { JWT_SECRET, fetchSessionRow, sessionIsLive } from "../middleware/auth.js";
+import {
+  JWT_SECRET,
+  JWT_VERIFY_OPTS,
+  fetchSessionRow,
+  sessionIsLive,
+  sessionPastHardLimit,
+} from "../middleware/auth.js";
+import { securityHeaders } from "../middleware/securityHeaders.js";
+import { createHandshakeLimiter, clientIpFrom } from "../services/handshakeLimiter.js";
 import agentService from "../services/agentService.js";
 import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
@@ -17,6 +26,7 @@ import mikrotikPollerService from "../services/mikrotikPollerService.js";
 import backupService from "../services/backupService.js";
 import reportService from "../services/reportService.js";
 import auditService from "../services/auditService.js";
+import deviceLogs from "../services/deviceLogs.js";
 import socketSessions from "../services/socketSessions.js";
 
 // import routes
@@ -103,7 +113,7 @@ function userOrIpKey(req) {
   const header = req.headers["authorization"];
   if (header?.startsWith("Bearer ")) {
     try {
-      const { id } = jwt.verify(header.slice(7), JWT_SECRET, { algorithms: ["HS256"] });
+      const { id } = jwt.verify(header.slice(7), JWT_SECRET, JWT_VERIFY_OPTS);
       if (id != null) return `u:${id}`;
     } catch {
       /* absent, expired or forged — fall through to the IP budget */
@@ -164,18 +174,170 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   },
   allowEIO3: true, //bcz ESP32 uses Engine.IO v3
+  // ─── Refuse the JSONP polling transport ─────────────────────────────────────
+  //
+  // engine.io picks it purely from the presence of a `j` query parameter
+  // (node_modules/engine.io/build/transports/index.js — `if ("string" === typeof
+  // req._query.j)`), and it is still shipped in 6.6.9. A JSONP reply is loaded by the
+  // browser as a `<script>`, so it is the one response on this server that is NOT
+  // subject to CORS: `cors.origin` above cannot constrain it, because a script tag
+  // never asks.
+  //
+  // Nothing here needs it. The dashboard is a modern socket.io-client (websocket, with
+  // XHR polling as the fallback) and the ESP32 connects with an explicit
+  // `?EIO=3&transport=websocket`. `allowEIO3` is on for the ESP32's PROTOCOL version,
+  // which is a separate axis from the transport — leaving JSONP reachable was an
+  // unintended consequence of it, not a requirement of it.
+  //
+  // The practical exposure today is small, and it is worth being precise about why:
+  // this API carries NO ambient credentials — no cookies anywhere, auth is a Bearer
+  // token the browser never attaches on its own — so a cross-origin script tag cannot
+  // ride a victim's session. It reaches an unauthenticated handshake and is rejected.
+  // What it can still do is spend that victim's failed-handshake budget
+  // (services/handshakeLimiter.js) from any page they happen to visit. Closing the
+  // transport removes a CORS-exempt channel from the surface and costs nothing.
+  allowRequest: (req, done) => {
+    // Parsed off the raw URL: engine.io has not populated `_query` yet at this point.
+    const isJsonp = /[?&]j=/.test(req.url ?? "");
+    if (isJsonp) {
+      // 3 = FORBIDDEN in engine.io's error-code enum.
+      return done(3, false);
+    }
+    return done(null, true);
+  },
+  // Socket.IO's own body cap, stated rather than inherited — the counterpart to
+  // express.json()'s limit below, for the ingest path Express never sees. 1 MB is
+  // the library default and is already ~1000x the largest real frame (an ESP32
+  // `offlineData` replay chunk is 5 rows), so this is a ceiling, not a budget.
+  maxHttpBufferSize: Number(process.env.SOCKET_MAX_PAYLOAD_BYTES) || 1e6,
 });
 
-app.use("/uploads", express.static("uploads"));
+// ─── NO STATIC FILE SERVING ───────────────────────────────────────────────────
+//
+// `app.use("/uploads", express.static("uploads"))` used to sit here and it was an
+// UNAUTHENTICATED read of `backend/uploads/` — 23 real staff profile photos, served
+// to anyone who could reach the port, with no token and no role check. The avatar
+// UPLOAD path was deleted when login went Google-only (`middleware/upload.js` is
+// gone, `PATCH /users/me` no longer takes multipart), so the writer was removed and
+// the reader was left behind: a dead feature still handing out personal data.
+//
+// That is a Data Privacy Act (RA 10173) exposure, not just an untidy route — the
+// Privacy Notice this system makes people accept does not describe a public photo
+// directory. Removed rather than gated behind authMiddleware, because an `<img src>`
+// cannot send an Authorization header, so gating it would break the avatars it
+// serves while still leaving the feature alive. Live avatars are absolute Google URLs
+// (`googleAuthService` re-syncs `profile_image` on EVERY sign-in); a legacy
+// `/uploads/...` value now degrades to initials — see frontend/src/utils/format.ts.
+//
+// See audits/api-infra-security-2026-08-25.md — A-02.
+
+// Security response headers, BEFORE the routes and before the limiter: a 429 or a
+// 404 is not exempt from being framed or MIME-sniffed. See middleware/securityHeaders.js.
+app.disable("x-powered-by");
+app.use(securityHeaders());
 // exposedHeaders lets the browser READ our sliding-session renewal header
 // (cross-origin responses hide custom headers from JS unless listed here).
 app.use(cors({ origin: CORS_ORIGIN, exposedHeaders: ["X-Renewed-Token"] }));
-app.use(express.json());
-app.set("trust proxy", 2);
+// ─── trust proxy ──────────────────────────────────────────────────────────────
+//
+// How many proxy hops in front of this process may be BELIEVED when they claim a
+// client's address via X-Forwarded-For. The production path is ICTU's edge → the
+// campus nginx → here, hence 2 (deployment-guide.md §5).
+//
+// ⚠️ This number is a security control, not a formality. Set it HIGHER than the real
+// hop count and the surplus entries are attacker-supplied: a client that sends
+// `X-Forwarded-For: a, b, c` chooses its own `req.ip`, which means its own bucket in
+// every IP-keyed limiter here (sign-in 30/15min, agent enrollment 30/15min, metric
+// ingest) and its own value in `system_logs.ip_address` — the row that IS the
+// evidence for a Privacy Notice acceptance. It was hardcoded to 2, so a developer
+// running with no proxy at all, or a deployment that ends up with one, had no way to
+// correct it short of editing this file.
+//
+// The default stays 2 so the documented deployment is unchanged. Set TRUST_PROXY=0
+// when nothing sits in front of this process, or to the real hop count otherwise.
+// See audits/api-infra-security-2026-08-25.md — A-03.
+const TRUST_PROXY = process.env.TRUST_PROXY ?? "2";
+app.set("trust proxy", /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_PROXY);
+const TRUST_PROXY_HOPS = /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : 0;
+
+// ⚠️ ORDER: the limiter runs BEFORE the body parser, deliberately.
+//
+// It used to sit after `express.json()`, which meant a request that was about to be
+// rejected had already had up to 100 kB of JSON read off the socket and parsed. That is
+// work done on behalf of a client you have just decided to refuse — and the flood the
+// limiter exists to stop is exactly when you least want to be doing it.
+//
+// Safe because the limiter never touches the body: `userOrIpKey` reads the Authorization
+// header, and `skip` reads `req.path`. `trust proxy` above is app-level config applied at
+// startup, so `req.ip` is already correct here regardless of statement order.
 app.use(globalLimiter);
+
+// Explicit request-body cap. This was `express.json()` — which does apply a 100kb
+// default, but an INHERITED default is not a decision: nothing recorded that the
+// batch endpoint's 60-sample cap has to keep fitting inside it, so the two limits
+// could drift apart in a release note. Stated here, and referenced from the batch
+// handler's MAX_BATCH. No `express.urlencoded` is mounted on purpose — every client
+// (dashboard, Go agent, ESP32) speaks JSON, so a form parser would be attack surface
+// with no consumer.
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "100kb" }));
+
+// ─── Handshake attempt budget ─────────────────────────────────────────────────
+//
+// The global Express limiter CANNOT see this path: Socket.IO answers /socket.io/ on
+// the HTTP server directly and the Express app is never invoked, so the one endpoint
+// that accepts DEVICE_SECRET had no attempt limit while every HTTP credential path
+// had one. Counts REJECTED handshakes only — see services/handshakeLimiter.js for
+// why a plain connection cap would lock out the whole campus instead.
+// See audits/api-infra-security-2026-08-25.md — A-04.
+const HANDSHAKE_MAX_FAILURES = Number(process.env.SOCKET_HANDSHAKE_MAX_FAILURES) || 50;
+const handshakeLimiter = createHandshakeLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxFailures: HANDSHAKE_MAX_FAILURES,
+});
+
+// Constant-time equality against DEVICE_SECRET.
+//
+// `timingSafeEqual` throws when the two buffers differ in length, so the length is
+// compared first — which means length itself is still not constant-time. That is
+// unavoidable without hashing both sides, and is not the part worth protecting:
+// config/env.js enforces a 24-character floor, so the length is a known property of the
+// deployment rather than a secret. What this removes is the byte-by-byte prefix oracle.
+//
+// Returns false when the variable is unset, preserving the previous `secret && …`
+// behaviour: no configured secret means no device can authenticate.
+function matchesDeviceSecret(provided) {
+  const expected = process.env.DEVICE_SECRET;
+  if (!expected || typeof provided !== "string") return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 // F-01: authenticate every socket connection before events are registered
 io.use(async (socket, next) => {
+  // Resolved with the SAME trusted-hop count Express uses, so this agrees with the
+  // `req.ip` every other limiter and the audit trail see.
+  const peer = clientIpFrom(
+    socket.handshake.headers,
+    socket.handshake.address,
+    TRUST_PROXY_HOPS,
+  );
+  if (handshakeLimiter.isBlocked(peer)) {
+    console.warn(
+      `[RATE] socket handshake blocked from ${peer} — over ${HANDSHAKE_MAX_FAILURES} ` +
+        `failed attempts/15min (retry in ${handshakeLimiter.retryAfterSec(peer)}s)`,
+    );
+    return next(new Error("Too many failed connection attempts"));
+  }
+  const reject = (message, why) => {
+    const fails = handshakeLimiter.recordFailure(peer);
+    if (fails === HANDSHAKE_MAX_FAILURES) {
+      // Log the moment the budget runs out, once. A credential being ground against
+      // this endpoint is otherwise a quiet line in a stream of reconnect noise.
+      console.warn(`[RATE] socket handshake budget exhausted for ${peer} — ${why}`);
+    }
+    return next(new Error(message));
+  };
   // F-04: keep the shared secret out of the URL — a query string is written verbatim
   // into proxy and access logs, a header and a frame body are not. Three sources, in
   // descending preference:
@@ -189,36 +351,58 @@ io.use(async (socket, next) => {
     socket.handshake.headers?.["x-device-key"] ??
     socket.handshake.query?.deviceKey;
 
-  // ESP32 device authentication via shared secret
+  // ESP32 device authentication via shared secret.
+  //
+  // Compared in constant time. `===` on a secret leaks its length and a prefix through
+  // timing — the same reason installKeyService.matchesLegacyKey has always used
+  // timingSafeEqual for the very same class of value, and the two comparisons should
+  // not disagree about how careful to be. The handshake limiter makes the attack
+  // expensive rather than impossible; this makes it uninformative. Lengths are checked
+  // first because timingSafeEqual THROWS on a length mismatch.
   if (deviceKey) {
-    const secret = process.env.DEVICE_SECRET;
-    if (secret && deviceKey === secret) {
+    if (matchesDeviceSecret(deviceKey)) {
       socket.isDevice = true;
+      handshakeLimiter.recordSuccess(peer);
       return next();
     }
-    return next(new Error("Invalid device key"));
+    return reject("Invalid device key", "bad device key");
   }
 
   // Browser client authentication via JWT
   const token = socket.handshake.auth?.token;
-  if (!token) return next(new Error("Unauthorized"));
+  if (!token) return reject("Unauthorized", "no credential presented");
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
+    const decoded = jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTS);
     //  reject sockets whose session has since been revoked/disabled. Same predicate
     //  the HTTP middleware and the revocation sweep use — see middleware/auth.js.
     if (!sessionIsLive(await fetchSessionRow(decoded.id), decoded.tv)) {
-      return next(new Error("Session is no longer valid"));
+      return reject("Session is no longer valid", "revoked/disabled session");
+    }
+    // Refuse a session that has already outlived its absolute ceiling. jwt.verify has
+    // only established that THIS TOKEN is unexpired; a token minted just under the cap
+    // is still signature-valid for an hour afterwards, and without this check it could
+    // open a fresh long-lived socket during that window — re-arming the very thing the
+    // sweep was just taught to close. Checked here as well as in the sweep so the
+    // connection is never established, rather than established and dropped up to
+    // SOCKET_REVOKE_SWEEP_MS later.
+    if (sessionPastHardLimit(decoded)) {
+      return reject("Session is no longer valid", "session past its absolute age cap");
     }
     socket.user = decoded;
     socket.isDevice = false;
+    // Clear the budget: a working dashboard, agent or ESP32 must never accumulate
+    // its way into a block on an address shared by everyone behind nginx or the NAT.
+    handshakeLimiter.recordSuccess(peer);
     next();
   } catch (err) {
     // Same reasoning as middleware/auth.js: the client gets a bare "Invalid token",
     // the log gets the actual cause. A rejected handshake surfaces in the browser as
     // an opaque 403 on /socket.io/, which says nothing about why.
-    console.warn(`[AUTH] socket handshake rejected — ${err.name}: ${describeError(err)}`);
-    next(new Error("Invalid token"));
+    console.warn(
+      `[AUTH] socket handshake rejected from ${peer} — ${err.name}: ${describeError(err)}`,
+    );
+    reject("Invalid token", err.name);
   }
 });
 
@@ -415,9 +599,9 @@ server.requestTimeout = Number(process.env.HTTP_REQUEST_TIMEOUT_MS) || 60_000;
 server.headersTimeout = Number(process.env.HTTP_HEADERS_TIMEOUT_MS) || 90_000;
 server.keepAliveTimeout = Number(process.env.HTTP_KEEPALIVE_TIMEOUT_MS) || 80_000;
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT} (0.0.0.0 — all interfaces)`);
-});
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT} (0.0.0.0 — all interfaces)`);
+  });
 
 // Offline sweep — agents POST every ~10s and refresh last_seen; nothing else marks
 // a server offline when its agent stops. Every 15s, flip stale approved servers to
@@ -505,6 +689,20 @@ const runReportPurge = async () => {
 };
 runReportPurge();
 setInterval(runReportPurge, PURGE_INTERVAL_MS);
+
+// Device-event retention — the last log table without one. Same daily cadence as the
+// others; see services/deviceLogs.purgeOld for why 90 days.
+const DEVICE_LOG_RETENTION_DAYS = Number(process.env.DEVICE_LOG_RETENTION_DAYS) || 90;
+const runDeviceLogPurge = async () => {
+  try {
+    const purged = await deviceLogs.purgeOld(DEVICE_LOG_RETENTION_DAYS);
+    if (purged) console.log(`[device_logs] purged ${purged} row(s) older than ${DEVICE_LOG_RETENTION_DAYS}d`);
+  } catch (err) {
+    console.error("[device_logs] purge error:", describeError(err));
+  }
+};
+runDeviceLogPurge();
+setInterval(runDeviceLogPurge, PURGE_INTERVAL_MS);
 
 // Audit-trail retention — system_logs is the table with ip_address + user_agent in
 // it, i.e. the most personal data the schema holds, and it was the one table with

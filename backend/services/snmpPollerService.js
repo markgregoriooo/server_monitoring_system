@@ -29,6 +29,7 @@ import {
   counterDelta,
 } from "./snmpUtils.js";
 import { describeError } from "../utils/httpError.js";
+import { writeCommunity, readCommunity } from "./communityCrypto.js";
 
 // ─── SNMP poller: routers (IF-MIB) + UPS (UPS-MIB), pull-based ─────────────────
 //
@@ -78,13 +79,34 @@ const firstValue = (m) => {
   const k = Object.keys(m)[0];
   return k === undefined ? null : m[k];
 };
-const connFor = (d) => ({
-  host: d.ip,
-  community: d.community || "public",
-  port: d.snmpPort || 161,
-  timeout: SNMP_TIMEOUT_MS,
-  retries: SNMP_RETRIES,
-});
+// Build the SNMP session parameters for a device.
+//
+// ⚠️ NO DEFAULT COMMUNITY. This read `d.community || "public"`, which silently
+// substituted the best-known default credential in existence for a missing one. It was
+// unreachable in practice — loadDevices() filters a UPS without a community out
+// entirely, and pollRouter() sends a router without one down the ICMP path before it
+// gets here — but that is exactly what makes a fallback dangerous: it is invisible
+// until the invariant it depends on changes, and then the poller starts probing a
+// production device with a guessed credential and reports the result as monitoring.
+// Fail loudly instead, so a bug upstream surfaces as a bug rather than as a device
+// that mysteriously answers (or does not).
+const connFor = (d) => {
+  const community = typeof d.community === "string" ? d.community.trim() : "";
+  if (!community) {
+    throw new Error(
+      `SNMP poll attempted for "${d.name ?? d.ip}" (id ${d.id}) with no community string. ` +
+        "A router without one is monitored by ICMP (pollRouterByPing) and a UPS without " +
+        "one is not loaded at all, so reaching here means loadDevices/pollRouter changed.",
+    );
+  }
+  return {
+    host: d.ip,
+    community,
+    port: d.snmpPort || 161,
+    timeout: SNMP_TIMEOUT_MS,
+    retries: SNMP_RETRIES,
+  };
+};
 
 // ─── Collectors (pure SNMP → sample; no DB, no Influx — unit-testable) ──────────
 
@@ -250,6 +272,7 @@ async function loadDevices() {
       WHERE d.device_type IN ('router','ups')`,
   );
   return rows
+    .map((r) => ({ ...r, community: readCommunity(r.community) }))
     .filter((r) => {
       if (!r.ip) return false;
       if (r.type === "ups") return Boolean(r.community) && ["snmp", "network"].includes(r.commType);
@@ -397,6 +420,16 @@ async function setReachable(io, d, online) {
 // path has no equivalent — an SNMP timeout yields no partial sample to write.)
 async function pollRouterByPing(io, d) {
   const icmp = await icmpPing.ping(d.ip);
+
+  // A BROKEN PROBE IS NOT AN OUTAGE. If ICMP could not be attempted at all — no `ping`
+  // binary, or the account cannot open a raw socket (systemd's NoNewPrivileges blocks
+  // the setuid/cap_net_raw it needs) — then `reachable:false` is not a measurement, it
+  // is the absence of one. Writing it would mark every ping-only router Offline and
+  // alert on all of them simultaneously: a fleet-wide outage that exists only in the
+  // monitoring. icmpPing has already logged the cause once.
+  // See audits/logging-monitoring-2026-08-25.md and ops/systemd/README.md.
+  if (icmp.probeError) return;
+
   const sample = {
     reachable: icmp.reachable,
     descr: null,
@@ -450,6 +483,15 @@ async function pollRouter(io, d) {
     // blocked UDP 161 — and those need opposite fixes. §9 of the design doc sends the
     // operator to run snmpwalk by hand precisely because the log couldn't tell them.
     const icmp = await icmpPromise;
+    // With ICMP unavailable, the combined verdict below would read "SNMP failed AND the
+    // host is unreachable" — the second half being an artefact of the broken probe, not
+    // a finding. Fall back to reporting only what was actually observed.
+    if (icmp.probeError) {
+      console.warn(
+        `[SNMP_POLLER] ${d.name ?? d.ip}: SNMP failed and ICMP is unavailable ` +
+          `(${icmp.probeError}) — cannot tell a dead router from a bad community string.`,
+      );
+    }
     err.message = icmp.reachable
       ? `${err.message} — but the host ANSWERS ICMP (${icmp.latencyMs} ms), so the device is up and SNMP is the problem: wrong community, SNMP not enabled, or UDP ${d.snmpPort || 161} blocked`
       : `${err.message} — and the host does not answer ICMP either, so the device or its link is down`;
@@ -669,24 +711,33 @@ const trimOrNull = (v) => {
 // `= NULL` is never true in SQL, so this needs its own branch: without it the guard
 // silently matched nothing and every re-submit of the add form created another
 // duplicate router.
+// ⚠️ The community half of the comparison happens in JS, not in SQL, and has to.
+// `snmp_community` is now AES-256-GCM ciphertext with a random IV (communityCrypto.js),
+// so the same string encrypts to a different value every time and `n.snmp_community = ?`
+// would match nothing — turning this guard into a no-op and letting every re-submit of
+// the add form create another duplicate router, which is the precise bug the `= NULL`
+// branch below was written to fix. So the query narrows on (ip, port) — indexed, and a
+// handful of rows at this scale — and the credential is compared after decryption.
 async function assertEndpointFree(conn, ip, snmpPort, community) {
-  const [dup] = community
+  const [rows] = community
     ? await conn.query(
-        `SELECT d.device_name, d.device_type
+        `SELECT d.device_name, d.device_type, n.snmp_community
            FROM devices d
            JOIN device_network n ON n.device_id = d.device_id
-          WHERE d.ip_address = ? AND n.snmp_port = ? AND n.snmp_community = ?
-          LIMIT 1`,
-        [ip, snmpPort, community],
+          WHERE d.ip_address = ? AND n.snmp_port = ?`,
+        [ip, snmpPort],
       )
     : await conn.query(
-        `SELECT d.device_name, d.device_type
+        `SELECT d.device_name, d.device_type, n.snmp_community
            FROM devices d
            JOIN device_network n ON n.device_id = d.device_id
           WHERE d.ip_address = ? AND (n.snmp_community IS NULL OR n.snmp_community = '')
           LIMIT 1`,
         [ip],
       );
+  const dup = community
+    ? rows.filter((r) => readCommunity(r.snmp_community) === community).slice(0, 1)
+    : rows;
   if (dup.length) {
     throw badRequest(
       community
@@ -740,7 +791,9 @@ async function addNetworkDevice(input) {
     await conn.query(
       `INSERT INTO device_network (device_id, gateway, dns, network_segment, snmp_port, snmp_community)
        VALUES (?, '', '', ?, ?, ?)`,
-      [deviceId, networkSegment(ip), snmpPort, community],
+      // Encrypted at rest — the column feeds the nightly mysqldump and whatever that
+      // folder is synced offsite to. See services/communityCrypto.js.
+      [deviceId, networkSegment(ip), snmpPort, writeCommunity(community)],
     );
     await conn.commit();
     await logDevice(
@@ -801,7 +854,9 @@ async function addUpsDevice(input) {
     await conn.query(
       `INSERT INTO device_network (device_id, gateway, dns, network_segment, snmp_port, snmp_community)
        VALUES (?, '', '', ?, ?, ?)`,
-      [deviceId, networkSegment(ip), snmpPort, community],
+      // Encrypted at rest — the column feeds the nightly mysqldump and whatever that
+      // folder is synced offsite to. See services/communityCrypto.js.
+      [deviceId, networkSegment(ip), snmpPort, writeCommunity(community)],
     );
     await conn.query(
       `INSERT INTO ups_details (device_id, brand, model, battery_capacity, communication_type, serial_number)

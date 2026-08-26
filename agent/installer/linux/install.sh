@@ -2,8 +2,16 @@
 # Linux installer — installs the CSPC-ICTU monitoring agent as a systemd service.
 # Run the matching binary (cspc-agent-linux-amd64 / -arm64) from the same folder.
 #
-# Usage: sudo bash install.sh <API_URL> <INSTALL_KEY> [--re-enroll]
-#   e.g. sudo bash install.sh http://192.168.100.9:3000 AIK-...
+# Usage: sudo bash install.sh <API_URL> [INSTALL_KEY] [--re-enroll]
+#   e.g. CSPC_INSTALL_KEY=AIK-... sudo -E bash install.sh http://192.168.100.9:3000
+#
+# PREFER the environment variable. A key passed as an ARGUMENT is visible in `ps aux` to
+# every user on the machine while enrollment runs, is written to the invoking shell's
+# history file, and is captured by execve auditing. `sudo -E` is what preserves the
+# variable across the privilege change; without it sudo strips the environment and the
+# installer will tell you the key is missing rather than enrolling with a blank one.
+# The positional form still works and is still accepted, so existing runbooks do not
+# break — it just warns.
 #
 # Get the key from the dashboard: Server Metrics -> Agent install keys -> + New key.
 #
@@ -13,11 +21,28 @@
 set -euo pipefail
 
 API_URL="${1:-}"
-INSTALL_KEY="${2:-}"
-RE_ENROLL="${3:-}"
+# The environment wins over the argument, matching the agent binary's own precedence.
+# ${2} may legitimately be "--re-enroll" now that the key is optional, so it is only
+# treated as a key when it does not start with a dash.
+INSTALL_KEY="${CSPC_INSTALL_KEY:-}"
+KEY_FROM_ARG=""
+if [[ -z "$INSTALL_KEY" && -n "${2:-}" && "${2}" != -* ]]; then
+  INSTALL_KEY="${2}"
+  KEY_FROM_ARG="yes"
+fi
+# --re-enroll may arrive as $2 (env-var form) or $3 (positional-key form).
+RE_ENROLL=""
+for a in "${@:2}"; do [[ "$a" == "--re-enroll" ]] && RE_ENROLL="--re-enroll"; done
+
 if [[ -z "$API_URL" || -z "$INSTALL_KEY" ]]; then
-  echo "Usage: sudo bash install.sh <API_URL> <INSTALL_KEY> [--re-enroll]"
+  echo "Usage: CSPC_INSTALL_KEY=AIK-... sudo -E bash install.sh <API_URL> [--re-enroll]"
+  echo "   or: sudo bash install.sh <API_URL> <INSTALL_KEY> [--re-enroll]   (key visible in ps/history)"
   exit 1
+fi
+if [[ -n "$KEY_FROM_ARG" ]]; then
+  echo "NOTE: the install key was passed as a command-line argument, so it is visible in" >&2
+  echo "NOTE: the process list and in this shell's history. For future installs use:" >&2
+  echo "NOTE:   CSPC_INSTALL_KEY=AIK-... sudo -E bash install.sh $API_URL" >&2
 fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -53,7 +78,10 @@ fi
 # First run: register and block until an admin approves (writes agent.conf).
 if [[ ! -f "$CONF" ]]; then
   echo "Registering with backend; waiting for admin approval (Ctrl-C to abort)..."
-  "$INSTALL_DIR/cspc-agent" --register-only -api-url "$API_URL" -install-key "$INSTALL_KEY" -conf "$CONF"
+  # Handed over in the ENVIRONMENT, not as an argument — this is the whole point of the
+  # change: even when the operator used the positional form, the key stops being visible
+  # in the process list from here on. The agent unsets it as soon as it has read it.
+  CSPC_INSTALL_KEY="$INSTALL_KEY" "$INSTALL_DIR/cspc-agent" --register-only -api-url "$API_URL" -conf "$CONF"
 else
   # Say so LOUDLY. The install key is a required argument, so silently ignoring it reads
   # as "the key was applied" — which is how a machine ends up still attributed to an old
