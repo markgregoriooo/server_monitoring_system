@@ -552,27 +552,37 @@ environment flag, which is the better design.
 
 ---
 
-### S-14 — Cross-cutting — History cleanup
+### S-14 — Cross-cutting — History cleanup — **DONE 2026-08-26**
 
-The three historical leaks (S-01, S-02, S-03) live in blobs that removal commits do not
-delete. Rewriting is possible but has a real cost, and the honest recommendation depends on
-whether this repository is shared:
+The three historical leaks (S-01, S-02, S-03) lived in blobs that removal commits do not
+delete. **Rewritten and force-pushed on 2026-08-26**, ahead of any decision to make this
+repository public rather than after it.
 
-- **If the repo stays private and its collaborator list is small and known** — rotation
-  (S-01) is sufficient. A rewrite of 287 commits invalidates every clone and every open
-  branch; it is not obviously worth it here.
-- **Before making the repo public** (capstone submission, portfolio) — rewrite first:
+Two `git filter-repo` passes, run against a full pre-rewrite bundle of every ref:
 
-  ```bash
-  # git-filter-repo is the maintained tool; BFG is the alternative.
-  git filter-repo --replace-text <(printf '%s\n' \
-    'REDACTED-ROTATED-DEVICE-SECRET==>REDACTED' \
-    'REDACTED-ROTATED-WIFI-PASSWORD==>REDACTED' \
-    'REDACTED-REVOKED-INSTALL-KEY==>REDACTED')
-  ```
+```bash
+# 1. the three credentials -> placeholders, across all 291 commits
+git filter-repo --replace-text <(printf '%s
+'   '<device secret>==>REDACTED-ROTATED-DEVICE-SECRET'   '<wifi psk>==>REDACTED-ROTATED-WIFI-PASSWORD'   '<install key>==>REDACTED-REVOKED-INSTALL-KEY')
 
-  Then force-push and have every collaborator re-clone. **Rotate regardless** — a rewrite
-  does not reach forks, existing clones, or anyone's local reflog.
+# 2. 12 profile photos of real people. --replace-text swaps TEXT and does not
+#    delete files, so pass 1 could not touch them.
+git filter-repo --path backend/uploads --invert-paths --force
+
+git push --force-with-lease=refs/heads/main:<pre-rewrite sha> origin main
+```
+
+**Verified after the push.** All three values return **0 commits** under
+`git log --all -S`; zero `backend/uploads` commits remain; **283 commits intact, none
+dropped** (both photo commits also touched other files, so neither went empty); local and
+`origin/main` in sync; 357 tests pass.
+
+⚠️ **A rewrite reaches this repository only** — not forks, not existing clones, not
+anyone's reflog, and GitHub keeps orphaned commits reachable by direct SHA until Support
+GCs them. What actually closed these three was rotating or revoking them *first*; the
+rewrite removes the copy this repo serves. **Every other clone must be re-cloned, not
+pulled.** The SHA-256 denylist in `backend/config/env.js` stays permanently — it is what
+keeps the burned secret dead if it is ever pasted back in.
 
 ---
 
@@ -629,7 +639,8 @@ Ordered by risk removed per unit of effort.
    ciphertext — including, now, the SNMP communities.
 3. ~~**Encrypt the SNMP communities**~~ (S-05) — **DONE**, migration applied and both values
    converted; round-trip verified against the live rows.
-4. **Decide on history rewrite before the repo is ever made public** (S-14). *~30 min, once.*
+4. ~~**Decide on history rewrite before the repo is ever made public**~~ (S-14) —
+   **DONE 2026-08-26.** Rewritten and force-pushed; see S-14.
    Cheap now; impossible to do retroactively once it is public and forked.
 5. **Split `SECRET_ENC_KEY` from `MIKROTIK_ENC_KEY`** (S-11). *~5 min.* Newly possible; do it
    before go-live so the two rotation events stop being one.
@@ -684,6 +695,11 @@ override. `go build ./...` and `go vet ./...` clean. `bash -n install.sh` clean.
 ### Still outstanding
 
 1. **Reflash the ESP32** — it holds the old secret and cannot connect until reflashed.
-2. **S-04: set a MySQL password and move off `root`** — the largest remaining exposure.
-3. **S-14: decide on history rewrite** before this repository is ever made public.
-4. **S-11: set `SECRET_ENC_KEY`** and run `npm run rekey -- --from-key <mikrotik key> --suite general --apply`.
+2. **S-04: set a MySQL password and move off `root`** — the largest remaining exposure, and
+   now the only *live* credential problem left: the three historical ones are all dead.
+3. **S-11: set `SECRET_ENC_KEY`** and run
+   `npm run rekey -- --from-key <mikrotik key> --suite general --apply`. ⚠️ One step, not
+   two — setting the key without the rekey leaves the app unable to decrypt what it has
+   already written (install-key re-display, agent-token re-delivery, SNMP communities).
+
+*(S-14, the history rewrite, was completed 2026-08-26 — see above.)*

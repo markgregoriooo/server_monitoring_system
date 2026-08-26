@@ -2206,3 +2206,95 @@ correctly, and bypass / battery / off were verified by flipping `upsOutputSource
   would most want it. Deliberate for now.
 - Alert-type chips in Analytics still render raw names (`router_loss - 4`). Cosmetic, and it
   predates this session.
+
+---
+
+## SESSION 24 — 2026-08-25 / 2026-08-26
+**Branch:** `main`
+**Developer:** Mark Gregorio
+
+> Twenty audits in two waves — nine quality reviews, then eleven security ones — each ending
+> in applied fixes rather than a report. The last of them found a **live credential readable
+> in git history**, which turned the session's closing act into a history rewrite and a
+> force-push. The audit reports themselves live in `audits/`; this entry records what
+> changed and what is still open.
+
+### Wave 1 — nine quality reviews (2026-08-25)
+
+Architecture, design patterns, SOLID, resilience, error handling, error flow,
+naming/readability, code complexity, code duplication, testing. Reports in `dccb682`, the
+fixes they produced in `94ae6cc`, the tests in `6a77089`.
+
+### Wave 2 — eleven security audits (2026-08-26)
+
+Secrets management, session/cookie, auth flow, authorization, API/infra, database, file
+handling, logging/monitoring, business logic (+ a threat model), project structure, and the
+consolidated `SECURITY-REPORT-2026-08-25.md`. Landed with their fixes in `c891471`.
+
+**New code the audits forced into existence:**
+
+- **`npm run rekey`** (`backend/scripts/rekeySecrets.js`) — the rotation path that did not
+  exist. Four columns held AES-GCM ciphertext and the documented answer to "how do I change
+  the key?" was "you don't", which is not a security property. Rotation decrypts and
+  re-encrypts every row **in memory before writing any of them**: a half-finished rotation
+  leaves rows split across two keys and then neither key opens the table.
+- **`services/communityCrypto.js`** — SNMP communities were cleartext in `device_network`,
+  and that column feeds the nightly MySQL dump, which rclone copies offsite. Every
+  router/UPS credential on campus was on Backblaze in the clear.
+- **`services/handshakeLimiter.js`** — the Express limiter **cannot see `/socket.io/`**
+  (Socket.IO answers those on the HTTP server; Express is never invoked), so the one
+  endpoint accepting `DEVICE_SECRET` had no attempt limit at all.
+- **`middleware/securityHeaders.js`**, **`utils/logSafe.js`**, an `ops/systemd` unit.
+- Four migrations: agent token hashing (`2026-08-25` + `2026-08-25b` — the *pending* token
+  mattered as much as the permanent one), alert-rule scope uniqueness, SNMP community at rest.
+
+**Tests: 212 → 357.**
+
+### Applied to the live system, not just to the repo
+
+Rotated `DEVICE_SECRET` on both sides (`backend/.env` + `secrets.h`, verified identical to
+each other and different from the burned value), applied the SNMP migration against
+MariaDB 10.4.32, encrypted the 2 live communities, round-trip-verified all 5
+`device_network` rows against a pre-change snapshot, then destroyed the snapshot — it held
+the communities in the clear.
+
+### The history rewrite — 2026-08-26
+
+`audits/secrets-management-2026-08-26.md` S-01/S-02/S-03: three credentials sat in blobs
+that the removal commits never deleted — the ESP32 `DEVICE_SECRET`, the home WiFi PSK, and
+a real `AGENT_INSTALL_KEY` that lived in `server-metrics.md` for 66 days. All three are
+already dead (rotated / unset), so this was hygiene before the repo is ever made public,
+not an active breach.
+
+Two `git filter-repo` passes:
+
+1. `--replace-text` — the three values replaced with `REDACTED-*` placeholders across all
+   291 commits.
+2. `--path backend/uploads --invert-paths` — **12 profile photos** of real people, which
+   pass 1 could not touch (`--replace-text` swaps text, it does not delete files). Both
+   commits that touched them also touched other files, so no commit went empty.
+
+Then force-pushed with `--force-with-lease` pinned to the pre-rewrite remote SHA.
+
+**Verified after the push:** all three secrets return **0 commits** across every ref; zero
+`backend/uploads` commits remain; 283 commits intact, none dropped; local and remote in
+sync; 357 tests pass. A full pre-rewrite bundle was taken first.
+
+⚠️ **A rewrite reaches this repository only** — not forks, not existing clones, not
+anyone's reflog, and GitHub keeps orphaned commits reachable by direct SHA until Support
+GCs them. That is why all three values were rotated *first*, and why the SHA-256 denylist
+entry in `backend/config/env.js` (`3257818`) stays permanently: it is what keeps the burned
+secret dead if it is ever pasted back in. **Any other clone of this repo must be
+re-cloned, not pulled.**
+
+### Still outstanding
+
+1. **Reflash the ESP32** — it holds the old secret and cannot connect until it is reflashed.
+2. **S-04: MySQL runs as `root` with an empty password.** Now the largest live exposure in
+   the system — a real credential on a real port, unlike the three historical ones, which
+   are all dead. `deployment-guide.md:139` already prescribes a `cspc_app` user; it has not
+   been created.
+3. **S-11: set `SECRET_ENC_KEY`**, then
+   `npm run rekey -- --from-key <mikrotik key> --suite general --apply`. Three columns
+   currently borrow `MIKROTIK_ENC_KEY`; this gives them their own. ⚠️ One step, not two —
+   setting the key without the rekey leaves the app unable to decrypt what it already wrote.
