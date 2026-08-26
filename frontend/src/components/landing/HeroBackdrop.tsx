@@ -1,32 +1,42 @@
 import { useEffect, useRef } from "react";
 import { animate } from "animejs";
 import { prefersReducedMotion, EASE } from "./motion";
-import { STATUS } from "../../theme/gf";
-const { green: GREEN } = STATUS;
 
 /**
- * Two telemetry series drifting across the back of the fold.
+ * The fold's ambient background. Two layers, both decorative, both `aria-hidden`:
  *
- * Purely ambient — the numbers are a fixed shape wired to nothing, so this can
- * never go stale or claim something untrue. Its whole job is to say "there are
- * graphs behind this product" underneath the headline, the way Grafana's and
- * Zabbix's own marketing pages do.
+ *   1. a dot matrix, faded in from the right
+ *   2. two telemetry series drifting sideways  (the original layer)
  *
- * SEAMLESS LOOP, and that is the only interesting part. The series is drawn
- * TWICE end to end, and the group translates left by exactly one copy's width
- * before snapping back. Because the array's last value equals its first, the
- * join between the two copies is continuous, and the reset lands on a picture
- * identical to the frame before it — so there is no visible jump and no need to
- * shift any data. One transform, running forever, composited on the GPU.
+ * Two other layers were tried here and removed: a node-and-edge constellation, which
+ * against the dot matrix read as a second competing set of dots rather than as a
+ * topology, and expanding "ping" rings, which pulled the eye to a corner where nothing
+ * was happening. Both are worth NOT re-adding — the fold is a backdrop for a headline
+ * and a sign-in button, and every layer past texture costs the copy some attention.
  *
- * Opacity is deliberately tiny. This sits BEHIND the headline and the CTA,
- * and the fold already carries a grid pattern and an accent glow; a third
- * background layer that competes for attention makes the copy harder to read,
- * which is the one thing the hero cannot afford. If it is hard to see, it is
- * working.
+ * Purely ambient — every value here is a fixed shape wired to nothing, so none of it
+ * can go stale or claim something untrue. Its whole job is to say "there are graphs
+ * behind this product" underneath the headline, the way Grafana's and Zabbix's own
+ * marketing pages do.
+ *
+ * ── EVERYTHING IS WEIGHTED TO THE RIGHT ────────────────────────────────────────
+ * The hero copy is a single LEFT-aligned column, so the right of the fold is the empty
+ * half — the space the dashboard mock used to occupy. Layers 1 and 2 are masked or
+ * placed to live there and fade out before they reach the text (layer 3 spans the full
+ * width, but it hugs the bottom edge, well under the copy). That is the whole reason the
+ * masked 44px grid that used to sit here was removed: it ran lines straight through
+ * the headline. Texture beside the copy reads as depth; texture behind it reads as
+ * noise, and the copy is the one thing the hero cannot afford to make harder to read.
+ *
+ * ── ANIMATION IS COMPOSITED, OR IT DOES NOT ANIMATE ────────────────────────────
+ * The one moving layer translates a group — `transform` and `opacity` are the two
+ * properties the compositor can handle without re-rasterising, which matters for
+ * something that runs forever on a page that can sit open on a wall display.
+ *
+ * All motion is skipped under `prefers-reduced-motion` — this is a large-area, slow,
+ * peripheral movement, which is precisely the kind that triggers vestibular symptoms.
+ * The static frame is composed to look deliberate on its own, not like a broken loop.
  */
-
-const ACCENT = "#5794F2";
 
 const W = 1200;
 const H = 300;
@@ -90,23 +100,51 @@ export default function HeroBackdrop() {
   }, []);
 
   return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      preserveAspectRatio="none"
-      aria-hidden="true"
-      className="absolute inset-x-0 bottom-0 w-full pointer-events-none"
-      style={{ height: "62%" }}
-    >
-      {/* back plane — slower, fainter */}
-      <g ref={backRef}>
-        <path d={PATH_B} fill="none" stroke={GREEN} strokeWidth="2" opacity="0.16" />
-      </g>
+    <>
+      {/* ── 1. dot matrix ─────────────────────────────────────────────────────
+          Dots, not the grid lines this replaced: a dot never forms a continuous
+          rule that can cut through a line of type, so it survives being masked
+          close to the copy. Doubly masked — a horizontal ramp keeps it clear of
+          the text, a vertical one stops it colliding with the fixed topbar. */}
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          backgroundImage: "radial-gradient(var(--gf-text-dim) 1px, transparent 1px)",
+          backgroundSize: "24px 24px",
+          opacity: 0.22,
+          maskImage:
+            "linear-gradient(90deg, transparent 38%, black 82%), linear-gradient(180deg, transparent 6%, black 34%, black 74%, transparent 96%)",
+          WebkitMaskImage:
+            "linear-gradient(90deg, transparent 38%, black 82%), linear-gradient(180deg, transparent 6%, black 34%, black 74%, transparent 96%)",
+          maskComposite: "intersect",
+          WebkitMaskComposite: "source-in",
+        }}
+      />
 
-      {/* front plane — the one with the fill under it */}
-      <g ref={frontRef}>
-        <path d={AREA_A} fill={ACCENT} opacity="0.05" />
-        <path d={PATH_A} fill="none" stroke={ACCENT} strokeWidth="2" opacity="0.22" />
-      </g>
-    </svg>
+      {/* ── 2. the telemetry series ───────────────────────────────────────── */}
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        aria-hidden="true"
+        className="absolute inset-x-0 bottom-0 w-full pointer-events-none"
+        style={{ height: "62%" }}
+      >
+        {/* ⚠️ Colours go through `style`, NOT the `stroke`/`fill` ATTRIBUTES.
+            An SVG presentation attribute does not parse `var()` — `stroke="var(--x)"`
+            is silently dropped and the path renders black. The CSS property does, so
+            the theme token only reaches the shape via style. */}
+        {/* back plane — slower, fainter */}
+        <g ref={backRef}>
+          <path d={PATH_B} fill="none" strokeWidth="2" style={{ stroke: "var(--gf-hero-line-b)" }} />
+        </g>
+
+        {/* front plane — the one with the fill under it */}
+        <g ref={frontRef}>
+          <path d={AREA_A} style={{ fill: "var(--gf-hero-area-a)" }} />
+          <path d={PATH_A} fill="none" strokeWidth="2" style={{ stroke: "var(--gf-hero-line-a)" }} />
+        </g>
+      </svg>
+    </>
   );
 }

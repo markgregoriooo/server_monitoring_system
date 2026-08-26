@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { LANDING_PHOTOS, suppliedPhotos, type LandingPhoto } from "./photos";
 import Reveal from "./Reveal";
+import PhotoLightbox from "./PhotoLightbox";
 
 /**
  * The hardware strip — the only part of this page that is a photograph.
@@ -64,6 +66,9 @@ function Placeholder({ photo, index }: { photo: LandingPhoto; index: number }) {
 }
 
 export default function PhotoGallery() {
+  // Which photo the lightbox is showing; null = closed. The INDEX rather than the
+  // photo, because the lightbox pages left and right through the list.
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
   const supplied = suppliedPhotos();
   // import.meta.env.DEV is compiled to a literal by Vite, so the placeholder
   // branch and its copy are dropped from the production bundle entirely.
@@ -72,6 +77,11 @@ export default function PhotoGallery() {
   if (supplied.length === 0 && !showPlaceholders) return null;
 
   const items = showPlaceholders ? LANDING_PHOTOS : supplied;
+  // The lightbox pages left and right, so it must only ever hold photos that HAVE an
+  // image. In dev `items` can also carry unsupplied slots rendered as placeholders, and
+  // paging onto one would show an empty frame with real prose under it — the exact
+  // "broken image on a public page" this file is otherwise careful to avoid.
+  const openable = items.filter((p) => p.src.trim() !== "");
 
   return (
     <section className="px-4 sm:px-6 py-16 sm:py-20" style={{ borderTop: "1px solid var(--gf-divider)" }}>
@@ -101,17 +111,53 @@ export default function PhotoGallery() {
           {items.map((photo, i) => (
             <Reveal key={photo.id} delay={i * 70} className="h-full">
               {photo.src ? (
-                <figure className="gf-panel overflow-hidden h-full flex flex-col">
-                  <img
-                    src={photo.src}
-                    alt={photo.alt}
-                    loading="lazy"
-                    decoding="async"
-                    className="w-full object-cover"
-                    style={{ aspectRatio: "3 / 2", display: "block" }}
-                  />
-                  <figcaption
-                    className="px-3 py-2.5 flex-1"
+                // A real <button>, not a click handler on the figure. It has to be
+                // reachable by keyboard and announced as activatable, and wrapping the
+                // whole card means the caption is part of the target rather than a dead
+                // strip under a live image.
+                <button
+                  type="button"
+                  onClick={() => setOpenIndex(openable.findIndex((x) => x.id === photo.id))}
+                  aria-label={`${photo.caption} — open details`}
+                  className="gf-panel overflow-hidden h-full w-full flex flex-col text-left group"
+                  style={{ cursor: "zoom-in" }}
+                >
+                  <div className="relative w-full overflow-hidden" style={{ aspectRatio: "3 / 2" }}>
+                    <img
+                      src={photo.src}
+                      alt={photo.alt}
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
+                      style={{ display: "block" }}
+                    />
+                    {/* Affordance. Without something appearing on hover a photo in a grid
+                        reads as decoration, and nobody clicks decoration. */}
+                    <span
+                      aria-hidden="true"
+                      className="absolute inset-0 flex items-end justify-end p-2 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100"
+                      style={{ background: "linear-gradient(to top, rgba(9,11,15,0.55), transparent 55%)" }}
+                    >
+                      <span
+                        className="flex items-center justify-center"
+                        style={{
+                          width: 26,
+                          height: 26,
+                          borderRadius: 2,
+                          background: "var(--gf-glass)",
+                          border: "1px solid var(--gf-glass-border)",
+                          color: "#fff",
+                        }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
+                          <circle cx="11" cy="11" r="7" />
+                          <path d="M20 20l-3.2-3.2M11 8v6M8 11h6" />
+                        </svg>
+                      </span>
+                    </span>
+                  </div>
+                  <span
+                    className="px-3 py-2.5 flex-1 block"
                     style={{
                       fontSize: 12.5,
                       lineHeight: 1.4,
@@ -125,8 +171,8 @@ export default function PhotoGallery() {
                     }}
                   >
                     {photo.caption}
-                  </figcaption>
-                </figure>
+                  </span>
+                </button>
               ) : (
                 <Placeholder photo={photo} index={i} />
               )}
@@ -134,6 +180,15 @@ export default function PhotoGallery() {
           ))}
         </div>
       </div>
+
+      {openIndex !== null && openIndex >= 0 && (
+        <PhotoLightbox
+          photos={openable}
+          index={openIndex}
+          onClose={() => setOpenIndex(null)}
+          onNavigate={setOpenIndex}
+        />
+      )}
     </section>
   );
 }

@@ -30,6 +30,21 @@
      background — fine for a fill or a stroke, unreadable as a 11px label. Use
      --gf-accent for surfaces and graphics, --gf-accent-text for type. */
   --gf-accent-text:   #5794F2;  /* 6.40:1 on bg */
+
+  /* ── Hero backdrop telemetry lines ────────────────────────────────────────
+     The two drifting sparklines behind the fold (components/landing/HeroBackdrop).
+     ALPHA IS BAKED INTO THE COLOUR rather than set as a separate `opacity`, because
+     the two have to move together: the same alpha that reads as a whisper on a near
+     black page is invisible on a near white one, so a token that carried only the hue
+     would still need a second theme-aware number beside it.
+
+     These were hardcoded `#5794F2` and `#73BF69` with fixed opacities — tuned on dark
+     and unchanged by the theme toggle, which is why the fold looked empty in light
+     mode. Light uses the darker accent (the same #1F62E0 as --gf-accent-text, since
+     --gf-accent measures 2.76:1 there) and a deeper green, both at higher alpha. */
+  --gf-hero-line-a:   rgba(87,148,242,0.22);
+  --gf-hero-area-a:   rgba(87,148,242,0.05);
+  --gf-hero-line-b:   rgba(115,191,105,0.16);
   --gf-seg-empty:     rgba(255,255,255,0.06);
   --gf-scroll-bg:     rgba(0,0,0,0.25);
   --gf-scrollbar:     rgba(255,255,255,0.10);
@@ -82,6 +97,10 @@
   --gf-hover:         rgba(0,0,0,0.04);
   --gf-hover-strong:  rgba(0,0,0,0.08);
   --gf-accent-text:   #1F62E0;  /* 4.92:1 on bg, 5.41:1 on panel (--gf-accent is 2.76:1 here) */
+  /* Darker hues AND more alpha — see the note in the dark block above. */
+  --gf-hero-line-a:   rgba(31,98,224,0.34);
+  --gf-hero-area-a:   rgba(31,98,224,0.07);
+  --gf-hero-line-b:   rgba(28,105,52,0.32);
   --gf-seg-empty:     rgba(0,0,0,0.08);
   --gf-scroll-bg:     rgba(0,0,0,0.04);
   --gf-scrollbar:     rgba(0,0,0,0.15);
@@ -359,10 +378,36 @@
    URL bar VISIBLE. Plain `100vh` on a phone measures the tallest possible
    viewport, so a full-height section is taller than what you can actually see
    and the bottom of it sits under the browser chrome until you scroll. Anything
-   without svh support keeps the old behaviour rather than losing the floor. */
+   without svh support keeps the old behaviour rather than losing the floor.
+
+   ⚠️ This is a FLOOR, not a height — the hero grows past it whenever its content
+   needs more room.
+
+   The floor differs by width because the same number cannot serve both cases:
+
+   PHONE — a full screen. The hero IS the first impression, and letting the figures
+   strip peek above the fold splits attention between the headline and four numbers
+   before either has been read. One screen, then a scroll. `box-sizing: border-box`
+   means the `paddingTop: NAV_H` the section carries is INSIDE this, so the result is
+   exactly one viewport rather than one plus a topbar.
+
+   ≥640px — sized to the copy instead. A full-screen floor here used to be right, back
+   when the fold also carried a dashboard mock roughly as tall as the copy beside it.
+   With the mock gone the column is much shorter, and on a wide screen the leftover
+   height gets split above and below by `items-center` — which reads as a blank band
+   over the heading rather than as composition. Phones never had that problem: the
+   copy stacks tall enough to fill the screen on its own. */
 .hero-fold { min-height: 100vh; }
 @supports (min-height: 100svh) {
   .hero-fold { min-height: 100svh; }
+}
+
+@media (min-width: 640px) {
+  .hero-fold { min-height: 66vh; }
+
+  @supports (min-height: 66svh) {
+    .hero-fold { min-height: 66svh; }
+  }
 }
 
 /* Toast entrance (used by ToastHost via animate-[fadeIn_…]) */

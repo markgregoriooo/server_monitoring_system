@@ -6,19 +6,17 @@ import { useTheme } from "../../context/ThemeContext";
 import { BRAND } from "../../branding";
 import Reveal from "../../components/landing/Reveal";
 import Counter from "../../components/landing/Counter";
-import BrowserFrame from "../../components/landing/BrowserFrame";
-import ScaledStage from "../../components/landing/ScaledStage";
 import HeroBackdrop from "../../components/landing/HeroBackdrop";
 import Footer from "../../components/landing/Footer";
-import HeroDashboard from "../../components/landing/HeroDashboard";
 import FlowDiagram from "../../components/landing/FlowDiagram";
 import ForecastVisual from "../../components/landing/ForecastVisual";
 import PhotoGallery from "../../components/landing/PhotoGallery";
 import DemoReel from "../../components/landing/DemoReel";
 import LoginTutorial from "../../components/landing/LoginTutorial";
 import Faq from "../../components/landing/Faq";
-import { ScrollProgress, Parallax, SplitHeading, SectionRail } from "../../components/landing/ScrollFx";
-import { useIsNarrow, useScrolled } from "../../components/landing/motion";
+import BackToTop from "../../components/landing/BackToTop";
+import { ScrollProgress, SplitHeading, SectionRail } from "../../components/landing/ScrollFx";
+import { useScrolled } from "../../components/landing/motion";
 import { COVERAGE_VISUALS, type CoverageVisualKey } from "../../components/landing/CoverageVisuals";
 import { STATUS } from "../../theme/gf";
 const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
@@ -26,7 +24,7 @@ const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 // Topbar height. The fold subtracts it so the hero still fills exactly one screen,
 // and the content sections use it as scroll-margin so the sticky bar never covers
 // the heading it just scrolled to.
-const NAV_H = 52;
+const NAV_H = 60;
 
 // Grafana status colors (match the rest of the dashboard).
 const ACCENT = "#5794F2";
@@ -126,7 +124,6 @@ const ANALYTICS_POINTS: { title: string; body: string }[] = [
   },
 ];
 
-
 // Section heading. The title assembles word by word on approach (SplitHeading),
 // which is what keeps a long page feeling like it is responding to the scroll
 // rather than just sliding past — the label and the sub-line still use the plain
@@ -217,17 +214,13 @@ function ThemeIcon({ theme }: { theme: string }) {
 export default function Login() {
   const { loginWithGoogle } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  // Phone-width viewports get their own type scale, spacing and mock geometry.
-  const narrow = useIsNarrow();
   // Drives the topbar's two states: transparent and floating over the hero at
   // rest, frosted once content starts passing beneath it.
   const scrolled = useScrolled(24);
-  // Design width for the mini-UI mocks. ScaledStage maps design → available, so
-  // a SMALLER box in the same column is what ENLARGES the contents. Phones get
-  // 360 so the mock lands near 1:1; desktop gets 470 inside a ~700px column,
-  // scaling it ~1.5x. Do not drop the desktop figure below ~460 — the ROOM tile
-  // needs ~85px for "26.3°C" inside a quarter of the box.
-  const mockWidth = narrow ? 360 : 470;
+  // NOTE: `narrow`/`useIsNarrow` and `mockWidth` lived here to size the hero's
+  // dashboard mock. The mock is gone and nothing else on this page measured the
+  // viewport in JS — the remaining responsive work is all CSS breakpoints — so both
+  // were removed rather than left as dead state re-rendering on every resize.
   // Only the info Banner needs this as a literal — it slices the colour to build a
   // tint and a border. Everything else uses the var(--gf-accent-text) token.
   const accentText = theme === "dark" ? ACCENT : ACCENT_TEXT_LIGHT;
@@ -382,6 +375,7 @@ export default function Login() {
   return (
     <div className="min-h-screen bg-[var(--gf-bg)]" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
       <ScrollProgress />
+      <BackToTop />
 
       {/* ══ Topbar — sticky, so Sign in stays reachable while reading the page ══ */}
       <header
@@ -401,13 +395,16 @@ export default function Login() {
         }}
       >
         {/* Brand */}
-        <div className="flex items-center gap-2.5 min-w-0">
-          <LogoMark size={28} />
+        <div className="flex items-center gap-3 min-w-0">
+          <LogoMark size={36} />
+          {/* The wordmark stays at every width — it is what identifies the page. The
+              bar cannot carry both this and the Sign in button on a phone, and the
+              button is the half that gives way (see its own note below). */}
           <div className="leading-tight min-w-0">
-            <div className="text-[14px] font-semibold tracking-wide truncate" style={{ color: "var(--gf-text-primary)" }}>
+            <div className="text-[17px] font-semibold tracking-wide truncate" style={{ color: "var(--gf-text-primary)" }}>
               {BRAND.name}
             </div>
-            <div className="text-[10px] tracking-[0.22em] truncate" style={{ color: "var(--gf-text-dim)" }}>
+            <div className="text-[11px] tracking-[0.22em] truncate" style={{ color: "var(--gf-text-dim)" }}>
               {BRAND.subtitle}
             </div>
           </div>
@@ -421,10 +418,21 @@ export default function Login() {
             title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
             aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
             className="gf-icon-btn flex"
+            // Overridden to 32px so it matches the Sign in button beside it —
+            // `gf-icon-btn` is 28px, which is right in the dashboard chrome where every
+            // neighbour is another icon button, and 4px short here where the neighbour
+            // is a 32px-tall text button. Local override rather than editing the class:
+            // the sidebar and header use it at 28 and should stay there.
+            style={{ width: 32, height: 32 }}
           >
             <ThemeIcon theme={theme} />
           </button>
-          {googleButton("sm")}
+          {/* Desktop only. On a phone the bar has room for the wordmark or this, not
+              both, and this is the one with somewhere else to go: the hero carries a
+              full-size Sign in button, and the back-to-top control returns you to it
+              from anywhere on the page. Losing the wordmark instead would leave a bare
+              logo square identifying nothing. */}
+          <span className="hidden sm:block">{googleButton("sm")}</span>
         </div>
       </header>
 
@@ -442,19 +450,11 @@ export default function Login() {
         className="hero-fold relative flex flex-col overflow-hidden"
         style={{ paddingTop: NAV_H }}
       >
-        {/* Grafana-style grid, masked to a soft ellipse so it fades at the edges.
-            Tokens rather than fixed colors: the hero is the whole fold, so it has
-            to follow the theme toggle sitting right above it. */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            backgroundImage:
-              "linear-gradient(var(--gf-divider) 1px, transparent 1px), linear-gradient(90deg, var(--gf-divider) 1px, transparent 1px)",
-            backgroundSize: "44px 44px",
-            maskImage: "radial-gradient(ellipse at 35% 40%, black 0%, transparent 78%)",
-            WebkitMaskImage: "radial-gradient(ellipse at 35% 40%, black 0%, transparent 78%)",
-          }}
-        />
+        {/* NOTE: a masked 44px Grafana-style grid used to sit here, under the glow.
+            Removed — it was drawn to give a mostly-empty fold some texture, and the
+            fold is no longer mostly empty. Behind type it competed with the copy
+            rather than supporting it. The accent glow and HeroBackdrop's sparklines
+            below still carry the depth it was there for. */}
         <div
           className="absolute inset-0 pointer-events-none"
           style={{ backgroundImage: "radial-gradient(ellipse at 18% 0%, rgba(87,148,242,0.13) 0%, transparent 62%)" }}
@@ -474,29 +474,52 @@ export default function Login() {
         )}
 
         <div className="relative z-10 flex-1 flex items-center px-4 sm:px-10 lg:px-16 py-14 sm:py-16 lg:py-20">
-          <div className="max-w-7xl mx-auto w-full grid lg:grid-cols-[0.9fr_1.2fr] gap-8 sm:gap-10 lg:gap-12 items-center">
-            {/* copy */}
-            <div className="max-w-2xl">
+          {/* Single column since the illustrative dashboard mock was removed, on the same
+              `max-w-7xl` as the figures strip and every section below — so the hero lines
+              up with the rest of the page instead of sitting in a narrower well of its own.
+              Text stays LEFT-aligned: the institution name wraps, and centred ragged lines
+              that long are markedly harder to read.
+              ⚠️ The heading is allowed the full width, but the BODY copy below is capped
+              (`max-w-3xl`). At this container width an uncapped paragraph runs to ~150
+              characters a line, which is roughly twice the point where the eye starts
+              losing its place on the return sweep. */}
+          <div className="max-w-7xl mx-auto w-full">
+            <div>
               <Reveal>
-                {/* The full institution name is ~82 characters — four wrapped lines on
-                    a phone, above the fold, before the headline has been reached. It is
-                    the right label on a wide screen and the wrong one on a narrow one,
-                    so the phone gets the short form. Both are rendered and one is hidden
-                    by CSS rather than switched in JS: this is above the fold, and a
-                    swap that waits for a media-query hook shows the wrong one first. */}
+                {/* The eyebrow now carries what the SYSTEM is, because the institution
+                    name has been promoted into the headline below it. */}
                 <p className="text-[11px] tracking-[0.1em] sm:text-[12.5px] sm:tracking-[0.2em] uppercase mb-4 sm:mb-5 leading-relaxed" style={{ color: "var(--gf-accent-text)" }}>
-                  <span className="sm:hidden">{BRAND.name} · {BRAND.subtitle}</span>
-                  <span className="hidden sm:inline">{BRAND.fullName}</span>
+                  {BRAND.tagline}
                 </p>
               </Reveal>
 
               <Reveal delay={80}>
+                {/* The institution owns this page, so it is the h1 — the first thing a
+                    reader needs is WHOSE system this is, not what it claims to do.
+                    ⚠️ The full name is ~82 characters. At this size it runs to three
+                    lines on a laptop and would be six on a phone, above the fold, so
+                    narrow screens keep the short form. Both are rendered and one hidden
+                    by CSS rather than switched in JS: this is above the fold, and a swap
+                    that waits for a media-query hook shows the wrong one first. */}
                 <h1
-                  className="text-[36px] sm:text-[38px] xl:text-[48px] font-semibold leading-[1.14]"
+                  className="text-[27px] sm:text-[34px] lg:text-[38px] xl:text-[42px] font-semibold leading-[1.15]"
                   style={{ color: "var(--gf-text-primary)" }}
                 >
-                  Nothing in the server room goes unwatched.
+                  <span className="sm:hidden">{BRAND.name} · {BRAND.subtitle}</span>
+                  <span className="hidden sm:inline">{BRAND.fullName}</span>
                 </h1>
+              </Reveal>
+
+              <Reveal delay={120}>
+                {/* Demoted from h1 to a supporting line — it is the promise, not the
+                    identity. Kept in the accent colour so it still reads as a statement
+                    rather than as body copy. */}
+                <p
+                  className="text-[16px] sm:text-[19px] font-medium leading-snug mt-4 sm:mt-5"
+                  style={{ color: "var(--gf-accent-text)" }}
+                >
+                  Nothing in the server room goes unwatched.
+                </p>
               </Reveal>
 
               <Reveal delay={150}>
@@ -504,7 +527,7 @@ export default function Login() {
                     (what is collected, how it is stored, what it becomes); on a phone
                     the third is the one worth keeping, since it is the reason the
                     system exists. The rest is said again further down the page. */}
-                <p className="text-[14px] sm:text-[16.5px] leading-relaxed mt-5 sm:mt-6" style={{ color: "var(--gf-text-muted)" }}>
+                <p className="text-[14px] sm:text-[16.5px] leading-relaxed mt-5 sm:mt-6 max-w-3xl" style={{ color: "var(--gf-text-muted)" }}>
                   <span className="sm:hidden">
                     Servers, network, power and the room itself — turned into alerts that reach
                     someone before a failure does.
@@ -514,6 +537,56 @@ export default function Login() {
                     time-series, and turned into alerts that reach someone before a failure does.
                   </span>
                 </p>
+              </Reveal>
+
+              <Reveal delay={190}>
+                {/* The one thing the sentence above does NOT say, and the only claim on
+                    this page that is about the future rather than the present. Kept to a
+                    single line: it earns its place by being a real capability
+                    (analyticsService — disk, UPS battery and link saturation are each
+                    regressed over weeks of history), not by adding length.
+                    The phone gets a shortened version rather than nothing. Hiding it
+                    outright left the mobile fold visibly empty — the one screen where the
+                    copy is shortest — so the fix is fewer words, not fewer ideas. */}
+                <p
+                  className="text-[14px] sm:text-[16.5px] leading-relaxed mt-4 max-w-3xl"
+                  style={{ color: "var(--gf-text-muted)" }}
+                >
+                  <span className="sm:hidden">
+                    It also looks ahead — projecting when a disk fills or a UPS battery stops
+                    holding its charge, so the work gets scheduled instead of rushed.
+                  </span>
+                  <span className="hidden sm:inline">
+                    It also looks ahead: weeks of history are regressed to project when a disk
+                    fills, a UPS battery stops holding its charge or a link runs out of headroom —
+                    so the work gets scheduled instead of rushed.
+                  </span>
+                </p>
+              </Reveal>
+
+              <Reveal delay={215}>
+                {/* A compact restatement of scope in the reader's own vocabulary. The
+                    prose above says it in sentence form; this is the version someone
+                    scanning rather than reading will actually take in, and it costs four
+                    words. Each maps to a real ingest path — Go agents, SNMP/RouterOS,
+                    UPS-MIB and the ESP32 — which is what the figures strip below counts. */}
+                {/* Deliberately NOT flex-wrap: broken across lines this stops reading as
+                    one list and turns into four stray labels. It is kept on a single row
+                    at every width by shrinking the type and the tracking on phones —
+                    "SERVERS · NETWORK · POWER · ROOM" is ~31 characters, which at 12px
+                    with 0.14em tracking overruns a 360px screen but fits comfortably at
+                    10px/0.1em. */}
+                <div
+                  className="flex flex-nowrap items-center gap-x-2 sm:gap-x-3 mt-6 text-[10px] sm:text-[12px] tracking-[0.1em] sm:tracking-[0.14em] uppercase"
+                  style={{ color: "var(--gf-text-dim)" }}
+                >
+                  {["Servers", "Network", "Power", "Room"].map((w, i) => (
+                    <span key={w} className="flex items-center gap-x-2 sm:gap-x-3 whitespace-nowrap">
+                      {i > 0 && <span aria-hidden="true">·</span>}
+                      {w}
+                    </span>
+                  ))}
+                </div>
               </Reveal>
 
               <Reveal delay={240}>
@@ -529,20 +602,6 @@ export default function Login() {
                 </div>
               </Reveal>
             </div>
-
-            {/* the product, drawn rather than photographed */}
-            <Reveal delay={260} y={22}>
-              <Parallax distance={30}>
-                <BrowserFrame>
-                  <ScaledStage width={mockWidth}>
-                    <HeroDashboard compact={narrow} />
-                  </ScaledStage>
-                </BrowserFrame>
-              </Parallax>
-              <p className="text-[11px] mt-3 text-center" style={{ color: "var(--gf-text-dim)" }}>
-                Illustrative — sample values, not a live feed.
-              </p>
-            </Reveal>
           </div>
         </div>
       </section>
@@ -633,15 +692,21 @@ export default function Login() {
             sub="Sensors and agents push; routers and UPS units are polled — over SNMP, the RouterOS API, and ICMP for the gear we hold no credentials for. Everything converges on a single Node.js service that writes measurements to InfluxDB, state to MySQL, and a mirrored copy to on-site storage that survives a database wipe."
           />
 
-          {/* Full diagram on large screens; scaled to a phone its labels would be
-              a few pixels tall, so small screens get the stacked list below. */}
+          {/* Diagram from `md` up, stacked list below it.
+              The switch is about whether the LABELS survive the scale, not about
+              "desktop vs mobile": the SVG is a 940-wide viewBox at `w-full`, and its
+              smallest label is 10.5px. In a 768px tablet column (~720px inside the
+              section padding) that scales to ~8px — small, but sharp on a tablet
+              display. On a 360px phone the same label lands at ~3.6px, which is why
+              the fallback exists at all. This used to be gated at `lg`, which handed
+              every iPad in portrait the phone layout on a screen with ample room. */}
           <Reveal delay={100}>
-            <div className="hidden lg:block">
+            <div className="hidden md:block">
               <FlowDiagram />
             </div>
           </Reveal>
 
-          <div className="lg:hidden flex flex-col gap-2">
+          <div className="md:hidden flex flex-col gap-2">
             <Chip title="ESP32" sub="DHT11 + MQ-2 + IR — push over Socket.IO" />
             <Chip title="Go agents" sub="one per server — push over HTTP" />
             <Chip title="Pollers" sub="SNMP + RouterOS API + ICMP — pull" />

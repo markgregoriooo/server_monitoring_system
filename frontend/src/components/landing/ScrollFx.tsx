@@ -232,7 +232,7 @@ export function SectionRail({ tone = "var(--gf-accent)" }: { tone?: string }) {
     <div
       ref={hostRef}
       aria-hidden="true"
-      className="absolute left-0 top-0 bottom-0 hidden lg:block"
+      className="absolute left-0 top-0 bottom-0 hidden md:block"
       style={{ width: 1, background: "var(--gf-divider)" }}
     >
       <div
