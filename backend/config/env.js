@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
@@ -56,28 +57,41 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
 // It had NO validation at all, while JWT_SECRET above has had a length check since it
 // was written. The two are the same kind of value and deserve the same treatment.
 //
-// ⚠️ The denylist is not hypothetical hygiene. `REDACTED-ROTATED-DEVICE-SECRET` was
-// committed verbatim in `iot/esp32/env_monitor_v2.ino` at 5f5a084 (2026-06-09) and
-// removed at 219f36e (2026-08-16) — the split stops NEW exposure, it does not undo the
-// old one, and the value stayed reachable in the history of a pushed remote the entire
-// time. Refusing to boot on it is deliberate: a warning on a published credential is a
-// warning nobody acts on, and this one is two `git log -S` away from anybody who has
-// ever cloned the repository.
+// ⚠️ The denylist is not hypothetical hygiene. The original secret was committed
+// verbatim in `iot/esp32/env_monitor_v2.ino` at 5f5a084 (2026-06-09) and removed at
+// 219f36e (2026-08-16) — a split that stops NEW exposure without undoing the old one,
+// so it stayed reachable in the history of a pushed remote until that history was
+// rewritten on 2026-08-26. Refusing to BOOT on it is deliberate: a warning about a
+// published credential is a warning nobody acts on.
 //
 // Rotating it is a TWO-SIDED change — backend/.env and iot/esp32/<sketch>/secrets.h
 // must carry the same new value, and the ESP32 must be reflashed for it to take
 // effect. That is why the message names both files.
 const DEVICE_SECRET_MIN_LEN = 24;
 
-// Values known to have been published. Compared case-sensitively and verbatim; this is
-// a list of specific leaked strings, not a weak-password heuristic.
-const LEAKED_DEVICE_SECRETS = new Set([
-  "REDACTED-ROTATED-DEVICE-SECRET", // iot/esp32/env_monitor_v2.ino, 5f5a084 → 219f36e
+// Values known to have been published, stored as SHA-256 HASHES rather than as the
+// strings themselves.
+//
+// The obvious version of this list held the leaked secret verbatim — which meant the
+// file whose job is to refuse a published credential was itself publishing it, and it
+// survived the history rewrite that removed the value from every other blob. A hash
+// answers the only question this check asks ("is the configured secret THIS one?")
+// without the file needing to contain the answer.
+//
+// One entry: `iot/esp32/env_monitor_v2.ino` at 5f5a084 (2026-06-09), removed at
+// 219f36e (2026-08-16), scrubbed from history on 2026-08-26. Kept after the scrub
+// because a rewrite does not reach clones, forks or anyone's reflog — the value is
+// dead, and this is what makes it stay dead if it is ever pasted back in.
+const LEAKED_DEVICE_SECRET_HASHES = new Set([
+  "67de28a37d17cc99b4bd6ad48cda76f2406f070d7b330c836ebc856145d53d98",
 ]);
 
 const deviceSecret = (process.env.DEVICE_SECRET ?? "").trim();
+const deviceSecretHash = deviceSecret
+  ? crypto.createHash("sha256").update(deviceSecret, "utf8").digest("hex")
+  : "";
 
-if (deviceSecret && LEAKED_DEVICE_SECRETS.has(deviceSecret)) {
+if (deviceSecret && LEAKED_DEVICE_SECRET_HASHES.has(deviceSecretHash)) {
   throw new Error(
     `DEVICE_SECRET in ${ENV_PATH} is a value that was committed to this repository and is ` +
       "still readable in its git history, so it authenticates nobody. Rotate it on BOTH " +
