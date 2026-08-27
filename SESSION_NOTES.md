@@ -2354,22 +2354,54 @@ the API-down-but-pingable branch is taken. 357 tests pass; `tsc --noEmit` and th
 production build are clean. Not yet exercised against the real router, which is currently
 healthy — to do that, block TCP 8728 to it and watch the log line and the chart.
 
+### S-04 and S-11 closed — 2026-08-27
+
+**S-04, the last of it.** `root`/empty was already refused and the backend already ran as
+`cspc-ictu_app@localhost` with no DDL, but that account's grant was
+`SELECT, INSERT, UPDATE, DELETE ON *.*` — every schema on the server, not just this one.
+Confirmed it could read `mysql.user`, where two accounts still carry 41-char
+`mysql_native_password` hashes, so the credential in `backend/.env` reached far past the
+monitoring data and any injection bug in the app would have inherited that reach.
+
+Scoped it, as root:
+
+```sql
+REVOKE ALL PRIVILEGES ON *.* FROM `cspc-ictu_app`@`localhost`;
+GRANT SELECT, INSERT, UPDATE, DELETE ON `cspc-ictu-monitoring-system`.* TO `cspc-ictu_app`@`localhost`;
+FLUSH PRIVILEGES;
+```
+
+Left as `GRANT USAGE ON *.*` (connect only) plus the one schema. Checked first that no app
+code touches `information_schema`, another schema, or any DDL — migrations are `.sql` files
+applied by hand, so they never run as this user. Verified after: the app user still reads
+and writes its own schema, `mysql.user` is now `ER_TABLEACCESS_DENIED_ERROR`, all five
+dashboard endpoints answer 200, and both pollers kept writing.
+
+**S-11.** `SECRET_ENC_KEY` set, and the three general columns re-wrapped under it with
+`npm run rekey -- --from-key <MIKROTIK_ENC_KEY> --suite general --apply` (dry run first —
+4 values, 0 unreadable). `mikrotik_devices.api_password` stays pinned to
+`MIKROTIK_ENC_KEY` and was deliberately untouched.
+
+Backend stopped for the rotation and restarted through nodemon, per the script's own
+procedure — the pollers decrypt every cycle and would have read rows mid-rotation.
+
+**Verified cryptographically, not just by "it started".** Pre-rotation ciphertext was
+dumped first, then each value was decrypted under the OLD key and compared against the
+current value decrypted under the NEW one: **5/5 identical plaintext**, 4 re-wrapped and
+`api_password` correctly unchanged. This mattered because the live path could not be
+exercised — both devices holding an SNMP community (Dev Router 66 and the UPS) are
+currently offline, so a broken community would not have shown up as anything.
+
+⚠️ **Two secrets were exposed to a terminal session doing this work** and should be
+rotated: the MySQL `root` password, and `MIKROTIK_ENC_KEY` (npm echoes the `--from-key`
+argument into its command banner). The second is now a supported operation rather than a
+dead end — `npm run rekey -- --from-key <current> --suite mikrotik --apply` — which is the
+whole reason the rotation path was built.
+
 ### Still outstanding
 
 1. **Reflash the ESP32** — it holds the old secret and cannot connect until it is reflashed.
-2. ~~**S-04: MySQL runs as `root` with an empty password.**~~ **DONE** — verified
-   2026-08-27: `root`/empty is now refused (`ER_ACCESS_DENIED_ERROR`) and the backend
-   connects as `cspc-ictu_app@localhost`, which holds no DDL (a `CREATE TABLE` probe is
-   denied). ⚠️ **One narrower gap remains:** that grant is
-   `SELECT, INSERT, UPDATE, DELETE ON *.*`, not scoped to the monitoring schema — so the
-   credential sitting in `backend/.env` can read `mysql.user` (two accounts there still
-   carry readable 41-char `mysql_native_password` hashes) and write rows in every other
-   schema on the server. An SQL-injection bug anywhere in the app inherits that reach.
-   Scope it as root:
-   `REVOKE ALL PRIVILEGES ON *.* FROM 'cspc-ictu_app'@'localhost';`
-   `GRANT SELECT, INSERT, UPDATE, DELETE ON \`cspc-ictu-monitoring-system\`.* TO 'cspc-ictu_app'@'localhost';`
-   `FLUSH PRIVILEGES;`
-3. **S-11: set `SECRET_ENC_KEY`**, then
-   `npm run rekey -- --from-key <mikrotik key> --suite general --apply`. Three columns
-   currently borrow `MIKROTIK_ENC_KEY`; this gives them their own. ⚠️ One step, not two —
-   setting the key without the rekey leaves the app unable to decrypt what it already wrote.
+2. **Rotate the two secrets named above** — the MySQL `root` password, and
+   `MIKROTIK_ENC_KEY` via `--suite mikrotik`.
+3. **Two MySQL accounts still use `mysql_native_password`** (41-char hashes, seen in
+   `mysql.user` before the grant was scoped). Worth moving to a modern auth plugin.
