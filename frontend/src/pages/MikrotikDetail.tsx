@@ -80,6 +80,12 @@ export interface MkDevice {
   monitored: boolean;
 }
 interface HistPoint { time: string; rxBytesPerSec: number | null; txBytesPerSec: number | null; }
+// The ICMP half of the same response. Its own array with its own timestamps, never
+// merged into HistPoint — the two measurements land in different windows and
+// `createEmpty: false` keeps a different subset of them for each, so interleaving would
+// put a null in every other row and withGaps would shatter both lines. See the long
+// note in backend/handlers/networkHistoryHandler.js, which serves this route too.
+interface IcmpPoint { time: string; latencyMs: number | null; packetLossPct: number | null; }
 interface DeviceLog { log_level: "info" | "warning" | "critical" | "error"; message: string; recorded_at: string; }
 
 
@@ -137,6 +143,114 @@ function ThroughputChart({ history, spanSec }: { history: HistPoint[]; spanSec: 
         scales: {
           x: { ticks: { color: "#6B7280", maxTicksLimit: 6, font: { size: 9 } }, grid: { color: "rgba(127,127,127,0.10)" } },
           y: { beginAtZero: true, ticks: { color: "#6B7280", font: { size: 9 }, callback: (v: any) => formatBps(Number(v)) }, grid: { color: "rgba(127,127,127,0.10)" } },
+        },
+      },
+    });
+    return () => { chartRef.current?.destroy(); };
+  }, [history, spanSec]);
+  return (
+    <div style={{ height: 200 }}>
+      {history.length < 2 ? (
+        <div className="flex items-center justify-center h-full text-[13px]" style={{ color: gf.textDim }}>No data in range</div>
+      ) : (
+        <canvas ref={ref} />
+      )}
+    </div>
+  );
+}
+
+// ICMP series colours, identical to NetworkDetail and to the Dashboard's network panel —
+// latency cyan, loss the danger red. Three pages show this pair; a reader must not have
+// to re-learn which line is which on each of them.
+const LATENCY = "#3CC8E8";
+const LOSS = RED;
+
+// ─── ICMP history (latency + packet loss) ─────────────────────────────────────
+//
+// ICMP is measured on every MikroTik poll, alongside the RouterOS API call rather than
+// instead of it: the API says whether the router is answering, ping says whether the
+// LINK to it is healthy. Those are different questions, and only the second one catches
+// a link quietly dropping a third of its packets — an API call either returns or times
+// out, so degradation reads as perfect health right up until it flips to Offline.
+//
+// The two figures already drove alert rules and Analytics; this page showed them as two
+// tiles, which is a reading with no trend behind it.
+//
+// TWO AXES: milliseconds and percent are different units. The Dashboard shares one axis
+// for them, but that is a compromise for a 120px panel, not the shape to copy here.
+function IcmpChart({ history, spanSec }: { history: IcmpPoint[]; spanSec: number }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const chartRef = useRef<Chart | null>(null);
+  useEffect(() => {
+    if (!ref.current || history.length < 2) {
+      chartRef.current?.destroy();
+      chartRef.current = null;
+      return;
+    }
+    chartRef.current?.destroy();
+    // Same gap treatment as the throughput chart above: a poller that stopped reads as
+    // a hole with a start and an end, not a straight line drawn across the outage.
+    const gapped = withGaps(
+      history.map((p) => Date.parse(p.time)),
+      history.map((p) => fmtAxisTime(p.time, spanSec)),
+      [
+        history.map((p) => p.latencyMs ?? null),
+        history.map((p) => p.packetLossPct ?? null),
+      ],
+    );
+    chartRef.current = new Chart(ref.current, {
+      type: "line",
+      data: {
+        labels: gapped.labels,
+        datasets: [
+          { label: "Latency", data: gapped.series[0]!, borderColor: LATENCY, backgroundColor: LATENCY + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3, yAxisID: "y" },
+          { label: "Loss", data: gapped.series[1]!, borderColor: LOSS, backgroundColor: LOSS + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3, yAxisID: "y1" },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: true, labels: { color: "#8E9297", boxWidth: 10, boxHeight: 10, font: { size: 10 } } },
+          // The unit follows the SERIES, not the panel — the two lines sit on different
+          // axes, so one shared suffix would be wrong for one of them.
+          tooltip: {
+            callbacks: {
+              label: (ctx: any) =>
+                ctx.dataset.yAxisID === "y1"
+                  ? `${ctx.dataset.label}: ${Number(ctx.parsed.y).toFixed(1)}%`
+                  : `${ctx.dataset.label}: ${Number(ctx.parsed.y).toFixed(1)} ms`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: "#6B7280", maxTicksLimit: 6, font: { size: 9 } }, grid: { color: "rgba(127,127,127,0.10)" } },
+          // beginAtZero + suggestedMax, never a bare auto-scale. A MikroTik on the same
+          // rack answers in well under a millisecond, and an axis fitted to 0.9-1.2 ms
+          // turns that healthy flat line into a mountain range. suggestedMax is a FLOOR
+          // for the axis top, not a cap, so a router across a slower link still gets an
+          // axis that fits it.
+          y: {
+            type: "linear",
+            position: "left",
+            beginAtZero: true,
+            suggestedMax: 20,
+            ticks: { color: LATENCY, font: { size: 9 }, callback: (v: any) => `${v} ms` },
+            grid: { color: "rgba(127,127,127,0.10)" },
+          },
+          // Loss is deliberately NOT pinned to 0-100 either: any loss at all is a fault,
+          // and on a full 0-100 axis a real 2% is two pixels off the floor — visually
+          // identical to the healthy zero it is not.
+          y1: {
+            type: "linear",
+            position: "right",
+            beginAtZero: true,
+            suggestedMax: 10,
+            ticks: { color: LOSS, font: { size: 9 }, callback: (v: any) => `${v}%` },
+            grid: { drawOnChartArea: false },
+          },
         },
       },
     });
@@ -241,6 +355,9 @@ export default function MikrotikDetail({
   const [range, setRange] = useState<RangeValue>(DEFAULT_RANGE);
   const [rangeError, setRangeError] = useState("");
   const [history, setHistory] = useState<HistPoint[]>([]);
+  // Kept separately from `history` for the reason given on IcmpPoint: one request,
+  // two series, two sets of timestamps.
+  const [icmp, setIcmp] = useState<IcmpPoint[]>([]);
   const [logs, setLogs] = useState<DeviceLog[]>([]);
   // Bumped on every poll for this device. Used as a history-refetch trigger so the
   // chart tracks live data instead of freezing at whatever was loaded on mount.
@@ -348,6 +465,9 @@ export default function MikrotikDetail({
       .then((r) => {
         if (r.success && r.data) {
           setHistory(r.data.history ?? []);
+          // Already in the response — networkHistoryHandler serves this route too and
+          // has always returned both halves; this page simply never read the second one.
+          setIcmp(r.data.icmp ?? []);
           setRangeError("");
         } else {
           setRangeError(r.error || "Could not load history.");
@@ -407,6 +527,15 @@ export default function MikrotikDetail({
   const cpu = Math.round(d.cpuPercent ?? 0);
   const mem = Math.round(d.memPercent ?? 0);
   const latest = history.length ? history[history.length - 1] : undefined;
+  // The ICMP series carries its own gaps, so the headline reads the last NON-NULL
+  // sample rather than `.at(-1)`: a series that happens to close on an empty window
+  // would otherwise report "—" while the chart beside it plainly shows a line.
+  const lastReal = (a: (number | null)[]) => {
+    for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i] as number;
+    return null;
+  };
+  const latencyNow = lastReal(icmp.map((p) => p.latencyMs));
+  const lossNow = lastReal(icmp.map((p) => p.packetLossPct));
 
   return (
     <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
@@ -529,6 +658,42 @@ export default function MikrotikDetail({
         }
       >
         <ThroughputChart history={history} spanSec={rangeSpanSec(range)} />
+      </Panel>
+
+      {/* ICMP history — see IcmpChart for why link quality is a separate question from
+          "is the RouterOS API answering". One range for the page: the Throughput panel
+          above owns the picker and both charts follow it, because two pickers bound to
+          one piece of state are two controls that silently move each other. */}
+      <Panel
+        title="ICMP · Latency & Packet Loss"
+        right={
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Same colour ladder as the Latency / Packet Loss tiles further up the
+                page, so one reading is never green in one place and orange in another. */}
+            <span className="text-[12px]" style={{ color: LATENCY }}>
+              Latency{" "}
+              <span style={{ color: latencyNow == null ? gf.textMuted : latencyNow > 150 ? ORANGE : gf.textPrimary }}>
+                {latencyNow == null ? "—" : `${Math.round(latencyNow)} ms`}
+              </span>
+            </span>
+            <span className="text-[12px]" style={{ color: LOSS }}>
+              Loss{" "}
+              <span
+                style={{
+                  color:
+                    lossNow == null ? gf.textMuted
+                      : lossNow >= 20 ? RED
+                      : lossNow > 0 ? ORANGE
+                      : GREEN,
+                }}
+              >
+                {lossNow == null ? "—" : `${Math.round(lossNow)}%`}
+              </span>
+            </span>
+          </div>
+        }
+      >
+        <IcmpChart history={icmp} spanSec={rangeSpanSec(range)} />
       </Panel>
 
       {/* Physical ports */}

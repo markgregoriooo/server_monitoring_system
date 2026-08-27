@@ -307,6 +307,42 @@ export default function NetworkFocus({
           <>
             <LegendDot color={IN_COLOR} label="In" value={offline ? "—" : formatBps(inNow)} />
             <LegendDot color={OUT_COLOR} label="Out" value={offline ? "—" : formatBps(outNow)} />
+            {/* ICMP as BADGES, not lines. Latency and loss are measured on an SNMP
+                router and a MikroTik exactly as they are on a ping-only one — the
+                poller runs a ping alongside every walk and every API call — but they
+                do not belong on this chart: bytes/sec, milliseconds and percent share
+                no axis, and a third and fourth line would bury the throughput this
+                panel exists to show. A number is the right form for them here, because
+                what a glance needs from link quality is "is it still fine", not a shape.
+                The ping-only branch above keeps them as lines, where they ARE the chart.
+
+                Read from the LIVE device row rather than from `history`, the same call
+                ServerFocus makes for its tiles: the chart may be showing a 30-day range
+                whose last aggregated point is hours old, while these two are current as
+                of the most recent poll. */}
+            <LegendDot
+              color={LATENCY_COLOR}
+              label="Latency"
+              value={offline || device.latencyMs == null ? "—" : `${Math.round(device.latencyMs)} ms`}
+              {...(offline || device.latencyMs == null
+                ? {}
+                : { valueColor: device.latencyMs > 150 ? "#FF780A" : "#73BF69" })}
+            />
+            <LegendDot
+              color={LOSS_COLOR}
+              label="Loss"
+              value={offline || device.packetLossPct == null ? "—" : `${Math.round(device.packetLossPct)}%`}
+              {...(offline || device.packetLossPct == null
+                ? {}
+                : {
+                    // Same ladder as the ping branch's header and NetworkDetail's tile,
+                    // so one reading is never green in one place and orange in another.
+                    valueColor:
+                      device.packetLossPct >= 20 ? "#F2495C"
+                        : device.packetLossPct > 0 ? "#FF780A"
+                        : "#73BF69",
+                  })}
+            />
           </>
         )}
       </div>

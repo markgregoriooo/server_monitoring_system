@@ -61,6 +61,13 @@ export interface NetDevice {
   sysName?: string | null; // sysName — the hostname the device calls itself
 }
 interface HistPoint { time: string; rxBytesPerSec: number | null; txBytesPerSec: number | null; }
+// The ICMP half of the same response. It arrives as its OWN array with its own
+// timestamps, never merged into HistPoint — the two measurements land in different
+// windows (a 60s poll against the -1h preset's 20s window leaves most of them empty,
+// and `createEmpty: false` keeps a different subset for each), so interleaving them
+// would put a null in every other row and withGaps would shatter both lines. See the
+// long note in backend/handlers/networkHistoryHandler.js.
+interface IcmpPoint { time: string; latencyMs: number | null; packetLossPct: number | null; }
 interface DeviceLog { log_level: "info" | "warning" | "critical" | "error"; message: string; recorded_at: string; }
 
 
@@ -115,6 +122,120 @@ function ThroughputChart({ history }: { history: HistPoint[] }) {
         scales: {
           x: { ticks: { color: "#6B7280", maxTicksLimit: 6, font: { size: 9 } }, grid: { color: "rgba(127,127,127,0.10)" } },
           y: { beginAtZero: true, ticks: { color: "#6B7280", font: { size: 9 }, callback: (v: any) => formatBps(Number(v)) }, grid: { color: "rgba(127,127,127,0.10)" } },
+        },
+      },
+    });
+    return () => { chartRef.current?.destroy(); };
+  }, [history]);
+  return (
+    <div style={{ height: 200 }}>
+      {history.length < 2 ? (
+        <div className="flex items-center justify-center h-full text-[13px]" style={{ color: gf.textDim }}>No data in range</div>
+      ) : (
+        <canvas ref={ref} />
+      )}
+    </div>
+  );
+}
+
+// ICMP series colours, matched to the Dashboard's network panel so latency is the same
+// cyan and loss the same red on both pages — a reader who learns the colours on the
+// Dashboard must not re-learn them one click later. Loss takes the danger red because
+// ANY loss is a fault here (the seeded router_loss rule alerts above 0%), while latency
+// is a measured figure whose healthy value is a property of the link.
+const LATENCY = "#3CC8E8";
+const LOSS = RED;
+
+// ─── ICMP history (latency + packet loss) ─────────────────────────────────────
+//
+// Drawn in BOTH modes, not only for a ping-only device. ICMP runs on EVERY router —
+// alongside the SNMP walk, not instead of it — and latency/loss are the two things a
+// walk structurally CANNOT report: it either answers or times out, so a link dropping a
+// third of its packets reads as perfectly healthy right up until it flips to Offline.
+// They already drive alert rules, already appear in Analytics and already go into
+// reports; this page measured them, printed them as two tiles, and then had nowhere to
+// show whether they were getting worse.
+//
+// TWO AXES, unlike the Dashboard's compact version of this chart. Milliseconds and
+// percent are different units; sharing one axis there is a deliberate compromise for a
+// 120px panel. At this size the honest layout is latency left, loss right.
+function IcmpChart({ history }: { history: IcmpPoint[] }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const chartRef = useRef<Chart | null>(null);
+  useEffect(() => {
+    if (!ref.current || history.length < 2) {
+      chartRef.current?.destroy();
+      chartRef.current = null;
+      return;
+    }
+    chartRef.current?.destroy();
+    // Same gap treatment as the throughput chart: a poller that stopped reads as a hole
+    // with a start and an end, not as a straight line drawn across the outage.
+    const gapped = withGaps(
+      history.map((p) => Date.parse(p.time)),
+      history.map((p) =>
+        new Date(p.time).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit", hour12: false }),
+      ),
+      [
+        history.map((p) => p.latencyMs ?? null),
+        history.map((p) => p.packetLossPct ?? null),
+      ],
+    );
+    chartRef.current = new Chart(ref.current, {
+      type: "line",
+      data: {
+        labels: gapped.labels,
+        datasets: [
+          { label: "Latency", data: gapped.series[0]!, borderColor: LATENCY, backgroundColor: LATENCY + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3, yAxisID: "y" },
+          { label: "Loss", data: gapped.series[1]!, borderColor: LOSS, backgroundColor: LOSS + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3, yAxisID: "y1" },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: true, labels: { color: "#8E9297", boxWidth: 10, boxHeight: 10, font: { size: 10 } } },
+          // The unit has to follow the SERIES, not the panel — the two lines are on
+          // different axes, so one shared suffix would be wrong for one of them.
+          tooltip: {
+            callbacks: {
+              label: (ctx: any) =>
+                ctx.dataset.yAxisID === "y1"
+                  ? `${ctx.dataset.label}: ${Number(ctx.parsed.y).toFixed(1)}%`
+                  : `${ctx.dataset.label}: ${Number(ctx.parsed.y).toFixed(1)} ms`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: "#6B7280", maxTicksLimit: 6, font: { size: 9 } }, grid: { color: "rgba(127,127,127,0.10)" } },
+          // beginAtZero + suggestedMax, never a bare auto-scale. A rack switch answers
+          // in well under a millisecond, and an axis fitted to 0.9-1.2 ms turns that
+          // healthy flat line into a mountain range — the same magnified-noise problem
+          // ServerFocus pins its 0-100% axis to avoid. suggestedMax is a FLOOR for the
+          // axis top, not a cap, so an ISP CPE sitting at 40 ms still gets a chart that
+          // fits it. Both regimes are healthy; neither should look dramatic.
+          y: {
+            type: "linear",
+            position: "left",
+            beginAtZero: true,
+            suggestedMax: 20,
+            ticks: { color: LATENCY, font: { size: 9 }, callback: (v: any) => `${v} ms` },
+            grid: { color: "rgba(127,127,127,0.10)" },
+          },
+          // Loss is deliberately NOT pinned to 0-100 either. Any loss at all is a fault,
+          // and on a full 0-100 axis a real 2% is two pixels off the floor — visually
+          // identical to the healthy zero it is not.
+          y1: {
+            type: "linear",
+            position: "right",
+            beginAtZero: true,
+            suggestedMax: 10,
+            ticks: { color: LOSS, font: { size: 9 }, callback: (v: any) => `${v}%` },
+            // No second set of gridlines over the plot — one grid, from the left axis.
+            grid: { drawOnChartArea: false },
+          },
         },
       },
     });
@@ -212,6 +333,9 @@ export default function NetworkDetail({
   const [range, setRange] = useState<RangeValue>(DEFAULT_RANGE);
   const [rangeError, setRangeError] = useState("");
   const [history, setHistory] = useState<HistPoint[]>([]);
+  // Kept separately from `history` for the reason given on IcmpPoint: one request,
+  // two series, two sets of timestamps.
+  const [icmp, setIcmp] = useState<IcmpPoint[]>([]);
   const [logs, setLogs] = useState<DeviceLog[]>([]);
   // Bumped on every poll for this device — a history-refetch trigger so the chart
   // tracks live data instead of freezing at whatever was loaded on mount.
@@ -330,6 +454,9 @@ export default function NetworkDetail({
       .then((r) => {
         if (r.success && r.data) {
           setHistory(r.data.history ?? []);
+          // Already in the response — the endpoint has always returned both halves for
+          // every router; this page simply never read the second one.
+          setIcmp(r.data.icmp ?? []);
           setRangeError("");
         } else {
           setRangeError(r.error || "Could not load history.");
@@ -354,6 +481,15 @@ export default function NetworkDetail({
   const worstUtil = upUtil.length ? Math.round(Math.max(...upUtil)) : 0;
   const totalErrs = Object.values(errDeltas).reduce((a, b) => a + b, 0);
   const latest = history.length ? history[history.length - 1] : undefined;
+  // The ICMP series carries its own gaps, so the headline reads the last NON-NULL
+  // sample rather than `.at(-1)`: a series that happens to close on an empty window
+  // would otherwise report "—" while the chart beside it plainly shows a line.
+  const lastReal = (a: (number | null)[]) => {
+    for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i] as number;
+    return null;
+  };
+  const latencyNow = lastReal(icmp.map((p) => p.latencyMs));
+  const lossNow = lastReal(icmp.map((p) => p.packetLossPct));
 
   const startLabelEdit = () => {
     const draft: Record<string, string> = {};
@@ -542,6 +678,44 @@ export default function NetworkDetail({
         <ThroughputChart history={history} />
       </Panel>
       )}
+
+      {/* ICMP history, in BOTH modes — see IcmpChart for why it is not ping-only.
+          For a ping device this is the ONLY chart on the page, so it carries the range
+          picker in that mode; in SNMP mode the Throughput panel above owns the picker
+          and both charts follow it, because two pickers bound to one piece of state are
+          two controls that silently move each other. */}
+      <Panel
+        title="ICMP · Latency & Packet Loss"
+        right={
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Same colour ladder as the Latency / Packet Loss tiles further up the
+                page, so one reading is never green in one place and orange in another. */}
+            <span className="text-[12px]" style={{ color: LATENCY }}>
+              Latency{" "}
+              <span style={{ color: latencyNow == null ? gf.textMuted : latencyNow > 150 ? ORANGE : gf.textPrimary }}>
+                {latencyNow == null ? "—" : `${Math.round(latencyNow)} ms`}
+              </span>
+            </span>
+            <span className="text-[12px]" style={{ color: LOSS }}>
+              Loss{" "}
+              <span
+                style={{
+                  color:
+                    lossNow == null ? gf.textMuted
+                      : lossNow >= 20 ? RED
+                      : lossNow > 0 ? ORANGE
+                      : GREEN,
+                }}
+              >
+                {lossNow == null ? "—" : `${Math.round(lossNow)}%`}
+              </span>
+            </span>
+            {pingMode && <RangePicker value={range} onChange={setRange} error={rangeError || undefined} />}
+          </div>
+        }
+      >
+        <IcmpChart history={icmp} />
+      </Panel>
 
       {/* Physical ports */}
       <Panel
