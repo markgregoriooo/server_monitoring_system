@@ -121,7 +121,13 @@ async function collect(d, labels) {
 }
 
 // ─── Status + threshold logging ────────────────────────────────────────────────
-async function setReachable(io, d, online) {
+// `reason` names WHICH failure this is, for the device_logs line. Without it every
+// failure read "MikroTik unreachable — no API response", which conflates two states
+// needing opposite fixes: a router that is genuinely down, and a router that is up and
+// answering ICMP while its API rejects us (service disabled, wrong port, credentials,
+// an address-list rule). The SNMP poller has drawn exactly this distinction since it
+// was written; this one never did. See pollDevice's catch.
+async function setReachable(io, d, online, reason = "") {
   const id = Number(d.id);
   if (!online) latest.set(id, { status: "Offline", reachable: false, uptimeSeconds: null, interfaces: [] });
   const newStatus = online ? "online" : "offline";
@@ -134,7 +140,7 @@ async function setReachable(io, d, online) {
   const log = await logDevice(
     d.id,
     online ? "info" : "warning",
-    online ? "MikroTik reachable" : "MikroTik unreachable — no API response",
+    online ? "MikroTik reachable" : reason || "MikroTik unreachable — no API response",
   );
   if (log) io?.emit("deviceLog", log);
   io?.emit("networkStatus", { id: d.id, status: online ? "Online" : "Offline" });
@@ -162,7 +168,119 @@ async function pollDevice(io, d) {
   // inconsistent: present on some routers, absent on others, for no reason a user
   // could see.
   const icmpPromise = icmpPing.ping(d.ip);
-  const sample = await collect(d, labels); // throws if unreachable
+
+  let sample;
+  try {
+    sample = await collect(d, labels); // throws if unreachable
+  } catch (err) {
+    // THE ICMP RESULT USED TO BE THROWN AWAY HERE.
+    //
+    // `collect` threw before `await icmpPromise` was ever reached, so a ping that had
+    // already been sent — and answered — was discarded, and the failure was reported as
+    // a flat "unreachable". Two consequences, both of which hid the thing this poller
+    // exists to see:
+    //
+    //  • No latency_ms / packet_loss_pct was stored for the WHOLE outage, so the one
+    //    chart that could explain an API failure is blank across exactly the window
+    //    worth reading. (Verified on Campus MikroTik: an API outage from 2026-08-25
+    //    04:04 to 2026-08-27 02:37 left three ICMP points in thirty days.)
+    //  • "MikroTik unreachable" was raised as a CRITICAL alert against a router that
+    //    may be up, healthy, and two milliseconds away.
+    //
+    // The SNMP poller has always drawn this distinction (pollRouter's catch says "but
+    // the host ANSWERS ICMP … so SNMP is the problem"). This is the same treatment.
+    //
+    // Handled here rather than rethrown: pollAll's catch calls setReachable(), which
+    // resets the `latest` cache entry, and that would wipe the ICMP figures again.
+    const icmp = await icmpPromise;
+
+    // node-routeros can reject a failed connect with an error carrying NO message at
+    // all (verified against a closed port: `err.message` is ""), which left the log
+    // line reading "poll failed for X (ip):  — …" with a blank where the cause belongs.
+    // Fall back through the fields that do carry something.
+    const cause = err?.message || err?.code || err?.errno || String(err ?? "") || "no detail from the RouterOS client";
+
+    // A BROKEN PROBE IS NOT A MEASUREMENT. No `ping` binary, or an account that cannot
+    // run it, yields reachable:false — the absence of an observation, not an outage.
+    // Report only what was actually seen, and store nothing. Same guard, and the same
+    // reasoning, as pollRouterByPing in the SNMP poller.
+    if (icmp.probeError) {
+      console.error(
+        `[MIKROTIK_POLLER] poll failed for ${d.name} (${d.ip}): ${cause} ` +
+          `— and ICMP is unavailable (${icmp.probeError}), so a dead router cannot be told ` +
+          `from a rejected API login.`,
+      );
+      await setReachable(io, d, false);
+      return;
+    }
+
+    const verdict = icmp.reachable
+      ? `MikroTik API not responding — but the host ANSWERS ICMP (${icmp.latencyMs} ms), ` +
+        `so RouterOS is up and the API is the problem: service disabled, wrong port, ` +
+        `credentials rejected, or an address-list rule`
+      : "MikroTik unreachable — no API response and no ICMP reply either, so the device or its link is down";
+
+    console.error(`[MIKROTIK_POLLER] poll failed for ${d.name} (${d.ip}): ${cause} — ${verdict}`);
+    await setReachable(io, d, false, verdict);
+
+    // Store what ICMP could still measure. The argument is the one CLAUDE.md already
+    // makes for the ping-only router path: latency and loss are the only two things
+    // available here, so dropping the point during an outage blanks the chart at
+    // precisely the moment it is worth reading. An empty `interfaces` array is safe —
+    // every numeric rule reads null → NaN and bails, and the per-interface loop does
+    // not run; the unreachable alert itself is already raised by setReachable above.
+    // `reachable: false`, NOT icmp.reachable — deliberately, and it is the whole
+    // subtlety of this path. writeNetworkSample derives both the broadcast status and
+    // the stored `reachable` field from this one flag ("Online" unless it is exactly
+    // false), so handing it the ICMP verdict would emit `networkMetrics {status:
+    // "Online"}` immediately after setReachable emitted `networkStatus {status:
+    // "Offline"}` — every dashboard flipping between the two on each poll. From this
+    // system's point of view the device IS down: it cannot be monitored.
+    //
+    // Nothing is lost by saying so. The ICMP fields below are still written, so the
+    // stored record reads "unreachable, yet answering in 2.3 ms with no loss" — which
+    // is precisely the signature of a live router with a dead API, and is a sharper
+    // diagnostic than a bare reachable:true would have been.
+    const icmpOnly = {
+      reachable: false,
+      descr: null,
+      sysName: null,
+      uptimeSeconds: null,
+      cpuPercent: null,
+      memPercent: null,
+      latencyMs: icmp.latencyMs,
+      packetLossPct: icmp.packetLossPct,
+      connectedClients: null,
+      interfaces: [],
+    };
+    await writeNetworkSample(
+      io,
+      { id: d.id, name: d.name, ip: d.ip, type: d.type, location: d.location },
+      icmpOnly,
+    );
+    await deviceAlerts.checkRouter(io, d, icmpOnly);
+
+    // Overwrites the bare entry setReachable() just wrote, so the tiles and
+    // GET /api/mikrotik keep showing the latency and loss that are still being measured.
+    latest.set(Number(d.id), {
+      status: "Offline",
+      // Agrees with `status` for the same reason as above — NetworkDetail's Status tile
+      // prints "reachable" as its subtitle from this flag, and "Offline / reachable" is
+      // a contradiction on screen. That the host answers ping is carried by the two
+      // ICMP figures, the device_logs line and the ICMP chart, none of which conflict
+      // with anything.
+      reachable: false,
+      latencyMs: icmp.latencyMs,
+      packetLossPct: icmp.packetLossPct,
+      uptimeSeconds: null,
+      cpuPercent: null,
+      memPercent: null,
+      connectedClients: null,
+      interfaces: [],
+    });
+    return;
+  }
+
   const icmp = await icmpPromise;
   sample.latencyMs = icmp.latencyMs;
   sample.packetLossPct = icmp.packetLossPct;
@@ -230,9 +348,11 @@ async function pollAll(io) {
       try {
         await pollDevice(io, d);
       } catch (err) {
-        // Log the reason. A bare catch here made every failure look identical to
-        // "unreachable", so a router that answers fine but rejects one API command
-        // silently showed as Offline with nothing to debug from.
+        // Now a BACKSTOP only. The API-unreachable case — by far the common one — is
+        // handled inside pollDevice, which combines it with the ICMP verdict and does
+        // not rethrow. What still lands here is everything else: a label lookup, an
+        // InfluxDB write, an alert evaluation. Those are faults in the monitoring
+        // rather than in the router, so the reason is logged verbatim.
         console.error(
           `[MIKROTIK_POLLER] poll failed for ${d.name} (${d.ip}):`,
           err?.message ?? err,
