@@ -2287,13 +2287,88 @@ entry in `backend/config/env.js` (`3257818`) stays permanently: it is what keeps
 secret dead if it is ever pasted back in. **Any other clone of this repo must be
 re-cloned, not pulled.**
 
+### ICMP made visible — 2026-08-27
+
+`networkHistoryHandler` has always returned both halves of a router's history in one
+response (`{ history, icmp }`), for every router. Neither detail page ever read the second
+one, so latency and packet loss existed as two static tiles with no trend behind them —
+and a ping-only router, which writes nothing to `network_traffic`, had **no chart at all**.
+
+- **`pages/NetworkDetail.tsx` + `pages/MikrotikDetail.tsx`** — an `IcmpChart` panel, drawn
+  in BOTH modes rather than only for ping-only devices. ICMP runs alongside every SNMP
+  walk and every RouterOS API call, and it reports the two things those structurally
+  cannot: a walk answers or times out, so a link dropping a third of its packets reads as
+  perfectly healthy until it flips to Offline. Two axes (ms left, % right) — the
+  Dashboard's single shared axis is a compromise for a 120px panel, not the shape to copy
+  at this size. Both axes use `beginAtZero` + `suggestedMax` (20 ms / 10 %) rather than a
+  bare auto-scale: a rack switch answers in under a millisecond, and an axis fitted to
+  0.9-1.2 ms turns that healthy flat line into a mountain range. `suggestedMax` is a FLOOR,
+  so an ISP CPE at 40 ms still gets an axis that fits. Loss is deliberately not pinned to
+  0-100 either — a real 2 % would be two pixels off the floor, identical to the healthy
+  zero it is not.
+- **`components/dashboard/NetworkFocus.tsx`** — on a MikroTik and an SNMP router the two
+  figures join the legend as BADGES (`Latency 4 ms` / `Loss 0%`) beside In/Out, not as
+  chart lines: bytes/sec, ms and percent share no axis, and two more lines would bury the
+  throughput the panel exists to show. A ping-only router keeps them as lines, where they
+  ARE the chart. The badges read the LIVE device row, not `history` — the same call
+  ServerFocus makes for its tiles, since the chart may be on a 30-day range whose last
+  aggregated point is hours old.
+
+### The MikroTik poller threw its own ping away — 2026-08-27
+
+Found while verifying the above. `mikrotikPollerService.pollDevice` started an ICMP probe,
+then `await collect(...)` **threw before `await icmpPromise` was ever reached** — so a ping
+that had already been sent and answered was discarded on every failed poll.
+
+Three consequences, all of which hid exactly what the new chart is for:
+
+1. No `latency_ms` / `packet_loss_pct` stored for the whole outage. Campus MikroTik's API
+   was down 2026-08-25 04:04 → 2026-08-27 02:37 and left **three ICMP points in thirty
+   days**; the chart is blank across the window worth reading.
+2. The log said a flat `"MikroTik unreachable — no API response"` whether or not the box
+   answered ping — two states needing opposite fixes, reported identically.
+3. A **critical** unreachable alert against a router that may be up and 2 ms away.
+
+`snmpPollerService.pollRouter` has drawn this distinction since it was written ("but the
+host ANSWERS ICMP … so SNMP is the problem"); this poller simply never did. The catch now
+awaits the probe, honours `icmp.probeError` (a missing `ping` binary is the absence of a
+measurement, not an outage), builds a verdict for `device_logs` via a new `reason`
+argument on `setReachable`, writes an ICMP-only sample so the series stays continuous, and
+keeps the figures in the `latest` cache. It no longer rethrows — `pollAll`'s catch calls
+`setReachable`, which would reset that cache entry.
+
+⚠️ The sample passes **`reachable: false`, not `icmp.reachable`**. `writeNetworkSample`
+derives both the stored flag and the broadcast status from it ("Online" unless exactly
+false), so handing it the ICMP verdict would emit `networkMetrics {status:"Online"}`
+immediately after `networkStatus {status:"Offline"}` — every dashboard flipping between
+the two on each poll. Nothing is lost: the record now reads "unreachable, yet answering in
+2.3 ms with no loss", which is a sharper diagnostic than a bare `reachable:true`.
+
+Also: `node-routeros` can reject a failed connect with an **empty** `err.message` (verified
+against a closed port), which left the log line blank where the cause belongs — there is
+now a fallback through `code`/`errno`.
+
+**Verified:** reproduced the exact shape against `127.0.0.1` (answers ICMP in 1 ms, nothing
+on 8728) with no DB or InfluxDB writes — `collect()` rejects, the probe resolves reachable,
+the API-down-but-pingable branch is taken. 357 tests pass; `tsc --noEmit` and the
+production build are clean. Not yet exercised against the real router, which is currently
+healthy — to do that, block TCP 8728 to it and watch the log line and the chart.
+
 ### Still outstanding
 
 1. **Reflash the ESP32** — it holds the old secret and cannot connect until it is reflashed.
-2. **S-04: MySQL runs as `root` with an empty password.** Now the largest live exposure in
-   the system — a real credential on a real port, unlike the three historical ones, which
-   are all dead. `deployment-guide.md:139` already prescribes a `cspc_app` user; it has not
-   been created.
+2. ~~**S-04: MySQL runs as `root` with an empty password.**~~ **DONE** — verified
+   2026-08-27: `root`/empty is now refused (`ER_ACCESS_DENIED_ERROR`) and the backend
+   connects as `cspc-ictu_app@localhost`, which holds no DDL (a `CREATE TABLE` probe is
+   denied). ⚠️ **One narrower gap remains:** that grant is
+   `SELECT, INSERT, UPDATE, DELETE ON *.*`, not scoped to the monitoring schema — so the
+   credential sitting in `backend/.env` can read `mysql.user` (two accounts there still
+   carry readable 41-char `mysql_native_password` hashes) and write rows in every other
+   schema on the server. An SQL-injection bug anywhere in the app inherits that reach.
+   Scope it as root:
+   `REVOKE ALL PRIVILEGES ON *.* FROM 'cspc-ictu_app'@'localhost';`
+   `GRANT SELECT, INSERT, UPDATE, DELETE ON \`cspc-ictu-monitoring-system\`.* TO 'cspc-ictu_app'@'localhost';`
+   `FLUSH PRIVILEGES;`
 3. **S-11: set `SECRET_ENC_KEY`**, then
    `npm run rekey -- --from-key <mikrotik key> --suite general --apply`. Three columns
    currently borrow `MIKROTIK_ENC_KEY`; this gives them their own. ⚠️ One step, not two —
