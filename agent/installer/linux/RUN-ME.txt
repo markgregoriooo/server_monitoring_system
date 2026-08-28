@@ -50,7 +50,10 @@ GETTING THIS FOLDER ONTO THE SERVER  (command line only, no desktop)
 BEFORE YOU START
 -----------------------------------------------------------------------
   1) The backend PC must be ON and on the SAME network as this server.
-       curl http://192.168.100.9:3000
+     Ask ICTU for its LAN address — that is the <backend-server-ip> used all
+     through this guide, and it looks like 192.168.1.50. Use the address, not
+     a website name: the agent talks to the backend directly on port 3000.
+       curl http://<backend-server-ip>:3000
      You should see:  {"error":"Route not found"}
      If it fails -> wrong network, or the firewall on the backend PC is blocking
      port 3000. Fix that before continuing.
@@ -65,11 +68,11 @@ INSTALL
   1) Install (from inside this folder). Put the key in a VARIABLE first, so it does
      not sit in the process list or in your shell history:
        export CSPC_INSTALL_KEY='<INSTALL_KEY>'
-       sudo -E bash install.sh http://192.168.100.9:3000
+       sudo -E bash install.sh http://<backend-server-ip>:3000
        unset CSPC_INSTALL_KEY
      The -E is what carries the variable through sudo; without it the installer will
      say the key is missing. Passing the key as an argument still works if you prefer:
-       sudo bash install.sh http://192.168.100.9:3000 <INSTALL_KEY>
+       sudo bash install.sh http://<backend-server-ip>:3000 <INSTALL_KEY>
      It installs to /opt/cspc-agent, registers, and waits.
 
   2) An ADMIN approves it on the dashboard:
@@ -90,7 +93,7 @@ UPGRADING AN AGENT THAT IS ALREADY INSTALLED
 
        sudo systemctl stop cspc-agent
        export CSPC_INSTALL_KEY='<INSTALL_KEY>'
-       sudo -E bash install.sh http://192.168.100.9:3000
+       sudo -E bash install.sh http://<backend-server-ip>:3000
        unset CSPC_INSTALL_KEY
 
   It warns that the key was not used — that is expected, and nothing needs

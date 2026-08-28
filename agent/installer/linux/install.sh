@@ -3,7 +3,7 @@
 # Run the matching binary (cspc-agent-linux-amd64 / -arm64) from the same folder.
 #
 # Usage: sudo bash install.sh <API_URL> [INSTALL_KEY] [--re-enroll]
-#   e.g. CSPC_INSTALL_KEY=AIK-... sudo -E bash install.sh http://192.168.100.9:3000
+#   e.g. CSPC_INSTALL_KEY=AIK-... sudo -E bash install.sh http://<backend-server-ip>:3000
 #
 # PREFER the environment variable. A key passed as an ARGUMENT is visible in `ps aux` to
 # every user on the machine while enrollment runs, is written to the invoking shell's

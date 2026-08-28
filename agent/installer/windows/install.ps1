@@ -5,7 +5,7 @@
 
   Usage:
     $env:CSPC_INSTALL_KEY = 'AIK-...'
-    .\install.ps1 -ApiUrl "http://192.168.100.9:3000"
+    .\install.ps1 -ApiUrl "http://<backend-server-ip>:3000"
     .\install.ps1 -ApiUrl "..." -ReEnroll                        # re-register an existing install
 
     .\install.ps1 -ApiUrl "..." -InstallKey "AIK-..."            # still works, discouraged

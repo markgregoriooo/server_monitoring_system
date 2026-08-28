@@ -16,7 +16,10 @@ outage leaves a gap in the live view but not in the stored history.
 BEFORE YOU START
 -----------------------------------------------------------------------
   1) The backend PC must be ON and on the SAME network as this computer.
-     Open  http://192.168.100.9:3000  in this computer's browser.
+     Ask ICTU for its LAN address — that is the <backend-server-ip> used all
+     through this guide, and it looks like 192.168.1.50. Use the address, not
+     a website name: the agent talks to the backend directly on port 3000.
+     Open  http://<backend-server-ip>:3000  in this computer's browser.
      You should see:  {"error":"Route not found"}
      If it does not load -> wrong network, or the firewall on the backend PC is
      blocking port 3000. Fix that before continuing.
@@ -43,10 +46,10 @@ INSTALL
   3) Install. Put the key in a VARIABLE first, so it does not sit in the process
      list or in PowerShell's saved history:
        $env:CSPC_INSTALL_KEY = '<INSTALL_KEY>'
-       .\install.ps1 -ApiUrl "http://192.168.100.9:3000"
+       .\install.ps1 -ApiUrl "http://<backend-server-ip>:3000"
        Remove-Item Env:\CSPC_INSTALL_KEY
      Passing the key as a parameter still works if you prefer:
-       .\install.ps1 -ApiUrl "http://192.168.100.9:3000" -InstallKey "<INSTALL_KEY>"
+       .\install.ps1 -ApiUrl "http://<backend-server-ip>:3000" -InstallKey "<INSTALL_KEY>"
      It installs to C:\Program Files\CSPC Monitoring Agent, registers, and waits.
 
   4) An ADMIN approves it on the dashboard:
@@ -67,7 +70,7 @@ UPGRADING AN AGENT THAT IS ALREADY INSTALLED
 
        Stop-Process -Name cspc-agent -Force
        $env:CSPC_INSTALL_KEY = '<INSTALL_KEY>'
-       .\install.ps1 -ApiUrl "http://192.168.100.9:3000"
+       .\install.ps1 -ApiUrl "http://<backend-server-ip>:3000"
        Remove-Item Env:\CSPC_INSTALL_KEY
 
   It warns that the key was not used — that is expected, and nothing needs

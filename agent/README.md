@@ -177,7 +177,7 @@ Everything is driven by command-line flags parsed in `main.go`:
 |------|---------|
 | `--register` | Enroll if not already enrolled, **wait** for admin approval, then **start the metric loop** (one command does it all). |
 | `--register-only` | Enroll and **exit** after approval. Used by the installers — the service then runs the loop separately. |
-| `-api-url URL` | Backend base URL, e.g. `http://192.168.100.9:3000`. Required for enrollment. |
+| `-api-url URL` | Backend base URL, e.g. `http://<backend-server-ip>:3000`. Required for enrollment. |
 | `CSPC_INSTALL_KEY` (env) | **The preferred way to pass the enrollment key** (`AIK-…`), minted by an admin on **Server Metrics → Agent install keys**. Required for enrollment. Used once — the agent then runs on the `AGT-…` token it gets at approval, and **unsets the variable as soon as it has read it** so the long-lived metric process and anything it spawns do not inherit it. Revoking the install key blocks new installs; the admin can *also* choose to de-authorise the servers it enrolled, in which case this agent gets a 403, deletes its `agent.conf` and exits (re-run with a live key to come back). |
 | `-install-key KEY` | ⚠️ **Deprecated** — same value, worse channel. A command-line argument is visible in `ps aux` / `Get-CimInstance Win32_Process` to anyone on the box for as long as enrollment runs, lands in the invoking shell's history file, and is captured by process-creation auditing (Linux auditd `execve`, Windows event 4688). Still accepted so existing runbooks keep working, and it warns when used. `CSPC_INSTALL_KEY` **wins** if both are set, so a stale flag in an old script cannot override a deliberately-set variable. |
 | `-conf PATH` | Path to `agent.conf`. Defaults to **next to the executable** so the installed service finds it regardless of working directory. |
@@ -187,7 +187,7 @@ So in practice:
 
 ```bash
 # Brand-new machine: enroll, wait for approval, then run forever
-CSPC_INSTALL_KEY=<KEY> cspc-agent --register -api-url http://192.168.100.9:3000 -conf agent.conf
+CSPC_INSTALL_KEY=<KEY> cspc-agent --register -api-url http://<backend-server-ip>:3000 -conf agent.conf
 
 # Already enrolled (agent.conf exists): just run the loop
 cspc-agent -conf agent.conf
@@ -511,7 +511,7 @@ re-pointing it). Plain `KEY=value`:
 
 ```ini
 # Written by `cspc-agent --register` after admin approval. Do not commit.
-API_URL=http://192.168.100.9:3000
+API_URL=http://<backend-server-ip>:3000
 DEVICE_TOKEN=AGT-3f9c…           # the permanent bearer token for this machine
 DEVICE_ID=42
 INTERVAL_SECONDS=10
@@ -644,7 +644,7 @@ pauses until you approve in the dashboard, then creates and starts the OS servic
 ```powershell
 # Windows — run from an ELEVATED PowerShell, binary in the same folder
 $env:CSPC_INSTALL_KEY = '<INSTALL_KEY>'
-.\install.ps1 -ApiUrl "http://192.168.100.9:3000"
+.\install.ps1 -ApiUrl "http://<backend-server-ip>:3000"
 Remove-Item Env:\CSPC_INSTALL_KEY
 ```
 
@@ -661,7 +661,7 @@ Remove-Item Env:\CSPC_INSTALL_KEY
 # Linux — systemd, binary in the same folder (auto-picks amd64 vs arm64)
 # -E carries CSPC_INSTALL_KEY through sudo; without it the installer reports no key.
 export CSPC_INSTALL_KEY='<INSTALL_KEY>'
-sudo -E bash install.sh http://192.168.100.9:3000
+sudo -E bash install.sh http://<backend-server-ip>:3000
 unset CSPC_INSTALL_KEY
 ```
 
@@ -691,7 +691,7 @@ sudo systemctl disable --now cspc-agent   # remove
 
 ```bash
 # one-time enrollment (blocks until you Approve it in the dashboard), then runs
-CSPC_INSTALL_KEY=<KEY> go run ./cmd/agent --register -api-url http://192.168.100.9:3000 -conf ./agent.conf
+CSPC_INSTALL_KEY=<KEY> go run ./cmd/agent --register -api-url http://<backend-server-ip>:3000 -conf ./agent.conf
 
 # already enrolled — just run the loop
 make run     # == go run ./cmd/agent -conf ./agent.conf

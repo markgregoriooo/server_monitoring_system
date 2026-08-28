@@ -187,7 +187,13 @@ const COMMAND_URL = (() => {
     const u = new URL(API_URL);
     // Rebuilt from parts rather than string-replaced: it keeps the port and survives
     // an IPv6 literal like http://[::1]:3000, where a naive host regex does not.
-    return `${u.protocol}//<domain>${u.port ? `:${u.port}` : ""}`;
+    //
+    // `<backend-server-ip>` rather than `<domain>`: the value wanted here is the LAN IP
+    // of the machine running the backend, and "domain" invites the PUBLIC hostname —
+    // which is wrong twice over. Agents talk to :3000 directly rather than through
+    // nginx, and pointing them at the public name makes ingest depend on ICTU's edge
+    // and the internet being up. Same placeholder the deployment guide uses (§0.1).
+    return `${u.protocol}//<backend-server-ip>${u.port ? `:${u.port}` : ""}`;
   } catch {
     return API_URL;
   }
