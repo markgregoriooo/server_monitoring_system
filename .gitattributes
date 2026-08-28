@@ -3,3 +3,15 @@
 # it. Binary also means conflicts surface as "take mine / take theirs", which is the only
 # sane resolution for a model nobody can merge by hand.
 *.mwb binary
+
+# Shell scripts must keep LF endings in the WORKING COPY, not just in the repo.
+# The blobs are already LF — but core.autocrlf=true checks them out as CRLF on Windows,
+# and this system is deployed by COPYING THE WORKING FOLDER to the Linux server rather
+# than cloning it (deployment-guide.md §1.1). So the CRLF the developer never sees is
+# exactly what lands on the server, where bash rejects it with `bad interpreter:
+# /bin/bash^M` — an error that reads as a missing file or a broken shebang rather than
+# as a line-ending problem. `ops/db-backup/dump-mysql.sh` and
+# `ops/offsite-backup/sync-offsite.sh` run nightly, so the failure would surface as
+# backups quietly not happening. A clone on Linux was never affected, which is why this
+# would not reproduce anywhere except the one path we actually deploy through.
+*.sh text eol=lf
