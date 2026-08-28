@@ -55,6 +55,62 @@ live on the one campus server.
 
 ---
 
+### 0.1 Which address goes where (read this before you edit anything)
+
+Three different addresses point at the **same backend process**, and each is correct for
+exactly one audience. Putting the right one in the wrong file is the most common
+deployment mistake, and it usually fails silently — a page that loads with no data, or a
+sensor that never appears.
+
+**You edit five things. None of them is a source file.**
+
+| # | File | What goes in | Which address |
+|---|---|---|---|
+| 1 | `frontend/.env` | `VITE_API_URL=https://monitoring.cspc.edu.ph` | **hostname** |
+| 2 | `backend/.env` | `WEB_ORIGIN=https://monitoring.cspc.edu.ph` | **hostname** |
+| 3 | nginx site config<br>`/etc/nginx/sites-available/cspc` | `proxy_pass http://127.0.0.1:3000;` | **127.0.0.1** |
+| 4 | `iot/esp32/env_monitor_v2/secrets.h` | `#define BACKEND_HOST "192.168.100.9"` | **LAN IP** |
+| 5 | *(a command, not a file)* the agent installer | `install.sh http://192.168.100.9:3000 AIK-<key>` | **LAN IP** |
+
+#### Files you do NOT edit
+
+These already read the values above. Changing them is how a deployment ends up with two
+sources of truth that disagree:
+
+| File | Why it needs no edit |
+|---|---|
+| `frontend/src/config.ts` | Reads `VITE_API_URL`, falling back to `<page-host>:3000` for LAN development. |
+| `frontend/src/socket/socket.ts` | `io(API_URL)` — imports the same value. **The socket has no separate setting.** |
+| `frontend/src/api/client.ts` | Axios `baseURL`, same value again. |
+
+That is worth stating plainly because it is a natural thing to go looking for: the live
+socket and the REST API are pinned by **one** variable, `VITE_API_URL`. nginx proxies both
+`/api/` and `/socket.io/` to the backend on the same hostname, so the browser only ever
+talks to one origin.
+
+#### Why each one is what it is
+
+**Hostname (1, 2)** — the browser may be on campus wifi or at home, so the public name is
+the only address it can reach. `VITE_API_URL` tells the browser where to call;
+`WEB_ORIGIN` tells the backend which origin to accept CORS from. **They must match exactly**
+— same scheme, same host, no trailing slash.
+
+**127.0.0.1 (3)** — nginx runs on the *same machine* as the backend, so it reaches it over
+loopback. This address is meaningful only inside that box. A browser asking for
+`127.0.0.1:3000` is asking its **own** laptop, where nothing is listening.
+
+**LAN IP (4, 5)** — the ESP32 and the Go agents are on campus and talk to `:3000`
+directly, never through nginx. That keeps ingest alive when the internet or ICTU's edge is
+down, and it is why §9.1 firewalls `:3000` to the collector subnets rather than closing it.
+
+> ⚠️ **`VITE_API_URL` is compiled into the JavaScript at build time.** Edit
+> `frontend/.env` **before** `npm run build` ([§4.1](#41-frontendenv) → [§4.2](#42-build)).
+> Building first and editing afterwards leaves the old address inside the bundle: the page
+> loads, every API call and the socket fail, and the config file on disk looks correct —
+> which is what makes it expensive to diagnose.
+
+---
+
 ## 1. Prerequisites
 
 | Component | Version | Notes |
@@ -77,12 +133,199 @@ agents and firmware cache the address, and ICTU's proxy needs a fixed target.
 
 ---
 
+### 1.1 Put the code on the server
+
+Everything below assumes the project is already at **`/opt/cspc`** on the Linux box. This
+section is how it gets there. Do it first — §2 onward all run from inside it.
+
+**Why `/opt/cspc` specifically.** It is not a preference: `ops/systemd/cspc-monitoring.service`
+declares `WorkingDirectory=/opt/cspc/backend`, and §5.2 serves the dashboard from
+`/opt/cspc/frontend-dist`. Putting the project anywhere else means editing the unit file.
+
+> ⚠️ **Do not put it under `/home/<you>/`.** nginx runs as `www-data` and usually cannot
+> traverse a home directory, which produces a 403 that reads like a config error (§5.6).
+
+#### 1.1.1 Create the service account and the directory
+
+The backend runs as a dedicated **system user with no shell** — it holds `JWT_SECRET`,
+the database password and the encryption keys, so it should not be a login account and
+should not be `root`.
+
+```bash
+sudo useradd --system --home /opt/cspc --shell /usr/sbin/nologin cspc
+sudo mkdir -p /opt/cspc
+```
+
+#### 1.1.2 Transfer the project folder
+
+The whole project folder is copied across — by WinSCP, `scp`, `rsync`, or a USB drive.
+Any of them is fine. What matters is that **six things do not make the trip**, because
+each one is either wrong on Linux or belongs to the development machine.
+
+##### What must not be copied
+
+| Do not copy | What happens if you do |
+|---|---|
+| `backend/node_modules/`<br>`frontend/node_modules/` | ~52 MB in the backend alone, and the native modules are compiled **for Windows**. On Linux they crash or misbehave. They are reinstalled in §1.1.4. |
+| `backend/.env` | Carries the dev database name and the dev secrets. Production writes its own in §3.1. Copying it is also how a compromised key spreads. |
+| `backend/backups/` | Tens of MB of the *development* room's NDJSON history. |
+| `backend/reports/` | Generated CSV/PDFs for reports that will not exist in the new database. |
+| `backend/branding/` | Logos uploaded on the dev box. Production uses the committed marks until ICTU re-uploads. |
+| `frontend/dist/` | Built with the **dev** `VITE_API_URL` compiled in. Rebuilt on the server in §4.2. |
+
+`.git/` is optional — harmless to copy, and useless without a remote.
+
+##### Option A — exclude during the transfer (fastest)
+
+`rsync` over SSH, run from the project folder on your workstation:
+
+```bash
+rsync -av \
+  --exclude node_modules \
+  --exclude .env \
+  --exclude backups \
+  --exclude reports \
+  --exclude branding \
+  --exclude dist \
+  --exclude .git \
+  ./ user@campus-server:/opt/cspc/
+```
+
+In **WinSCP**, the same list goes in *Transfer settings → File mask → Exclude*:
+
+```
+node_modules/; .env; backups/; reports/; branding/; dist/; .git/
+```
+
+##### Option B — copy everything, then clean on the server
+
+Simpler to get right if the transfer tool has no exclude support (a plain drag-and-drop,
+or a USB drive). Copy the folder to `/opt/cspc`, then, **before** installing anything:
+
+```bash
+cd /opt/cspc
+sudo rm -rf backend/node_modules frontend/node_modules
+sudo rm -rf backend/backups backend/reports backend/branding
+sudo rm -rf frontend/dist
+sudo rm -f  backend/.env
+```
+
+The transfer is slower — you move the 52 MB of `node_modules` only to delete it — but
+nothing depends on remembering an exclude list in a dialog box.
+
+##### Verify before moving on
+
+```bash
+cd /opt/cspc
+ls backend/src/server.js frontend/package.json v13_cspc-ictu-monitoring-system.sql
+# All three must exist — they are the backend entry point, the frontend manifest
+# and the schema you import in §2.1.
+
+[ -d backend/node_modules ] && echo "STOP: node_modules came across — delete it"
+[ -f backend/.env ]         && echo "STOP: dev .env came across — delete it"
+```
+
+⚠️ **`backend/assets/` must be present**, and is easy to lose to an over-eager exclude
+mask. It holds the report letterhead marks (`assets/branding/`) and the embedded PDF font
+(`assets/fonts/`). Without the fonts, reports still generate but fall back to Helvetica
+instead of the Arial-compatible face ICTU asked for:
+
+```bash
+ls backend/assets/fonts/Arimo-Regular.ttf backend/assets/branding/cspc-logo.png
+```
+
+#### 1.1.3 Two things Windows→Linux breaks
+
+Both are silent on Windows and only appear on the server.
+
+**Line endings.** A shell script committed with CRLF fails as
+`bad interpreter: /bin/bash^M` — which reads as a missing file, not a line-ending problem.
+`.gitattributes` now pins `*.sh text eol=lf`, so a fresh clone is correct. Verify anyway,
+since the two backup scripts run nightly and their failure is invisible:
+
+```bash
+file ops/db-backup/dump-mysql.sh ops/offsite-backup/sync-offsite.sh
+# want: "ASCII text" — NOT "with CRLF line terminators"
+
+# If any say CRLF:
+sed -i 's/\r$//' ops/db-backup/*.sh ops/offsite-backup/*.sh
+```
+
+**Filename case.** Linux filesystems are case-sensitive; Windows is not. An import written
+`../Services/foo.js` for a file named `services/foo.js` works on the dev machine and fails
+here. The first `npm run build` on the server is the real test — a build that passed on
+Windows proves nothing about this.
+
+#### 1.1.4 Install dependencies (on the server)
+
+```bash
+cd /opt/cspc/backend  && npm ci --omit=dev
+cd /opt/cspc/frontend && npm ci
+```
+
+`npm ci` installs exactly the lockfile, which is what you want on a server; `npm install`
+may resolve different versions. The frontend keeps its dev dependencies because Vite needs
+them to build.
+
+> ⚠️ **Do not build the frontend yet.** `VITE_API_URL` is baked in at build time, so the
+> build has to come *after* §4.1. Building now silently ships the wrong backend URL, and
+> the only symptom is API calls going nowhere.
+
+#### 1.1.5 Ownership and permissions
+
+```bash
+sudo chown -R cspc:cspc /opt/cspc/backend
+
+# The backend writes reports and on-site backups itself — create them owned by it,
+# or the first write fails at runtime rather than at deploy time.
+sudo mkdir -p /opt/cspc/backend/reports /opt/cspc/backend/backups /opt/cspc/backend/branding
+sudo chown cspc:cspc /opt/cspc/backend/reports /opt/cspc/backend/backups /opt/cspc/backend/branding
+```
+
+`.env` gets its own tighter mode once it exists (§3.1):
+
+```bash
+sudo chown cspc:cspc /opt/cspc/backend/.env
+sudo chmod 600 /opt/cspc/backend/.env     # secrets — owner-read only
+```
+
+#### 1.1.6 What the server will NOT have, and that is correct
+
+A clean deployment starts empty. None of these is a fault to fix:
+
+| Absent | Why, and what to do |
+|---|---|
+| **`backend/.env`** | Gitignored. Write it on the server (§3.1) with **freshly generated** secrets — never copy the dev values. |
+| **Uploaded logos** (`backend/branding/`) | Gitignored runtime data. Reports use the committed marks in `backend/assets/branding/` until an admin re-uploads on the Reports page. |
+| **All users** | The first Google sign-in lands `pending` with nobody able to approve it — see **§4.3**. |
+| **All devices** | Every server, router, UPS and aircon is registered again. Agents re-enrol; MikroTik credentials and aircon IR channels are re-entered. |
+| **All history** | No alerts, reports or audit trail. InfluxDB starts empty too (§2.2). |
+
+#### 1.1.7 Where to go next
+
+```
+1.1  code at /opt/cspc            ← you are here
+2.1  create the MySQL database, import v13_cspc-ictu-monitoring-system.sql
+2.2  InfluxDB bucket + token
+3.1  backend/.env   (fresh secrets)
+3.2  run the backend / install the systemd unit  → ops/systemd/README.md
+4.1  frontend/.env  (VITE_API_URL)  →  4.2 build
+5.x  nginx
+6.x  HTTPS hostname + Google OAuth origins
+4.3  bootstrap the first admin      ← LAST: it needs Google sign-in working
+```
+
+⚠️ §4.3 is numbered before §5 and §6 but must be done **after** them: the first admin is
+created by signing in with Google, and Google refuses a bare LAN IP (§6.3).
+
+---
+
 ## 2. Databases
 
 ### 2.1 MySQL
 
 **One file, no migrations.** `v13_cspc-ictu-monitoring-system.sql` is a phpMyAdmin export
-of the full schema (24 tables) and already includes everything the old `migrations/`
+of the full schema (**25 tables**) and already includes everything the `migrations/`
 folder used to apply.
 
 > **Upgrading a database loaded before 2026-08-09?** One statement is needed (already
@@ -109,12 +352,13 @@ mysql -u root -p -e "CREATE DATABASE cspc_ictu_monitoring CHARACTER SET utf8mb4 
 mysql -u root -p cspc_ictu_monitoring < v13_cspc-ictu-monitoring-system.sql
 ```
 
-The export ships **two tables pre-populated**, and both matter:
+The export ships **three tables pre-populated**, and all three matter:
 
 | Seeded table | Why it's not optional |
 |---|---|
 | `alert_rules` | Alerting is **rules-only** — an empty table means **no threshold alert ever fires**: CPU/mem/disk, temperature/gas/humidity, router CPU/mem, link utilisation/errors, UPS charge/runtime all go silent. |
 | `aircon_ir_config` | The auto-cooling IR zone boundaries. Without them the ESP32 keeps its compiled-in defaults and the dashboard can't retune when IR fires. |
+| `settings` | Report template defaults — page size (Folio), the letterhead unit line, the signature block and both logo slots. Empty means every generated PDF falls back to code defaults and the admin panel has nothing to show. |
 
 Everything else ships **empty**, which is what a fresh install wants: no users (the first
 Google sign-in creates a `pending` account for an admin to approve — [§4.3](#43-bootstrap-the-first-admin-important--chicken-and-egg)),
@@ -171,7 +415,7 @@ Then point `backend/.env` at it — `DB_USER=cspc_app`, `DB_PASSWORD=…`.
 >   turn it into a second global rule competing with the existing one for that metric.
 >
 > Verify by importing into a throwaway database before committing — `CREATE DATABASE
-> zz_test`, load, confirm 24 tables and 31 foreign keys, `DROP DATABASE zz_test`. Static
+> zz_test`, load, confirm 25 tables and 31 foreign keys, `DROP DATABASE zz_test`. Static
 > inspection missed this twice; the import is the only real proof.
 
 ### 2.2 InfluxDB 2.x
@@ -268,9 +512,68 @@ BACKUP_OFFSITE_MARKER=                   # path the rclone job stamps on each su
 BACKUP_OFFSITE_MAX_AGE_HOURS=26          # warn if no successful offsite sync within this
 ```
 
-Generate strong secrets, e.g. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
-`DEVICE_SECRET` must equal the firmware constant; `AGENT_INSTALL_KEY` is what every agent
-presents at enrollment.
+#### Generating the secrets
+
+⚠️ **Generate these ON THE SERVER, and never reuse the development values.** Copying
+`backend/.env` across carries the dev database name, the dev Influx token and — worse —
+any key that has ever been pasted into a chat, a ticket or a screenshot. New machine, new
+keys.
+
+All four are **validated, not merely documented** — the code refuses rather than warns, so
+a bad value surfaces on deploy day instead of at the moment it matters. The first two are
+checked at **boot** (the backend will not start); the encryption keys are checked the
+first time a credential is **saved**:
+
+| Variable | Requirement | Enforced by |
+|---|---|---|
+| `JWT_SECRET` | at least **32 characters** | `config/env.js` — throws at import |
+| `DEVICE_SECRET` | at least **24 characters**, and not a value published in this repo's history (checked by SHA-256) | `config/env.js` — throws at import |
+| `MIKROTIK_ENC_KEY` | exactly **64 hex characters** (32 bytes) | `services/secretCrypto.js` — throws when a credential is saved |
+| `SECRET_ENC_KEY` | exactly **64 hex characters**, and **different from** `MIKROTIK_ENC_KEY` | as above |
+
+Run this once on the server and paste the four lines into `backend/.env`:
+
+```bash
+node -e "
+const c = require('crypto');
+console.log('JWT_SECRET='        + c.randomBytes(48).toString('base64url'));
+console.log('DEVICE_SECRET='     + c.randomBytes(24).toString('hex'));
+console.log('MIKROTIK_ENC_KEY='  + c.randomBytes(32).toString('hex'));
+console.log('SECRET_ENC_KEY='    + c.randomBytes(32).toString('hex'));
+"
+```
+
+Then lock the file down — it now holds every credential the system has:
+
+```bash
+sudo chown cspc:cspc /opt/cspc/backend/.env
+sudo chmod 600 /opt/cspc/backend/.env      # owner read/write only
+```
+
+##### Two that need more than pasting
+
+> ⚠️ **`DEVICE_SECRET` is TWO-SIDED.** The same value must also go into
+> `iot/esp32/env_monitor_v2/secrets.h`, and the ESP32 must be **reflashed** (§8). The
+> handshake compares them with `timingSafeEqual`, so a mismatch rejects every device
+> connection — and the symptom is a room that is silently unmonitored, not an error
+> anyone is looking at. Setting it on the backend alone is half the job.
+
+> ⚠️ **`MIKROTIK_ENC_KEY` should be set once and left alone.** Every RouterOS password is
+> encrypted under it, so changing it later makes them all undecryptable — the poller then
+> fails to log in with no obvious cause. `npm run rekey -- --from-key <old> --apply`
+> recovers from that, but it is a stop-the-backend procedure. Set this **before**
+> registering the MikroTik (§7), not after.
+
+##### The rest
+
+`AGENT_INSTALL_KEY` is the deprecated bootstrap fallback and should be **left blank** on a
+new install: enrollment keys are minted in the UI (Server Metrics → Agent install keys)
+once you have an admin. It exists only because a fresh database has no keys *and* no admin
+to mint one — if you use it to bootstrap the first agent, blank it and restart afterwards.
+
+`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `SMTP_*` are copied from their own consoles,
+not generated here — see `google-oauth.md` and `email-popup-notifications.md` §8.
+
 
 ### 3.2 Run
 
@@ -775,11 +1078,17 @@ them, is in **`https_hostname&reverse_proxy_req_letter.md`** (and as a Word docu
 | Who | Uses which address |
 |---|---|
 | **Browsers / staff (incl. from home)** | the **public hostname** `https://monitoring.cspc.edu.ph` |
-| **Go agents + ESP32 (on campus)** | the **server's LAN address** `http://<campus-server-ip>:3000` |
+| **Go agents + ESP32 (on campus)** | the **server's LAN address** `http://<backend-server-ip>:3000` |
 
 Keep the on-campus collectors pointing at the **internal LAN IP** — it's faster and doesn't
 depend on ICTU's edge or the internet being up. The public hostname is for human dashboard
 access only.
+
+> There is a **third** address, and it is the one people put in the wrong file: nginx
+> reaches the backend over `http://127.0.0.1:3000`, which is meaningful only on the campus
+> server itself. [§0.1](#01-which-address-goes-where-read-this-before-you-edit-anything)
+> is the one-page map of all three — which file each belongs in, and which files need no
+> edit at all.
 
 > ⚠️ **Login needs the internet, even on campus.** Ingest survives an ISP outage (the row
 > above keeps ESP32 + agents on the LAN), but *signing in* does not: the browser must reach
@@ -801,7 +1110,7 @@ these wrong produces `Error 400: origin_mismatch` when the popup opens.
 
 > ⚠️ **This is why §6 is mandatory, not optional polish.** Google accepts only
 > `http://localhost` or an **HTTPS** origin here. A raw `http://192.168.x.x:5173` or
-> `http://<campus-server-ip>` is **rejected outright** — you cannot "just add the LAN
+> `http://<backend-server-ip>` is **rejected outright** — you cannot "just add the LAN
 > address". Without the ICTU hostname there is **no way for anyone to log in at all**,
 > on campus or at home. Treat §6.1 as a prerequisite of the whole deployment, not a
 > remote-access convenience.
@@ -930,19 +1239,25 @@ make all        # → dist/cspc-agent-windows-amd64.exe, dist/cspc-agent-linux-a
 ```
 
 Install on a target server as a background service (enrolls, waits for your approval,
-then runs). Point `-api-url` at the campus server's **LAN address** (not the public hostname):
+then runs). Point `-api-url` at the **backend server's LAN address** (not the public hostname):
 
 **Get the install key from the dashboard first.** As admin: **Server Metrics → Agent
 install keys → + New key**. Label it (e.g. "Main server room — Aug 2026"), optionally set
 an expiry, and copy the ready-made command it prints — the key is shown **once**.
 
+> **`<backend-server-ip>` is the LAN IP of the Linux box running the backend** — the same
+> machine that holds `/opt/cspc`, e.g. `192.168.100.9`. It is **not** the public hostname,
+> and **not** the address of the server being monitored. Every agent on every host points
+> at this one address. See §6.2 for why on-campus collectors stay on the LAN even after
+> HTTPS is published.
+
 ```powershell
 # Windows — elevated PowerShell, binary in same folder
-.\install.ps1 -ApiUrl "http://<campus-server-ip>:3000" -InstallKey "AIK-<key>"
+.\install.ps1 -ApiUrl "http://<backend-server-ip>:3000" -InstallKey "AIK-<key>"
 ```
 ```bash
 # Linux — systemd
-sudo bash install.sh http://<campus-server-ip>:3000 AIK-<key>
+sudo bash install.sh http://<backend-server-ip>:3000 AIK-<key>
 ```
 
 Then in the dashboard (as admin): **Server Metrics → approve** the pending agent. It
@@ -1024,8 +1339,8 @@ ICTU which VLAN the server room and the monitored servers are on; do not guess a
 Verify from a machine outside the allowed range:
 
 ```bash
-curl -m 5 http://<campus-server-ip>:3000/api/policy/version   # expect: timeout / refused
-curl -I  http://<campus-server-ip>/                            # expect: 200 (nginx still fine)
+curl -m 5 http://<backend-server-ip>:3000/api/policy/version   # expect: timeout / refused
+curl -I  http://<backend-server-ip>/                            # expect: 200 (nginx still fine)
 ```
 
 Then re-check that an agent still reports in (Server Metrics → the host goes Online). If it
@@ -1202,7 +1517,7 @@ Full walkthrough — bucket, keys, rclone config, connection test, restore, and 
 | First user can't do anything | Still `status='pending'`. Promote in MySQL ([§4.3](#43-bootstrap-the-first-admin-important--chicken-and-egg)). |
 | No alerts ever fire | `alert_rules` is empty → alerting is rules-only → silent. The schema seeds it; if the table is empty the dump was loaded structure-only. |
 | Agent stuck "pending" | Not approved yet (Server Metrics page), or `AGENT_INSTALL_KEY` mismatch. |
-| Agent can't reach backend | Pointed at the public hostname instead of the **LAN IP**, or LAN firewall blocks :3000. Agents use `http://<campus-server-ip>:3000` ([§6.2](#62-two-addresses-two-audiences-important)). |
+| Agent can't reach backend | Pointed at the public hostname instead of the **LAN IP**, or LAN firewall blocks :3000. Agents use `http://<backend-server-ip>:3000` ([§6.2](#62-two-addresses-two-audiences-important)). |
 | Agent 403s and removes itself | The server was **removed** in the dashboard (token revoked). Re-run `--register`. |
 | ESP32 won't connect | `deviceSecret` ≠ backend `DEVICE_SECRET`, or wrong `host`/`port` (use the LAN IP). |
 | Analytics shows "need more data" | Expected early — forecasts need ~1–2 weeks of `server_metrics`; alert analytics works day one. |
