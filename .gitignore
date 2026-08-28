@@ -169,3 +169,6 @@ MANUSCRIPT-REVISION-GUIDE.docx
 # leading characters Word uses, not to *.docx, since the .docx files themselves
 # are tracked (see the note above).
 ~$*
+
+# Uploaded report letterhead marks (runtime data; assets/branding holds the committed defaults)
+backend/branding/

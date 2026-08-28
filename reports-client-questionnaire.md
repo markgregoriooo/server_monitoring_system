@@ -235,3 +235,121 @@ Tick the ones ICTU will actually use, and how often each is needed.
 
 Anything you leave blank, we keep as it is today and note as a dev-team decision rather
 than a client requirement.
+
+---
+
+# ✅ ICTU's answers — received 2026-08-26, transcribed 2026-08-28
+
+Answered in person by the **MIS Section** on the printed request letter. Source images
+are in `reports_template/` (the annotated letter, and a handwritten content outline on
+its reverse). Transcribed from those photographs and confirmed with the team.
+
+**This section is the requirement of record.** Where it disagrees with the body of this
+document above, this section wins — the text above is the question we asked, not the
+answer we got.
+
+## A. Format answers
+
+| Question asked | ICTU's answer | Status |
+|---|---|---|
+| A report ICTU already files | **PDF**, as a **downloadable file** | Built — PDF is the primary artifact; CSV still ships alongside it |
+| Official letterhead template | *"Dynamic"* — braced across the report/letterhead/logo rows | Built — the letterhead is configuration, not a committed file |
+| ICTU logo, high-res | *"Dynamic"* — **ICTU uploads it themselves**, because they may change their logo | Built — admin uploads it on the Reports page |
+| Font file | **Arial, 11 or 12 pt** | ⚠️ **Not built** — see the note below |
+| Paper size — A4, Letter, or Folio? | *"Dynamic (long - default)"* — **the operator picks; default is Long / Folio** | Built — per-report picker, admin-set default, ships as Folio |
+| Philippine time (UTC+8) or UTC? | **UTC+8 (Philippine time)** — annotated *"N/A"* + *"System Generated Report"*, clarified verbally | Built — every timestamp in a report is `PHT` |
+| Are "Prepared by" / "Noted by" right, and is "Approved by" needed? | **Yes — all three lines** | Built — three signature columns |
+| Is a control or reference number required? | **Yes, advisable to have** | Built — `ICTU-<TYPE>-<YEAR>-<NNN>`, matching ICTU's own sample |
+
+### ⚠️ The one open item: Arial
+
+ICTU asked for **Arial 11/12**. The PDF is still set in **Helvetica**, which is one of
+pdfkit's built-in fonts.
+
+This is deliberate for now, not an oversight. Helvetica and Arial are metrically
+near-identical, so nothing about the layout changes — but embedding a real Arial `.ttf`
+means shipping a **licensed Microsoft font** in the repository, which we should not do
+without ICTU confirming they hold a licence that covers it. The alternative is a
+metric-compatible open font (Liberation Sans, or Arimo) which is licensed for
+redistribution and renders at the same widths.
+
+**Decision needed from ICTU:** ship Liberation Sans/Arimo as the Arial stand-in, or have
+them supply the Arial file from a licence they hold. One line in `reportRenderer.js`
+changes once that is settled.
+
+## B. Report content — ICTU's own outline
+
+Written on the reverse of the letter. This is now the **section order of the Server
+Metrics report**, deliberately, because it is what they will read it against.
+
+```
+Server Monitoring          2) Server Availability Report   3) Resource Utilization
+  Server Name                   Uptime                         CPU
+  IP Address                    Downtime                       Memory
+  Operating System              Percentage                     Network
+  Monitoring Period             Incident(s)
+  Date and Time Created
+  Responsible                4) Server Status
+                             5) Performance monitoring
+                             6) Temperature / Humidity
+```
+
+| Item | Where it now appears |
+|---|---|
+| Server Name / IP Address / Operating System | Identity block under the title when the report is scoped to one server; a **Servers Monitored** table when it covers all of them |
+| Monitoring Period / Date and Time Created / Responsible | Identity block, every report type. *Responsible* is the user who generated it |
+| Uptime / Downtime / Percentage / Incidents | New **Server Availability** section |
+| CPU / Memory / Network | **Resource Utilization** section — Network was collected but never reported until now |
+| 4) Server Status | Covered by Availability (a status is a point in time; the report covers a period) |
+| 5) Performance monitoring | Covered by Resource Utilization |
+| 6) Temperature / Humidity | Already the separate **Environment** report type |
+
+### Two measurement notes worth keeping
+
+1. **"Uptime" is not the agent's `uptime_seconds`.** That counter resets to zero on every
+   reboot, so it answers "how long since this box last booted". Availability asks what
+   share of *the period* the server was reachable, across however many reboots — so it is
+   derived from the offline-alert record instead (`services/availabilityMath.js`).
+   Planned maintenance is excluded: `setMaintenance` suppresses the offline sweep, so no
+   alert is raised and the window is not counted against the server.
+
+2. **Network bytes are cumulative counters.** `psnet.IOCounters` reports bytes since boot,
+   so averaging them the way CPU is averaged would print a mean odometer reading. The
+   report uses Flux `increase()`, which sums non-negative deltas and reads a reboot as 0
+   rather than as the whole counter again.
+
+## C. Still unanswered
+
+These were on the form and ICTU did not mark them. Left as-is and recorded as dev-team
+decisions rather than client requirements:
+
+- Scheduled/automatic report emailing (Section 5) — the mechanism exists; no timer was requested.
+- Charts inside the PDF (Section 6) — still tables only.
+- Retention (`REPORT_RETENTION_DAYS`, 90 days) and who may generate/delete (Section 7).
+
+One stray word — `cost` — is written at the foot of the letter, attached to no question.
+Unresolved; ask at the next meeting whether it refers to something they expected to see.
+
+
+### ⚠️ The signature block diverges from this answer — deliberately
+
+ICTU answered **yes to all three** lines: Prepared by / Noted by / Approved by. Two
+things changed afterwards, both at the project team’s instruction rather than the
+client’s, and both are recorded here so nobody later reads the code as if it were the
+client’s answer:
+
+1. **The block is configurable** (2026-08-28). ICTU asked for it — “they have options on
+   how many signatures need to put” — so an admin sets how many lines there are, their
+   labels, and whose names. Capped at six, which is two rows of three; past that a
+   column is narrower than a signature.
+
+2. **The DEFAULT is now two lines, not three** — Prepared by and Approved by. The
+   reasoning was that most reports go straight from preparer to approver and the middle
+   line is the one usually left blank. **“Noted by:” is one press of “Add line” away**,
+   and any install that already stored three keeps three: a saved block always wins over
+   the shipped default.
+
+**Worth confirming with ICTU at the next meeting**, since their written answer says three
+and a fresh install now produces two. If they want three back it is a one-line change to
+`DEFAULT_SIGNATORIES` in `backend/services/reportTemplate.js` — or simply pressing Add
+line once on an existing install.

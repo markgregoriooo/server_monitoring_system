@@ -29,6 +29,56 @@ export interface ApiResult<T = any> {
   error?: string;
 }
 
+/** Page sizes a report can be rendered at. Mirrors PAPER_SIZES in
+ *  backend/services/reportTemplate.js — `folio` is Philippine long bond (8.5x13in),
+ *  which is ICTU's default. */
+export type PaperSizeKey = "a4" | "letter" | "folio";
+
+/** One entry of GET /reports/template's `paperSizes` map. */
+export interface PaperSizeOption {
+  label: string;
+  size: [number, number];
+  inches: string;
+}
+
+/** One line of the report's signature block. */
+export interface Signatory {
+  /** The label, e.g. "Prepared by:". Required — a line with no label is not a block. */
+  role: string;
+  /** A fixed name, or "" to leave the line blank for a manual signature. */
+  name: string;
+  /** Fill `name` with whoever generated the report. An explicit name still wins. */
+  auto: boolean;
+}
+
+/** Mirrors MAX_SIGNATORIES in backend/services/reportTemplate.js — two rows of three. */
+export const MAX_SIGNATORIES = 6;
+
+/** GET /reports/template — the active branding an admin can change. */
+export interface ReportTemplate {
+  paperSize: PaperSizeKey;
+  /** The signature block, in printed order. */
+  signatories: Signatory[];
+  /** The large line on the letterhead, where CSPC's own stationery reads
+   *  "COLLEGE of COMPUTER STUDIES". */
+  unitName: string;
+  /** What it falls back to when cleared — shown as the input's placeholder. */
+  unitNameDefault: string;
+  logos: Record<
+    "cspc" | "ictu",
+    {
+      /** true = ICTU's own upload; false = the placeholder bundled with the repo. */
+      uploaded: boolean;
+      /** The fixed name it is stored under, e.g. "cspc-logo.png". */
+      file: string | null;
+      /** The name the admin uploaded it as. Falls back to `file` for older uploads. */
+      originalName: string | null;
+      updatedAt: string | null;
+      bundled: string;
+    }
+  >;
+}
+
 /** Message shown when the server sent no `error` field of its own. Keyed by HTTP status;
  *  anything absent falls through to the network-level message. */
 const STATUS_FALLBACK: Record<number, string> = {
@@ -942,15 +992,92 @@ export const api = {
   // Returns 202 with a `pending` report — the backend builds it in the background
   // and pushes the finished row over Socket.IO as `reportUpdated`.
   // `deviceId` scopes the report to one device; omit for campus-wide.
+  // `paperSize` is per report (ICTU asked for it to be chosen, not fixed); omit to
+  // take the admin's configured default.
   generateReport: async (opts: {
     type: string;
     title?: string;
     periodStart?: string;
     periodEnd?: string;
     deviceId?: number;
+    paperSize?: PaperSizeKey;
   }): Promise<ApiResult> => {
     try {
       const res = await apiClient.post("/reports", opts);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // ── Report template (ICTU letterhead + page size) ───────────────────────────
+  // Read by both roles (the Generate modal needs the size options); every mutation
+  // below is admin-only server-side.
+  getReportTemplate: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/reports/template");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  setReportPaperSize: async (paperSize: PaperSizeKey): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put("/reports/template/paper-size", { paperSize });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Replaces the whole block — it is a short ordered list, and sending it entire is
+  // simpler than diffing rows that have no ids.
+  setReportSignatories: async (signatories: Signatory[]): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put("/reports/template/signatories", { signatories });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Blank restores the default, which is how an admin undoes a change without
+  // having to retype the original wording.
+  setReportUnitName: async (unitName: string): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.put("/reports/template/unit-name", { unitName });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Sends the file's RAW bytes, not multipart and not base64 — the backend reads the
+  // body with express.raw and identifies the image by its leading bytes. The declared
+  // Content-Type only decides whether the body is parsed at all, so it is taken from
+  // the File and re-checked server-side.
+  uploadReportLogo: async (slot: "cspc" | "ictu", file: File): Promise<ApiResult> => {
+    try {
+      const type = file.type === "image/jpeg" ? "image/jpeg" : "image/png";
+      const res = await apiClient.post(`/reports/template/logo/${slot}`, file, {
+        headers: {
+          "Content-Type": type,
+          // The body is the raw image, so the name it was uploaded under travels
+          // separately. Encoded because HTTP headers are Latin-1 and a filename can
+          // hold anything; the server decodes and sanitises it.
+          "X-Logo-Filename": encodeURIComponent(file.name),
+        },
+      });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  clearReportLogo: async (slot: "cspc" | "ictu"): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/reports/template/logo/${slot}`);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

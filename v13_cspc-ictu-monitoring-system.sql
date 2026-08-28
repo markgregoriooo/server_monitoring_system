@@ -413,6 +413,8 @@ CREATE TABLE `reports` (
   `generated_by` int(11) NOT NULL,
   `title` varchar(100) DEFAULT NULL,
   `type` enum('environment','server','alerts','aircon','network','ups','forecast') DEFAULT NULL,
+  `paper_size` enum('a4','letter','folio') NOT NULL DEFAULT 'folio' COMMENT 'Page size the PDF was rendered at; folio = long bond, 8.5x13in',
+  `reference_no` varchar(40) DEFAULT NULL COMMENT 'Assigned at build time, e.g. ICTU-SRV-2026-001. NULL until generated.',
   `device_id` int(11) DEFAULT NULL,
   `status` enum('pending','generated','failed') DEFAULT NULL,
   `file_path` varchar(255) DEFAULT NULL,
@@ -475,6 +477,21 @@ CREATE TABLE `settings` (
   `description` varchar(255) DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+--
+-- Dumping data for table `settings`
+--
+-- Report template defaults. `folio` (long bond) is ICTU's stated default page size;
+-- blank logo filenames mean "use the marks committed under backend/assets/branding".
+-- See migrations/2026-08-28_report_template.sql and reports-client-questionnaire.md.
+--
+
+INSERT INTO `settings` (`setting_key`, `setting_value`, `description`) VALUES
+('report.paper_size', 'folio', 'Default page size for generated PDF reports: a4 | letter | folio (long bond).'),
+('report.logo_ictu', '', 'Filename under backend/branding/ of the ICTU letterhead mark. Blank = use the bundled assets/branding/ictu-logo.jpg.'),
+('report.logo_cspc', '', 'Filename under backend/branding/ of the CSPC seal. Blank = use the bundled assets/branding/cspc-logo.png.'),
+('report.unit_name', '', 'Large line on the report letterhead. Blank = INFORMATION AND COMMUNICATIONS TECHNOLOGY UNIT.'),
+('report.signatories', '[{"role":"Prepared by:","name":"","auto":true},{"role":"Approved by:","name":"","auto":false}]', 'Report signature block as JSON: [{role,name,auto}]. auto = fill with the report generator.');
 
 -- --------------------------------------------------------
 
@@ -728,6 +745,7 @@ ALTER TABLE `notification_prefs`
 --
 ALTER TABLE `reports`
   ADD PRIMARY KEY (`report_id`),
+  ADD UNIQUE KEY `uq_reports_reference` (`reference_no`),
   ADD KEY `idx_reports_by` (`generated_by`),
   ADD KEY `idx_reports_status` (`status`),
   ADD KEY `idx_reports_created` (`created_at`),

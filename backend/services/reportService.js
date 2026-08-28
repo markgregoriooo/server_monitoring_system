@@ -11,8 +11,20 @@ import {
   REPORT_TYPES,
   TYPE_LABEL,
   SCOPE_TYPES,
+  defaultTitle,
+  titleWithReference,
   assertBuildersComplete,
 } from "./reportTypes.js";
+import { computeAvailability, formatDuration } from "./availabilityMath.js";
+import {
+  formatPH,
+  philippineYear,
+  referenceNo,
+  normalizePaperSize,
+  PAPER_SIZE_KEYS,
+  resolveSignatories,
+} from "./reportTemplate.js";
+import brandingService from "./reportBrandingService.js";
 import { describeError } from "../utils/httpError.js";
 
 // Real reports: persisted in MySQL `reports`, with a CSV + PDF written to disk per
@@ -127,8 +139,93 @@ function fluxRows(flux) {
 // cells show a blank rather than NaN. N-03.
 const roundOrNull = (v, d = 1) => (typeof v === "number" && !Number.isNaN(v) ? +v.toFixed(d) : null);
 const dayKey = (iso) => String(iso).slice(0, 10);
+// "2026-08-21" -> "Aug 21". Short enough to sit under a bar without overlapping its
+// neighbour, and unambiguous inside a period the header already names.
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const dayLabel = (key) => {
+  const [, m, d] = String(key).split("-");
+  return m && d ? `${MONTHS[Number(m) - 1] ?? m} ${Number(d)}` : String(key);
+};
+
+/**
+ * Count rows into one bucket per DAY of the period, by some category.
+ *
+ * Every day in the window is emitted, including the empty ones — a bar chart that skips
+ * quiet days compresses the timeline and makes a burst look like the norm.
+ */
+function dailyCounts(rows, start, stop, categoryOf, timeOf = (r) => r.created_at) {
+  const days = [];
+  const cursor = new Date(start);
+  cursor.setHours(0, 0, 0, 0);
+  const end = new Date(stop);
+  // Guard against a period so wide it would produce thousands of bars.
+  while (cursor <= end && days.length < 120) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  const index = new Map(days.map((d, i) => [d, i]));
+  const buckets = new Map();
+  for (const r of rows) {
+    const cat = categoryOf(r);
+    if (!cat) continue;
+    const i = index.get(dayKey(new Date(timeOf(r)).toISOString()));
+    if (i === undefined) continue;
+    if (!buckets.has(cat)) buckets.set(cat, new Array(days.length).fill(0));
+    buckets.get(cat)[i] += 1;
+  }
+  return { labels: days.map(dayLabel), buckets };
+}
 // Decimal GB, the convention for link throughput (not GiB).
 const gb = (bytes) => +((Number(bytes) || 0) / 1e9).toFixed(2);
+
+/**
+ * A time-bucketed series for a chart, straight from InfluxDB.
+ *
+ * The report TABLES aggregate the whole period to one row per device; a trend line needs
+ * the period sliced up, so this is the one extra query a chart costs.
+ *
+ * `fn: mean` across whatever devices match — exact for a device-scoped report, and the
+ * campus average for an unscoped one, which is what a single line can honestly show.
+ * `createEmpty: false` leaves a GAP where nothing was recorded rather than a zero, and
+ * chartMath.segments breaks the line there instead of drawing straight through it.
+ *
+ * @returns {Promise<{labels: string[], byField: Map<string, (number|null)[]>}>}
+ */
+async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope, points = 30) {
+  const spanMs = stop.getTime() - start.getTime();
+  // At least a minute per bucket — 30 points over a short window would otherwise ask
+  // Influx for sub-second aggregation and return noise.
+  const everySec = Math.max(60, Math.round(spanMs / points / 1000));
+  const rows = await fluxRows(`
+    from(bucket: "${bucket}")
+      |> range(start: ${start.toISOString()}, stop: ${stop.toISOString()})
+      |> filter(fn: (r) => r._measurement == "${measurement}")
+      ${scope}
+      |> filter(fn: (r) => ${fieldFilter})
+      |> group(columns: ["_field"])
+      |> aggregateWindow(every: ${everySec}s, fn: mean, createEmpty: false)`);
+
+  // One column per distinct timestamp, so every field lines up on the same x axis even
+  // when one of them stopped reporting partway through.
+  const times = [...new Set(rows.map((r) => r._time))].sort();
+  const index = new Map(times.map((t, i) => [t, i]));
+  const byField = new Map();
+  for (const r of rows) {
+    if (!byField.has(r._field)) byField.set(r._field, new Array(times.length).fill(null));
+    const v = Number(r._value);
+    byField.get(r._field)[index.get(r._time)] = Number.isFinite(v) ? +v.toFixed(2) : null;
+  }
+
+  // A day is label enough for a multi-day report; a 24-hour one needs the clock.
+  const byDay = spanMs > 3 * 86_400_000;
+  const labels = times.map((t) => {
+    const d = new Date(t);
+    return byDay
+      ? dayLabel(d.toISOString().slice(0, 10))
+      : formatPH(d, { seconds: false }).slice(11, 16);
+  });
+  return { labels, byField };
+}
 
 // ─── Data builders (return the normalized report payload) ────────────────────
 async function buildEnvironment(start, stop) {
@@ -180,6 +277,32 @@ async function buildEnvironment(start, stop) {
       { label: "Peak temperature", value: Number.isFinite(peakTemp) ? `${peakTemp} °C` : "—" },
       { label: "Peak gas", value: Number.isFinite(peakGas) ? `${peakGas} ppm` : "—" },
     ],
+    // Ascending for the chart — the table is newest-first, but a time axis that ran
+    // backwards would be read wrong by everyone.
+    charts: (() => {
+      const asc = [...days].reverse();
+      if (!asc.length) return [];
+      const labels = asc.map((d) => dayLabel(d.date));
+      return [
+        {
+          // Temperature and humidity share one 0-100 axis: both live in that range, and
+          // it is the pairing ICTU asked for ("Temperature / Humidity").
+          title: "Temperature (°C) and humidity (%)",
+          kind: "line", max: 100, labels,
+          series: [
+            { name: "Avg temp °C", color: "#EF9F27", values: asc.map((d) => d.avgTemp ?? null) },
+            { name: "Avg humidity %", color: "#38BDF8", values: asc.map((d) => d.avgHum ?? null) },
+          ],
+        },
+        {
+          // Gas is ppm — its own axis, or a 300ppm smoke event would be invisible
+          // against a 0-100 scale.
+          title: "Peak gas (ppm)",
+          kind: "line", labels,
+          series: [{ name: "Peak gas", color: "#F472B6", values: asc.map((d) => d.maxGas ?? null) }],
+        },
+      ];
+    })(),
     table: {
       columns: ["Date", "Avg Temp °C", "Max Temp °C", "Min Temp °C", "Avg Hum %", "Peak Gas ppm"],
       rows: days.map((d) => [
@@ -189,64 +312,308 @@ async function buildEnvironment(start, stop) {
   };
 }
 
+// Structured to ICTU's own outline (reports-client-questionnaire.md): an identity
+// header, then Server Availability, then Resource Utilization. Their handwritten list
+// is the section order below, deliberately — it is what they will read it against.
 async function buildServer(start, stop, deviceId) {
-  const fields = `r._field == "cpu_percent" or r._field == "mem_percent" or r._field == "disk_percent"`;
+  const S = start.toISOString();
+  const E = stop.toISOString();
   const scope = fluxDeviceFilter(deviceId);
-  const q = (fn) => `
+
+  const gauges = (fn) => `
     from(bucket: "${bucket}")
-      |> range(start: ${start.toISOString()}, stop: ${stop.toISOString()})
+      |> range(start: ${S}, stop: ${E})
       |> filter(fn: (r) => r._measurement == "server_metrics")
       ${scope}
-      |> filter(fn: (r) => ${fields})
+      |> filter(fn: (r) =>
+          r._field == "cpu_percent" or r._field == "mem_percent" or r._field == "disk_percent")
       |> group(columns: ["device_id", "_field"])
       |> ${fn}()`;
 
-  const [means, maxes] = await Promise.all([fluxRows(q("mean")), fluxRows(q("max"))]);
+  // ⚠️ net_bytes_sent/recv are CUMULATIVE counters — gopsutil's psnet.IOCounters
+  // reports bytes since BOOT (agent/internal/collector/collector.go). Averaging them
+  // the way CPU is averaged would print the mean odometer reading, a large number
+  // meaning nothing. increase() sums the non-negative deltas, so a counter reset on
+  // reboot reads as 0 rather than as the whole counter again, and last() takes the
+  // period total. Same treatment buildNetwork already gives the SNMP byte counters.
+  const counters = `
+    from(bucket: "${bucket}")
+      |> range(start: ${S}, stop: ${E})
+      |> filter(fn: (r) => r._measurement == "server_metrics")
+      ${scope}
+      |> filter(fn: (r) => r._field == "net_bytes_sent" or r._field == "net_bytes_recv")
+      |> group(columns: ["device_id", "_field"])
+      |> increase()
+      |> last()`;
+
+  const scoped = deviceId != null;
+
+  // Device facts. `server_specs` is LEFT JOINed: a server enrolled before the agent
+  // sent its first host refresh has a devices row and no specs row, and it must still
+  // appear in its own report rather than vanishing on an inner join.
+  const [devices] = await db.query(
+    `SELECT d.device_id,
+            COALESCE(NULLIF(d.display_name, ''), d.device_name) AS device_name,
+            d.ip_address, d.location, d.status,
+            s.os, s.kernel, s.architecture, s.cores, s.memory_total_mb
+       FROM devices d
+       LEFT JOIN server_specs s ON s.device_id = d.device_id
+      WHERE d.device_type = 'server'${scoped ? " AND d.device_id = ?" : ""}`,
+    scoped ? [deviceId] : [],
+  );
+
+  // Offline incidents overlapping the window.
+  //
+  // ⚠️ The predicate is an OVERLAP test, not `created_at BETWEEN start AND end`. An
+  // outage that began before the period and ran into it is exactly the downtime a
+  // monthly report exists to show, and a BETWEEN would drop it entirely — reporting
+  // 100% availability for a server that was dark when the month opened.
+  //
+  // Servers raise type='offline' (agentService); routers/UPS/MikroTik raise
+  // 'device_offline' (deviceAlerts). Both spellings are live, so this is narrowed by
+  // device_type as well rather than trusting the type string alone.
+  const [outageRows] = await db.query(
+    `SELECT a.device_id, a.created_at, a.resolved_at
+       FROM alerts a
+       JOIN devices d ON d.device_id = a.device_id
+      WHERE a.type = 'offline'
+        AND d.device_type = 'server'
+        AND a.created_at < ?
+        AND (a.resolved_at IS NULL OR a.resolved_at > ?)
+        ${scoped ? "AND a.device_id = ?" : ""}
+      ORDER BY a.created_at`,
+    scoped ? [stop, start, deviceId] : [stop, start],
+  );
+
+  const [means, maxes, ctrs, trend] = await Promise.all([
+    fluxRows(gauges("mean")),
+    fluxRows(gauges("max")),
+    fluxRows(counters),
+    fluxTimeSeries(
+      "server_metrics",
+      `r._field == "cpu_percent" or r._field == "mem_percent" or r._field == "disk_percent"`,
+      start, stop, scope,
+    ),
+  ]);
 
   const byDev = new Map();
   const slot = (id) => {
-    if (!byDev.has(id)) byDev.set(id, { device_id: id });
+    if (!byDev.has(id)) byDev.set(id, { device_id: id, sentBytes: 0, recvBytes: 0 });
     return byDev.get(id);
   };
   const F = { cpu_percent: "Cpu", mem_percent: "Mem", disk_percent: "Disk" };
   for (const r of means) slot(r.device_id)[`avg${F[r._field]}`] = roundOrNull(r._value, 0);
   for (const r of maxes) slot(r.device_id)[`max${F[r._field]}`] = roundOrNull(r._value, 0);
+  for (const r of ctrs) {
+    const d = slot(r.device_id);
+    if (r._field === "net_bytes_sent") d.sentBytes = Number(r._value) || 0;
+    else d.recvBytes = Number(r._value) || 0;
+  }
 
-  // Resolve device_id → name from MySQL.
-  const [devices] = await db.query(
-    "SELECT device_id, COALESCE(NULLIF(display_name, ''), device_name) AS device_name FROM devices WHERE device_type = 'server'",
-  );
-  const nameOf = new Map(devices.map((d) => [String(d.device_id), d.device_name]));
+  // A registered server that reported NOTHING in the period still belongs in the
+  // report — "no data" is the finding. Influx alone would omit it silently.
+  for (const d of devices) slot(String(d.device_id));
+
+  const meta = new Map(devices.map((d) => [String(d.device_id), d]));
+
+  // ⚠️ Drop device_ids that exist in InfluxDB but no longer in MySQL.
+  //
+  // `DELETE /api/servers/:id` removes the devices row; the time-series it wrote is left
+  // where it is (Influx has its own retention, and deleting history to un-register a
+  // machine would be worse). So an unscoped report queried Influx and got back ids for
+  // servers that were decommissioned months ago, printing them as
+  //
+  //     #53  —  —  —
+  //
+  // — a row with no name, IP, OS or location, which tells a reader nothing and reads as
+  // a defect in a document filed with ICTU. The `#id` fallback below still exists for
+  // the narrower case of a row deleted mid-build.
+  //
+  // Counted, not silently dropped: a report that quietly omits machines it found data
+  // for is worse than one that says how many it left out.
+  const orphaned = [...byDev.keys()].filter((id) => !meta.has(id));
+  for (const id of orphaned) byDev.delete(id);
+  const nameOf = (id) => meta.get(id)?.device_name ?? `#${id}`;
+  // ⚠️ On Windows the kernel version is ALREADY inside the OS string, so appending it
+  // printed the build twice:
+  //
+  //   Microsoft Windows 11 … 10.0.26200.9168 Build 26200.9168 (10.0.26200.9168 Build
+  //   26200.9168, x86_64)
+  //
+  // That is a property of the DATA, not of this function: `server_specs.os` is
+  // gopsutil's `Platform`, which on Windows carries the version and build, while
+  // `kernel` is `KernelVersion` — the same string again. On Linux they genuinely differ
+  // ("ubuntu 22.04" / "5.15.0-187-generic"), which is why the kernel is worth showing at
+  // all. So each part is added only when it is not already present.
+  // devices.status is an enum (online/offline/warning/maintenance) written by the
+  // offline sweep and by setMaintenance. Title-cased for the page; "—" when the row is
+  // gone from MySQL but its history survives in Influx.
+  const statusOf = (id) => {
+    const v = meta.get(id)?.status;
+    return v ? v.charAt(0).toUpperCase() + v.slice(1) : "—";
+  };
+  const osOf = (id) => {
+    const m = meta.get(id);
+    if (!m?.os) return "—";
+    const detail = [m.kernel, m.architecture]
+      .filter((part) => part && !m.os.includes(part))
+      .join(", ");
+    return detail ? `${m.os} (${detail})` : m.os;
+  };
+
+  // Availability per device, from the merged outage windows. See availabilityMath —
+  // uptime here is "share of the period the server was reachable", which is NOT the
+  // agent's uptime_seconds counter (that resets on every reboot).
+  const outagesByDev = new Map();
+  for (const r of outageRows) {
+    const key = String(r.device_id);
+    if (!outagesByDev.has(key)) outagesByDev.set(key, []);
+    outagesByDev.get(key).push({ createdAt: r.created_at, resolvedAt: r.resolved_at });
+  }
+  const availOf = new Map();
+  for (const id of byDev.keys()) {
+    availOf.set(
+      id,
+      computeAvailability({
+        periodStart: start,
+        periodEnd: stop,
+        outages: outagesByDev.get(id) ?? [],
+      }),
+    );
+  }
 
   const rows = [...byDev.values()].sort((a, b) =>
-    String(nameOf.get(a.device_id) ?? a.device_id).localeCompare(
-      String(nameOf.get(b.device_id) ?? b.device_id),
-    ),
+    nameOf(a.device_id).localeCompare(nameOf(b.device_id)),
   );
 
-  return {
-    summary: [
-      { label: "Servers reporting", value: rows.length },
-      {
-        label: "Busiest CPU (avg)",
-        // Influx keeps metrics for devices that have since been removed from MySQL,
-        // so fall back to the id — the same "#id" the table shows, not a bare "?".
-        value: rows.length
-          ? (() => {
-              const id = rows.reduce((m, r) => ((r.avgCpu ?? 0) > (m.avgCpu ?? 0) ? r : m)).device_id;
-              return nameOf.get(id) ?? `#${id}`;
-            })()
-          : "—",
-      },
-    ],
-    table: {
-      columns: ["Server", "Avg CPU %", "Max CPU %", "Avg Mem %", "Max Mem %", "Avg Disk %", "Max Disk %"],
-      rows: rows.map((r) => [
-        nameOf.get(r.device_id) ?? `#${r.device_id}`,
-        r.avgCpu ?? "—", r.maxCpu ?? "—", r.avgMem ?? "—", r.maxMem ?? "—", r.avgDisk ?? "—", r.maxDisk ?? "—",
-      ]),
+  // ── Headline figures ──
+  const totalIncidents = rows.reduce((s, r) => s + (availOf.get(r.device_id)?.incidents ?? 0), 0);
+  const totalDowntime = rows.reduce((s, r) => s + (availOf.get(r.device_id)?.downtimeSec ?? 0), 0);
+  // The FLEET figure is the worst server, not the mean of the percentages. Averaging
+  // would let two healthy servers hide one that was down for a day, which is the one
+  // fact the section exists to surface.
+  const worst = rows.reduce(
+    (m, r) => {
+      const a = availOf.get(r.device_id);
+      return a?.availabilityPct != null && (m == null || a.availabilityPct < m.pct)
+        ? { pct: a.availabilityPct, id: r.device_id }
+        : m;
     },
-  };
+    /** @type {{pct: number, id: string}|null} */ (null),
+  );
+
+  const summary = [
+    { label: "Servers reporting", value: rows.length },
+    {
+      label: "Lowest availability",
+      value: worst ? `${nameOf(worst.id)} — ${worst.pct}%` : "—",
+    },
+    { label: "Total downtime", value: formatDuration(totalDowntime) },
+    { label: "Incidents", value: totalIncidents },
+    {
+      label: "Busiest CPU (avg)",
+      value: rows.length
+        ? nameOf(rows.reduce((m, r) => ((r.avgCpu ?? 0) > (m.avgCpu ?? 0) ? r : m)).device_id)
+        : "—",
+    },
+  ];
+
+  // Stated only when it happened, so a normal report carries no line about it.
+  if (orphaned.length) {
+    summary.push({
+      label: "Excluded",
+      value: `${orphaned.length} removed ${orphaned.length === 1 ? "server" : "servers"} with data in this period (no longer registered)`,
+    });
+  }
+
+  const tables = [];
+
+  // ── Server identity ──
+  // Scoped to one server, the identity is a HEADER (returned as `meta`, rendered as
+  // labelled lines under the title) — that is the shape ICTU drew. Unscoped, the same
+  // facts cannot be a header because there are several of each, so they become the
+  // first table. Same fields either way; only the presentation follows the scope.
+  const identity = scoped
+    ? [
+        { label: "Server Name", value: nameOf(String(deviceId)) },
+        { label: "IP Address", value: meta.get(String(deviceId))?.ip_address || "—" },
+        { label: "Operating System", value: osOf(String(deviceId)) },
+        { label: "Status (now)", value: statusOf(String(deviceId)) },
+      ]
+    : [];
+
+  if (!scoped) {
+    tables.push({
+      title: "Servers Monitored",
+      // ⚠️ "Status (now)" is a LIVE value on a historical document — devices.status is
+      // whatever the offline sweep last wrote, not what the server was during the
+      // period. Labelled so, because "Online" beside a report covering last month would
+      // otherwise read as a claim about last month. ICTU asked for "Server Status" in
+      // their outline; the period figure is the Availability section.
+      columns: ["Server", "IP Address", "Operating System", "Location", "Status (now)"],
+      rows: rows.map((r) => [
+        nameOf(r.device_id),
+        meta.get(r.device_id)?.ip_address || "—",
+        osOf(r.device_id),
+        meta.get(r.device_id)?.location || "—",
+        statusOf(r.device_id),
+      ]),
+    });
+  }
+
+  // ── Server Availability ──
+  tables.push({
+    title: "Server Availability",
+    columns: ["Server", "Uptime", "Downtime", "Availability %", "Incidents"],
+    rows: rows.map((r) => {
+      const a = availOf.get(r.device_id);
+      return [
+        nameOf(r.device_id),
+        a ? formatDuration(a.uptimeSec) : "—",
+        a ? formatDuration(a.downtimeSec) : "—",
+        a?.availabilityPct ?? "—",
+        a?.incidents ?? "—",
+      ];
+    }),
+  });
+
+  // ── Resource Utilization ──
+  // Disk stays although ICTU's list named only CPU/Memory/Network: it is already
+  // collected, already alerted on per-volume, and a capacity report without it would
+  // be the one section an admin has to go elsewhere for.
+  tables.push({
+    title: "Resource Utilization",
+    columns: [
+      "Server", "Avg CPU %", "Max CPU %", "Avg Mem %", "Max Mem %",
+      "Avg Disk %", "Max Disk %", "Net Sent GB", "Net Recv GB",
+    ],
+    rows: rows.map((r) => [
+      nameOf(r.device_id),
+      r.avgCpu ?? "—", r.maxCpu ?? "—", r.avgMem ?? "—", r.maxMem ?? "—",
+      r.avgDisk ?? "—", r.maxDisk ?? "—",
+      // A server with no counter delta (one sample, or none) reads "—" rather than
+      // "0 GB" — nothing measured is not the same as nothing transferred.
+      r.sentBytes ? gb(r.sentBytes) : "—",
+      r.recvBytes ? gb(r.recvBytes) : "—",
+    ]),
+  });
+
+  // One chart, one axis, pinned 0-100. Three auto-scaled mini-charts would make a 2%
+  // wobble and a 40% climb look identical — the same argument ServerFocus makes on the
+  // dashboard, and the series hexes match it so a reader does not re-learn the colours.
+  const charts = trend.labels.length
+    ? [{
+        title: "Resource utilization over the period (%)",
+        kind: "line", max: 100, labels: trend.labels,
+        series: [
+          { name: "CPU", color: "#378ADD", values: trend.byField.get("cpu_percent") ?? [] },
+          { name: "Memory", color: "#7F77DD", values: trend.byField.get("mem_percent") ?? [] },
+          { name: "Disk", color: "#EF9F27", values: trend.byField.get("disk_percent") ?? [] },
+        ].filter((x) => x.values.length),
+      }]
+    : [];
+
+  return { meta: identity, summary, tables, charts };
 }
 
 // ─── Network: SNMP routers + MikroTik ────────────────────────────────────────
@@ -308,21 +675,40 @@ async function buildNetwork(start, stop, deviceId) {
       |> map(fn: (r) => ({ r with _value: if r._value then 1.0 else 0.0 }))
       |> mean()`;
 
-  const [means, maxes, ctrs, utils, links] = await Promise.all([
+  const [means, maxes, ctrs, utils, links, trend] = await Promise.all([
     fluxRows(gauges("mean")),
     fluxRows(gauges("max")),
     fluxRows(counters),
     fluxRows(peakUtil),
     fluxRows(linkUp),
+    // router_metrics, not network_traffic: latency and loss are the only two figures a
+    // PING-ONLY router has, and they are collected for SNMP routers too — so one chart
+    // works for every device this report can cover.
+    fluxTimeSeries(
+      "router_metrics",
+      `r._field == "latency_ms" or r._field == "packet_loss_pct"`,
+      start, stop, scope,
+    ),
   ]);
 
   // Device facts + offline events from MySQL. `scoped` narrows both to one device
   // when the report is device-scoped (bound param, not interpolated).
   const scoped = deviceId != null;
+  // `ping_only` is what makes the report honest about a device it can only PING.
+  //
+  // A router registered with no SNMP community (an ISP-owned CPE, which nobody at ICTU
+  // has credentials for) is polled by ICMP alone: reachable, latency, packet loss. It has
+  // no CPU, no memory, no client count and no interfaces — not "none this period", but
+  // none ever. Printing those columns as "—" on every row of every report reads as a
+  // fault in the monitoring rather than as a property of the device.
   const [devices] = await db.query(
-    `SELECT device_id, COALESCE(NULLIF(display_name, ''), device_name) AS device_name, device_type, location
-       FROM devices
-      WHERE device_type IN ('router', 'mikrotik')${scoped ? " AND device_id = ?" : ""}`,
+    `SELECT d.device_id,
+            COALESCE(NULLIF(d.display_name, ''), d.device_name) AS device_name,
+            d.device_type, d.location,
+            (n.snmp_community IS NULL OR n.snmp_community = '') AS ping_only
+       FROM devices d
+       LEFT JOIN device_network n ON n.device_id = d.device_id
+      WHERE d.device_type IN ('router', 'mikrotik')${scoped ? " AND d.device_id = ?" : ""}`,
     scoped ? [deviceId] : [],
   );
   const [offline] = await db.query(
@@ -376,9 +762,17 @@ async function buildNetwork(start, stop, deviceId) {
   for (const r of utils) iface(r).peakUtil = roundOrNull(r._value, 0);
   for (const r of links) iface(r).upPct = roundOrNull(Number(r._value) * 100, 0);
 
+  // Same orphan rule as buildServer: Influx outlives MySQL rows, so a router deleted
+  // from the dashboard still has its history here and would print as "#67 — — —".
+  // Dropped from both tables, and the per-interface rows go with their device — an
+  // orphaned port is even less identifiable than an orphaned device.
+  const orphaned = [...byDev.keys()].filter((id) => !meta.has(id));
+  for (const id of orphaned) byDev.delete(id);
+  for (const [key, i] of [...byIface.entries()]) {
+    if (!meta.has(i.device_id)) byIface.delete(key);
+  }
+
   const nameOf = (id) => meta.get(id)?.device_name ?? `#${id}`;
-  // Influx outlives MySQL rows — a device deleted from the dashboard still has its
-  // history here. Say "—" rather than guessing "Router" for one we can't identify.
   const kindOf = (id) => {
     const t = meta.get(id)?.device_type;
     return t === "mikrotik" ? "MikroTik" : t === "router" ? "Router" : "—";
@@ -396,9 +790,20 @@ async function buildNetwork(start, stop, deviceId) {
   const totalOffline = devRows.reduce((s, d) => s + (offlineOf.get(d.device_id) ?? 0), 0);
   const busiest = ifaceRows[0];
 
-  return {
-    summary: [
-      { label: "Network devices reporting", value: devRows.length },
+  // ── Is this report entirely about ping-only devices? ──
+  // If so it is an ICMP report, and every SNMP column and the whole Ports section are
+  // things the subject can never have — not "no data this period". Reporting them as
+  // blanks makes the monitoring look broken; omitting them describes the device.
+  //
+  // Judged over the devices actually IN the report, so a mixed campus-wide report keeps
+  // the full shape (the SNMP routers in it need those columns) while a report scoped to
+  // the ISP-owned CPE drops them.
+  const icmpOnly =
+    devRows.length > 0 && devRows.every((d) => Number(meta.get(d.device_id)?.ping_only) === 1);
+
+  const summary = [{ label: "Network devices reporting", value: devRows.length }];
+  if (!icmpOnly) {
+    summary.push(
       { label: "Total traffic", value: totalBytes ? `${gb(totalBytes)} GB` : "—" },
       {
         label: "Busiest port",
@@ -407,47 +812,95 @@ async function buildNetwork(start, stop, deviceId) {
           : "—",
       },
       { label: "Link errors", value: totalErrors },
-      // Worst packet loss anywhere in the period. For a ping-only WAN router this is
-      // the headline figure — a link that never went "offline" but dropped a third of
-      // its traffic is the failure nothing else in this report would show.
-      {
-        label: "Worst packet loss",
-        value: (() => {
-          const withLoss = devRows.filter((d) => d.maxLoss != null);
-          if (!withLoss.length) return "—";
-          const worst = withLoss.reduce((a, b) => (b.maxLoss > a.maxLoss ? b : a));
-          return `${nameOf(worst.device_id)} — ${worst.maxLoss}%`;
-        })(),
-      },
-      { label: "Offline events", value: totalOffline },
-    ],
-    tables: [
-      {
-        title: "Devices",
-        // Avg/Max latency and avg loss sit next to the SNMP gauges rather than in a
-        // separate table: one row per device stays one row per device, and a column
-        // that reads "—" for an SNMP router is the same "not reported" the CPU
-        // columns already show for a ping-only one. Max latency earns its column —
-        // an average hides the spikes, which is the whole complaint about a slow link.
-        columns: ["Device", "Kind", "Avg CPU %", "Max CPU %", "Avg Mem %", "Avg Clients", "Avg ms", "Max ms", "Loss %", "RX GB", "TX GB", "Offline"],
-        rows: devRows.map((d) => [
-          nameOf(d.device_id), kindOf(d.device_id),
-          d.avgCpu ?? "—", d.maxCpu ?? "—", d.avgMem ?? "—", d.avgClients ?? "—",
-          d.avgLatency ?? "—", d.maxLatency ?? "—", d.avgLoss ?? "—",
-          gb(d.rxBytes), gb(d.txBytes), offlineOf.get(d.device_id) ?? 0,
-        ]),
-      },
-      {
-        title: "Ports",
-        columns: ["Device", "Port", "Location", "RX GB", "TX GB", "Peak Util %", "Errors", "Link Up %"],
-        rows: ifaceRows.map((i) => [
-          nameOf(i.device_id), i.name, i.label || "—",
-          gb(i.rxBytes), gb(i.txBytes),
-          i.peakUtil ?? "—", i.errors, i.upPct ?? "—",
-        ]),
-      },
-    ],
-  };
+    );
+  }
+  summary.push(
+    // Worst packet loss anywhere in the period. For a ping-only WAN router this is
+    // the headline figure — a link that never went "offline" but dropped a third of
+    // its traffic is the failure nothing else in this report would show.
+    {
+      label: "Worst packet loss",
+      value: (() => {
+        const withLoss = devRows.filter((d) => d.maxLoss != null);
+        if (!withLoss.length) return "—";
+        const worst = withLoss.reduce((a, b) => (b.maxLoss > a.maxLoss ? b : a));
+        return `${nameOf(worst.device_id)} — ${worst.maxLoss}%`;
+      })(),
+    },
+    { label: "Offline events", value: totalOffline },
+  );
+
+  const tables = [
+    icmpOnly
+      ? {
+          // Reachability only — the three things ICMP can measure, plus the outage
+          // count. ⚠️ Loss gets BOTH average and worst: on a ping-only link they are the
+          // whole diagnosis, and an average alone hides the spike that is the fault.
+          // (The full table shows only the average under a bare "Loss %", which is why
+          // a row could read 0 while the summary said 80.)
+          title: "Reachability",
+          columns: ["Device", "Device Type", "Avg ms", "Max ms", "Avg Loss %", "Max Loss %", "Offline"],
+          rows: devRows.map((d) => [
+            nameOf(d.device_id), kindOf(d.device_id),
+            d.avgLatency ?? "—", d.maxLatency ?? "—",
+            d.avgLoss ?? "—", d.maxLoss ?? "—",
+            offlineOf.get(d.device_id) ?? 0,
+          ]),
+        }
+      : {
+          title: "Devices",
+          // Avg/Max latency and avg loss sit next to the SNMP gauges rather than in a
+          // separate table: one row per device stays one row per device, and a column
+          // that reads "—" for an SNMP router is the same "not reported" the CPU
+          // columns already show for a ping-only one. Max latency earns its column —
+          // an average hides the spikes, which is the whole complaint about a slow link.
+          columns: ["Device", "Device Type", "Avg CPU %", "Max CPU %", "Avg Mem %", "Avg Clients", "Avg ms", "Max ms", "Avg Loss %", "RX GB", "TX GB", "Offline"],
+          rows: devRows.map((d) => [
+            nameOf(d.device_id), kindOf(d.device_id),
+            d.avgCpu ?? "—", d.maxCpu ?? "—", d.avgMem ?? "—", d.avgClients ?? "—",
+            d.avgLatency ?? "—", d.maxLatency ?? "—", d.avgLoss ?? "—",
+            gb(d.rxBytes), gb(d.txBytes), offlineOf.get(d.device_id) ?? 0,
+          ]),
+        },
+  ];
+
+  // A ping-only device has no interfaces to report on — ever. "Ports / No data for the
+  // selected period" invites someone to go looking for a poller fault that isn't there.
+  if (!icmpOnly) {
+    tables.push({
+      title: "Ports",
+      columns: ["Device", "Port", "Location", "RX GB", "TX GB", "Peak Util %", "Errors", "Link Up %"],
+      rows: ifaceRows.map((i) => [
+        nameOf(i.device_id), i.name, i.label || "—",
+        gb(i.rxBytes), gb(i.txBytes),
+        i.peakUtil ?? "—", i.errors, i.upPct ?? "—",
+      ]),
+    });
+  }
+
+  // Two charts, not one: milliseconds and percent cannot share an axis without one of
+  // them becoming a flat line along the bottom.
+  const charts = [];
+  const latency = trend.byField.get("latency_ms");
+  const loss = trend.byField.get("packet_loss_pct");
+  if (latency?.length) {
+    charts.push({
+      title: "Round-trip latency (ms)",
+      kind: "line", labels: trend.labels,
+      series: [{ name: "Latency", color: "#378ADD", values: latency }],
+    });
+  }
+  if (loss?.length) {
+    charts.push({
+      // Pinned 0-100 so a healthy link is a flat line on the floor rather than noise
+      // magnified to fill the box.
+      title: "Packet loss (%)",
+      kind: "line", max: 100, labels: trend.labels,
+      series: [{ name: "Loss", color: "#E02F44", values: loss }],
+    });
+  }
+
+  return { summary, tables, charts };
 }
 
 // ─── UPS power ───────────────────────────────────────────────────────────────
@@ -483,12 +936,43 @@ async function buildUps(start, stop, deviceId) {
       |> group(columns: ["device_id"])
       |> mean()`;
 
-  const [means, mins, maxes, batt] = await Promise.all([
+  const [means, mins, maxes, batt, trend] = await Promise.all([
     fluxRows(gauges("mean")),
     fluxRows(gauges("min")),
     fluxRows(gauges("max")),
     fluxRows(onBattery),
+    fluxTimeSeries(
+      "ups_metrics",
+      `r._field == "battery_charge_pct" or r._field == "runtime_remaining_min" or r._field == "load_pct"`,
+      start, stop, scope,
+    ),
   ]);
+
+  // Charge and load are percentages and share an axis; runtime is MINUTES and gets its
+  // own, or a 40-minute runtime would sit off the top of a 0-100 scale.
+  const upsCharts = [];
+  const charge = trend.byField.get("battery_charge_pct");
+  const load = trend.byField.get("load_pct");
+  const runtime = trend.byField.get("runtime_remaining_min");
+  if (charge?.length || load?.length) {
+    upsCharts.push({
+      title: "Battery charge and load (%)",
+      kind: "line", max: 100, labels: trend.labels,
+      series: [
+        { name: "Charge", color: "#73BF69", values: charge ?? [] },
+        { name: "Load", color: "#EF9F27", values: load ?? [] },
+      ].filter((x) => x.values.length),
+    });
+  }
+  if (runtime?.length) {
+    upsCharts.push({
+      // The figure that actually answers "how long do we have" — the one a UPS report
+      // exists for.
+      title: "Runtime remaining (minutes)",
+      kind: "line", labels: trend.labels,
+      series: [{ name: "Runtime", color: "#B877D9", values: runtime }],
+    });
+  }
 
   const scoped = deviceId != null;
   const [devices] = await db.query(
@@ -546,6 +1030,7 @@ async function buildUps(start, stop, deviceId) {
   const peakLoad = rows.reduce((m, r) => (r.maxLoad != null && r.maxLoad > m ? r.maxLoad : m), -Infinity);
 
   return {
+    charts: upsCharts,
     summary: [
       { label: "UPS units reporting", value: rows.length },
       { label: "Lowest battery", value: lowest("minCharge") != null ? `${lowest("minCharge")} %` : "—" },
@@ -593,7 +1078,24 @@ async function buildAlerts(start, stop, deviceId) {
     scoped ? [start, stop, deviceId] : [start, stop],
   );
   const count = (sev) => rows.filter((r) => r.severity === sev).length;
+  const daily = dailyCounts(rows, start, stop, (r) => r.severity);
   return {
+    // Severity order is fixed (critical first) rather than whatever the data happened to
+    // contain, so the same colour means the same thing on every report.
+    charts: rows.length
+      ? [{
+          title: "Alerts per day, by severity",
+          kind: "bar",
+          labels: daily.labels,
+          series: ["critical", "warning", "info"]
+            .filter((sev) => daily.buckets.has(sev))
+            .map((sev) => ({
+              name: sev,
+              color: { critical: "#E02F44", warning: "#FF780A", info: "#5794F2" }[sev],
+              values: daily.buckets.get(sev),
+            })),
+        }]
+      : [],
     summary: [
       { label: "Total alerts", value: rows.length },
       { label: "Critical", value: count("critical") },
@@ -628,7 +1130,24 @@ async function buildAircon(start, stop, deviceId) {
     scoped ? [start, stop, deviceId] : [start, stop],
   );
   const manual = rows.filter((r) => r.trigger_type === "manual").length;
+  const daily = dailyCounts(rows, start, stop, (r) => r.trigger_type);
   return {
+    // Manual vs auto is the question this report exists to answer — who acted, and how
+    // often the room cooled itself.
+    charts: rows.length
+      ? [{
+          title: "Aircon actions per day",
+          kind: "bar",
+          labels: daily.labels,
+          series: ["manual", "auto"]
+            .filter((t) => daily.buckets.has(t))
+            .map((t) => ({
+              name: t,
+              color: { manual: "#3CC8E8", auto: "#73BF69" }[t],
+              values: daily.buckets.get(t),
+            })),
+        }]
+      : [],
     summary: [
       { label: "Total actions", value: rows.length },
       { label: "Manual", value: manual },
@@ -782,12 +1301,17 @@ function toClient(r) {
     periodStart: iso(r.period_start),
     periodEnd: iso(r.period_end),
     createdAt: iso(r.created_at),
+    // Assigned during build(), so it is null while a row is pending and stays null on
+    // one that failed — a number is only spent on a document that exists.
+    referenceNo: r.reference_no ?? null,
+    paperSize: normalizePaperSize(r.paper_size),
     hasFile: !!r.file_path,
   };
 }
 
 const BASE_SELECT = `
   SELECT r.report_id, r.title, r.type, r.device_id, r.status, r.generated_by, r.file_path,
+         r.paper_size, r.reference_no,
          r.period_start, r.period_end, r.created_at,
          u.name AS generated_by_name, COALESCE(NULLIF(d.display_name, ''), d.device_name) AS device_name
     FROM reports r
@@ -845,8 +1369,24 @@ async function getRaw(id) {
 // The row IS the progress record, so a crash mid-build leaves a visible `pending` row
 // rather than a silent gap.
 
-async function create({ userId, type, title, periodStart, periodEnd, deviceId }) {
+async function create({ userId, type, title, periodStart, periodEnd, deviceId, paperSize }) {
   if (!REPORT_TYPES.includes(type)) throw badRequest("Invalid report type.");
+
+  // Paper size: the caller's choice, else the admin's configured default.
+  //
+  // Validated STRICTLY here rather than normalized, because this value came from a
+  // person: normalizePaperSize would quietly fold a typo to Folio and print a document
+  // on a page they did not ask for. A stored default gets the lenient treatment
+  // instead — see reportBrandingService.defaultPaperSize.
+  let page;
+  if (paperSize == null || paperSize === "") {
+    page = await brandingService.defaultPaperSize();
+  } else {
+    page = String(paperSize).trim().toLowerCase();
+    if (!PAPER_SIZE_KEYS.includes(page)) {
+      throw badRequest(`Invalid paper size. Choose one of: ${PAPER_SIZE_KEYS.join(", ")}.`);
+    }
+  }
 
   const end = periodEnd ? new Date(periodEnd) : new Date();
   const start = periodStart ? new Date(periodStart) : new Date(end.getTime() - 7 * 24 * 3600 * 1000);
@@ -897,15 +1437,14 @@ async function create({ userId, type, title, periodStart, periodEnd, deviceId })
     scopeName = dev.device_name;
   }
 
-  // Default title carries the scope, so a list of reports stays readable.
-  const finalTitle =
-    (title && title.trim()) ||
-    `${TYPE_LABEL[type]} Report${scopeName ? ` — ${scopeName}` : ""}`;
+  // Default title carries the scope, so a list of reports stays readable. build()
+  // appends the control number to this once it has one — see stampReference.
+  const finalTitle = (title && title.trim()) || defaultTitle(type, scopeName);
 
   const [ins] = await db.query(
-    `INSERT INTO reports (generated_by, title, type, device_id, status, period_start, period_end)
-     VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
-    [userId, finalTitle.slice(0, 100), type, scopeId, start, end],
+    `INSERT INTO reports (generated_by, title, type, device_id, status, period_start, period_end, paper_size)
+     VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+    [userId, finalTitle.slice(0, 100), type, scopeId, start, end, page],
   );
 
   const created = toClient(await getRaw(ins.insertId));
@@ -918,6 +1457,95 @@ async function create({ userId, type, title, periodStart, periodEnd, deviceId })
 // Build the dataset, write both files, flip the status. NEVER THROWS — it is called
 // fire-and-forget from the route, where a rejection would be unhandled. Failure is
 // reported the same way success is: the row status plus a `reportUpdated` push.
+/**
+ * Push the current report template to every open dashboard.
+ *
+ * Same reasoning as `envConfigUpdated` for the alert rules: the admin who just changed
+ * the default paper size is standing on the Template tab, and is therefore the LEAST
+ * likely person to notice that everyone else's Generate dialog still offers the old
+ * default. A report generated from a stale picker is printed on the wrong page size and
+ * nobody finds out until it comes off a printer.
+ *
+ * Broadcast to everyone rather than to a room: the template is shared state, exactly
+ * like the reports list itself.
+ *
+ * Best-effort. A settings change that succeeded must not be reported as failed because
+ * a socket was unavailable.
+ */
+async function broadcastTemplate() {
+  if (!_io) return;
+  try {
+    _io.emit("reportTemplateUpdated", await brandingService.describe());
+  } catch (err) {
+    console.error("[REPORTS] could not broadcast template:", describeError(err));
+  }
+}
+
+/**
+ * Claim this report's control number.
+ *
+ * ICTU's sample is `ICTU-ENV-2026-001`, so the sequence is per (type, year) rather than
+ * one global counter — each kind of report has its own run of numbers, which is how a
+ * paper filing system is actually organised.
+ *
+ * ⚠️ The year and the count BOTH come from SQL, and both from `created_at`. Deriving the
+ * year in JS while filtering in SQL would put the two on different clocks: MySQL returns
+ * a TIMESTAMP in the session time zone, so around New Year the label and the bucket
+ * could disagree and the first report of the year would be numbered under the last one.
+ * The backend runs in Manila (deployment-guide.md), so the session year IS the Philippine
+ * year; `philippineYear` is only the fallback for when the row cannot be read.
+ *
+ * Only rows that already CARRY a number are counted, so a failed build leaves no gap.
+ *
+ * The UNIQUE index on `reference_no` is the arbiter, not this count: two reports of the
+ * same type generated in the same instant would both read the same COUNT(*) and compute
+ * the same number. The loser gets ER_DUP_ENTRY and takes the next one. Doing it before
+ * any file is written means a collision costs a retry rather than a failed report.
+ */
+async function claimReference(row, generatedAt) {
+  if (row.reference_no) return row.reference_no;
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let year = philippineYear(generatedAt);
+    let seq = 1;
+    try {
+      const [[r]] = await db.query(
+        `SELECT YEAR(r.created_at) AS yr,
+                (SELECT COUNT(*)
+                   FROM reports p
+                  WHERE p.type = r.type
+                    AND YEAR(p.created_at) = YEAR(r.created_at)
+                    AND p.reference_no IS NOT NULL
+                    AND p.report_id < r.report_id) + 1 AS seq
+           FROM reports r
+          WHERE r.report_id = ?`,
+        [row.report_id],
+      );
+      if (r?.yr) year = Number(r.yr);
+      if (r?.seq) seq = Number(r.seq);
+    } catch (err) {
+      // A number is worth having but is not worth failing the report over.
+      console.error("[REPORTS] reference sequence lookup failed:", err.message);
+    }
+
+    const candidate = referenceNo(row.type, year, seq + attempt);
+    try {
+      await db.query("UPDATE reports SET reference_no = ? WHERE report_id = ?", [
+        candidate,
+        row.report_id,
+      ]);
+      return candidate;
+    } catch (err) {
+      if (err?.code !== "ER_DUP_ENTRY") throw err;
+      // Someone took it between the count and the write. Round again.
+    }
+  }
+
+  // Unique by construction — report_id is the primary key — so the document still
+  // carries a citable number even if the sequence could not be resolved.
+  return referenceNo(row.type, philippineYear(generatedAt), row.report_id);
+}
+
 async function build(id) {
   const row = await getRaw(id);
   if (!row) return null;
@@ -926,12 +1554,73 @@ async function build(id) {
     const start = new Date(row.period_start);
     const end = new Date(row.period_end);
     const payload = await BUILDERS[row.type](start, end, row.device_id ?? null);
+    const generatedAt = new Date();
+
+    // The control number is assigned HERE, not at insert, and only on the path that
+    // succeeds — a report that fails to build must not consume a number, because a gap
+    // in a filing sequence is a question somebody later has to answer. Claimed before
+    // any file is written, and frozen on the row so it never recomputes: ICTU may cite
+    // it in correspondence.
+    const reference = await claimReference(row, generatedAt);
+
+    // Marks and page size are resolved per build, from whatever the admin has
+    // configured now, then frozen with the files. Re-downloading an old report gives
+    // back the document that was filed, not a re-render under today's branding.
+    const [cspcLogo, ictuLogo, unit, sigConfig] = await Promise.all([
+      brandingService.logoPath("cspc"),
+      brandingService.logoPath("ictu"),
+      brandingService.unitName(),
+      brandingService.signatories(),
+    ]);
+
+    // Decided BEFORE the files are written, so the PDF's own title, the row in the list
+    // and the download filename are all the same string.
+    const finalTitle = titleWithReference(
+      { title: row.title, type: row.type, deviceName: row.device_name },
+      reference,
+    );
+
     const report = {
-      title: row.title,
+      title: finalTitle,
+      referenceNo: reference,
+      paperSize: normalizePaperSize(row.paper_size),
+      branding: { cspc: cspcLogo, ictu: ictuLogo },
+      // The large line on the letterhead. CSPC's own stationery reads "COLLEGE of
+      // COMPUTER STUDIES" there; these are ICTU's reports, so it reads ICTU.
+      unitName: unit,
       type: TYPE_LABEL[row.type] + (row.device_name ? ` — ${row.device_name}` : ""),
       periodStart: start,
       periodEnd: end,
-      generatedAt: new Date(),
+      generatedAt,
+      // The signature block, admin-configured and resolved here: any line marked `auto`
+      // takes the name of whoever generated this report, which is the one name that
+      // differs on every document and the only one the system actually knows.
+      //
+      // This replaced a "Responsible" row in the identity block, which said the same
+      // thing as "Prepared by" two inches further down the same page — ICTU asked for
+      // both, and no institution asks for a field twice. Their questionnaire allowed
+      // for exactly this ("names may either be automatically printed or left blank for
+      // manual signature").
+      //
+      // ⚠️ ICTU's handwritten list puts "Responsible" among the SERVER identity fields
+      // (name / IP / OS), which may instead mean the machine's custodian — a thing this
+      // schema does not record at all. Open question; see reports-client-questionnaire.md.
+      signatories: resolveSignatories(sigConfig, row.generated_by_name || ""),
+      // ── The identity block ICTU asked for ──
+      // Type first (what this document is), then whatever the builder knows about the
+      // subject (server name / IP / OS), then the period and the creation time.
+      meta: [
+        { label: "Type", value: TYPE_LABEL[row.type] },
+        ...(payload.meta ?? []),
+        {
+          label: "Monitoring Period",
+          value: `${formatPH(start)}  to  ${formatPH(end)}`,
+        },
+        { label: "Date and Time Created", value: formatPH(generatedAt) },
+      ],
+      // Vector charts drawn between the summary and the tables. A builder that has
+      // nothing worth plotting simply omits them.
+      charts: payload.charts ?? [],
       summary: payload.summary,
       // A builder returns either one `table` or several titled `tables` — the
       // renderer normalizes both. Only ever one of the two is set.
@@ -944,8 +1633,8 @@ async function build(id) {
     fs.writeFileSync(path.join(REPORTS_DIR, `${stem}.pdf`), await toPDFBuffer(report));
 
     await db.query(
-      "UPDATE reports SET status = 'generated', file_path = ? WHERE report_id = ?",
-      [stem, id],
+      "UPDATE reports SET status = 'generated', file_path = ?, title = ? WHERE report_id = ?",
+      [stem, finalTitle, id],
     );
   } catch (err) {
     console.error("[REPORTS] build failed:", describeError(err));
@@ -1091,4 +1780,5 @@ async function purgeOld(days) {
 export default {
   init, failStuckBuilds, list, create, build, generate, fileFor, remove, purgeOld, scopeOptions, email,
   REPORT_TYPES, SCOPE_TYPES,
+  broadcastTemplate,
 };

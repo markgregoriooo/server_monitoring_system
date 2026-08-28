@@ -442,3 +442,164 @@ report is an artifact somebody deliberately generated, not an auto-raised alert.
   History page, so this would be a third view of the same rows *and* the only report
   type needing an ENUM migration. A CSV export on the History page is the cheaper
   answer if an audit trail is ever asked for.
+
+---
+
+## 16. The ICTU template (2026-08-28)
+
+ICTU answered the format questionnaire on **2026-08-26**. Their answers are transcribed
+in `reports-client-questionnaire.md` — that file is the requirement of record; this
+section is how each answer was built.
+
+### 16.1 What changed
+
+| ICTU asked for | Built as |
+|---|---|
+| PDF, downloadable | Unchanged — PDF was already the primary artifact |
+| Logo **they** upload ("what if they change logo") | `POST /api/reports/template/logo/:slot`, admin panel on the Reports page |
+| Paper size **dynamic**, default **Long** | `reports.paper_size` per report + a `settings` default; ships **folio** |
+| **Philippine time**, not UTC | Every timestamp in a PDF/CSV renders `… PHT` |
+| **Prepared by / Noted by / Approved by** | Three signature columns |
+| Control number, "advisable to have" | `reports.reference_no`, e.g. `ICTU-SRV-2026-001` |
+| Identity header + availability + resource sections | Rebuilt `buildServer` to their outline |
+
+### 16.2 Paper size — why it is stored per report
+
+`settings['report.paper_size']` is the **default an admin picks once**.
+`reports.paper_size` is what a **specific** report was rendered at, frozen at generate
+time.
+
+Both exist because the CSV and PDF on disk *are* the artifact. If the size lived only in
+settings, changing the default would make every past report's stored PDF disagree with
+what the Reports page claims it is.
+
+> ⚠️ **Folio is 8.5 × 13 in — Philippine long bond.** It is **not** US Legal (8.5 × 14).
+> pdfkit has no name constant for it, which is why all three sizes are given as explicit
+> point pairs in `reportTemplate.PAPER_SIZES` rather than as pdfkit size names.
+
+Validation is deliberately asymmetric: the **route** rejects an unknown size with a 400,
+because that value came from a person and silently folding their typo to Folio would
+print the document on a page they did not choose. A **stored** value gets
+`normalizePaperSize`, which folds anything unusable back to Folio — a hand-edited
+settings row must not be able to fail every build.
+
+### 16.3 The logo
+
+Uploads go to `backend/branding/` (gitignored, **runtime data**). The committed marks in
+`backend/assets/branding/` stay put as the fallback, so a fresh clone still renders a
+letterhead before anyone has uploaded anything. Resolution is **uploaded → bundled →
+nothing**, and a missing uploaded file falls back rather than dropping the logo — the
+settings row and the file are two pieces of state, and restoring a DB dump without
+`backend/branding/` separates them.
+
+The upload is a **raw body**, not multipart:
+
+- `middleware/upload.js` (multer) was deleted with the avatar-upload feature, and a
+  multipart dependency for one admin-only endpoint is not worth carrying;
+- base64-in-JSON inflates the payload by a third and would have to fight the 100 kB
+  `JSON_BODY_LIMIT` protecting every other route;
+- `express.raw` ships with Express and yields the Buffer that both the content sniff and
+  `fs.writeFileSync` want.
+
+> ⚠️ **The file is identified by its leading bytes, never by the declared Content-Type or
+> the filename.** Both of those are caller-chosen, and this path ends in a file written to
+> disk and later embedded in a document staff open. A mislabelled upload would otherwise
+> be stored happily and then throw inside `build()` — which is fire-and-forget — so every
+> report from then on would land in `failed` with the cause being an upload made days
+> earlier. **SVG is refused outright**, not "unsupported": pdfkit cannot rasterise it, and
+> it is XML with script in it, so the moment anything renders branding in a browser it
+> becomes stored XSS.
+
+### 16.4 The control number
+
+Shape is ICTU's own sample: `ICTU-<TYPE>-<YEAR>-<NNN>`, sequence per (type, year).
+
+Assigned in `claimReference` **during build, and only on the path that succeeds** — a
+report that fails to build must not consume a number, because a gap in a filing sequence
+is a question somebody later has to answer. Frozen on the row afterwards so it never
+recomputes: ICTU may cite it in correspondence.
+
+The year and the count both come from SQL, both from `created_at`. Deriving the year in
+JS while filtering in SQL would put them on different clocks — MySQL returns a TIMESTAMP
+in the session time zone — and around New Year the label and the bucket could disagree,
+misfiling the first document of the year.
+
+**The UNIQUE index is the arbiter, not the COUNT.** Two reports of the same type
+generated in the same instant read the same count and compute the same number; the loser
+gets `ER_DUP_ENTRY` and takes the next one. Claiming happens before any file is written,
+so a collision costs a retry rather than a failed report.
+
+### 16.5 Server report structure
+
+Now follows the outline ICTU wrote out by hand:
+
+1. **Identity** — Server Name, IP Address, Operating System (header when scoped to one
+   server; a *Servers Monitored* table when campus-wide, since there is no single IP to
+   put in a header), then Monitoring Period, Date and Time Created, Responsible.
+2. **Server Availability** — Uptime, Downtime, Availability %, Incidents.
+3. **Resource Utilization** — CPU, Memory, Disk, and **Network**.
+
+> ⚠️ **"Uptime" here is not the agent's `uptime_seconds`.** That counter resets to zero on
+> every reboot, so it answers *"how long since this box last booted"*. Availability asks
+> what share of **the period** the server was reachable, across however many reboots — so
+> it is derived from the offline-alert record instead (`services/availabilityMath.js`).
+> Overlapping outage rows are **merged** before summing: raw sums double-count, and enough
+> overlap pushes downtime past the period, printing a negative uptime. Incidents are
+> counted off the merged set so the count and the duration describe the same object.
+> Planned downtime never appears at all — `setMaintenance` stops the offline sweep, so no
+> alert is raised — which makes this figure **unplanned** availability.
+
+> ⚠️ **Network bytes are cumulative counters.** `psnet.IOCounters` reports bytes since
+> boot, so `mean()` would print the average odometer reading. The report uses Flux
+> `increase()`, which sums non-negative deltas and reads a reboot as 0 rather than as the
+> whole counter again — the same treatment `buildNetwork` already gives the SNMP counters.
+
+### 16.6 Still open: Arial
+
+ICTU asked for **Arial 11/12**. The PDF is still set in **Helvetica** — pdfkit's built-in,
+and metrically near-identical, so no layout depends on the difference.
+
+Embedding real Arial means shipping a **licensed Microsoft font** in the repo, which
+should not happen without ICTU confirming a licence that covers redistribution. The
+alternative is a metric-compatible open font (**Liberation Sans** or **Arimo**), licensed
+for redistribution and identical in width.
+
+**This needs a decision from ICTU**, then one `registerFont` call plus swapping the
+`"Helvetica"` / `"Helvetica-Bold"` strings in `reportRenderer.js`.
+
+### 16.7 Where the template lives in the UI
+
+The template settings sit behind a **tab inside the Generate modal**, not on the page.
+
+They began as a panel under the report list, which put configuration that changes a few
+times a year permanently below the thing people come to this page to read. The page is a
+list of generated reports; that is now all it is.
+
+The modal itself is **horizontal** (`max-w-5xl`, two columns: type cards on the left,
+scope/title/paper/period on the right) with the footer pinned outside the scroll area.
+Stacked vertically, seven type cards pushed the Generate button below the fold on a
+laptop — on the one screen whose entire purpose is pressing it.
+
+The Template tab's footer button reads **Done**, not Cancel: every control on it saves as
+it is changed (a select, a blur, an upload), so there is nothing to confirm or discard.
+
+### 16.8 The per-report detail drawer
+
+Each row in the report list expands on click, the same pattern as the servers table
+(`ServerMetrics.tsx` → `ServerDrawerRow`).
+
+It exists because everything that DECIDED what a PDF looks like became invisible the
+moment the report existed. The row shows a title, a period and a status — it could not
+say which page size the file was rendered at, whether it covered one device or the whole
+campus, or what control number it was filed under. Those are precisely the questions
+someone asks with the printed copy in front of them.
+
+The drawer shows reference number, type, scope, paper size, full monitoring period and
+creation time in PHT, who generated it, and whether the files are on disk. A `pending`
+row says "pending" where the reference number goes, and a `failed` one says "not assigned
+— build failed", rather than showing a blank where a filed document's number belongs.
+
+⚠️ Every action in the row (`CSV`, `PDF`, email, delete, and the delete confirmation's
+Yes/No) calls `stopPropagation()`. Without it, downloading a report would also toggle the
+drawer — and `DownloadBtn`'s `onClick` had to be widened from `() => void` to take the
+event before that was even expressible.
