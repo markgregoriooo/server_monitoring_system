@@ -25,6 +25,25 @@ function formatUptime(ms) {
 
 // ─── Queries ──────────────────────────────────────────────────────────────────
 
+// ─── Activity-log timestamps ─────────────────────────────────────────────────
+// ONE format, used by the live entries below and matched exactly by the DATE_FORMAT
+// in getAll. The two must agree: an entry appended the moment you press Turn On and
+// the same entry after a refresh are the same event, and two different-looking stamps
+// read as two different things.
+//
+// ⚠️ Includes the DATE. It used to be time-only, so a three-day-old entry read "10:19
+// AM" with nothing to say it was not today — on a log whose whole purpose is telling
+// you when the room was last cooled.
+//
+// Asia/Manila explicitly, not the host clock: the reports render in PHT and a
+// dashboard that disagreed with them about when something happened would be worse
+// than either being wrong alone.
+const LOG_STAMP_OPTS = {
+  month: "short", day: "numeric",
+  hour: "numeric", minute: "2-digit", hour12: true,
+  timeZone: "Asia/Manila",
+};
+const logStamp = (d = new Date()) => d.toLocaleString("en-PH", LOG_STAMP_OPTS);
 async function getAll() {
   const [units] = await db.query(`
     SELECT
@@ -56,7 +75,7 @@ async function getAll() {
   for (const ac of aircons) {
     const [rows] = await db.query(`
       SELECT
-        DATE_FORMAT(created_at, '%h:%i %p') AS time,
+        DATE_FORMAT(created_at, '%b %e, %l:%i %p') AS time,
         action,
         reason
       FROM aircon_logs
@@ -210,7 +229,7 @@ async function toggle(id, userId, userName) {
           VALUES (?, NULL, ?, ?, 'auto')
         `, [id, syncAction, syncReason]);
         syncEntry = {
-          time:   new Date().toLocaleTimeString("en-PH"),
+          time:   logStamp(),
           action: syncAction,
           reason: syncReason,
         };
@@ -224,7 +243,7 @@ async function toggle(id, userId, userName) {
     setTemp,     // non-null only when the power-on re-sync changed it
     syncEntry,   // extra activity-log row for that re-sync
     entry: {
-      time:   new Date().toLocaleTimeString("en-PH"),
+      time:   logStamp(),
       action,
       reason: `By ${userName}`,
     },
@@ -274,7 +293,7 @@ async function rename(id, name, userId, userName) {
   return {
     name: clean,
     previousName: row.device_name,
-    entry: { time: new Date().toLocaleTimeString("en-PH"), action, reason },
+    entry: { time: logStamp(), action, reason },
   };
 }
 

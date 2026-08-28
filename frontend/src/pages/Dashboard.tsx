@@ -1433,7 +1433,9 @@ export default function Dashboard() {
                   >
                     <div className="flex items-center gap-2">
                       <span className="relative flex h-1.5 w-1.5">
-                        {ac.enabled && (
+                        {/* No pulse while the ESP32 is gone — an animation asserts a live
+                            reading, and this is a remembered value. */}
+                        {ac.enabled && !sensorDead && (
                           <span
                             className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
                             style={{ background: GREEN }}
@@ -1441,29 +1443,40 @@ export default function Dashboard() {
                         )}
                         <span
                           className="relative inline-flex rounded-full h-1.5 w-1.5"
-                          style={{ background: ac.enabled ? GREEN : gf.textMuted }}
+                          style={{ background: sensorDead ? ORANGE : ac.enabled ? GREEN : gf.textMuted }}
                         />
                       </span>
                       <span className="text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
                         {ac.name}
                       </span>
                     </div>
+                    {/* ON / OFF, not ONLINE / OFFLINE: this is the unit's POWER
+                        (aircon_state.is_on), and ONLINE means "reachable" for every other
+                        device on this page. UNKNOWN when the ESP32 is offline — every IR
+                        signal goes through it, so with it gone the value is just the last
+                        thing anyone set, unverifiable and possibly days old. */}
                     <span
                       className="text-[11px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
+                      title={sensorDead
+                        ? "The ESP32 is offline, so this unit's real state cannot be confirmed."
+                        : undefined}
                       style={{
-                        color: ac.enabled ? GREEN : gf.textMuted,
-                        background: ac.enabled ? "rgba(115,191,105,0.12)" : gf.hover,
+                        color: sensorDead ? ORANGE : ac.enabled ? GREEN : gf.textMuted,
+                        background: sensorDead
+                          ? "rgba(255,120,10,0.12)"
+                          : ac.enabled ? "rgba(115,191,105,0.12)" : gf.hover,
                       }}
                     >
-                      {ac.enabled ? "ONLINE" : "OFFLINE"}
+                      {sensorDead ? "UNKNOWN" : ac.enabled ? "ON" : "OFF"}
                     </span>
                   </div>
                   <div className="px-3 pb-1.5 -mt-1">
                     <span className="text-[10px]" style={{ color: gf.textDim }}>
-                      {ac.last_trigger === "manual" ? "set manually"
-                        : ac.last_trigger === "auto" ? "set by auto-cooling"
-                          : "not yet triggered"}
-                      {ac.enabled && ac.uptime && ac.uptime !== "offline" ? ` · on for ${ac.uptime}` : ""}
+                      {sensorDead ? "last known state — ESP32 offline"
+                        : ac.last_trigger === "manual" ? "set manually"
+                          : ac.last_trigger === "auto" ? "set by auto-cooling"
+                            : "not yet triggered"}
+                      {!sensorDead && ac.enabled && ac.uptime && ac.uptime !== "offline" ? ` · on for ${ac.uptime}` : ""}
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-px" style={{ background: gf.divider }}>

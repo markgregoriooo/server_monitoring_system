@@ -20,10 +20,25 @@ interface Aircon {
 }
 
 interface LogEntry {
+  /** Pre-formatted "Aug 21, 10:19 AM" — see logStamp. */
   time: string;
   action: string;
   reason: string;
 }
+
+// Must match `logStamp` in backend/services/airconService.js AND the DATE_FORMAT its
+// getAll query uses. All three produce the same string, so an entry appended the instant
+// you press Turn On looks identical to the same entry after a refresh — two different
+// stamps for one event read as two events.
+//
+// Asia/Manila explicitly rather than the viewer's clock: a staffer on a laptop set to
+// another zone would otherwise see a different time from the one in the PDF report.
+const LOG_STAMP_OPTS: Intl.DateTimeFormatOptions = {
+  month: "short", day: "numeric",
+  hour: "numeric", minute: "2-digit", hour12: true,
+  timeZone: "Asia/Manila",
+};
+const logStamp = (d: Date = new Date()): string => d.toLocaleString("en-PH", LOG_STAMP_OPTS);
 
 interface SensorData {
   temperature: number;
@@ -206,7 +221,7 @@ function StatPanel({
 // ─── AirconCard ───────────────────────────────────────────────────────────────
 
 function AirconCard({
-  ac, log, canDelete, canManage, onDelete, onToggle, onRename, siblingNames,
+  ac, log, canDelete, canManage, onDelete, onToggle, onRename, siblingNames, esp32Online,
 }: {
   ac: Aircon;
   log: LogEntry[];
@@ -216,6 +231,10 @@ function AirconCard({
   onToggle: (id: number, enabled: boolean) => void;
   onRename: (id: number, name: string) => void;
   siblingNames: string[]; // every OTHER unit's name — for the duplicate pre-check
+  // The IR signal reaches the AC only through the ESP32. With it absent the backend
+  // refuses the toggle (409), so the button says why rather than letting someone press
+  // it and read an error.
+  esp32Online: boolean;
 }) {
   const [toggling, setToggling] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -341,14 +360,29 @@ function AirconCard({
       >
         CH {ac.ir_channel}
       </span>
+      {/* ── Power state, and whether we can still vouch for it ──
+          This pill used to read ONLINE / OFFLINE from `ac.enabled`, which is
+          `aircon_state.is_on` — the unit's POWER, not its reachability. Two problems
+          with that: ONLINE/OFFLINE means "can we reach it" for every other device in
+          this system, and with the ESP32 gone the value is simply the last thing anyone
+          set, unverifiable and often days old.
+
+          So it says ON / OFF while the ESP32 is there, and UNKNOWN when it is not. An AC
+          nobody can see is not "on" — it is a unit whose state we last knew at some
+          point in the past, which is a different claim. */}
       <span
         className="text-[11px] font-bold tracking-widest px-2 py-0.5 rounded-[2px] shrink-0"
+        title={esp32Online
+          ? undefined
+          : "The ESP32 is offline, so the unit's real state cannot be confirmed. This was its last known state."}
         style={{
-          color: ac.enabled ? GREEN : GF.textMuted,
-          background: ac.enabled ? "rgba(115,191,105,0.1)" : GF.hover,
+          color: !esp32Online ? ORANGE : ac.enabled ? GREEN : GF.textMuted,
+          background: !esp32Online
+            ? "rgba(255,120,10,0.1)"
+            : ac.enabled ? "rgba(115,191,105,0.1)" : GF.hover,
         }}
       >
-        {ac.enabled ? "ONLINE" : "OFFLINE"}
+        {!esp32Online ? "UNKNOWN" : ac.enabled ? "ON" : "OFF"}
       </span>
     </>
   );
@@ -361,8 +395,11 @@ function AirconCard({
       {canManage && (
         <button
           onClick={handleToggle}
-          disabled={toggling}
-          className="gf-raise flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] text-[12px] font-semibold disabled:opacity-40"
+          disabled={toggling || !esp32Online}
+          title={esp32Online
+            ? undefined
+            : "The ESP32 is offline — the IR signal cannot reach this unit."}
+          className="gf-raise flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] text-[12px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
           style={{
             color: ac.enabled ? RED : GREEN,
             background: ac.enabled ? "rgba(242,73,92,0.1)" : "rgba(115,191,105,0.1)",
@@ -396,7 +433,9 @@ function AirconCard({
       {/* Compact stats row */}
       <div className="grid grid-cols-5 gap-px" style={{ background: GF.divider, borderBottom: `1px solid ${GF.divider}` }}>
         {[
-          ["State", ac.enabled ? "on" : "off"],
+          // Matches the pill: with the ESP32 gone this is a remembered value, not an
+          // observed one.
+          ["State", !esp32Online ? "unknown" : ac.enabled ? "on" : "off"],
           ["Fan", ac.fanMode ?? "auto"],
           ["Mode", ac.mode],
           ["Set Temp", `${ac.setTemp}°C`],
@@ -1163,7 +1202,7 @@ export default function AirConditioner() {
       // (auto IR no longer switches power, so it can't re-enable a unit you turned off).
       setAircons(prev => prev.map(a => ids.has(a.id) ? { ...a, setTemp: data.setTemp } : a));
       const entry: LogEntry = {
-        time:   new Date().toLocaleTimeString("en-PH"),
+        time:   logStamp(),
         action: data.action,
         reason: "Temperature zone change",
       };
@@ -1258,6 +1297,27 @@ export default function AirConditioner() {
         </div>
       </div>
 
+      {/* ── ESP32 offline banner ──
+          The explanation lives here, once, rather than repeated on every card. Each card
+          carries only a short UNKNOWN pill; a full sentence beside four units would be
+          four copies of one fact. */}
+      {!loading && !esp32Online && (
+        <div
+          className="flex items-start gap-2 px-3 py-2.5 rounded-[2px] text-[12px]"
+          style={{ background: "rgba(255,120,10,0.08)", border: `1px solid rgba(255,120,10,0.25)`, color: ORANGE }}
+        >
+          <span className="mt-[3px] w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ORANGE }} />
+          <span>
+            <strong>Air conditioner control is unavailable.</strong>{" "}
+            <span style={{ color: GF.textMuted }}>
+              The ESP32 sends every IR signal, so with it offline the units cannot be switched
+              and their real state cannot be confirmed. The states below are the last known —
+              a unit may since have been turned on or off by hand.
+            </span>
+          </span>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <span className="text-[13px] tracking-widest" style={{ color: GF.textDim }}>Loading…</span>
@@ -1324,6 +1384,7 @@ export default function AirConditioner() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               {aircons.map(ac => (
                 <AirconCard
+                  esp32Online={esp32Online}
                   key={ac.id}
                   ac={ac}
                   log={logs[ac.id] ?? []}

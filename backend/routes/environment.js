@@ -4,6 +4,7 @@ import environmentService from "../services/environmentService.js";
 import esp32Monitor from "../services/esp32Monitor.js";
 import alertRulesService from "../services/alertRulesService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
+import { isDeviceConnected } from "../sockets/deviceRoom.js";
 
 const router = express.Router();
 
@@ -20,9 +21,11 @@ router.post("/calibrate-gas", authMiddleware, requireRole("admin"), (req, res) =
   const io = req.app.get("io");
   if (!io) return res.status(503).json({ error: "Socket server unavailable." });
 
-  const room = io.sockets.adapter.rooms.get("devices");
-  if (!room || room.size === 0) {
-    return res.status(409).json({ error: "ESP32 is not connected — cannot calibrate." });
+  // Shared with the aircon toggle (sockets/deviceRoom.js) rather than an inline copy —
+  // one check and one wording, so a user never meets two different messages for the same
+  // condition and takes them for two different faults.
+  if (!isDeviceConnected(io)) {
+    return res.status(409).json({ error: "The ESP32 is not connected — cannot calibrate." });
   }
 
   io.to("devices").emit("calibrateGas");

@@ -2,6 +2,7 @@ import express from "express";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import airconService from "../services/airconService.js";
 import { describeError } from "../utils/httpError.js";
+import { isDeviceConnected, NO_DEVICE_MESSAGE } from "../sockets/deviceRoom.js";
 
 const router = express.Router();
 
@@ -128,10 +129,27 @@ router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, nex
 // ── PATCH /api/aircon/:id/toggle ──────────────────────────────────────────────
 router.patch("/:id/toggle", authMiddleware, requireRole("admin", "it_staff"), async (req, res, next) => {
   try {
+    const io = req.app.get("io");
+
+    // ⚠️ Checked BEFORE anything is written.
+    //
+    // The IR signal is a Socket.IO emit into the `devices` room, and an emit into an
+    // empty room is silently discarded — no error, no return value. So with the ESP32
+    // absent this route used to flip `aircon_state.is_on`, stamp "Manually turned ON by
+    // <user>" into `aircon_logs`, tell every dashboard the unit was on, and send the IR
+    // precisely nowhere. Nothing physical happened, and the record said otherwise — in
+    // the very table the Aircon Activity report is built from.
+    //
+    // Refusing is the honest answer: a unit nobody can command should not appear to have
+    // been commanded. `calibrate-gas` in routes/environment.js has always worked this
+    // way; both now share one check so they cannot drift.
+    if (!isDeviceConnected(io)) {
+      return res.status(409).json({ error: NO_DEVICE_MESSAGE });
+    }
+
     const result = await airconService.toggle(req.params.id, req.user.id, req.user.name);
     if (!result) return res.status(404).json({ error: "Unit not found" });
 
-    const io = req.app.get("io");
     io?.emit("airconStatus", {
       aircon: {
         id: +req.params.id,
