@@ -894,7 +894,7 @@ Where each allowance comes from — **do not trim these without checking**:
 | `style-src 'unsafe-inline'` | The pages use React `style={{…}}` attributes throughout. A CSP-safe alternative is a per-response nonce, which Vite's static build cannot provide |
 | `style-src`/`font-src … fonts.g*` | JetBrains Mono (`src/index.css` `@import`) and Share Tech Mono (`index.html`) are loaded from Google Fonts |
 | `img-src … *.googleusercontent.com` | Profile photos come from the Google ID token (`lh3.googleusercontent.com`, but the host varies) |
-| `connect-src 'self'` | **Only correct when `VITE_API_URL` points at this same origin.** Left to auto-detect, `config.ts` builds `http://<host>:3000` — a *different* origin — and every API call and the socket are blocked. §5.2 already tells you to set `VITE_API_URL=/`; this is the second reason it matters |
+| `connect-src 'self'` | **Only correct when `VITE_API_URL` points at this same origin.** Left to auto-detect, `config.ts` builds `http://<host>:3000` — a *different* origin — and every API call and the socket are blocked. [§4.1](#41-frontendenv) already tells you to pin it to the public hostname (`https://monitoring.cspc.edu.ph`, no `:3000`); this is the second reason it matters |
 
 > ⚠️ **Verify before go-live, don't assume.** Load the dashboard, open DevTools ▸ Console
 > and look for `Refused to load …` / `Refused to connect …`. Then sign out and sign in
