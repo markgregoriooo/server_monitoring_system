@@ -156,64 +156,228 @@ sudo useradd --system --home /opt/cspc --shell /usr/sbin/nologin cspc
 sudo mkdir -p /opt/cspc
 ```
 
-#### 1.1.2 Transfer the project folder
+#### 1.1.2 Get the code onto the server
 
-The whole project folder is copied across — by WinSCP, `scp`, `rsync`, or a USB drive.
-Any of them is fine. What matters is that **six things do not make the trip**, because
-each one is either wrong on Linux or belongs to the development machine.
+Three ways in. The choice is **not** a preference — it is decided by what ICTU's network
+allows and by how many times you expect to update the code after go-live.
+
+| | Method | When it's right |
+|---|---|---|
+| **1** | **`git clone` + deploy key** | You will update the code more than once. **For this project, this is the answer** — see below. |
+| **2** | `rsync` over SSH | You can reach the server over the network, but git on the server is not permitted |
+| **3** | USB drive / `scp` a tarball | The server has no network path from your laptop (air-gapped) |
+
+##### The one question that decides it
+
+From your own laptop:
+
+```bash
+ssh <your-account>@<backend-server-ip>
+```
+
+**If that connects, you never need a USB drive.** Method 1 or 2 will both work, and both
+are repeatable — which matters, because you will not transfer this project only once.
+
+If it refuses, the reason decides the rest: no account yet (ask ICTU — below), or no
+network route at all (Method 3).
+
+> ⚠️ **Why Method 1 is worth the extra ten minutes of setup.** This is a capstone: the
+> code will change after panel feedback, after the ICTU review, and every time a bug turns
+> up in testing. With git, an update is four commands and about twenty seconds
+> ([below](#updating-the-code-later)). With a USB drive it is a re-archive, a walk across
+> campus, and a manual extract — every single time, with no record of what changed. The
+> first deployment costs the same either way. The fifth does not.
+
+##### What to ask ICTU's system administrator
+
+You are deploying onto **someone else's infrastructure**, so several things are not yours
+to configure. Ask for all of these **before** deployment day — the outbound-access answer
+in particular decides whether Method 1 is even possible, and it is the one most likely to
+be "no" on an institutional server.
+
+| Ask for | Why you need it | If you don't get it |
+|---|---|---|
+| **An SSH account** on the campus server, plus its **IP/hostname and SSH port** | Every method except USB starts here | You are on Method 3, physically at the machine |
+| **`sudo` rights** for that account | Installing Node/MySQL/InfluxDB/nginx, creating the `cspc` service user, writing to `/opt`, `systemctl`, firewall rules — §1 through §5 all need root | Nothing in this guide can be completed; ICTU must run it with you |
+| **A static LAN IP** (or a reserved DHCP lease) for the server | Agents and the ESP32 firmware **cache the address**. If it moves, every collector goes silent at once and nothing points at DHCP as the cause | Re-flash the ESP32 and re-enroll every agent whenever the lease changes |
+| **Outbound internet from the server** to `github.com` (**port 22** for SSH clones, or 443 for HTTPS) and `registry.npmjs.org` (443) | `git clone` **and** `npm ci` both need it. `npm ci` is required by §1.1.4 regardless of how the code arrives | Method 1 is impossible, and §1.1.4 needs an offline `node_modules` workaround — tell ICTU early, this is the expensive one |
+| **Whether the server sits behind an HTTP proxy**, and its address | `git` and `npm` both need explicit proxy configuration; without it they hang and then time out with no useful error | Installs fail in a way that looks like a broken network |
+| **Inbound firewall**: TCP **3000** open to the subnets holding the monitored servers and the ESP32; **80/443** for the dashboard | Collectors reach the backend directly on `:3000`, never through nginx ([§9.1](#91-restrict-port-3000-to-the-agent-subnets--do-this-on-deploy-day)) | Agents enroll but never deliver metrics; the room shows no sensor data |
+| **The HTTPS hostname** — `monitoring.cspc.edu.ph` | Google OAuth **rejects a bare LAN IP**, so login cannot work without it ([§6.1](#61-request-the-https-endpoint-from-ictu)) | Nobody can sign in, including you |
+| **A maintenance window** for restarts | The backend restarts on every deploy and config change | Coordinate each restart ad hoc |
+
+> ⚠️ **Ask about outbound access first and explicitly.** "Can this server reach github.com
+> and registry.npmjs.org?" is a five-second question with a fifteen-minute consequence if
+> the answer is no and you find out on deployment day. A server that is firewalled inbound
+> is normal and expected; one that is firewalled *outbound* is also common on institutional
+> networks, and it invalidates Method 1 along with `npm ci`.
+
+##### Method 1 — `git clone` with a deploy key (recommended)
+
+The repository is **private**, so the server needs its own read access. Do not use your
+personal GitHub password or a personal access token: a **deploy key** is scoped to this one
+repository, is read-only, and can be revoked without touching your account.
+
+**Step 1 — generate a key ON THE SERVER** (never copy your laptop's key across):
+
+```bash
+ssh-keygen -t ed25519 -C "cspc-campus-server-deploy" -f ~/.ssh/deploy_key -N ""
+cat ~/.ssh/deploy_key.pub
+```
+
+**Step 2 — register it on GitHub.** Copy the whole `ssh-ed25519 …` line printed above, then
+in a browser go to:
+
+> your repository → **Settings** → **Deploy keys** → **Add deploy key**
+> Title: `cspc-campus-server` · Key: *paste* · **Leave “Allow write access” UNCHECKED**
+
+Read-only is deliberate: the server never pushes, so write access buys nothing and means a
+compromised server could rewrite your capstone's history.
+
+**Step 3 — tell SSH to use that key for GitHub:**
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+
+Host github-cspc
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/deploy_key
+  IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config
+```
+
+`IdentitiesOnly yes` matters: without it SSH offers every key it can find and GitHub
+rejects the connection after too many attempts, which reads as "permission denied" rather
+than "wrong key".
+
+**Step 4 — verify the key works before relying on it:**
+
+```bash
+ssh -T git@github-cspc
+# Expect: "Hi markgregoriooo/server_monitoring_system! You've successfully authenticated,
+#          but GitHub does not provide shell access."
+# That message IS success — the shell-access line is normal for a deploy key.
+```
+
+**Step 5 — clone into place:**
+
+```bash
+sudo mkdir -p /opt/cspc
+sudo chown $USER /opt/cspc                     # temporary — §1.1.5 hands it to `cspc`
+git clone git@github-cspc:markgregoriooo/server_monitoring_system.git /opt/cspc
+cd /opt/cspc
+```
+
+> ⚠️ **If your SSH port to GitHub is blocked** (some campus firewalls block outbound 22),
+> use GitHub's SSH-over-HTTPS endpoint instead — same key, port 443. Add `Port 443` and
+> `HostName ssh.github.com` to the `Host github-cspc` block above.
+
+Then skip to [§1.1.3](#113-two-things-windowslinux-breaks). **A clone needs no cleanup** —
+`node_modules`, `.env`, `backups/`, `reports/`, `branding/` and `dist/` are all gitignored,
+so the exclusion list below simply does not apply to you. That is the second reason this
+method is the least error-prone: there is no list to remember.
+
+<a id="updating-the-code-later"></a>
+###### Updating the code later
+
+This is the payoff. After pushing changes from your laptop:
+
+```bash
+cd /opt/cspc
+sudo -u cspc git pull                          # or: git pull, then re-run §1.1.5
+
+cd backend  && npm ci --omit=dev               # only if package.json changed
+cd ../frontend && npm ci && npm run build      # only if the dashboard changed
+sudo cp -r dist/. /opt/cspc/frontend-dist/     # see §5.2
+
+sudo systemctl restart cspc-monitoring
+sudo systemctl status cspc-monitoring --no-pager
+```
+
+⚠️ **Re-run [§1.1.5](#115-ownership-and-permissions) after any pull that adds files** —
+new files are owned by whoever ran `git pull`, and the backend runs as `cspc`.
+
+⚠️ **A pull that includes a new file under `migrations/` needs that migration applied**
+([§2.1](#21-mysql)). The backend does not run migrations on start, so the symptom is
+a route failing on an unknown column rather than anything announcing itself at boot.
+
+##### Method 2 — `rsync` over SSH
+
+For when the server is reachable but git on it is not permitted. One command from your
+laptop, inside the project folder:
+
+```bash
+rsync -avz --delete \
+  --exclude node_modules --exclude .env --exclude '.env.*' \
+  --exclude backups --exclude reports --exclude branding \
+  --exclude dist --exclude .git --exclude secrets.h \
+  ./ <your-account>@<backend-server-ip>:/opt/cspc/
+```
+
+Re-run it for every update; it transfers only what changed, so later syncs take seconds.
+`--delete` removes files on the server that you have since deleted locally — without it the
+server slowly accumulates dead files that no longer exist in your project.
+
+In **WinSCP**, the same exclusions go in *Transfer settings → File mask → Exclude*:
+
+```
+node_modules/; .env; .env.*; backups/; reports/; branding/; dist/; .git/; secrets.h
+```
+
+##### Method 3 — USB drive or `scp` (no network path)
+
+Only when the server genuinely cannot be reached. Build one archive on Windows (Git Bash),
+which is faster and safer than copying thousands of loose files onto a FAT32 drive — flash
+filesystems do not preserve Linux permissions or the execute bit, and a `.tar.gz` carries
+both through intact:
+
+```bash
+cd /c/Users/<you>/Documents/server-infrastructure-monitoring-system-webSystem
+tar -czf /d/cspc-deploy.tar.gz \
+  --exclude='./backend/node_modules'   --exclude='./frontend/node_modules' \
+  --exclude='./backend/.env'           --exclude='./backend/.env.*' \
+  --exclude='./frontend/.env'          --exclude='./iot/esp32/env_monitor_v2/secrets.h' \
+  --exclude='./backend/backups'        --exclude='./backend/reports' \
+  --exclude='./backend/branding'       --exclude='./frontend/dist' \
+  --exclude='./.git' \
+  .
+```
+
+That lands at roughly **17 MB** — well under FAT32's 4 GB limit, so the drive needs no
+reformatting. On the server:
+
+```bash
+sudo mkdir -p /mnt/usb /opt/cspc
+sudo mount /dev/sdb1 /mnt/usb                  # confirm the device with: lsblk
+sudo tar -xzf /mnt/usb/cspc-deploy.tar.gz -C /opt/cspc
+sudo umount /mnt/usb
+```
+
+> ⚠️ **Check the archive before you carry it.** `tar -tzf cspc-deploy.tar.gz | grep -E '\.env|secrets\.h'`
+> must print nothing. An `.env` backup left in the project folder (`.env.bak-…`) is matched
+> by the `--exclude='./backend/.env.*'` line above, but only if it lives where that pattern
+> looks — and a stray copy of `secrets.h` carries a real WiFi password and `DEVICE_SECRET`.
 
 ##### What must not be copied
 
+**Applies to Methods 2 and 3 only** — a git clone gets this right automatically, because
+every item below is gitignored.
+
 | Do not copy | What happens if you do |
 |---|---|
-| `backend/node_modules/`<br>`frontend/node_modules/` | ~52 MB in the backend alone, and the native modules are compiled **for Windows**. On Linux they crash or misbehave. They are reinstalled in §1.1.4. |
-| `backend/.env` | Carries the dev database name and the dev secrets. Production writes its own in §3.1. Copying it is also how a compromised key spreads. |
+| `backend/node_modules/`<br>`frontend/node_modules/` | ~190 MB, and the native modules are compiled **for Windows**. On Linux they crash or misbehave. They are reinstalled in §1.1.4. |
+| `backend/.env`<br>(and any `.env.bak-*`) | Carries the dev database name and the dev secrets. Production writes its own in §3.1. Copying it is also how a compromised key spreads. |
+| `iot/esp32/…/secrets.h` | Real WiFi password + `DEVICE_SECRET`. The server never needs it — the ESP32 is flashed from your laptop (§8). |
 | `backend/backups/` | Tens of MB of the *development* room's NDJSON history. |
 | `backend/reports/` | Generated CSV/PDFs for reports that will not exist in the new database. |
 | `backend/branding/` | Logos uploaded on the dev box. Production uses the committed marks until ICTU re-uploads. |
 | `frontend/dist/` | Built with the **dev** `VITE_API_URL` compiled in. Rebuilt on the server in §4.2. |
 
-`.git/` is optional — harmless to copy, and useless without a remote.
-
-##### Option A — exclude during the transfer (fastest)
-
-`rsync` over SSH, run from the project folder on your workstation:
-
-```bash
-rsync -av \
-  --exclude node_modules \
-  --exclude .env \
-  --exclude backups \
-  --exclude reports \
-  --exclude branding \
-  --exclude dist \
-  --exclude .git \
-  ./ user@campus-server:/opt/cspc/
-```
-
-In **WinSCP**, the same list goes in *Transfer settings → File mask → Exclude*:
-
-```
-node_modules/; .env; backups/; reports/; branding/; dist/; .git/
-```
-
-##### Option B — copy everything, then clean on the server
-
-Simpler to get right if the transfer tool has no exclude support (a plain drag-and-drop,
-or a USB drive). Copy the folder to `/opt/cspc`, then, **before** installing anything:
-
-```bash
-cd /opt/cspc
-sudo rm -rf backend/node_modules frontend/node_modules
-sudo rm -rf backend/backups backend/reports backend/branding
-sudo rm -rf frontend/dist
-sudo rm -f  backend/.env
-```
-
-The transfer is slower — you move the 52 MB of `node_modules` only to delete it — but
-nothing depends on remembering an exclude list in a dialog box.
-
 ##### Verify before moving on
+
+Whichever method you used:
 
 ```bash
 cd /opt/cspc
