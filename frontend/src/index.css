@@ -9,6 +9,15 @@
   /* dark (default — Grafana is always dark-first) */
   --gf-bg:            #111217;
   --gf-panel:         #181B1F;
+
+  /* The page background as raw R,G,B CHANNELS — a hex token cannot be made
+     translucent, and the scrim over the login fold's cover photograph needs a
+     different alpha at every gradient stop.
+     ⚠️ It MUST track the theme. The hero copy is `--gf-text-primary`, which flips from
+     light to dark with the theme — a scrim fixed dark would leave dark text on a dark
+     wash the moment someone switches to light mode. Matches --gf-bg so the photo fades
+     into the section below it rather than ending on a seam. */
+  --gf-bg-rgb: 17, 18, 23;
   --gf-panel-border:  rgba(255,255,255,0.07);
   --gf-header:        #1a1d23;
   --gf-sidebar:       #111217;
@@ -81,6 +90,9 @@
 :root.light {
   --gf-bg:            #F4F5F5;
   --gf-panel:         #FFFFFF;
+
+  /* Light counterpart of the hero scrim — see the dark block above. */
+  --gf-bg-rgb: 244, 245, 245;
   --gf-panel-border:  rgba(0,0,0,0.09);
   --gf-header:        #F4F5F5;
   --gf-sidebar:       #FFFFFF;
@@ -391,24 +403,30 @@
    means the `paddingTop: NAV_H` the section carries is INSIDE this, so the result is
    exactly one viewport rather than one plus a topbar.
 
-   ≥640px — sized to the copy instead. A full-screen floor here used to be right, back
-   when the fold also carried a dashboard mock roughly as tall as the copy beside it.
-   With the mock gone the column is much shorter, and on a wide screen the leftover
-   height gets split above and below by `items-center` — which reads as a blank band
-   over the heading rather than as composition. Phones never had that problem: the
-   copy stacks tall enough to fill the screen on its own. */
+   DESKTOP — the same full screen, since 2026-08-28.
+   It was 66vh for a while, on the reasoning that with the old dashboard mock gone the
+   copy column no longer filled a screen and `items-center` would leave a blank band
+   above the heading. Two things changed that: the fold now carries a cover photograph,
+   which wants the whole viewport rather than a band of it, and a partial height made the
+   section's size depend on how many lines the copy happened to occupy — so editing a
+   headline visibly resized the page. A full viewport is stable against copy changes,
+   which is the property that matters more than the leftover space. */
 .hero-fold { min-height: 100vh; }
 @supports (min-height: 100svh) {
   .hero-fold { min-height: 100svh; }
 }
 
-@media (min-width: 640px) {
-  .hero-fold { min-height: 66vh; }
-
-  @supports (min-height: 66svh) {
-    .hero-fold { min-height: 66svh; }
-  }
-}
+/* NOTE: a `min-width: 640px` override used to cut the fold to 66vh (briefly 76vh) on
+   anything wider than a phone. Removed 2026-08-28 — the base rule above now applies at
+   every width, so the fold is a FULL viewport on desktop as well.
+   The partial height was a hedge from when the hero carried a three-line institution
+   headline and a dashboard mock; at 66vh the section ended mid-screen and read as a
+   short band rather than as a fold. It also made the height content-dependent on short
+   laptops, so removing a line of copy visibly shrank the section — which is exactly the
+   coupling a full-viewport fold does not have.
+   `100svh` is what makes this correct on mobile: `vh` there is the LARGEST viewport,
+   measured with the browser chrome retracted, so a 100vh hero is taller than the visible
+   area on first paint and its bottom sits under the address bar. */
 
 /* Toast entrance (used by ToastHost via animate-[fadeIn_…]) */
 @keyframes fadeIn {

@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { NavLink, useLocation } from "react-router";
 import { useAuth } from "../../context/AuthContext";
-import { useTheme } from "../../context/ThemeContext";
 import { useNotifications } from "../../context/NotificationContext";
 import { roleConfig } from "../../data/users";
 import { BRAND } from "../../branding";
@@ -192,7 +191,6 @@ function readOpenGroups(): Record<string, boolean> {
 
 export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollapse }: SidebarProps) {
   const { user, logout } = useAuth();
-  const { theme, toggleTheme } = useTheme();
   const { openAlertCount, pendingAgentCount, pendingUserCount } = useNotifications();
   const [profileOpen, setProfileOpen] = useState(false);
   // Success toast shown AFTER the profile modal closes (same style as UserManagement).
@@ -404,42 +402,13 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
           )}
         </nav>
 
-        {/* ── Bottom: theme + user ── */}
+        {/* ── Bottom: user ── */}
+        {/* NOTE: a labelled "Theme" row sat at the top of this block. Moved to the
+            topbar (components/layout/Header.tsx) on 2026-08-28 — a display preference
+            below the navigation was unreachable whenever the rail was collapsed or the
+            viewport was a phone, while every other chrome-level control (the live
+            widget, the bell) already lived in that bar. */}
         <div style={{ borderTop: "1px solid var(--gf-panel-border)" }}>
-          {/* Theme toggle */}
-          <div className="flex items-center justify-between px-4 py-2.5"
-            style={{ borderBottom: "1px solid var(--gf-panel-border)" }}>
-            <span className="text-[11px] tracking-widest uppercase"
-              style={{ color: "var(--gf-text-dim)" }}>
-              Theme
-            </span>
-            {/* .gf-btn-quiet — the same treatment as Sign Out below, so the rail's
-                secondary controls read as one family instead of three weights.
-                The label already names the theme you'll GET, not the one you're in. */}
-            <button onClick={toggleTheme}
-              title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-              className="gf-btn-quiet flex items-center gap-1.5 px-2.5 py-1 text-[12px]">
-              {theme === "dark" ? (
-                <>
-                  <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
-                    <circle cx="7" cy="7" r="3" stroke="currentColor" strokeWidth="1.4"/>
-                    <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M3.2 3.2l1 1M9.8 9.8l1 1M10.8 3.2l-1 1M4.2 9.8l-1 1"
-                      stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                  </svg>
-                  Light
-                </>
-              ) : (
-                <>
-                  <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
-                    <path d="M12.25 7.46A5.25 5.25 0 1 1 6.54 1.75 4.08 4.08 0 0 0 12.25 7.46z"
-                      stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                  Dark
-                </>
-              )}
-            </button>
-          </div>
-
           {/* User */}
           {user && (
             <div className="px-3 py-3 flex flex-col gap-2">

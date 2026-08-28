@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useLocation } from "react-router";
 import { useAuth } from "../../context/AuthContext";
 import { useNotifications } from "../../context/NotificationContext";
+import { useTheme } from "../../context/ThemeContext";
 import NotificationPanel from "../notifications/NotificationPanel";
 import { usePip } from "../../pip/PipContext";
 import { BRAND } from "../../branding";
@@ -51,6 +52,7 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
   const { user }    = useAuth();
   const { unreadCount, openAlertCount, pendingAgentCount, pendingUserCount } = useNotifications();
   const { supported: pipSupported, isOpen: pipOpen, open: openPip, close: closePip } = usePip();
+  const { theme, toggleTheme } = useTheme();
   const location    = useLocation();
   const [section, page] = breadcrumbs[location.pathname] ?? [BRAND.name, "Dashboard"];
 
@@ -145,6 +147,33 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
           style={{ color: "var(--gf-text-dim)" }}>
           {now}
         </span>
+
+        {/* Theme toggle.
+            Moved here from the sidebar's bottom rail (2026-08-28). It was a labelled
+            row down there, which put a display preference below the navigation and out
+            of sight whenever the rail was collapsed or the viewport was a phone — while
+            every other chrome-level control already lived in this bar.
+            Icon-only, in the same `gf-icon-btn` box as the widget and bell beside it, so
+            the three read as one family. The title names the theme you will GET, not the
+            one you are in — the same wording the sidebar used. */}
+        <button
+          onClick={toggleTheme}
+          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          className="gf-icon-btn inline-flex">
+          {theme === "dark" ? (
+            <svg width="15" height="15" viewBox="0 0 14 14" fill="none">
+              <circle cx="7" cy="7" r="3" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M3.2 3.2l1 1M9.8 9.8l1 1M10.8 3.2l-1 1M4.2 9.8l-1 1"
+                stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="15" height="15" viewBox="0 0 14 14" fill="none">
+              <path d="M12.25 7.46A5.25 5.25 0 1 1 6.54 1.75 4.08 4.08 0 0 0 12.25 7.46z"
+                stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+        </button>
 
         {/* Pop-out live widget (Picture-in-Picture) — Chromium-only, hidden elsewhere.
             Uses the same .gf-icon-btn box as the bell beside it: it was previously a bare

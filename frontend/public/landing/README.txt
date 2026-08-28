@@ -71,3 +71,40 @@ the build, so anything left in `src` at `npm run build` time SHIPS. Blank the
 src (back to "") for any slot still holding a stand-in — an empty slot is
 dropped from the build entirely, and the whole section hides itself if every
 slot is empty.
+
+===========================================================================
+ THE FOLD'S COVER PHOTOGRAPH  —  hero-cover.jpg
+===========================================================================
+
+The big picture behind the headline and the Sign in button.
+
+  File:  frontend/public/landing/hero-cover.jpg
+  Code:  HERO_COVER in src/pages/auth/Login.tsx
+
+TO ADD OR REPLACE IT
+  Drop the file here with that exact name. Nothing else to change.
+  Hard-refresh (Ctrl+Shift+R) — the browser caches it under the same URL.
+
+TO REMOVE IT
+  Set  HERO_COVER = ""  in Login.tsx. The fold returns to the plain
+  background it had before. Deleting the file alone also works: the layer
+  paints nothing rather than showing a broken image, so the page never
+  looks half-finished in front of anyone.
+
+SHOOTING / CHOOSING THE SHOT
+  - Landscape, minimum 2400px wide. JPG is fine.
+  - Put the SUBJECT RIGHT OF CENTRE. The headline and button occupy the
+    left half of the fold and a dark scrim is heaviest there, so anything
+    important on the left will be deliberately obscured.
+  - It is shown at very different shapes: about 100vh tall on a phone and
+    66vh on a desktop, always centre-cropped. Check it does not lose its
+    subject on a narrow window.
+  - Busy is fine, and mid-tone is fine — the scrim handles both. What does
+    NOT work is a bright area behind the left half, which fights the copy
+    no matter how strong the scrim is.
+
+WHAT STAYS ON TOP OF IT
+  The drifting telemetry lines (HeroBackdrop) are drawn ABOVE the photo on
+  purpose. They are the fold's one piece of motion and they survive any
+  background change — if a picture ever hides them, the picture is wrong,
+  not the animation.

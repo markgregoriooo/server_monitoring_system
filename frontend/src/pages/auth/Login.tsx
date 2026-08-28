@@ -21,6 +21,23 @@ import { COVERAGE_VISUALS, type CoverageVisualKey } from "../../components/landi
 import { STATUS } from "../../theme/gf";
 const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
+// ── The fold's cover photograph ───────────────────────────────────────────────
+//
+// Put the file at:   frontend/public/landing/hero-cover.jpg
+//
+// Served from `public/`, so the path is the URL — no import and no bundler step, and
+// swapping the picture is overwriting one file. Same convention as the hardware photos
+// in components/landing/photos.ts; see public/landing/README.txt.
+//
+// Set to "" to remove the cover entirely and get the old plain fold back. That is also
+// what an ABSENT file degrades to visually: the layer paints nothing rather than
+// showing a broken image, so a half-finished swap never reaches the public page.
+//
+// Shooting notes: landscape, at least 2400px wide, and composed with its subject
+// RIGHT OF CENTRE — the copy occupies the left half of the fold and the scrim is
+// heaviest there, so anything important on the left is deliberately obscured.
+const HERO_COVER = "/landing/hero-cover.jpg";
+
 // Topbar height. The fold subtracts it so the hero still fills exactly one screen,
 // and the content sections use it as scroll-margin so the sticky bar never covers
 // the heading it just scrolled to.
@@ -450,7 +467,61 @@ export default function Login() {
         className="hero-fold relative flex flex-col overflow-hidden"
         style={{ paddingTop: NAV_H }}
       >
-        {/* NOTE: a masked 44px Grafana-style grid used to sit here, under the glow.
+        {/* ── 1. Cover photograph ──
+            Drop a file at frontend/public/landing/hero-cover.jpg and it appears here.
+            Until then this layer paints nothing and the fold looks exactly as it did
+            before — a missing background must never leave a blank or broken hero.
+
+            `background-position: center` rather than a fixed crop: the fold is 100vh on
+            a phone and 66vh on a desktop, so the same image is shown at wildly different
+            aspect ratios and any corner-anchored crop loses the subject on one of them.
+
+            NOT `background-attachment: fixed` — it forces a repaint on every scroll
+            frame on most mobile browsers and is simply ignored on iOS Safari. */}
+        {HERO_COVER && (
+          <div
+            aria-hidden
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              backgroundImage: `url("${HERO_COVER}")`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              backgroundRepeat: "no-repeat",
+            }}
+          />
+        )}
+
+        {/* ── 2. Scrim ──
+            ⚠️ Load-bearing, not decoration. The headline, the body copy and the sign-in
+            button all sit on this photograph, and a photo of a server room is mostly
+            mid-tone greys with bright LEDs in it — text lands on both. The scrim is what
+            keeps the copy readable whatever the picture turns out to be, so it stays even
+            if a darker photo seems not to need it.
+
+            ⚠️ THEME-AWARE, via `--gf-bg-rgb` (index.css). The copy is
+            `--gf-text-primary`, which flips from light to dark with the theme, so a scrim
+            fixed dark would put dark text on a dark wash the moment anyone switched to
+            light mode. The token carries R,G,B channels and the alphas live here, because
+            the alpha varies per stop and a colour token cannot.
+
+            Weighted LEFT because the copy is a single left-aligned column: the text side
+            is held near-opaque while the right stays clear enough for the picture to
+            read, and a second pass along the bottom keeps the fold from ending in a hard
+            seam against the section below. */}
+        {HERO_COVER && (
+          <div
+            aria-hidden
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              backgroundImage:
+                "linear-gradient(90deg, rgba(var(--gf-bg-rgb),0.94) 0%, rgba(var(--gf-bg-rgb),0.86) 38%, rgba(var(--gf-bg-rgb),0.55) 72%, rgba(var(--gf-bg-rgb),0.42) 100%)," +
+                "linear-gradient(180deg, rgba(var(--gf-bg-rgb),0.55) 0%, transparent 28%, transparent 62%, rgba(var(--gf-bg-rgb),0.85) 100%)",
+            }}
+          />
+        )}
+
+        {/* ── 3. Accent glow ──
+            NOTE: a masked 44px Grafana-style grid used to sit here, under the glow.
             Removed — it was drawn to give a mostly-empty fold some texture, and the
             fold is no longer mostly empty. Behind type it competed with the copy
             rather than supporting it. The accent glow and HeroBackdrop's sparklines
@@ -459,6 +530,12 @@ export default function Login() {
           className="absolute inset-0 pointer-events-none"
           style={{ backgroundImage: "radial-gradient(ellipse at 18% 0%, rgba(87,148,242,0.13) 0%, transparent 62%)" }}
         />
+
+        {/* ── 4. The drifting telemetry lines ──
+            Deliberately ABOVE the photo and its scrim, so the animation still reads
+            over a picture instead of being buried by it. This is the layer that says
+            "there are graphs behind this product", and it is the one thing about the
+            fold that must survive a background change. */}
         <HeroBackdrop />
 
         {/* The sign-in messages have no form to live in any more, so they sit at the
@@ -485,28 +562,27 @@ export default function Login() {
               losing its place on the return sweep. */}
           <div className="max-w-7xl mx-auto w-full">
             <div>
-              <Reveal>
-                {/* The eyebrow now carries what the SYSTEM is, because the institution
-                    name has been promoted into the headline below it. */}
-                <p className="text-[11px] tracking-[0.1em] sm:text-[12.5px] sm:tracking-[0.2em] uppercase mb-4 sm:mb-5 leading-relaxed" style={{ color: "var(--gf-accent-text)" }}>
-                  {BRAND.tagline}
-                </p>
-              </Reveal>
-
+              {/* NOTE: an eyebrow line sat here above the headline, carrying the
+                  institution name. Removed — with the system name promoted to the h1 it
+                  was the second thing on the fold naming something the fixed top bar
+                  already names (BRAND.name + BRAND.subtitle), and that bar is on screen
+                  before this section is even scrolled to.
+                  The fold's height no longer depends on it: `.hero-fold` is a full
+                  viewport at every width, so removing copy leaves space rather than
+                  shrinking the section. */}
               <Reveal delay={80}>
-                {/* The institution owns this page, so it is the h1 — the first thing a
-                    reader needs is WHOSE system this is, not what it claims to do.
-                    ⚠️ The full name is ~82 characters. At this size it runs to three
-                    lines on a laptop and would be six on a phone, above the fold, so
-                    narrow screens keep the short form. Both are rendered and one hidden
-                    by CSS rather than switched in JS: this is above the fold, and a swap
-                    that waits for a media-query hook shows the wrong one first. */}
+                {/* The SYSTEM is the h1 — it names the thing this page is for, with the
+                    institution that owns it in the eyebrow directly above.
+                    No responsive short form is needed here any more: the tagline is ~39
+                    characters against the institution name's ~82, so it sets on two
+                    comfortable lines on a phone where the old headline ran to six.
+                    Type scale is unchanged, so the headline is exactly the size the
+                    institution name was. */}
                 <h1
                   className="text-[27px] sm:text-[34px] lg:text-[38px] xl:text-[42px] font-semibold leading-[1.15]"
                   style={{ color: "var(--gf-text-primary)" }}
                 >
-                  <span className="sm:hidden">{BRAND.name} · {BRAND.subtitle}</span>
-                  <span className="hidden sm:inline">{BRAND.fullName}</span>
+                  {BRAND.tagline}
                 </h1>
               </Reveal>
 
