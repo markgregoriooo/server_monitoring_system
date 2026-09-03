@@ -3,7 +3,7 @@
  *  ESP32 Environment & Smoke Monitoring System v2
  *  Components: 2x MQ-2, DHT11, Piezo Buzzer, WS2812B RGB LED,
  *              RTC (DS3231), micro SD (SPI), 2x IR Transmitter
- *
+ *  
  *  ─── PIN ASSIGNMENTS ────────────────────────────────────────
  *  MQ-2 #1 AOUT  : GPIO 34  (ADC, via 10kΩ/20kΩ divider)
  *  MQ-2 #2 AOUT  : GPIO 35  (ADC, via 10kΩ/20kΩ divider)
@@ -119,7 +119,7 @@ bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
 #define DHTTYPE DHT11
 
 /* =================== RGB LED ================ */
-#define NUM_PIXELS 20
+#define NUM_PIXELS 140
 
 /* ================ LEDC (Buzzer) ============= */
 #define FREQ_SMOKE_CRITICAL 2500
@@ -165,7 +165,7 @@ bool wifiWasUp = false;   // last known link state, for edge detection in loop()
 #include <SD.h>
 #include <SPI.h>
 
-#define LOG_FILE "/log.csv"
+#define LOG_FILE "/env_backup.csv"
 
 /* A long outage must not fill the card, and a box that never reconnects must not
    write until it dies. 8 MB is weeks of buffering at the cadence below; past it the
@@ -257,7 +257,7 @@ float WARNING_PPM   = 150.0;
 float CRITICAL_PPM  = 300.0;
 float TEMP_COLD     = 22.0;
 float TEMP_WARNING  = 29.0;
-float TEMP_CRITICAL = 35.0;
+float TEMP_CRITICAL = 32.0;
 float HUM_WARNING   = 85.0;
 float HUM_CRITICAL  = 95.0;
 

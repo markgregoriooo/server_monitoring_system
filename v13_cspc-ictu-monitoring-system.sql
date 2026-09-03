@@ -470,12 +470,13 @@ CREATE TABLE `server_specs` (
 --
 
 CREATE TABLE `settings` (
-  `id` int(11) NOT NULL,
+  `id` int(11) NOT NULL AUTO_INCREMENT,
   `updated_by` int(11) DEFAULT NULL,
   `setting_key` varchar(255) DEFAULT NULL,
   `setting_value` text DEFAULT NULL,
   `description` varchar(255) DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT current_timestamp()
+  `updated_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 
 --
@@ -770,7 +771,6 @@ ALTER TABLE `server_specs`
 -- Indexes for table `settings`
 --
 ALTER TABLE `settings`
-  ADD PRIMARY KEY (`id`),
   ADD UNIQUE KEY `idx_settings_key` (`setting_key`),
   ADD KEY `fk_settings_users1_idx` (`updated_by`);
 
