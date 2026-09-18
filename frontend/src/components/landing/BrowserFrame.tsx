@@ -8,12 +8,19 @@ import type { ReactNode } from "react";
  * no perspective tilt, no drop-shadow bloom. The dashboard inside is dense and
  * dark; ornate chrome around it competes with the thing it is framing.
  *
- * The URL is the real deployment hostname from the deployment guide, which is a
- * small honesty: the address someone will actually type.
+ * The URL is the REAL deployment hostname — a small honesty: the address someone will
+ * actually type. It is the live one, not an illustration, so it has to move when the
+ * deployment does: `monitoring.cspc.edu.ph` was the address ICTU was going to publish,
+ * and the system now runs on `monitoring.cspc-ictu.stream` behind a Cloudflare Tunnel
+ * (`cloudflare-tunnel-setup.md`).
+ *
+ * ⚠️ Change it here and the walkthrough (LoginTutorial) and the animation (DemoReel)
+ * both follow — neither passes `url`, and a frame showing an address that does not resolve
+ * is worse than no address at all.
  */
 export default function BrowserFrame({
   children,
-  url = "monitoring.cspc.edu.ph",
+  url = "monitoring.cspc-ictu.stream",
   className = "",
 }: {
   children: ReactNode;

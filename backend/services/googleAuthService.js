@@ -119,7 +119,10 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
     await recordDenial("domain_not_allowed", { email, ip, userAgent });
     // 403, not 401: we know who they are, they're just not allowed in.
     throw new AuthRejection(
-      "Only CSPC accounts (@cspc.edu.ph or @my.cspc.edu.ph) can sign in.",
+      // Short on purpose: this renders in the login banner, and the old wording ran to
+      // 65 characters — two lines on a phone and, inside its own well, two on a desktop.
+      // The accepted domains are already named on the sign-in page itself.
+      "Only CSPC accounts can sign in.",
       403,
     );
   }

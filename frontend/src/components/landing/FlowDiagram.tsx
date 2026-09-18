@@ -43,7 +43,7 @@ interface Box {
 // "SNMP · RouterOS · ICMP" is ~139px and spilled out of the old 130px box. Widening the
 // column also moves where the connectors start (see LINKS: x=166, was 136).
 const BOXES: Box[] = [
-  { x: 6, y: 18, w: 160, h: 52, title: "ESP32", sub: "DHT11 · MQ-2 · IR", tone: GREEN },
+  { x: 6, y: 18, w: 160, h: 52, title: "ESP32", sub: "DHT22 · MQ-2 · IR", tone: GREEN },
   { x: 6, y: 92, w: 160, h: 52, title: "Go agents", sub: "one per server", tone: GREEN },
   // ICMP is not a fourth ingest path — it rides the same pull poller. It earns a name
   // here because it is the only one that can monitor equipment we hold no credentials

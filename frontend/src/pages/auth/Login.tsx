@@ -83,7 +83,13 @@ function LogoMark({ size }: { size: number }) {
 // a sentence would take a paragraph to say — "0 passwords stored" is the whole
 // authentication design in two words.
 const FIGURES: { value: number; suffix?: string; label: string; note: string }[] = [
-  { value: 4, label: "ingest paths", note: "agents · SNMP · RouterOS · ICMP · sensor" },
+  // THREE, matching the section heading below, FlowDiagram's three boxes and CLAUDE.md.
+  // This read 4 with a note naming 5 protocols, which is what happens when a count of
+  // PATHS is given a note listing TRANSPORTS: SNMP, RouterOS and ICMP are three ways the
+  // one pull poller collects, not three paths into the backend (FlowDiagram.tsx: "ICMP is
+  // not a fourth ingest path — it rides the same pull poller"). The note now names the
+  // same three things the diagram draws, so the figure and the picture cannot drift.
+  { value: 3, label: "ingest paths", note: "ESP32 · agents · pollers" },
   { value: 3, suffix: "s", label: "room sampling", note: "every reading evaluated" },
   { value: 2, label: "data stores", note: "InfluxDB + MySQL" },
   { value: 0, label: "passwords stored", note: "Google Workspace only" },
@@ -195,7 +201,7 @@ function DownArrow() {
 function Banner({ color, children }: { color: string; children: React.ReactNode }) {
   return (
     <div
-      className="text-[14px] leading-relaxed px-3 py-2.5 mb-4"
+      className="text-[13px] sm:text-[14px] leading-relaxed px-3 py-2.5 mb-4"
       style={{ color, background: `${color}14`, border: `1px solid ${color}40`, borderRadius: 2 }}
     >
       {children}
@@ -428,28 +434,115 @@ export default function Login() {
         </div>
 
         {/* Theme toggle + sign in */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* No `gap` here: the sign-in button collapses to zero width at the top of the
+            page, and a gap would survive that collapse and push the theme button 8px
+            off the right edge — visibly out of line with its own scrolled position.
+            The spacing lives on that wrapper's margin instead, and collapses with it. */}
+        <div className="flex items-center shrink-0">
           <button
             type="button"
             onClick={toggleTheme}
             title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
             aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-            className="gf-icon-btn flex"
-            // Overridden to 32px so it matches the Sign in button beside it —
+            className="gf-icon-btn flex items-center justify-center overflow-hidden whitespace-nowrap"
+            // Height is overridden to 32px so it matches the Sign in button beside it —
             // `gf-icon-btn` is 28px, which is right in the dashboard chrome where every
             // neighbour is another icon button, and 4px short here where the neighbour
             // is a 32px-tall text button. Local override rather than editing the class:
             // the sidebar and header use it at 28 and should stay there.
-            style={{ width: 32, height: 32 }}
+            //
+            // WIDTH is the part that moves, and it is CONTENT-DRIVEN (`auto`) rather than
+            // a pair of Tailwind width classes. `.gf-icon-btn` declares `width: 28px` from
+            // inside `@layer utilities` — the SAME layer Tailwind's own `w-8` lands in, and
+            // later in it — so at equal specificity the class wins and `w-8` silently does
+            // nothing. The button then rendered 28 wide by 32 tall: a thin box, not the
+            // square it had always been. An inline width outranks both.
+            //
+            // 8px either side is what makes it exactly square: 14px icon + 8 + 8 + the 1px
+            // border each side = 32, matching the height. The label's own max-width
+            // animation is what grows and shrinks it; the button just follows its content,
+            // which is also why no `sm:` variant is needed — the label is `display: none`
+            // on a phone, so there the button is always the 32px square.
+            //
+            // ⚠️ The LABEL collapses its own width, which is what keeps this honest: the
+            // content then always FITS the button, at both ends of the animation and
+            // everywhere between. A label left at full width inside a 32px button
+            // overflows it, and `overflow-hidden` then clips whatever `justify-*` decided
+            // to push out — which is how the icon disappeared at the collapsed size.
+            // Because nothing overflows, `justify-center` is safe and the icon is exactly
+            // centred at 32px on every screen, mobile included.
+            //
+            // The inline transition restates the class's own transitions: declaring
+            // `transition` here replaces that declaration outright, and leaving them out
+            // would silently kill the hover and press feedback.
+            style={{
+              width: "auto",
+              height: 32,
+              paddingLeft: 8,
+              paddingRight: 8,
+              transition:
+                "background-color .12s ease, color .12s ease," +
+                " border-color .12s ease, box-shadow .12s ease, transform .06s ease",
+            }}
           >
-            <ThemeIcon theme={theme} />
+            <span className="shrink-0 flex"><ThemeIcon theme={theme} /></span>
+            {/* Names the mode it switches TO, matching the title/aria-label. Desktop only:
+                on a phone the button never widens, so there is nowhere to put it — and
+                `display: none` there means the icon is the only content, centred.
+                The left margin collapses with the width, or a flex gap would survive the
+                collapse and shove the icon off-centre by its own 6px. */}
+            <span
+              className="hidden sm:inline-block overflow-hidden text-[12px] leading-none"
+              style={{
+                // A CAP, not a width: the label is shrink-to-fit, so this only has to be
+                // comfortably larger than the longest string ("Light mode") for the label
+                // to take its natural width and never clip on a different font metric.
+                maxWidth: scrolled ? 0 : 96,
+                marginLeft: scrolled ? 0 : 6,
+                opacity: scrolled ? 0 : 1,
+                transition:
+                  "max-width .28s ease, margin-left .28s ease, opacity .18s ease",
+              }}
+            >
+              {theme === "dark" ? "Light mode" : "Dark mode"}
+            </span>
           </button>
           {/* Desktop only. On a phone the bar has room for the wordmark or this, not
               both, and this is the one with somewhere else to go: the hero carries a
               full-size Sign in button, and the back-to-top control returns you to it
               from anywhere on the page. Losing the wordmark instead would leave a bare
-              logo square identifying nothing. */}
-          <span className="hidden sm:block">{googleButton("sm")}</span>
+              logo square identifying nothing.
+
+              ⚠️ Hidden at the top of the page too, and for the same reason it is hidden
+              on a phone: at rest the hero's own full-size Sign in button is the one on
+              screen, so this is a second copy of a control the reader is already looking
+              at. It fades in with the frosted bar, on the same `scrolled` flag and the
+              same .28s curve, once that hero button has left the viewport.
+
+              `visibility`, not just `opacity` — a transparent button is still clickable
+              and still in the tab order, so keyboard focus could land on a control
+              nobody can see. Transitioning visibility as well holds it visible for the
+              length of the fade OUT and flips it immediately on the way IN, which is
+              exactly the behaviour wanted, and keeps it out of the accessibility tree
+              while hidden without a separate aria-hidden. */}
+          <span
+            className="hidden sm:block overflow-hidden"
+            style={{
+              // Width, not just opacity: an invisible button that still occupies its box
+              // would leave the theme button expanding into a gap rather than into the
+              // space this one vacates. Collapsing it is what makes the two read as one
+              // exchange instead of two unrelated fades.
+              maxWidth: scrolled ? 200 : 0,
+              marginLeft: scrolled ? 8 : 0,
+              opacity: scrolled ? 1 : 0,
+              visibility: scrolled ? "visible" : "hidden",
+              transition:
+                "max-width .28s ease, margin-left .28s ease, opacity .28s ease," +
+                " visibility .28s ease",
+            }}
+          >
+            {googleButton("sm")}
+          </span>
         </div>
       </header>
 
@@ -542,7 +635,10 @@ export default function Login() {
             top of the fold — directly under the button that produces them. */}
         {(notice || info || error) && (
           <div className="relative z-10 px-4 sm:px-6 pt-6 flex justify-center" aria-live="polite">
-            <div className="w-full max-w-lg">
+            {/* max-w-2xl, not lg: the longest of these messages is the domain rejection,
+                and at 14px monospace it needs ~550px — it wrapped inside a 512px well on a
+                DESKTOP, which is not a mobile problem at all. */}
+            <div className="w-full max-w-2xl">
               {notice && <Banner color={ORANGE}>{notice}</Banner>}
               {info && <Banner color={accentText}>{info}</Banner>}
               {error && <Banner color={RED}>{error}</Banner>}

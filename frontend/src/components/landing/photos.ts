@@ -56,11 +56,11 @@ export const LANDING_PHOTOS: LandingPhoto[] = [
     caption: "The environment node, installed",
     title: "The environment node",
     detail:
-      "An ESP32 carrying a DHT11, two MQ-2 gas sensors, an infrared transmitter array, a " +
+      "An ESP32 carrying a DHT22, two MQ-2 gas sensors, an infrared transmitter array, a " +
       "WS2812B status strip and a piezo buzzer. It pushes a reading every three seconds over an " +
       "authenticated Socket.IO connection — every one of them evaluated against the alert " +
-      "rules, though only about one in ten is stored, because a server room does not move 1 °C " +
-      "in three seconds and the rest is quantisation noise. A DS3231 clock and a micro SD card " +
+      "rules, though only about one in ten is stored, because a server room does not move " +
+      "measurably in three seconds and the rest is sensor noise. A DS3231 clock and a micro SD card " +
       "let it keep recording when the backend is unreachable and replay the gap on reconnect.",
     meta: "ESP32 · Socket.IO push · ~3s",
     brief:
@@ -69,19 +69,19 @@ export const LANDING_PHOTOS: LandingPhoto[] = [
   {
     id: "sensor-board",
     src: "/landing/sensor-board.jpg",
-    alt: "DHT11, two MQ-2 gas sensors and the infrared transmitters on the ESP32 board",
-    caption: "DHT11, two MQ-2 sensors, IR transmitters",
+    alt: "DHT22, two MQ-2 gas sensors and the infrared transmitters on the ESP32 board",
+    caption: "DHT22, two MQ-2 sensors, IR transmitters",
     title: "The sensors, close up",
     detail:
-      "The DHT11 reports temperature and humidity at 1 °C and 1 %RH resolution. The two MQ-2 " +
+      "The DHT22 reports temperature and humidity at 0.1 °C and 0.1 %RH resolution. The two MQ-2 " +
       "gas sensors are deliberately judged separately rather than averaged — one rising while " +
       "the other does not is the entire reason there are two of them, and it is what tells a " +
       "real event from a drifting sensor. Their clean-air baseline is measured once per " +
       "location and stored in flash, not re-measured at boot: a restart during a gas event " +
       "would record polluted air as clean.",
-    meta: "DHT11 + 2x MQ-2 + IR TX on GPIO 25/33",
+    meta: "DHT22 + 2x MQ-2 + IR TX on GPIO 25/33",
     brief:
-      "Top-down on the board so the DHT11, BOTH MQ-2s and the two IR LEDs are individually visible. Fill the frame.",
+      "Top-down on the board so the DHT22, BOTH MQ-2s and the two IR LEDs are individually visible. Fill the frame.",
   },
   {
     id: "rack",

@@ -162,7 +162,7 @@ export default function PhotoGallery() {
                       fontSize: 12.5,
                       lineHeight: 1.4,
                       // Two lines' worth, reserved whether the caption needs them or
-                      // not: "DHT11, two MQ-2 sensors, IR transmitters" wraps at this
+                      // not: "DHT22, two MQ-2 sensors, IR transmitters" wraps at this
                       // column width and the other three do not, so without a floor that
                       // one panel stands 18px taller than its neighbours.
                       minHeight: 55,
