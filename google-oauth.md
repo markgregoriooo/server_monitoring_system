@@ -231,18 +231,33 @@ Common errors:
 > CSPC accounts — Internal audience"), together with the HTTPS hostname setup it depends on
 > (§6.1, provided by ICTU). Follow that at deployment time; the notes below are the rationale.
 
-- **This project uses Internal**, and the Cloud project is owned by the `cspc.edu.ph`
-  organization — no user cap, no verification review, no "unverified app" warning, and Google
-  itself restricts sign-in to CSPC accounts. ✅ Confirmed 2026-08-05 that `cspc.edu.ph`
-  (employees) and `my.cspc.edu.ph` (students) are a **single Workspace**, verified by a
-  successful `@my.cspc.edu.ph` sign-in under Internal.
-- **Do not "publish" the app.** Publishing status (Testing → In production) applies only to
-  **External** apps, to lift the 100-test-user cap. Internal has no publishing step and is live
-  for the org as soon as it's set; switching to External to "publish" would throw away the org
-  restriction. Only relevant if the Internal path ever becomes unavailable.
-- Trade-off to know: the consent-screen **logo** is gated behind app verification, which
-  Internal apps never undergo — so the app *name* renders but the logo does not. Not worth
-  switching to External over.
+- ⚠️ **This project is EXTERNAL, not Internal — corrected 2026-09-18.** The Cloud project
+  (number `729616051996`) sits under **no organization**, so the Internal option is greyed out
+  and cannot be enabled from here: Internal requires the project to live inside a Workspace
+  org, and a `@my.cspc.edu.ph` student account has no rights on the `cspc.edu.ph` org to put it
+  there. The earlier "Internal confirmed 2026-08-05" note was wrong, and wrong in an
+  instructive way — its evidence was *a successful `@my.cspc.edu.ph` sign-in*, which succeeds
+  under External+Testing just as well and so never distinguished the two. That `cspc.edu.ph`
+  and `my.cspc.edu.ph` are one Workspace is still true; it simply is not what decides this.
+- **Google does NOT restrict sign-in to CSPC accounts.** That was an Internal property this
+  project never had. The real gate is server-side and always was: `GOOGLE_ALLOWED_DOMAINS` via
+  `services/googleDomain.js`, with refusals audited by `authService.recordSignInDenied`. Do not
+  count Google as a security layer here.
+- **Publish the app (Testing → In production).** In Testing there is a **100-user cap counted
+  over the app's LIFETIME** — it never resets, and every account that has ever signed in has
+  consumed a slot (20 were gone by 2026-09-18). At 100, no new CSPC staff member can sign in,
+  ever, and there is no way to reclaim slots. The scopes are `openid email profile`, all
+  **non-sensitive**, so production needs no verification review — only the **App domain**
+  fields filled in on the Branding page (home page / privacy policy / terms →
+  `https://monitoring.cspc-ictu.stream` and `/privacy`, which is public by design).
+- The consent-screen **logo** is hidden while the app is in Testing, and setting a logo is
+  itself what triggers the verification requirement. If it blocks publishing, remove it — a
+  permanent sign-in ceiling is a real failure and a missing logo is cosmetic. The app *name*
+  renders either way, on both the consent screen and the account chooser.
+- **The institutional fix** is for ICTU to own the Cloud project under the `cspc.edu.ph` org,
+  on a CSPC hostname. Internal then becomes available, the cap disappears, and the branding is
+  legitimately CSPC's rather than asserted on a privately-registered domain. Same ask as the
+  `ictusupport@` App Password and the `monitoring.cspc.edu.ph` hostname — send them together.
 - Serve the dashboard over **HTTPS at a real hostname** and add it to **Authorized JavaScript
   origins** — this is what lets campus PCs and phones sign in at all. ICTU publishes that
   endpoint; see `deployment-guide.md` §6.1.

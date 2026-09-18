@@ -1527,8 +1527,11 @@ See `audits/api-infra-security-2026-08-25.md` — A-03.
 > is reachable by anyone, including bots and scanners. Three layers already stand in the way,
 > and it's worth knowing they're what makes public exposure acceptable:
 >
-> 1. **Google OAuth with Internal audience** — only accounts in the CSPC Workspace can even
->    authenticate. There's no password to guess and no local account to brute-force.
+> 1. **Google OAuth + the server-side domain allow-list** — there is no password to guess and
+>    no local account to brute-force. ⚠️ The app is **External** (Internal is unavailable —
+>    `google-oauth.md` §10), so Google itself does *not* restrict who reaches the consent
+>    screen. `GOOGLE_ALLOWED_DOMAINS` (`services/googleDomain.js`) is what refuses a session to
+>    anything outside the CSPC domains, and `recordSignInDenied` audits the attempt.
 > 2. **Admin approval** — a valid CSPC account still lands `status='pending'` and cannot hold a
 >    session until an admin approves it ([§4.3](#43-bootstrap-the-first-admin-important--chicken-and-egg)).
 > 3. **Rate limiting** — 30 sign-in attempts / 15 min per IP (failures only), 3000 requests /
