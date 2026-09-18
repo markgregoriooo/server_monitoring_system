@@ -15,39 +15,39 @@ part works internally* see `CLAUDE.md`, `server-metrics.md`, `google-oauth.md`, 
 > is a single full export that already contains every change the old `migrations/` folder
 > applied, plus the seed rows the app needs to function. See [§2.1](#21-mysql).
 
-> **Deployment model (decided):** **on-premise at CSPC** — the backend, databases, and
+> **Deployment model (decided):** **on-premise at CSPC** — the backend, databases and
 > dashboard all run on one **campus server**, published over HTTPS at
-> `monitoring.cspc.edu.ph` by **ICTU's own edge** (their DNS, their certificate, reverse-proxied
-> to this server). The backend *must* be on campus because it talks directly to the
-> server-room hardware over the LAN — and polls routers / UPS / MikroTik on private addresses
-> a cloud host could never reach.
-> See [§5](#5-serve-everything-from-one-campus-server-nginx) and
-> [§6](#6-publish-the-dashboard-over-https-ictu-endpoint).
+> **`monitoring.cspc-ictu.stream`** through a **Cloudflare Tunnel**. The backend *must* be on
+> campus because it talks directly to the server-room hardware over the LAN, and polls
+> routers / UPS / MikroTik on private addresses no cloud host could reach.
+>
+> ⚠️ **The tunnel is a pipe, not a host.** It removes nginx, port-forwarding, TLS certificates
+> and the wait for ICTU to publish a hostname — it does not remove the server. See
+> [§5](#5-publish-the-dashboard-cloudflare-tunnel).
 
 ---
 
 ## 0. Architecture at a glance (what you actually deploy)
 
 ```
-   Staff (campus or home) ─https─▶ ICTU edge ─┐  (their DNS + TLS cert, reverse proxy)
-                                             │
+   Staff (campus or home) ─https─▶ Cloudflare ─┐  (their DNS + TLS cert)
+                                               │  outbound tunnel, no open ports
    ┌─────────────────────── CAMPUS SERVER (on-prem) ───────────────────────┐
-   │                                         ▼                              │
-   │   nginx (:80/:443)                                                     │
-   │     ├─ serves frontend/dist  (React SPA, static files)                 │
-   │     └─ reverse-proxies /api + /socket.io → backend :3000               │
-   │                                         │                              │
+   │                                          ▼                             │
+   │   cloudflared  ─┬─ /api/ + /socket.io/ ─▶ backend      :3000           │
+   │                 └─ everything else ─────▶ serve -s dist :8080          │
+   │                                          │                             │
    │   Backend: Node + Express + Socket.IO (:3000)  ──▶ MySQL 8 (:3306)     │
    │   backend/src/server.js                        └─▶ InfluxDB 2 (:8086)  │
    └───────────────────────────────────────────────────────────────────────┘
         ▲ Socket.IO(deviceKey)        ▲ HTTP Bearer        ▲ SNMP / RouterOS API
    ESP32 env node              Go agents (per server)   Routers/UPS/MikroTik
    (campus LAN)               (campus LAN)              (campus LAN)
-                                                + Google OAuth (login) · Resend (email, optional)
+                                                + Google OAuth (login) · SMTP (email, optional)
 ```
 
 **On-campus collectors point at the server's LAN address; only humans (browsers) use the
-public HTTPS hostname.** See [§6](#6-publish-the-dashboard-over-https-ictu-endpoint).
+public hostname.** See [§5](#5-publish-the-dashboard-cloudflare-tunnel).
 
 **Five deployable units:** (1) MySQL, (2) InfluxDB, (3) backend, (4) frontend,
 (5) the edge collectors (Go agents on each server + the ESP32 firmware) — units 1–4 all
@@ -66,11 +66,11 @@ sensor that never appears.
 
 | # | File | What goes in | Which address |
 |---|---|---|---|
-| 1 | `frontend/.env` | `VITE_API_URL=https://monitoring.cspc.edu.ph` | **hostname** |
-| 2 | `backend/.env` | `WEB_ORIGIN=https://monitoring.cspc.edu.ph` | **hostname** |
-| 3 | nginx site config<br>`/etc/nginx/sites-available/cspc` | `proxy_pass http://127.0.0.1:3000;` | **127.0.0.1** |
-| 4 | `iot/esp32/env_monitor_v2/secrets.h` | `#define BACKEND_HOST "192.168.100.9"` | **LAN IP** |
-| 5 | *(a command, not a file)* the agent installer | `install.sh http://192.168.100.9:3000 AIK-<key>` | **LAN IP** |
+| 1 | `frontend/.env` | `VITE_API_URL=https://monitoring.cspc-ictu.stream` | **hostname** |
+| 2 | `backend/.env` | `WEB_ORIGIN=https://monitoring.cspc-ictu.stream` | **hostname** |
+| 3 | `~/.cloudflared/config.yml` | `service: http://localhost:3000` / `:8080` | **localhost** |
+| 4 | `iot/esp32/env_monitor_v2/secrets.h` | `#define BACKEND_HOST "192.168.100.39"` | **LAN IP** |
+| 5 | *(a command, not a file)* the agent installer | `install.sh http://192.168.100.39:3000 AIK-<key>` | **LAN IP** |
 
 #### Files you do NOT edit
 
@@ -84,9 +84,9 @@ sources of truth that disagree:
 | `frontend/src/api/client.ts` | Axios `baseURL`, same value again. |
 
 That is worth stating plainly because it is a natural thing to go looking for: the live
-socket and the REST API are pinned by **one** variable, `VITE_API_URL`. nginx proxies both
-`/api/` and `/socket.io/` to the backend on the same hostname, so the browser only ever
-talks to one origin.
+socket and the REST API are pinned by **one** variable, `VITE_API_URL`. The tunnel routes both
+`/api/` and `/socket.io/` to the backend on the same hostname, so the browser only ever talks
+to one origin.
 
 #### Why each one is what it is
 
@@ -95,16 +95,20 @@ the only address it can reach. `VITE_API_URL` tells the browser where to call;
 `WEB_ORIGIN` tells the backend which origin to accept CORS from. **They must match exactly**
 — same scheme, same host, no trailing slash.
 
-**127.0.0.1 (3)** — nginx runs on the *same machine* as the backend, so it reaches it over
-loopback. This address is meaningful only inside that box. A browser asking for
-`127.0.0.1:3000` is asking its **own** laptop, where nothing is listening.
+**localhost (3)** — `cloudflared` runs on the *same machine* as the backend, so it reaches it
+over loopback. This address is meaningful only inside that box. A browser asking for
+`localhost:3000` is asking its **own** laptop, where nothing is listening.
 
-**LAN IP (4, 5)** — the ESP32 and the Go agents are on campus and talk to `:3000`
-directly, never through nginx. That keeps ingest alive when the internet or ICTU's edge is
-down, and it is why §9.1 firewalls `:3000` to the collector subnets rather than closing it.
+**LAN IP (4, 5)** — the ESP32 and the Go agents are on campus and talk to `:3000` directly,
+never through the tunnel. That keeps collection, buzzing and alerting alive when the internet
+is down — only the dashboard goes dark — and it is why §9.1 firewalls `:3000` to the collector
+subnets rather than closing it.
 
 > ⚠️ **`VITE_API_URL` is compiled into the JavaScript at build time.** Edit
 > `frontend/.env` **before** `npm run build` ([§4.1](#41-frontendenv) → [§4.2](#42-build)).
+> This is the most common post-deploy failure: everyone except you sees
+> "cannot connect to server", because your own localhost testing happens to guess the right
+> address while the built bundle carries the wrong one.
 > Building first and editing afterwards leaves the old address inside the bundle: the page
 > loads, every API call and the socket fail, and the config file on disk looks correct —
 > which is what makes it expensive to diagnose.
@@ -119,16 +123,16 @@ down, and it is why §9.1 firewalls `:3000` to the collector subnets rather than
 | npm | bundled with Node | |
 | MySQL | **8.0+** | relational store |
 | InfluxDB | **2.x** | time-series store (env, server, router/UPS metrics) |
-| nginx | latest | serves the dashboard + reverse-proxies the API ([§5](#5-serve-everything-from-one-campus-server-nginx)) |
+| `cloudflared` | latest | publishes the dashboard over HTTPS ([§5](#5-publish-the-dashboard-cloudflare-tunnel)) — replaces nginx |
 | Go | **1.22+** | only to *build* the agents; target servers need nothing |
 | Arduino IDE / arduino-cli | latest | only to flash the ESP32 |
 | A Google Cloud OAuth **Web** client | — | login is Google-only (`google-oauth.md`) |
-| An HTTPS hostname from ICTU | — | `monitoring.cspc.edu.ph`, published by ICTU ([§6.1](#61-request-the-https-endpoint-from-ictu)). **Google rejects a bare LAN IP**, so this is required, not optional |
+| An HTTPS hostname | — | `monitoring.cspc-ictu.stream`, already registered and routed ([§5](#5-publish-the-dashboard-cloudflare-tunnel)). **Google rejects a bare LAN IP**, so this is required, not optional |
 | (optional) Resend account | — | alert emails; system works without it |
 
 Network: the backend listens on **0.0.0.0:3000** (all interfaces). On-campus collectors
 (agents, ESP32) reach it directly at the server's LAN IP:3000; browsers reach it through
-nginx (+ ICTU's edge). Give the campus server a **static LAN IP / internal hostname** —
+the Cloudflare Tunnel. Give the campus server a **static LAN IP / internal hostname** —
 agents and firmware cache the address, and ICTU's proxy needs a fixed target.
 
 ---
@@ -142,7 +146,7 @@ section is how it gets there. Do it first — §2 onward all run from inside it.
 declares `WorkingDirectory=/opt/cspc/backend`, and §5.2 serves the dashboard from
 `/opt/cspc/frontend-dist`. Putting the project anywhere else means editing the unit file.
 
-> ⚠️ **Do not put it under `/home/<you>/`.** nginx runs as `www-data` and usually cannot
+> ⚠️ **Do not put it under `/home/<you>/`.** The service account usually cannot
 > traverse a home directory, which produces a 403 that reads like a config error (§5.6).
 
 #### 1.1.1 Create the service account and the directory
@@ -198,12 +202,12 @@ be "no" on an institutional server.
 | Ask for | Why you need it | If you don't get it |
 |---|---|---|
 | **An SSH account** on the campus server, plus its **IP/hostname and SSH port** | Every method except USB starts here | You are on Method 3, physically at the machine |
-| **`sudo` rights** for that account | Installing Node/MySQL/InfluxDB/nginx, creating the `cspc` service user, writing to `/opt`, `systemctl`, firewall rules — §1 through §5 all need root | Nothing in this guide can be completed; ICTU must run it with you |
+| **`sudo` rights** for that account | Installing Node/MySQL/InfluxDB/cloudflared, creating the `cspc` service user, writing to `/opt`, `systemctl`, firewall rules — §1 through §5 all need root | Nothing in this guide can be completed; ICTU must run it with you |
 | **A static LAN IP** (or a reserved DHCP lease) for the server | Agents and the ESP32 firmware **cache the address**. If it moves, every collector goes silent at once and nothing points at DHCP as the cause | Re-flash the ESP32 and re-enroll every agent whenever the lease changes |
 | **Outbound internet from the server** to `github.com` (**port 22** for SSH clones, or 443 for HTTPS) and `registry.npmjs.org` (443) | `git clone` **and** `npm ci` both need it. `npm ci` is required by §1.1.4 regardless of how the code arrives | Method 1 is impossible, and §1.1.4 needs an offline `node_modules` workaround — tell ICTU early, this is the expensive one |
 | **Whether the server sits behind an HTTP proxy**, and its address | `git` and `npm` both need explicit proxy configuration; without it they hang and then time out with no useful error | Installs fail in a way that looks like a broken network |
-| **Inbound firewall**: TCP **3000** open to the subnets holding the monitored servers and the ESP32; **80/443** for the dashboard | Collectors reach the backend directly on `:3000`, never through nginx ([§9.1](#91-restrict-port-3000-to-the-agent-subnets--do-this-on-deploy-day)) | Agents enroll but never deliver metrics; the room shows no sensor data |
-| **The HTTPS hostname** — `monitoring.cspc.edu.ph` | Google OAuth **rejects a bare LAN IP**, so login cannot work without it ([§6.1](#61-request-the-https-endpoint-from-ictu)) | Nobody can sign in, including you |
+| **Inbound firewall**: TCP **3000** open to the subnets holding the monitored servers and the ESP32 | Collectors reach the backend directly on `:3000`, never through the tunnel ([§9.1](#91-restrict-port-3000-to-the-agent-subnets--do-this-on-deploy-day)). **80/443 are no longer needed** | Agents enroll but never deliver metrics; the room shows no sensor data |
+| **Outbound TCP 7844** allowed from the server | `cloudflared` dials Cloudflare on it. Nothing INBOUND needs opening — that is the point of a tunnel | The tunnel never connects: `failed to connect to the edge` |
 | **A maintenance window** for restarts | The backend restarts on every deploy and config change | Coordinate each restart ad hoc |
 
 > ⚠️ **Ask about outbound access first and explicitly.** "Can this server reach github.com
@@ -474,7 +478,7 @@ A clean deployment starts empty. None of these is a fault to fix:
 3.1  backend/.env   (fresh secrets)
 3.2  run the backend / install the systemd unit  → ops/systemd/README.md
 4.1  frontend/.env  (VITE_API_URL)  →  4.2 build
-5.x  nginx
+5.x  Cloudflare Tunnel
 6.x  HTTPS hostname + Google OAuth origins
 4.3  bootstrap the first admin      ← LAST: it needs Google sign-in working
 ```
@@ -635,7 +639,7 @@ GOOGLE_ALLOWED_DOMAINS=cspc.edu.ph,my.cspc.edu.ph   # blank = these defaults
 
 # CORS — the dashboard's public origin (the ICTU hostname from §6). Comma-separated;
 # or * for a roaming LAN. Include http://localhost:5173 too if you also use the dev server.
-WEB_ORIGIN=https://monitoring.cspc.edu.ph
+WEB_ORIGIN=https://monitoring.cspc-ictu.stream
 
 # Alert email (optional — blank RESEND_API_KEY = email off; bell + toast still work)
 RESEND_API_KEY=
@@ -821,13 +825,13 @@ npm install
 ```dotenv
 VITE_GOOGLE_CLIENT_ID=<same-web-client-id>.apps.googleusercontent.com
 # For the campus + ICTU-edge topology (§5/§6): pin the backend to the PUBLIC origin (no :3000).
-# nginx reverse-proxies /api and /socket.io to the backend on the same hostname, so the
-# browser talks to one origin. Must match the ICTU hostname and the backend's WEB_ORIGIN.
-VITE_API_URL=https://monitoring.cspc.edu.ph
+# The Cloudflare Tunnel routes /api and /socket.io to the backend on the same hostname, so
+# the browser talks to one origin. Must match the backend's WEB_ORIGIN exactly.
+VITE_API_URL=https://monitoring.cspc-ictu.stream
 ```
 
 > Why set this here: by default the app auto-detects the backend at `<page-host>:3000`
-> (`frontend/src/config.ts`). Behind nginx + ICTU's edge, port 3000 isn't public — the API
+> (`frontend/src/config.ts`). Behind the tunnel, port 3000 isn't public — the API
 > is reached at the page's own origin under `/api`. Pinning `VITE_API_URL` to the public
 > URL makes both the Axios client and Socket.IO use it.
 
@@ -840,8 +844,9 @@ vars at build time → **rebuild after any change** (`npm run build`).
 npm run build          # → frontend/dist/  (static SPA)
 ```
 
-`frontend/dist/` is served by nginx on the campus server — see
-[§5](#5-serve-everything-from-one-campus-server-nginx). (For local development instead:
+`frontend/dist/` is served by `npx serve -s dist -l 8080` on the campus server, which the
+tunnel forwards to — see [§5](#5-publish-the-dashboard-cloudflare-tunnel).
+(For local development instead:
 `npm run dev` → `http://localhost:5173`.)
 
 ### 4.3 Bootstrap the first admin (important — chicken-and-egg)
@@ -886,508 +891,233 @@ SELECT user_id, email, role, status FROM users;
 
 ---
 
-## 5. Serve everything from one campus server (nginx)
+## 5. Publish the dashboard (Cloudflare Tunnel)
 
-Put the built dashboard **and** the backend behind a single nginx on the campus server, so
-the browser sees one origin (no cross-origin/mixed-content issues) and ICTU's edge has a
-single target to forward to.
+Replaces nginx, port-forwarding, TLS certificates and waiting on ICTU for a hostname. The
+system is published at **`https://monitoring.cspc-ictu.stream`**.
 
-### 5.0 Who sets up what
+Full operating manual: `cloudflare-tunnel-setup.md`. This section is the deploy-day version.
 
-There are **two** reverse proxies in this deployment, on two different machines, configured by
-two different people. Confusing them is the most common source of "wait, is that mine?":
+### 5.0 What the tunnel is, and is not
+
+`cloudflared` makes an **outbound** connection from the campus server to Cloudflare.
+Cloudflare then forwards public traffic back down it.
+
+⚠️ **It does not host anything.** The backend, MySQL, InfluxDB and the dashboard files all
+still run on the campus server. Cloudflare is a pipe, not a host.
+
+⚠️ **The server must still be on the campus LAN.** The ESP32 opens a socket to it, the Go
+agents POST to it, and the SNMP and MikroTik pollers reach out to `192.168.100.x`. None of
+that can travel through Cloudflare — those are private addresses. This is why the deployment
+target is an on-prem machine and not a cloud VM.
+
+| Removed by the tunnel | Still required |
+|---|---|
+| nginx reverse proxy | the campus server itself |
+| public IP / port-forwarding | it being on the monitored LAN |
+| TLS certificate + renewal | it staying powered on |
+| ICTU publishing a hostname | |
+
+### 5.1 One hostname, two local ports
+
+The tunnel splits a single hostname by URL **path**:
 
 ```
-  Staff at home / on campus
-      │  https://monitoring.cspc.edu.ph
-      ▼
-  ICTU edge proxy               ←── THEY configure this. You never touch it.
-      │                              · their DNS record
-      │                              · their TLS certificate (HTTPS ends here)
-      │                              · their firewall (inbound 443)
-      │  plain http, over the campus LAN
-      ▼
-  YOUR campus server — nginx :80  ←── YOU configure this (§5)
-      ├─ /              → frontend/dist   (static React files)
-      ├─ /api/*         → 127.0.0.1:3000
-      └─ /socket.io/*   → 127.0.0.1:3000  (WebSocket)
-      │
-      ▼
-  Node backend :3000  →  MySQL · InfluxDB   ←── YOU (§2, §3)
+                                    ┌─ /api/        ─┐
+Browser ─https─▶ Cloudflare ─tunnel─┤ /socket.io/   ─┼─▶ localhost:3000   backend
+                                    └─ everything else ─▶ localhost:8080  dashboard files
+
+ESP32 + Go agents ──── LAN, straight to 192.168.100.39:3000 ────▶   (never the domain)
 ```
 
-**Why both?** ICTU's proxy makes the app *public and encrypted* — the part you can't do
-yourself. Your nginx does two things theirs can't:
+Two ports because the backend serves JSON only — the dashboard's HTML/JS/CSS are static
+files and need something to hand them out. That used to be nginx; now it is `serve`.
 
-1. **Serves the React app.** `npm run build` produces static files; the Node backend only
-   answers `/api` and `/socket.io` and will never serve HTML/JS/CSS. Something has to.
-2. **Presents one simple target.** ICTU forwards everything to `<LAN-IP>:80` and never needs
-   to know your internal layout. Without nginx they'd have to route three path prefixes to
-   different places — configuration in *their* system that you'd have to file a ticket to
-   change every time something moved.
-
-Everything below is **your** work, on **your** server, and none of it needs ICTU. Do it now,
-test it over the LAN, and have it working before they connect anything.
-
-### 5.1 Install nginx
+### 5.2 Install cloudflared on the server
 
 ```bash
-sudo apt update && sudo apt install nginx
-sudo systemctl enable --now nginx
-curl -I http://localhost          # expect: HTTP/1.1 200 OK (the nginx welcome page)
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cf.deb
+sudo dpkg -i cf.deb && rm cf.deb
+cloudflared --version
 ```
 
-### 5.2 Build the dashboard and put it where nginx can read it
+### 5.3 Move the tunnel credentials
+
+The tunnel and its DNS record **already exist** — they were created once and belong to the
+Cloudflare account, not to a machine. Do not create a second one.
+
+Copy two files from the machine that created it to the server's service account:
 
 ```bash
-cd frontend
-npm ci                            # or npm install
-npm run build                     # → frontend/dist
-
-sudo mkdir -p /opt/cspc
-sudo cp -r dist /opt/cspc/frontend-dist
-sudo chown -R www-data:www-data /opt/cspc/frontend-dist
-sudo chmod -R a+rX /opt/cspc/frontend-dist
+# on the server, as the service user
+mkdir -p ~/.cloudflared
+# then copy in (scp / USB):
+#   cert.pem
+#   f8859a41-0eea-4c0c-a698-165335c802e7.json
+chmod 600 ~/.cloudflared/*
 ```
 
-> ⚠️ **Set `VITE_API_URL` before building** ([§4.1](#41-frontendenv)) — Vite bakes it into the
-> bundle at build time. Building first and editing `.env` afterwards silently ships the wrong
-> backend URL, and the only symptom is API calls going to the wrong host.
+⚠️ Both are credentials. `cert.pem` can create tunnels and edit DNS on the whole domain.
+Never commit either; never put them on a shared drive.
 
-> ⚠️ **Don't serve the build from your home directory.** nginx runs as `www-data` and usually
-> can't traverse `/home/<you>/`, producing a 403 that looks like a config error. `/opt/cspc/`
-> or `/var/www/` avoids it.
+### 5.4 `~/.cloudflared/config.yml`
 
-### 5.3 The config
+```yaml
+tunnel: f8859a41-0eea-4c0c-a698-165335c802e7
+credentials-file: /home/<service-user>/.cloudflared/f8859a41-0eea-4c0c-a698-165335c802e7.json
 
-`/etc/nginx/sites-available/cspc-monitoring` (symlink it into `sites-enabled/`):
+ingress:
+  - hostname: monitoring.cspc-ictu.stream
+    path: ^/api/
+    service: http://localhost:3000
 
-```nginx
-server {
-    listen 80;
-    server_name _;                           # match ANY Host — safest behind ICTU's proxy,
-                                             # which may forward with Host: <LAN-IP>
+  - hostname: monitoring.cspc-ictu.stream
+    path: ^/socket.io/
+    service: http://localhost:3000
 
-    root /opt/cspc/frontend-dist;            # the `npm run build` output from §5.2
-    index index.html;
+  - hostname: monitoring.cspc-ictu.stream
+    service: http://localhost:8080
 
-    # Headroom only. The avatar-upload path (and middleware/upload.js) is gone —
-    # profile photos now come from Google — so nothing the app accepts is anywhere
-    # near this: agent metric batches are deliberately kept under the backend's
-    # explicit `express.json({ limit: '100kb' })`. Safe to drop to nginx's 1m default;
-    # kept as slack.
-    client_max_body_size 4m;
-
-    # React SPA — serve the file if it exists, else fall back to index.html
-    location / {
-        try_files $uri /index.html;
-    }
-
-    # REST API → backend
-    location /api/ {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # Socket.IO — needs the WebSocket upgrade headers
-    location /socket.io/ {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host       $host;
-        proxy_set_header X-Real-IP  $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-}
+  - service: http_status:404
 ```
 
-> ⚠️ **The `/uploads/` location is gone on purpose.** It used to proxy to the backend's
-> `express.static("uploads")`, which served real staff profile photos to anyone who asked,
-> with no token and no role check. The avatar-upload feature was deleted when login went
-> Google-only, and that reader has now been removed from the backend too
-> (`audits/api-infra-security-2026-08-25.md` — A-02). Avatars are absolute Google URLs.
-> If you copied this config from an earlier revision, delete that line.
+⚠️ **Order matters** — first match wins, catch-all last.
+⚠️ **Miss the `/socket.io/` rule** and the dashboard loads but no chart ever updates, no
+alert toast fires and the bell never counts. It is the single easiest thing to get wrong,
+because everything *looks* fine.
 
-### 5.3.1 Security headers for the dashboard PAGE
-
-The backend sets its own headers on every API response (`middleware/securityHeaders.js`),
-but **it never serves the HTML** — nginx does, from `frontend-dist`. So the Content-Security
-Policy that governs the dashboard has to live here; a CSP set by the API applies only to
-API responses.
-
-Add this inside the `server { }` block, above the `location` blocks:
-
-```nginx
-    # Applies to everything nginx serves from this vhost, including the SPA shell.
-    add_header X-Content-Type-Options  "nosniff"            always;
-    add_header X-Frame-Options         "DENY"               always;
-    add_header Referrer-Policy         "no-referrer"        always;
-    add_header Permissions-Policy      "camera=(), microphone=(), geolocation=()" always;
-
-    # Enable ONLY once §6's certificate is in place. Over plain HTTP this pins the
-    # hostname to HTTPS in every staff browser — on a host with no certificate that is
-    # a self-inflicted outage, and it is not quickly undoable.
-    # add_header Strict-Transport-Security "max-age=15552000" always;
-
-    # Built up with `set` rather than written as one 400-character line. nginx has no
-    # line-continuation inside a quoted string — a quoted value split across lines keeps
-    # the newlines, and a header value containing a newline is not a valid header.
-    set $csp "default-src 'self'";
-    set $csp "${csp}; script-src 'self' https://accounts.google.com";
-    set $csp "${csp}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com";
-    set $csp "${csp}; font-src 'self' https://fonts.gstatic.com";
-    set $csp "${csp}; img-src 'self' data: blob: https://*.googleusercontent.com";
-    set $csp "${csp}; connect-src 'self' https://accounts.google.com";
-    set $csp "${csp}; frame-src https://accounts.google.com";
-    set $csp "${csp}; frame-ancestors 'none'; base-uri 'self'";
-    set $csp "${csp}; form-action 'self'; object-src 'none'";
-    add_header Content-Security-Policy $csp always;
+Validate:
+```bash
+cloudflared tunnel ingress validate
+cloudflared tunnel ingress rule https://monitoring.cspc-ictu.stream/api/servers
+# must answer: service: http://localhost:3000
 ```
 
-Where each allowance comes from — **do not trim these without checking**:
-
-| Directive | Why it is there |
-|-----------|-----------------|
-| `script-src … accounts.google.com` | `@react-oauth/google` injects `https://accounts.google.com/gsi/client`. Without it the **sign-in button never loads** and nobody can log in |
-| `style-src 'unsafe-inline'` | The pages use React `style={{…}}` attributes throughout. A CSP-safe alternative is a per-response nonce, which Vite's static build cannot provide |
-| `style-src`/`font-src … fonts.g*` | JetBrains Mono (`src/index.css` `@import`) and Share Tech Mono (`index.html`) are loaded from Google Fonts |
-| `img-src … *.googleusercontent.com` | Profile photos come from the Google ID token (`lh3.googleusercontent.com`, but the host varies) |
-| `connect-src 'self'` | **Only correct when `VITE_API_URL` points at this same origin.** Left to auto-detect, `config.ts` builds `http://<host>:3000` — a *different* origin — and every API call and the socket are blocked. [§4.1](#41-frontendenv) already tells you to pin it to the public hostname (`https://monitoring.cspc.edu.ph`, no `:3000`); this is the second reason it matters |
-
-> ⚠️ **Verify before go-live, don't assume.** Load the dashboard, open DevTools ▸ Console
-> and look for `Refused to load …` / `Refused to connect …`. Then sign out and sign in
-> again — the Google button is the piece most likely to be blocked, and it is the piece
-> that locks everyone out. `add_header` in nginx is **replaced, not merged**, by any
-> `add_header` in a nested `location`, so if you add one later you must repeat these.
-
-### 5.4 Enable it
+### 5.5 Serve the built dashboard on :8080
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/cspc-monitoring /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default    # the welcome page would otherwise win
-sudo nginx -t && sudo systemctl reload nginx
+cd /opt/cspc-monitoring/frontend
+npm run build
+npx serve -s dist -l 8080
 ```
 
-`nginx -t` validates the config before you reload — if it reports an error, nginx keeps
-running the old config, so a typo can't take the site down.
+⚠️ **`-s` is required.** Without it, a deep link or F5 on `/alerts` returns 404 instead of
+falling back to `index.html`.
 
-### 5.5 Test over the LAN — before ICTU connects anything
+For production, run it under the same process manager as the backend (§3.2) rather than a
+login shell — a terminal that closes takes the dashboard with it.
 
-Do this from **another machine on the campus network**, using the server's LAN IP. Get all
-four green before handing the IP to ICTU; if something breaks after they wire it up, you'll
-know the problem is on their side.
+### 5.6 Run the tunnel as a service
 
 ```bash
-# 1. Dashboard HTML is served
-curl -I http://<LAN-IP>/                     # → 200, Content-Type: text/html
-
-# 2. SPA routing works (deep links must fall back to index.html, not 404)
-curl -I http://<LAN-IP>/dashboard            # → 200
-
-# 3. API reaches the backend (401 is CORRECT — the route exists and demands auth)
-curl -i http://<LAN-IP>/api/auth/me          # → 401 {"error":"Access denied..."}
-
-# 4. WebSocket upgrade is accepted
-curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
-     "http://<LAN-IP>/socket.io/?EIO=4&transport=websocket"   # → 101 Switching Protocols
+sudo cloudflared service install
+sudo systemctl enable --now cloudflared
+systemctl status cloudflared
 ```
 
-Then open `http://<LAN-IP>/` in a browser. The dashboard should load. **Login will fail at
-this stage — that's expected**, because Google rejects a bare LAN IP as an OAuth origin
-(§6.3). You're only proving nginx serves and routes correctly.
+It reconnects by itself after a network drop or a reboot. No cron, no watchdog.
 
-### 5.6 If something's wrong
+### 5.7 Four processes must be running
+
+| Process | Port | Started by |
+|---|---|---|
+| backend | 3000 | pm2 / systemd (§3.2) |
+| dashboard files | 8080 | pm2 / systemd |
+| `cloudflared` | — | systemd (§5.6) |
+| MySQL + InfluxDB | 3306 / 8086 | systemd |
+
+### 5.8 App settings
+
+**`backend/.env`**
+```ini
+WEB_ORIGIN=https://monitoring.cspc-ictu.stream
+TRUST_PROXY=1
+```
+
+⚠️ **`TRUST_PROXY=1`, not the default 2.** A tunnel is exactly one hop. At 2 every visitor
+arrives as `127.0.0.1` and the spare slot is filled by a header **they** control — so a
+visitor picks their own rate-limit bucket and their own value in `system_logs.ip_address`,
+the row that *is* the evidence for a Privacy Notice acceptance.
+
+**`frontend/.env`**
+```ini
+VITE_API_URL=https://monitoring.cspc-ictu.stream
+```
+
+⚠️ No port, no `/api` suffix — the tunnel splits by path, not by port.
+⚠️ Compiled in at **build time**. Edit this *before* `npm run build`, or the old address
+stays inside the bundle and every request fails while the file on disk looks correct.
+
+### 5.9 Google OAuth
+
+Console → Credentials → OAuth 2.0 Client ID → **Authorized JavaScript origins** → add:
+
+```
+https://monitoring.cspc-ictu.stream
+```
+
+Leave redirect URIs empty (the app uses `redirect_uri: "postmessage"`). Keep
+`http://localhost:5173` for development. Allow a few minutes to apply.
+
+### 5.10 Verify
+
+| # | Check | Expect |
+|---|---|---|
+| 1 | `https://monitoring.cspc-ictu.stream/api/policy/version` | JSON |
+| 2 | site root | login page, padlock |
+| 3 | `/privacy` typed directly | loads, not 404 |
+| 4 | sign in with a CSPC Google account | works |
+| 5 | watch a chart one minute | numbers move (proves `/socket.io/`) |
+| 6 | History → your sign-in row | your real public IP, not `127.0.0.1` |
+| 7 | Server Metrics + Environment | agents Online, sensor live |
+| 8 | open it on campus WiFi | loads |
+
+⚠️ **Row 8 is not a formality.** `.stream` is a low-reputation TLD and some institutional
+DNS filters block whole TLDs. If it loads on mobile data but not on campus WiFi, that is
+filtering rather than a fault, and the only fix is a different domain. Test it early.
+
+### 5.11 Troubleshooting
 
 | Symptom | Cause |
 |---|---|
-| **403 Forbidden** | nginx (`www-data`) can't read the build directory — check §5.2 permissions, and that it isn't under `/home/` |
-| **404 on every deep link** (`/dashboard`) | `try_files $uri /index.html;` missing — the SPA fallback |
-| **502 Bad Gateway** on `/api/` | backend isn't running, or not on `:3000`. Check `curl http://127.0.0.1:3000/api/auth/me` on the server itself |
-| **Page loads, live data never arrives** | `/socket.io/` block missing the `Upgrade`/`Connection` headers or `proxy_http_version 1.1` |
-| **413 on an agent metric batch** | `client_max_body_size` too low, or a proxy in front capping below 100 KB |
-| **Sign-in button never appears** | the CSP is blocking `https://accounts.google.com/gsi/client` — check DevTools ▸ Console (§5.3.1) |
-| **Page loads, every API call fails** | `connect-src 'self'` with `VITE_API_URL` left to auto-detect → the app calls `:3000`, a different origin (§5.3.1) |
-| **nginx welcome page instead of the dashboard** | the `default` site is still enabled — remove the symlink (§5.4) |
+| `502 Bad Gateway` | backend or `serve` not running |
+| Site unreachable entirely | `cloudflared` not running |
+| Dashboard loads, panels empty | `VITE_API_URL` unset, or set but not rebuilt |
+| `blocked by CORS policy` | `WEB_ORIGIN` — restart the backend after editing |
+| Login popup opens then closes | domain missing from Google's authorized origins |
+| Charts never move | `/socket.io/` rule missing or below the catch-all |
+| F5 gives 404 | missing `-s` on `serve` |
+| Everything `127.0.0.1` in History | `TRUST_PROXY` must be `1` |
+| `failed to connect to the edge` | campus firewall blocking outbound TCP **7844** |
+| Site dies after ~14 days | ICANN registrant email never verified |
 
-### 5.7 Notes
+Logs: `sudo journalctl -u cloudflared -f`
 
-- **TLS:** HTTPS is terminated at **ICTU's edge**
-  ([§6](#6-publish-the-dashboard-over-https-ictu-endpoint)) — nginx stays on plain port 80
-  locally and you never manage a certificate on this box. Certificates and renewals are
-  ICTU's responsibility.
-- **HTTPS is not optional.** Google refuses `http://<LAN-IP>` as an OAuth origin, so nginx
-  on port 80 with nothing in front of it means **nobody can log in**. §6 has to be in place
-  before the system is usable by anyone, on campus or off.
-- After this, the backend and dashboard share the hostname `monitoring.cspc.edu.ph`, so
-  set `VITE_API_URL` ([§4.1](#41-frontendenv)) and `WEB_ORIGIN` ([§3.1](#31-backendenv))
-  to exactly that.
+### 5.12 Optional — restrict who can open it
+
+Cloudflare dashboard → **Zero Trust** → **Access** → **Applications** → **Add an
+application** → **Self-hosted** → domain `monitoring.cspc-ictu.stream` → policy: Allow /
+Include / **Emails ending in** `@cspc.edu.ph`. Free up to 50 users.
+
+⚠️ Do **not** apply Access to `/api/` — it would block the Go agents if they ever move off
+the LAN.
 
 ---
 
-## 6. Publish the dashboard over HTTPS (ICTU endpoint)
+## 6. Bootstrap the first admin
 
-> 🛠️ **Developing right now? Skip this whole section.** You do **not** need HTTPS or a
-> hostname to work on the system. `npm run dev` serves the dashboard at
-> `http://localhost:5173`, and **`localhost` is the one non-HTTPS origin Google accepts** —
-> so Google sign-in works on your machine with no §6 setup at all.
->
-> The only Google Console step development needs is having `http://localhost:5173` listed
-> under **Authorized JavaScript origins** (§6.3) on whatever OAuth client your `.env`
-> already points at.
->
-> Come back to §6 when the dashboard has to be opened from **another machine** — a campus
-> PC, a phone, or someone's house. That's the point at which the LAN IP stops working
-> (Google rejects `http://192.168.x.x`) and you need the real hostname.
+The schema seeds **no** admin, so the first Google sign-in lands as `pending` with nobody
+able to approve it. Promote that row by hand, once:
 
-The dashboard needs a real HTTPS hostname before anyone other than you can log in — Google
-will not accept a bare LAN IP as an OAuth origin. **ICTU publishes that endpoint**: they own
-the DNS record and the certificate, and reverse-proxy to this server on the campus LAN.
-
-```
-  https://monitoring.cspc.edu.ph
-        │
-   ICTU edge  (their DNS record + TLS certificate)
-        │  ← reverse-proxy over the campus LAN
-   Campus server → nginx :80 → backend :3000
+```sql
+UPDATE users SET role = 'admin', status = 'active'
+ WHERE email = 'your.name@cspc.edu.ph';
 ```
 
-**Why this route:** it's free, the hostname is official, ICTU handles certificate renewals,
-no third party sits in the traffic path, and nothing extra runs on your server. It also
-survives handover cleanly — there's no personal domain or account for anyone to inherit.
+Everyone after that is approved from **User Management → Pending registrations**.
 
-### 6.1 Request the HTTPS endpoint from ICTU
-
-Everything else in §6 waits on this, and it's the item with the longest lead time — send the
-request as early as you can, even while still developing.
-
-**What you're asking for.** ICTU creates `monitoring.cspc.edu.ph`, terminates TLS with CSPC's
-certificate, and reverse-proxies to this server on the campus LAN. You provide the server's
-**static LAN IP and port 80** (nginx, §5); they provide everything public-facing.
-
-> ✅ **Off-campus access: agreed with ICTU (2026-08-05).** They want the dashboard reachable
-> from outside the campus network, so their edge publishes it: the name resolves in **public**
-> DNS, points to a **publicly routable** IP, and inbound 443 is permitted at their firewall.
-> Staff can check server status from home. See the hardening note in
-> [§10](#10-production-hardening) — the dashboard is now internet-facing, which changes what
-> needs protecting.
-
-**Two proxy requirements to state upfront.** These are what usually break with a proxy you
-don't control, and both are far cheaper to raise now than to debug later:
-
-| Requirement | Why |
-|---|---|
-| Pass **WebSocket upgrades** on `/socket.io/` | the dashboard's live data is Socket.IO; without it the page loads but never updates — which looks like a bug in your system |
-| Preserve **`X-Forwarded-For`** | the backend uses `req.ip` for the sign-in rate limiter and the `system_logs` audit trail; without it every request appears to come from their proxy |
-
-**The handover spec.** This is everything ICTU needs — how they implement it (nginx, Apache,
-HAProxy, an appliance) is their business:
-
-```
-Public hostname:  monitoring.cspc.edu.ph
-Forward to:       http://<CAMPUS-SERVER-LAN-IP>:80     (plain HTTP over the LAN)
-Forward:          ALL paths, unchanged (no prefix stripping / rewriting)
-
-Required headers:
-  Host                 monitoring.cspc.edu.ph    ← preserve; don't rewrite to the IP
-  X-Forwarded-For      client IP (append)
-  X-Forwarded-Proto    https
-
-WebSocket:        allow HTTP/1.1 Upgrade on /socket.io/ (long-lived connections;
-                  read timeout well above the ~25 s Socket.IO ping interval)
-Max body size:    at least 1 MB (report downloads stream out; the largest
-                  request IN is an agent metric batch, capped at 100 KB)
-
-Requested:        restrict /api/agents/ and /api/servers/metrics to campus LAN sources
-```
-
-> ⚠️ **Lead with the WebSocket requirement.** If their proxy silently drops upgrade requests,
-> the dashboard loads perfectly and simply **never updates** — no error, no console warning,
-> nothing visibly broken. It reads as a bug in your application, and you can lose a day
-> looking in the wrong place. One sentence upfront prevents it.
-
-Two others bite quietly if missed. **Path rewriting** — if their proxy strips a prefix, every
-`/api/...` call 404s. **Body size** — nothing this
-system accepts is large (the biggest request in is a 100 KB agent metric batch), but a proxy
-capped below that turns an agent's post-outage backfill into a silent 413.
-
-**Draft message** — a complete, ready-to-send version, including the seven questions to ask
-them, is in **`https_hostname&reverse_proxy_req_letter.md`** (and as a Word document,
-`…_letter.docx`, for sending or printing):
-
-> "We need the ICTU server-monitoring dashboard reachable over HTTPS at
-> `monitoring.cspc.edu.ph`. Can you host that endpoint — DNS record plus TLS, reverse-proxied
-> to our campus server at `<LAN-IP>:80`?
->
-> Two requirements on the proxy: it needs to pass **WebSocket upgrades** on `/socket.io/`
-> (the dashboard's live data depends on it) and preserve **`X-Forwarded-For`** so we log real
-> client IPs.
->
-> Also, could you restrict `/api/agents/` and `/api/servers/metrics` to campus LAN sources at
-> the proxy? Those endpoints are only ever called by monitoring agents inside the network —
-> never from the internet."
-
-> **`trust proxy` is set to `2`** in `backend/src/server.js` for this topology (ICTU's edge →
-> nginx → backend = two hops). With `1` the client IP would resolve to their proxy and every
-> user would share one apparent IP, quietly degrading the sign-in rate limiter and the audit
-> log. If the topology ever changes, this value has to change with it.
-
-### 6.2 Two addresses, two audiences (important)
-
-| Who | Uses which address |
-|---|---|
-| **Browsers / staff (incl. from home)** | the **public hostname** `https://monitoring.cspc.edu.ph` |
-| **Go agents + ESP32 (on campus)** | the **server's LAN address** `http://<backend-server-ip>:3000` |
-
-Keep the on-campus collectors pointing at the **internal LAN IP** — it's faster and doesn't
-depend on ICTU's edge or the internet being up. The public hostname is for human dashboard
-access only.
-
-> There is a **third** address, and it is the one people put in the wrong file: nginx
-> reaches the backend over `http://127.0.0.1:3000`, which is meaningful only on the campus
-> server itself. [§0.1](#01-which-address-goes-where-read-this-before-you-edit-anything)
-> is the one-page map of all three — which file each belongs in, and which files need no
-> edit at all.
-
-> ⚠️ **Login needs the internet, even on campus.** Ingest survives an ISP outage (the row
-> above keeps ESP32 + agents on the LAN), but *signing in* does not: the browser must reach
-> `accounts.google.com` and the backend must reach `oauth2.googleapis.com`. If the campus
-> link drops, nobody can obtain a new session, and since the JWT expires after 1 h everyone
-> already signed in is logged out within the hour. Data keeps being collected and nothing is
-> lost — only the dashboard UI becomes unreachable until the link returns.
-
-### 6.3 Update Google OAuth authorized origins
-
-Login runs in the browser from the public origin, so in **Google Cloud Console → your
-OAuth Web client**, add `https://monitoring.cspc.edu.ph` to **Authorized JavaScript
-origins**. Keep `http://localhost:5173` in the list as well so local development keeps
-working. Miss this and sign-in fails from the public URL. See `google-oauth.md`.
-
-Format is strict — `https://monitoring.cspc.edu.ph` exactly: scheme required, **no trailing
-slash**, no path, no `:443`, and the host must match character for character. Getting any of
-these wrong produces `Error 400: origin_mismatch` when the popup opens.
-
-> ⚠️ **This is why §6 is mandatory, not optional polish.** Google accepts only
-> `http://localhost` or an **HTTPS** origin here. A raw `http://192.168.x.x:5173` or
-> `http://<backend-server-ip>` is **rejected outright** — you cannot "just add the LAN
-> address". Without the ICTU hostname there is **no way for anyone to log in at all**,
-> on campus or at home. Treat §6.1 as a prerequisite of the whole deployment, not a
-> remote-access convenience.
-
-**Authorized redirect URIs stays empty.** The popup authorization-code flow uses the magic
-`postmessage` redirect URI, set in code (`services/googleAuthService.js`) — nothing goes in
-that box.
-
-### 6.4 Open the app to all CSPC accounts (Internal audience)
-
-Adding the origin is not enough. A fresh OAuth app sits in **External / Testing**, where
-**only Google accounts listed under Test users can sign in**, capped at 100 — fine for
-development, unworkable for a campus rollout. Fix this before go-live.
-
-> **"Publishing" is not a step here.** Two settings get conflated: **User type** (Internal ·
-> External) and **Publishing status** (Testing · In production). Publishing exists only to
-> lift an *External* app out of its 100-test-user sandbox — it does **not** apply to Internal.
-> An Internal app is live for the whole organization the moment you set it, with no button to
-> press and the Test users list ignored. **Do not "publish"**: that means switching to
-> External, which discards the org restriction, the removed user cap, and the absence of an
-> "unverified app" warning.
-
-The project lives under the **CSPC Google Workspace**, which unlocks the best option —
-**Internal**:
-
-| | External / Testing | External / Published | **Internal** |
-|---|---|---|---|
-| Who can sign in | only listed test users | any Google account on earth | **only CSPC Workspace accounts** |
-| User cap | 100 | none | none |
-| Google verification review | n/a | not needed for our scopes | **not needed** |
-| "Unverified app" warning | yes | possible | **no** |
-| Ongoing admin work | add every user by hand | none | none |
-
-> **Internal is only offered to projects owned by a Workspace organization.** A project
-> created with a personal Gmail account can never be switched to Internal, whatever else you
-> configure — so create it with a CSPC Workspace account from the start.
-
-> ✅ **Both CSPC domains are confirmed to be one Workspace** (verified 2026-08-05). Employees
-> sign in as `@cspc.edu.ph`, students as `@my.cspc.edu.ph`, and a `@my.cspc.edu.ph` account
-> was able to log in with Audience already set to **Internal** — which only admits members of
-> the owning Workspace, so the two domains are the same tenant.
->
-> This was the one thing that could have broken the plan: had they been separate tenants,
-> Internal would have refused every student account and you'd have needed External + Published.
-> It isn't, so **keep both domains in `GOOGLE_ALLOWED_DOMAINS`** and use Internal.
-
-> **Already done?** Check **IAM & Admin → Settings** — if it shows the `cspc.edu.ph`
-> organization, and **Google Auth Platform → Audience** reads *Internal*, steps 1–4 below are
-> complete. Only step 5 (adding the production origin to the Web client, §6.3) is left, and
-> that has to wait until the hostname exists.
-
-**Steps** (console.cloud.google.com, signed in **with the CSPC Workspace account** — check
-the avatar, this is the step people get wrong):
-
-1. **New Project** → name it e.g. `cspc-ictu-monitoring`. The **Organization** field must
-   show the CSPC org, not *No organization*. If it says *No organization*, you're on the
-   wrong account or lack org rights — stop and resolve that first.
-2. **Google Auth Platform → Branding** — app name, support email, optional CSPC logo (under
-   Internal the logo shows with no verification review).
-3. **Audience → user type = Internal.** If it's greyed out, go back to step 1. There is no
-   "Publish" button for Internal — it's live for the whole org as soon as it's configured,
-   and the Test users list becomes irrelevant.
-4. **Data access / Scopes** — keep **only** `openid`, `email`, `profile`. That's all the app
-   reads; anything sensitive or restricted drags you into a verification review for nothing.
-5. **Clients → Create client → Web application** — add the origins from §6.3, leave redirect
-   URIs empty, then copy **both** the **Client ID** and the **Client secret**.
-
-> ⚠️ **The client secret is shown once.** Google will never display it again — only the last
-> 4 characters. If it's lost, use **Add secret** to mint a new one. A client can hold several
-> secrets, so the safe rotation is: add new → update `.env` → verify a login → delete old.
-
-**Then update the config** — four values, two files. The client **ID must be identical in
-both**, since the backend verifies the ID token's *audience* against it:
-
-```bash
-# backend/.env
-GOOGLE_CLIENT_ID=<new>.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=<new secret>
-GOOGLE_ALLOWED_DOMAINS=cspc.edu.ph,my.cspc.edu.ph
-WEB_ORIGIN=https://monitoring.cspc.edu.ph
-
-# frontend/.env
-VITE_GOOGLE_CLIENT_ID=<new>.apps.googleusercontent.com   # SAME id as above
-VITE_API_URL=https://monitoring.cspc.edu.ph              # see §4.1 — no :3000 behind nginx
-```
-
-Restart the backend and **rebuild** the frontend — neither picks these up live (nodemon does
-not reload `.env`; Vite inlines `VITE_*` at build time).
-
-**Keep `GOOGLE_ALLOWED_DOMAINS` set even under Internal.** Google restricts sign-in to the
-org; the allow-list independently restricts it to these two domains. Defence in depth, and
-it lets you narrow access further without touching Google.
-
-**Verify:**
-
-| Test | Expected |
-|---|---|
-| Approved CSPC account | reaches the dashboard |
-| New CSPC account | "Registration submitted…" → shows in **User Management → Pending registrations** |
-| Personal `@gmail.com` | blocked by Google (Internal); our domain gate refuses it too |
-| `@my.cspc.edu.ph` student account | works (confirmed under Internal, 2026-08-05) — re-test after any Audience change |
-| Open the public HTTPS URL | popup opens, no `origin_mismatch` |
-
-**What does *not* change:** no application code changes — this is Google Cloud config plus
-`.env`. Existing accounts keep working, because Google's `sub` identifies the Google
-*account*, not the OAuth client, so stored `users.google_sub` values stay valid across a
-project switch. And **Internal does not mean "everyone at CSPC gets in"** — it controls who
-may *knock*; a first-time sign-in still lands `status='pending'` until an admin approves it
-(§4.3).
-
-**Cut over safely:** keep the old project/client alive for a few days after the swap.
-Reverting is just pasting the old two values back into `.env` and restarting. Delete the old
-project only once the new one is proven.
+⚠️ Before a demo, have every panel member sign in once, then approve them all. A first-time
+visitor cannot see anything until an admin acts.
 
 ---
 
@@ -1463,33 +1193,38 @@ captured from the real remote (see `CLAUDE.md` → Air Conditioner System).
 
 ## 9. Ports & firewall
 
-| Port | Service | Who connects |
-|---|---|---|
-| 80 (LAN) | nginx → dashboard + API proxy | ICTU's reverse proxy; LAN browsers |
-| 3000 | Backend (HTTP + WebSocket) | nginx, Go agents, ESP32 (LAN) |
-| 5173 | Vite dev server | browsers (dev only — not in prod) |
-| 3306 | MySQL | backend only — **do not expose** |
-| 8086 | InfluxDB | backend only — **do not expose** |
+| Port | Direction | Service | Who connects |
+|---|---|---|---|
+| **7844** | **outbound** | `cloudflared` → Cloudflare | the tunnel itself |
+| 8080 | localhost | dashboard files (`serve`) | `cloudflared` only |
+| 3000 | LAN | Backend (HTTP + WebSocket) | `cloudflared`, Go agents, ESP32 |
+| 5173 | localhost | Vite dev server | dev only — not in prod |
+| 3306 | localhost | MySQL | backend only — **do not expose** |
+| 8086 | localhost | InfluxDB | backend only — **do not expose** |
 
-- **Nothing is exposed to the internet from this server.** ICTU's edge is the only
-  public-facing component; it reaches nginx over the campus LAN on port 80. Any inbound 443
-  rule lives at their edge, not here.
+- **No inbound port is open to the internet.** That is the point of a tunnel: `cloudflared`
+  dials *out* on 7844 and traffic returns down that connection. Ports 80 and 443 are no longer
+  needed anywhere.
+- **8080 stays on localhost.** Only `cloudflared` reads it; exposing it would publish the
+  dashboard over plain HTTP, bypassing Cloudflare entirely.
 - Keep MySQL (3306) and InfluxDB (8086) bound to localhost / the backend host only.
 
 ### 9.1 Restrict port 3000 to the agent subnets — do this on deploy day
 
 The backend listens on `0.0.0.0:3000` (`src/server.js`), and it **has to**: the Go agents and
-the ESP32 connect to it directly, not through nginx. So port 3000 is reachable by anything on
-the campus LAN, and *that is the bypass* — a client talking to `:3000` skips nginx entirely,
-which means it also writes its own `X-Forwarded-For`. With `TRUST_PROXY=2` the backend believes
-two of those entries, so such a client picks its own `req.ip`: its own bucket in every IP-keyed
-rate limiter (sign-in, agent enrollment, metric ingest) and its own value in
-`system_logs.ip_address` — the row that is the evidence for a Privacy Notice acceptance.
+the ESP32 connect to it directly, not through the tunnel. So port 3000 is reachable by anything
+on the campus LAN, and *that is the bypass* — a client talking to `:3000` skips `cloudflared`
+entirely, which means it also writes its own `X-Forwarded-For`. The backend then believes it,
+so such a client picks its own `req.ip`: its own bucket in every IP-keyed rate limiter
+(sign-in, agent enrollment, metric ingest) and its own value in `system_logs.ip_address` — the
+row that is the evidence for a Privacy Notice acceptance.
+
+⚠️ With the tunnel, `TRUST_PROXY` is **1**, not 2 — one hop, not two. See §5.8.
 
 No code can close this, because the port must stay open to the LAN. It is a firewall rule:
 
 ```bash
-sudo ufw allow 80/tcp                                        # nginx — browsers
+# No rule for 80/443: the tunnel needs no inbound port at all.
 sudo ufw allow from <AGENT_SUBNET> to any port 3000 proto tcp # e.g. 10.10.20.0/24
 sudo ufw allow from <ESP32_SUBNET> to any port 3000 proto tcp # if it differs
 sudo ufw deny 3000                                            # everyone else
@@ -1499,12 +1234,12 @@ sudo ufw enable && sudo ufw status numbered
 Replace `<AGENT_SUBNET>` / `<ESP32_SUBNET>` with the ranges those devices actually sit on — ask
 ICTU which VLAN the server room and the monitored servers are on; do not guess a /8.
 
-**Browsers are unaffected** — they reach the API through nginx on 80/443 and never touch 3000.
+**Browsers are unaffected** — they reach the API through the tunnel and never touch 3000.
 Verify from a machine outside the allowed range:
 
 ```bash
-curl -m 5 http://<backend-server-ip>:3000/api/policy/version   # expect: timeout / refused
-curl -I  http://<backend-server-ip>/                            # expect: 200 (nginx still fine)
+curl -m 5 http://<backend-server-ip>:3000/api/policy/version      # expect: timeout / refused
+curl -I  https://monitoring.cspc-ictu.stream/api/policy/version   # expect: 200 (tunnel fine)
 ```
 
 Then re-check that an agent still reports in (Server Metrics → the host goes Online). If it
@@ -1519,7 +1254,7 @@ See `audits/api-infra-security-2026-08-25.md` — A-03.
 
 ## 10. Production hardening
 
-- **HTTPS / reverse proxy:** nginx ([§5](#5-serve-everything-from-one-campus-server-nginx))
+- **HTTPS:** Cloudflare Tunnel ([§5](#5-publish-the-dashboard-cloudflare-tunnel)) — certificate issued and renewed by Cloudflare, nothing to manage on the server
   behind **ICTU's edge** ([§6](#6-publish-the-dashboard-over-https-ictu-endpoint)), which
   terminates TLS — no certificates to manage on this box.
 
@@ -1550,7 +1285,8 @@ See `audits/api-infra-security-2026-08-25.md` — A-03.
 - **CORS:** set `WEB_ORIGIN` to the exact public dashboard origin (the ICTU hostname);
   avoid `*` outside a trusted LAN.
 - **`TRUST_PROXY`** (backend/.env) is how many proxy hops may be believed when they claim a
-  client's address. Default **2** = ICTU's edge → campus nginx → backend, which is this
+  client's address. **With the Cloudflare Tunnel set it to `1`** — cloudflared → backend is one
+  hop. The default **2** described ICTU's edge → campus nginx → backend, which is this
   deployment. Set it to the REAL hop count: too low and every user shares one apparent IP
   (their proxy's); too high and the surplus entries are attacker-supplied (§9.1).
 - **DB user:** least-privilege app user ([§2.1](#21-mysql)), not root.
@@ -1647,7 +1383,7 @@ Full walkthrough — bucket, keys, rclone config, connection test, restore, and 
 ## 12. Post-deploy verification checklist
 
 - [ ] `node src/server.js` logs `Server running on port 3000` with no DB/Influx errors.
-- [ ] `https://monitoring.cspc.edu.ph/` loads the dashboard **from off the campus network** (test on phone mobile data, WiFi off).
+- [ ] `https://monitoring.cspc-ictu.stream/` loads the dashboard **from off the campus network** (test on phone mobile data, WiFi off).
 - [ ] Live data updates on the public URL — confirms ICTU's proxy passes WebSocket upgrades.
 - [ ] `system_logs` shows real client IPs, not ICTU's proxy address (confirms `trust proxy = 2`).
 - [ ] **Google sign-in** works from the public URL (origin added in Google Console — [§6.3](#63-update-google-oauth-authorized-origins)).
@@ -1675,7 +1411,7 @@ Full walkthrough — bucket, keys, rclone config, connection test, restore, and 
 
 | Symptom | Likely cause / fix |
 |---|---|
-| Public URL loads the page but API/live data fails | `VITE_API_URL` not set to the public origin (rebuild after setting), or nginx not proxying `/api` + `/socket.io` ([§5](#5-serve-everything-from-one-campus-server-nginx)). |
+| Public URL loads the page but API/live data fails | `VITE_API_URL` not set to the public origin, **or set but not rebuilt** — it is compiled in at build time. Otherwise the `/api/` or `/socket.io/` ingress rule is missing from `config.yml` ([§5](#5-publish-the-dashboard-cloudflare-tunnel)). |
 | Page loads but live data never updates | ICTU's proxy is not passing **WebSocket upgrades** on `/socket.io/` — the most common failure with a proxy you don't control ([§6.1](#61-request-the-https-endpoint-from-ictu)). |
 | Every request logs the same IP | ICTU's edge adds a second proxy hop — set `trust proxy` to `2` in `backend/src/server.js` ([§6.1](#61-request-the-https-endpoint-from-ictu)). |
 | API calls blocked (CORS error in console) | Public origin not in `WEB_ORIGIN`. Add the exact hostname; restart backend. |

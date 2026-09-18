@@ -108,10 +108,14 @@ above services and depend on them. **Under the correct model there are zero viol
 
 ## 2. Architecture diagram
 
+> *Updated 2026-09-17 — the ESP32's **DHT11 was replaced with a DHT22** (0.1 °C / 0.1 %RH resolution against 1 °C / 1 %RH).
+> The diagram below names the current hardware. Nothing else in this report was re-audited on
+> that date, and the findings still describe the system as it stood on 2026-08-25.*
+
 ```
 ┌─ EXTERNAL / PHYSICAL ────────────────────────────────────────────────────────────┐
 │  ESP32 node        Go agents        MikroTik router     SNMP routers / UPS        │
-│  DHT11·MQ-2×2      (per server)     (RouterOS API)      (IF-MIB / UPS-MIB)        │
+│  DHT22·MQ-2×2      (per server)     (RouterOS API)      (IF-MIB / UPS-MIB)        │
 │  IR TX·SD card                                          + ICMP ping               │
 └───────┬────────────────┬──────────────────┬──────────────────┬───────────────────┘
         │ Socket.IO      │ HTTP POST        │ PULL (30s)       │ PULL (60s)

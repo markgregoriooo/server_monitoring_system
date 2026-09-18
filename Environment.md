@@ -3,7 +3,7 @@
 End-to-end reference for the **environment subsystem** of the CSPC-ICTU server-room
 monitor: temperature, humidity, smoke (MQ-2), and the IR-based air-conditioner control.
 
-> Scope: this document covers the sensor pipeline (DHT11 + 2×MQ-2 → InfluxDB → dashboard)
+> Scope: this document covers the sensor pipeline (DHT22 + 2×MQ-2 → InfluxDB → dashboard)
 > and the IR/Aircon control loop (auto + manual). For users/auth/server-metrics, see
 > `CLAUDE.md`.
 
@@ -16,7 +16,7 @@ with IR transmitters, so **every physical AC action happens on the ESP32**.
 
 | Component | GPIO | Role |
 |-----------|------|------|
-| DHT11 | 4 | Temperature + humidity |
+| DHT22 | 4 | Temperature + humidity |
 | MQ-2 #1 | 34 (ADC) | Smoke/gas PPM (sensor 1) |
 | MQ-2 #2 | 35 (ADC) | Smoke/gas PPM (sensor 2) |
 | Piezo buzzer | 26 | Audible alarm (priority-based) |
@@ -35,7 +35,7 @@ Firmware: `iot/esp32/env_monitor_v2/env_monitor_v2.ino`. Reads every loop tick; 
 
 ```
             ┌──────────────────────── ESP32 (env_monitor_v2.ino) ───────────────────────┐
-            │  DHT11 + 2×MQ-2  ──read every loop──►  status calc  ──►  buzzer + RGB LED   │
+            │  DHT22 + 2×MQ-2  ──read every loop──►  status calc  ──►  buzzer + RGB LED   │
             │        │                                    │                               │
             │        │ every 3s                           │ on temp ZONE change           │
             │        ▼                                    ▼                               │
@@ -103,7 +103,7 @@ Raw ADC → resistance → PPM using the calibrated curve:
 | `WARNING` | 150 ≤ PPM < 300 |
 | `CRITICAL` | PPM ≥ 300 |
 
-### 3.2 Temperature (DHT11)
+### 3.2 Temperature (DHT22)
 | Temp status | Condition |
 |-------------|-----------|
 | `TOO_COLD` | < 22 °C |
@@ -111,7 +111,7 @@ Raw ADC → resistance → PPM using the calibrated curve:
 | `WARNING` | ≥ 29 °C |
 | `CRITICAL` | ≥ 35 °C |
 
-### 3.3 Humidity (DHT11)
+### 3.3 Humidity (DHT22)
 Used only inside the combined environment status:
 - `WARNING` if ≥ 85 %, `CRITICAL` if ≥ 95 %.
 
@@ -451,5 +451,11 @@ Update both hardcoded endpoints **and** the firmware:
   the SD code went back in. If it no longer fits, set Arduino IDE ▸ Tools ▸ **Partition
   Scheme → "Huge APP (3MB No OTA/1MB SPIFFS)"** rather than dropping the buffer;
   `SD_ENABLED 0` compiles the whole feature out if you need the space some other way.
-- **DHT11 is low-resolution** (±1 °C / integer-ish humidity) — fine for zone logic, not for
-  precise readings.
+- **DHT22 resolution** is 0.1 °C / 0.1 %RH at ±0.5 °C accuracy, over −40…80 °C and 0…100 %RH
+  — enough for both the zone logic and a readable trend line. It replaced a **DHT11**
+  (1 °C / 1 %RH, ±2 °C, 0…50 °C / 20…80 %RH), whose coarseness is the reason several comments
+  in this repo talk about quantisation. ⚠️ Two consequences of the swap: the persistence
+  deadbands in `envPersistPolicy` now filter real jitter instead of being unreachable (see
+  that file's header), and the DHT22 samples at **0.5 Hz** — once per 2 s — against the
+  DHT22's 1 Hz, so the 3 s `LOG_INTERVAL` remains safely above the minimum but has less slack
+  than it used to.

@@ -159,6 +159,14 @@ SMTP_USER=              # FULL mailbox address. Dev: your own Gmail/CSPC account
 SMTP_PASS=              # 16-char Google App Password, NOT the account password (needs 2-Step Verification on the account). Spaces are stripped automatically. ⚠️ Revoked when the account's main password changes
 MAIL_FROM=              # "Name <addr@domain>"; blank = SMTP_USER. Sets the DISPLAY NAME — Gmail rewrites the address to the authenticated mailbox unless it's a verified "Send mail as" alias
 NOTIFY_EMAIL_MIN_SEVERITY= # min severity that triggers an email: info|warning|critical; blank = critical. Per-user override in notification_prefs
+                       # ⚠️ This is the THRESHOLD, not the switch. Alert email is OPT-IN per user: a missing
+                       # `notification_prefs` row means OFF (notificationService.PREF_DEFAULTS), and
+                       # registerGoogleUser seeds a row so the fallback never decides. It used to mean ON,
+                       # so approving an account started mailing it critical alerts before its owner had
+                       # signed in, could reach the toggle, or had seen the Privacy Notice. The bell/toast/
+                       # popup need a signed-in browser; email is the only channel that reaches a stranger.
+                       # migrations/2026-09-18_notification_prefs_default_off.sql backfilled every existing
+                       # user explicitly (email ON for anyone who had ever signed in), so nobody was muted
 NOTIFY_EMAIL_TO=        # optional: force ALL alert emails to this address (testing); blank = send to each active user's real email
 NOTIFY_COOLDOWN_MIN=    # de-dup window in minutes — same device+type+severity won't re-alert within it (restart-proof); blank = 30
 ALERT_RECOVERY_SAMPLES= # consecutive "normal" readings required before an alert AUTO-RESOLVES; blank = 3. Stops a metric oscillating around its threshold from producing an alert/resolve storm. Escalation is unaffected (still instant). Applies to servers, the environment, AND routers/MikroTik/UPS (deviceAlerts evalMetric + evalEvent — the boolean events too, since a link up/down has no threshold to hang hysteresis on). ⚠️ Counts SAMPLES, not seconds — wall-clock = count x that source's interval: ~30s for a default Go agent (`-interval 10`, but it's per-agent, so an `-interval 60` server takes 3 MINUTES), ~9s for the ESP32 (`LOG_INTERVAL 3000`), ~3 min on the 60s SNMP poll, ~1.5 min on the 30s MikroTik poll. Device offline/unreachable (`device_offline`) is NOT streak-gated — the poller's own status transition guards it, so an outage still surfaces on the first failed poll. See alertBandState.confirmRecovery
@@ -185,9 +193,9 @@ SESSION_MAX_HOURS=      # absolute ceiling on ONE sign-in, in hours; blank = 12.
                        # an internet-facing deployment. See middleware/auth.js maybeRenewToken
 SOCKET_REVOKE_SWEEP_MS= # how often connected BROWSER sockets are re-validated against `users` (status + token_version); blank = 30000 (30s). `io.use` authenticates once at the handshake and never re-checks, so without this a socket opened with a valid token keeps streaming after the account is disabled or revoked. A sweep, not a push from each token_version bump site, because there are four such sites and a sweep cannot miss a fifth (or a hand-edited row). Does NOT check the token's `exp` — HTTP sessions slide, so an active session legitimately outlives the token its socket opened with. See services/socketSessions.js
 SYSTEM_LOG_RETENTION_DAYS= # `system_logs` (the audit trail) rows older than this are purged daily; blank = 365. This table holds ip_address + user_agent — the most personal data in the schema — and had NO purge before, so it grew forever. The Privacy Notice commits to this period; changing it means changing the notice (and bumping POLICY_VERSION). Longer default than alerts/reports on purpose: an audit trail is what you go looking for months after an incident. See auditService.purgeOld
-ENV_PERSIST_INTERVAL_MS= # how often an ESP32 reading is STORED (InfluxDB + backup); blank = 30000 (30s). 0 stores every reading (the old behaviour). ⚠️ Does NOT change how often the ESP32 SENDS (`LOG_INTERVAL` 3000, firmware) or how often a reading is ACTED ON — validation, the online heartbeat, the live dashboard broadcast and the alert evaluation all still run on every 3s reading. Only persistence is throttled. The DHT11 resolves 1°C/1%RH and a server room does not move 1°C in 3s, so most readings were storing quantisation noise: ~28,800 samples/day, about 1.7 servers' worth of writes, and the same number of appends to the micro SD the backup writer lives on. See services/envPersistPolicy.js
+ENV_PERSIST_INTERVAL_MS= # how often an ESP32 reading is STORED (InfluxDB + backup); blank = 30000 (30s). 0 stores every reading (the old behaviour). ⚠️ Does NOT change how often the ESP32 SENDS (`LOG_INTERVAL` 3000, firmware) or how often a reading is ACTED ON — validation, the online heartbeat, the live dashboard broadcast and the alert evaluation all still run on every 3s reading. Only persistence is throttled. The DHT22 resolves 0.1°C/0.1%RH and a server room does not move measurably in 3s, so most readings were storing sensor noise: ~28,800 samples/day, about 1.7 servers' worth of writes, and the same number of appends to the micro SD the backup writer lives on. ⚠️ The DHT22 REPLACED a DHT11 (1°C/1%RH), which makes this policy more load-bearing rather than less — the old sensor could not express a change small enough to be noise, so the deadbands below were nearly unreachable; the new one can, so they now do real filtering. See services/envPersistPolicy.js
 ENV_PERSIST_DEADBAND_GAS=  # ppm a single MQ-2 must move to force an immediate store; blank = 15. This is what keeps a smoke event captured on the 3s tick that sees it rather than waiting for the heartbeat — the two sensors are judged separately, since one rising while the other doesn't is what two sensors are for
-ENV_PERSIST_DEADBAND_TEMP= # °C to force an immediate store; blank = 0.5 (the DHT11 resolves 1°C, so anything it can actually report crosses this)
+ENV_PERSIST_DEADBAND_TEMP= # °C to force an immediate store; blank = 0.5 (the DHT22 resolves 0.1°C, so this filters five resolution steps of jitter — it sits just above the sensor's ±0.5°C accuracy, and is NOT the no-op it effectively was under the old DHT11)
 ENV_PERSIST_DEADBAND_HUM=  # %RH to force an immediate store; blank = 2
 REPORT_MAX_PERIOD_DAYS= # widest period ONE report may cover; blank = 366. `start < end` alone accepted
                        # periodStart=2000-01-01, i.e. Flux queries over 26 years — and because the build is
@@ -221,7 +229,7 @@ so rotate anything that was committed.
 ## Architecture
 
 Server room environment monitoring system for CSPC-ICTU.  
-ESP32 (DHT11 + 2× MQ-2 + IR TX array + RGB LED) → Node.js + Socket.IO → React dashboard.
+ESP32 (DHT22 + 2× MQ-2 + IR TX array + RGB LED) → Node.js + Socket.IO → React dashboard.
 Three ingest paths: ESP32 (push, Socket.IO), Go agents (push, HTTP), and an SNMP
 poller (**pull** — routers via IF-MIB, UPS via UPS-MIB). See `router-ups-monitoring.md`.
 
@@ -229,7 +237,7 @@ poller (**pull** — routers via IF-MIB, UPS via UPS-MIB). See `router-ups-monit
 - **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, nodemailer (alert/report email over SMTP), net-snmp
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS, JetBrains Mono font
 - **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment, server-metric, **and** router/UPS time-series)
-- **Hardware:** ESP32, DHT11, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×2 (GPIO 25/33), DS3231 RTC + coin cell, micro SD (SPI, offline buffer)
+- **Hardware:** ESP32, DHT22, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×2 (GPIO 25/33), DS3231 RTC + coin cell, micro SD (SPI, offline buffer)
 
 ---
 

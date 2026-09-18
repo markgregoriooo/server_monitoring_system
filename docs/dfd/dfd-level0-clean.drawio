@@ -26,7 +26,7 @@
           <mxGeometry x="80" y="252" width="210" height="112" as="geometry" />
         </mxCell>
         <mxCell id="eRoom" value="Server Room (physical)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="80" y="390" width="210" height="70" as="geometry" />
+          <mxGeometry x="80" y="390" width="210" height="90" as="geometry" />
         </mxCell>
         <mxCell id="eSrv" value="Monitored Server" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="80" y="510" width="210" height="80" as="geometry" />
@@ -50,7 +50,7 @@
         </mxCell>
 
         <!-- ============ FLOWS: ADMIN ============ -->
-        <mxCell id="f01" value="sign-in, user approvals, alert-rule&lt;br&gt;configuration &amp;amp; enrollment keys" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.0484;entryDx=0;entryDy=0;" edge="1" parent="1" source="eAdmin" target="p0">
+        <mxCell id="f01" value="sign-in, user approvals, alert-rule configuration,&lt;br&gt;gas-sensor setup &amp;amp; enrollment keys" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.0484;entryDx=0;entryDy=0;" edge="1" parent="1" source="eAdmin" target="p0">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="f02" value="session &amp;amp; role" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.1387;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eAdmin">
@@ -66,13 +66,17 @@
         </mxCell>
 
         <!-- ============ FLOWS: SERVER ROOM / SERVER ============ -->
-        <mxCell id="f05" value="temperature, humidity, gas" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5242;entryDx=0;entryDy=0;" edge="1" parent="1" source="eRoom" target="p0">
+        <mxCell id="f05" value="temperature, humidity, gas&lt;br&gt;&amp;amp; gas-sensor pin map" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.5113;entryDx=0;entryDy=0;" edge="1" parent="1" source="eRoom" target="p0">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="f06" value="server metrics" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.6935;entryDx=0;entryDy=0;" edge="1" parent="1" source="eSrv" target="p0">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="f07" value="agent token" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.7581;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eSrv">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="f16" value="gas-sensor configuration" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5694;exitDx=0;exitDy=0;entryX=1;entryY=0.7;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eRoom">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
 
@@ -129,10 +133,10 @@
         <mxCell id="lgNote1" value="Reading it: every arrow is data crossing the system boundary. Note the two &lt;i&gt;pull&lt;/i&gt; relationships &#8212; the system asks the router and the UPS for their state, rather than being told &#8212; while the server room and the servers &lt;i&gt;push&lt;/i&gt;." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="80" y="905" width="1400" height="20" as="geometry" />
         </mxCell>
-        <mxCell id="lgNote2" value="&lt;b&gt;Balanced with the Level 1 DFD.&lt;/b&gt; The 15 flows above are composites: the 26 flows that cross the system boundary in Level 1 each roll up into exactly one of them, and every flow above has at least one Level 1 counterpart." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="lgNote2" value="&lt;b&gt;Balanced with the Level 1 DFD.&lt;/b&gt; The 16 flows above are composites: the 29 flows that cross the system boundary in Level 1 each roll up into exactly one of them, and every flow above has at least one Level 1 counterpart." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="80" y="931" width="1400" height="20" as="geometry" />
         </mxCell>
-        <mxCell id="lgNote3" value="Admin holds every IT Staff flow in addition to the two shown; only the admin-exclusive flows are drawn, at both levels, so the two diagrams stay consistent." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="lgNote3" value="Admin holds every IT Staff flow in addition to the four admin-exclusive flows drawn at both levels (registration approvals, enrollment keys, threshold rule edits and gas-sensor setup), so the two diagrams stay consistent." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="80" y="957" width="1400" height="20" as="geometry" />
         </mxCell>
       </root>

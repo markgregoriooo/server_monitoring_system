@@ -2405,3 +2405,98 @@ whole reason the rotation path was built.
    `MIKROTIK_ENC_KEY` via `--suite mikrotik`.
 3. **Two MySQL accounts still use `mysql_native_password`** (41-char hashes, seen in
    `mysql.user` before the grant was scoped). Worth moving to a modern auth plugin.
+
+---
+
+## SESSION 25 — 2026-09-17
+**Branch:** `main`
+**Developer:** Mark Gregorio
+
+> The MQ-2 gas sensors became managed data, both DFDs were re-balanced around the flows that
+> change brought, and the **DHT11 was replaced with a DHT22** — a swap whose interesting part
+> was not the name but the several comments whose reasoning depended on the old sensor's
+> coarseness.
+
+### DHT11 → DHT22
+
+The firmware was already correct (`#define DHTTYPE DHT22`, `DHT dht(DHTPIN, DHTTYPE)`); only
+the labels and the reasoning around them were stale. 36 plain label occurrences swapped across
+`CLAUDE.md`, `DOCUMENTATION.md`, `Environment.md`, `README.md`, four frontend files and the
+sketch's own comments.
+
+**Nothing functional broke.** `sensorHandler` only type-checks temperature/humidity — no bound
+assumed the DHT11's 0–50 °C / 20–80 %RH range, so the DHT22's wider range needed no change.
+`npm test` 469/469.
+
+⚠️ **Six passages were arguments, not labels**, and a name swap would have left them false:
+
+- `services/envPersistPolicy.js` — the header justified throttling persistence with "1°C / 1%
+  resolution and ±2°C accuracy … consecutive samples differ by quantisation noise". A DHT22
+  resolves 0.1 °C at ±0.5 °C, so the *mechanism* changed even though the conclusion held.
+- `envPersistPolicy.DEFAULTS.tempDeadband` (0.5 °C) was documented as "anything it can actually
+  report crosses this" — true of a 1 °C sensor, **false** of a 0.1 °C one. This is a real
+  behaviour change: under the DHT11 any reportable temperature move forced an immediate store;
+  under the DHT22 sub-0.5 °C drift now waits for the 30 s heartbeat. The deadbands went from
+  near-unreachable formalities to the thing actually keeping the write rate down, so the policy
+  is **more** load-bearing after the upgrade, not less.
+- Same argument restated in `CLAUDE.md` (×2), `README.md` and `handlers/sensorHandler.js`.
+- `Environment.md` §10 said "DHT11 is low-resolution — fine for zone logic, not for precise
+  readings", which is now the opposite of true. Replaced with the DHT22 spec plus a note that
+  it samples at **0.5 Hz** (once per 2 s) against the DHT11's 1 Hz — the 3 s `LOG_INTERVAL`
+  still clears it, with less margin than before.
+- `frontend/.../landing/photos.ts` (×2) — public landing-page captions asserting "1 °C and
+  1 %RH resolution" and "does not move 1 °C in three seconds". That file's own header warns
+  that `detail` makes factual claims a hardware swap can invalidate; it was right.
+
+Historical mentions of the DHT11 were **kept on purpose** where they explain why something is
+the way it is: `envPersistPolicy.js` (×2), `CLAUDE.md` (×2), `Environment.md` §10, and the
+dated note added to `audits/architecture-report-2026-08-25.md`. That audit's ASCII diagram was
+updated to `DHT22·MQ-2×2` (same character width, so the box borders still align) under a note
+recording that only the diagram was refreshed and the findings still describe 2026-08-25.
+
+⚠️ The quoted breadcrumb in SESSION 1 above (`… / DHT11 · 2× MQ-2`) is left as written: it
+quotes UI copy that genuinely said DHT11 on 2026-06-04 and was deleted in that same session.
+Editing it would falsify a quote rather than correct a fact.
+
+### Gas sensors as managed data
+
+`migrations/2026-09-17_gas_sensors.sql` — one row per physical MQ-2 channel (`channel` PK,
+1-based, mapping to the firmware's `MQ2_PINS[channel-1]` exactly as `aircon_state.ir_channel`
+already does), with `location_label`, `enabled`, a remembered `gpio`, and `updated_by →
+users.user_id`. Seeded with four channels: 1 and 2 enabled (the sensors already running — a
+migration must not silently switch off working smoke detection), 3 and 4 present but disabled
+on the free ADC1 pins. The 4-channel ceiling is **hardware, not schema**: ADC2 is unusable
+while WiFi is on and GPIO 32/33 are reserved for IR channels 3 and 4.
+
+### DFDs re-balanced
+
+Both diagrams in `docs/dfd/` updated for the flows the above introduced, then verified by
+parsing the files rather than by eye:
+
+```
+Level 0 flows              : 15 → 16   (new: system → Server Room, "gas-sensor configuration")
+Level 1 boundary flows     : 26 → 29   (2.0 went 8 → 11)
+External entities          : 9 vs 9, identical sets
+VERDICT                    : BALANCED
+```
+
+Level 1 gained an `Admin *` symbol and a `D10 gas_sensors` store in band 2, plus the band-2
+`D6 system_logs *` the audit write had always needed. Band 2 grew 500 → 700 px and everything
+below shifted 200 px, including the three cross-band corridors' hardcoded waypoints and the
+legend. All 18 band-2 connection-point fractions were recomputed so every flow stays a straight
+line with its own anchor.
+
+**New:** `docs/dfd/README.md` and `docs/dfd/dfd-narrative.docx` — the Figure 3 and Figure 4
+manuscript narratives, the notation (what `*` means, why entities are counted by name), the
+balance record, and the PDF export settings. ⚠️ The balance figures now live in three places:
+both `.drawio` legends and those two docs. A feature adding a boundary flow has to update all
+of them.
+
+### Still outstanding
+
+1. **Figure 4's narrative is written; Level 1's own legend note** and the two docs must be
+   re-checked together the next time a boundary flow is added.
+2. **`dfd-narrative.docx` has never been rendered** — no LibreOffice or pandoc on this machine,
+   so its structure is verified but its layout is not. Open it in Word before relying on it.
+3. **Level 1 prints at ~4.5 pt labels** on folio. Use A3 or a fold-out for the printed
+   manuscript.

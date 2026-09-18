@@ -33,7 +33,7 @@ their own files (see [Related Documentation](#13-related-documentation)).
 
 A monitoring and control system for the CSPC-ICTU server room. It tracks two things:
 
-- **Environment** — temperature, humidity, and smoke/gas, read by an **ESP32** (DHT11 +
+- **Environment** — temperature, humidity, and smoke/gas, read by an **ESP32** (DHT22 +
   2× MQ-2). The ESP32 also drives an **IR transmitter array** that controls the room's air
   conditioners automatically based on temperature zones.
 - **Server health** — CPU, memory, disk, network, and uptime of physical/virtual servers,
@@ -53,7 +53,7 @@ accounts and gated by admin approval.
 ```
    ┌──────────────┐  Socket.IO (device key)   ┌───────────────────────────┐
    │   ESP32      │ ────sensorData / irFired──▶│                           │
-   │ DHT11+2×MQ2  │ ◀──irConfig / irCommand────│      Node.js Backend      │
+   │ DHT22+2×MQ2  │ ◀──irConfig / irCommand────│      Node.js Backend      │
    │ IR TX ×4     │                            │  Express + Socket.IO      │
    └──────────────┘                            │                           │
                                                │  ┌─────────────────────┐  │
@@ -99,7 +99,7 @@ accounts and gated by admin approval.
 | Rate limiting| `express-rate-limit` |
 | Uploads      | `multer` (profile images: JPEG/PNG/WebP, 2 MB cap) |
 | Agent        | Go 1.22, `gopsutil/v3` + `godotenv` |
-| Firmware     | ESP32 (Arduino/C++) — DHT11, 2× MQ-2, WS2812B RGB, IR TX ×4, optional DS3231 RTC |
+| Firmware     | ESP32 (Arduino/C++) — DHT22, 2× MQ-2, WS2812B RGB, IR TX ×4, optional DS3231 RTC |
 
 ---
 
@@ -171,7 +171,7 @@ server-infrastructure-monitoring-system-webSystem/
 - Node.js 18+
 - MySQL 8.0+
 - InfluxDB 2.x
-- (For live environment data) ESP32 + DHT11 + 2× MQ-2
+- (For live environment data) ESP32 + DHT22 + 2× MQ-2
 - (For server metrics) the Go agent installed on each monitored host
 - A Google Cloud OAuth **Web** client (see `google-oauth.md`)
 
@@ -488,7 +488,7 @@ distinguishes them.
 
 ### 11.1 Environment monitoring (ESP32)
 
-ESP32 reads DHT11 (temp/humidity) + 2× MQ-2 (smoke/gas) every ~3s and emits `sensorData`.
+ESP32 reads DHT22 (temp/humidity) + 2× MQ-2 (smoke/gas) every ~3s and emits `sensorData`.
 The backend overrides the device timestamp with `new Date()`, writes to InfluxDB
 (`sensor_environment`, ms precision), and broadcasts to browsers. History is served by Flux
 queries via the `changeRange` → `sensorHistory` socket round-trip (not the mock REST

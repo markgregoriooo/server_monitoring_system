@@ -18,7 +18,7 @@ Three ingest paths converge on one alerting pipeline:
 
 | Source | Direction | Transport | Cadence |
 |--------|-----------|-----------|---------|
-| **ESP32** (DHT11 + 2× MQ-2 + IR TX + RGB LED) | push | Socket.IO | ~3 s (stored ~30 s — see below) |
+| **ESP32** (DHT22 + 2× MQ-2 + IR TX + RGB LED) | push | Socket.IO | ~3 s (stored ~30 s — see below) |
 | **Go agents** (one per monitored server) | push | HTTP POST | ~10 s (per-agent) |
 | **SNMP poller** (routers via IF-MIB, UPS via UPS-MIB) | pull | SNMP v2c | 60 s |
 | **MikroTik poller** (campus router) | pull | RouterOS API | 30 s |
@@ -27,8 +27,8 @@ Three ingest paths converge on one alerting pipeline:
 > validated, broadcast to the dashboards and evaluated against the alert rules — the live
 > view and alerting are unchanged. Only *storage* is throttled: a ~30 s heartbeat plus an
 > immediate write whenever a gas reading moves past its deadband, a status band changes, or
-> temperature/humidity actually shifts. The DHT11 resolves 1 °C and a server room does not
-> move 1 °C in three seconds, so storing every reading was recording quantisation noise;
+> temperature/humidity actually shifts. The DHT22 resolves 0.1 °C and a server room does not
+> move measurably in three seconds, so storing every reading was recording sensor noise;
 > smoke keeps 3 s effective resolution because a real rise trips the deadband on the tick
 > that sees it. Tunable via `ENV_PERSIST_*` in `backend/.env`, `0` restores per-reading
 > storage. See `backend/services/envPersistPolicy.js`.
@@ -404,7 +404,7 @@ from the agent-reported hostname, for racks where several boxes report `unknown-
 | Email | nodemailer over SMTP |
 | Reports | pdfkit |
 | Agent | Go + gopsutil |
-| Firmware | ESP32 (Arduino) — DHT11, 2× MQ-2, IR TX ×2, WS2812B, DS3231 |
+| Firmware | ESP32 (Arduino) — DHT22, 2× MQ-2, IR TX ×2, WS2812B, DS3231 |
 
 ---
 
