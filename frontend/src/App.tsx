@@ -15,6 +15,7 @@ import { LiveSummaryProvider } from "./pip/LiveSummaryContext";
 import { WidgetLayoutProvider } from "./pip/useWidgetLayout";
 import PipHost from "./pip/PipHost";
 import { roleConfig } from "./data/users";
+import { useDocumentTitle } from "./hooks/useDocumentTitle";
 
 import Login from "./pages/auth/Login";
 import Unauthorized from "./pages/auth/Unauthorized";
@@ -23,6 +24,8 @@ import PolicyGate from "./components/legal/PolicyGate";
 import Sidebar from "./components/layout/Sidebar";
 import Header from "./components/layout/Header";
 import ToastHost from "./components/notifications/ToastHost";
+import CriticalAlertModal from "./components/notifications/CriticalAlertModal";
+import { primeAlarm } from "./utils/criticalAlarm";
 import IdleLogoutModal from "./components/session/IdleLogoutModal";
 import Dashboard from "./pages/Dashboard";
 import ServerMetrics from "./pages/ServerMetrics";
@@ -79,6 +82,12 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
 function AppShell() {
   const { user, idleLogout, confirmIdleLogout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState<boolean>(false);
+  /* Header avatar -> Sidebar's My Profile modal. A COUNTER, not a boolean: a boolean would
+     have to be reset to false before it could fire again, so opening the modal, closing it
+     and clicking the avatar a second time would do nothing. Every increment is a new
+     request. The modal stays owned by the Sidebar — two instances would be two copies of
+     the same form, each able to save a different username. */
+  const [profileSignal, setProfileSignal] = useState(0);
   const [collapsed, setCollapsed] = useState<boolean>(
     () => localStorage.getItem("cspc_sidebar_collapsed") === "1",
   );
@@ -90,6 +99,11 @@ function AppShell() {
     });
   }, []);
   const location = useLocation();
+
+  // Names the browser tab after the current page. Mounted HERE rather than in the
+  // signed-in shell below, because /login and /privacy are returned from this component
+  // by their own early returns and would otherwise keep whatever title the last page set.
+  useDocumentTitle();
 
   // Ctrl/Cmd + B toggles the sidebar (like a code editor)
   useEffect(() => {
@@ -147,6 +161,7 @@ function AppShell() {
         onClose={() => setMobileOpen(false)}
         collapsed={collapsed}
         onToggleCollapse={toggleCollapsed}
+        openProfileSignal={profileSignal}
       />
 
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
@@ -156,6 +171,7 @@ function AppShell() {
           onMenuToggle={() => setMobileOpen(p => !p)}
           collapsed={collapsed}
           onToggleCollapse={toggleCollapsed}
+          onOpenProfile={() => setProfileSignal((n) => n + 1)}
         />
 
         <main className="flex-1 overflow-y-auto">
@@ -260,6 +276,11 @@ function AppShell() {
       {/* Live notification toasts — overlay, independent of the current route */}
       <ToastHost />
 
+      {/* CRITICAL takeover — blocking, centred, audible. Sits alongside the toast host rather
+          than replacing it: warnings and info still belong in the corner, and only `critical`
+          is allowed to stop someone working. Mounted at the shell so it covers every route. */}
+      <CriticalAlertModal />
+
       {/* Idle timeout notice. The session is already gone; this explains why, and OK
           completes the sign-out. Rendered here rather than per-page so it covers
           whatever the user was last looking at. */}
@@ -272,6 +293,13 @@ function AppShell() {
 }
 
 export default function App() {
+  /* Unlock audio on the first click/keypress anywhere — in practice the sign-in click, long
+     before any alert exists. Browsers start every AudioContext suspended and will not resume
+     it without a user gesture, so an alarm that first asks for sound at the moment of the
+     emergency is exactly the one that gets blocked. Doing it here, once, at the top of the
+     tree, is what makes the critical siren actually audible when it matters. */
+  useEffect(() => { primeAlarm(); }, []);
+
   return (
     <AuthProvider>
       <NotificationProvider>
