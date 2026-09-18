@@ -42,7 +42,10 @@ interface TypeMeta {
 // (GET /reports/scope-options) from the same map it validates against, so this page
 // never hardcodes "network means routers".
 interface ScopeDevice {
-  id: number;
+  // Usually a device_id. The Alert History list also offers the literal "room", which is
+  // the server room itself — environment alerts carry no device_id, so the one scope that
+  // matters most on that report is the one that cannot be a number.
+  id: number | string;
   name: string;
   type: string;
   location: string | null;
@@ -523,7 +526,10 @@ export default function Reports() {
       periodStart,
       periodEnd,
       ...(title ? { title } : {}),
-      ...(genDevice ? { deviceId: Number(genDevice) } : {}),
+      // NOT Number(): the room scope submits the string "room", and Number("room") is
+      // NaN — which serialises to null and silently generates a campus-wide report
+      // instead of the one that was asked for.
+      ...(genDevice ? { deviceId: /^\d+$/.test(genDevice) ? Number(genDevice) : genDevice } : {}),
       // Omitted rather than guessed when the template hasn't loaded — the server's
       // default is the authority, and sending a wrong size would print the document
       // on a page nobody chose.

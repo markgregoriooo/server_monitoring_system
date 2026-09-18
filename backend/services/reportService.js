@@ -6,6 +6,7 @@ import { queryClient, bucket } from "../config/influx.js";
 import { toCSV, toPDFBuffer } from "./reportRenderer.js";
 import { HttpError, unavailable } from "../utils/httpError.js";
 import emailService from "./emailService.js";
+import gasSensorService from "./gasSensorService.js";
 import analyticsService from "./analyticsService.js";
 import {
   REPORT_TYPES,
@@ -264,6 +265,44 @@ async function buildEnvironment(start, stop) {
     s.minTemp = roundOrNull(r.temperature);
   }
 
+  /* ── Per-sensor gas ────────────────────────────────────────────────────────────────
+     A peak with no place attached is not actionable. Once the MQ-2s sit apart — over the
+     rack and over the UPS cabinet, which is the only arrangement that makes two of them
+     worth having — "peak gas 412 ppm" does not tell a reader which end of the room it
+     happened in, and that is the whole question the number raises.
+
+     Read from `sensor_gas` (tagged per channel) rather than the legacy mq2_1/mq2_2 fields,
+     so sensors 3 and 4 are included. Names come from MySQL, so a renamed sensor reads the
+     same here as on the dashboard. A period predating the per-sensor series simply yields
+     no rows, and the report falls back to the aggregate table above — which is exactly what
+     it printed before. */
+  const perSensor = await fluxRows(`
+    from(bucket: "${bucket}")
+      |> range(start: ${start.toISOString()}, stop: ${stop.toISOString()})
+      |> filter(fn: (r) => r._measurement == "sensor_gas" and r._field == "ppm")
+      |> group(columns: ["channel"])`);
+
+  const sensorStats = new Map();
+  for (const r of perSensor) {
+    const ch = Number(r.channel);
+    if (!Number.isFinite(ch) || r._value == null) continue;
+    const st = sensorStats.get(ch) ?? { channel: ch, peak: -Infinity, sum: 0, n: 0 };
+    if (r._value > st.peak) st.peak = r._value;
+    st.sum += r._value;
+    st.n += 1;
+    sensorStats.set(ch, st);
+  }
+  const sensors = [...sensorStats.values()]
+    .sort((a, b) => a.channel - b.channel)
+    .map((st) => ({
+      channel: st.channel,
+      label: gasSensorService.labelFor(st.channel),
+      peak: Math.round(st.peak),
+      avg: Math.round(st.sum / st.n),
+    }));
+  // WHERE the worst reading of the whole period came from.
+  const worstSensor = sensors.reduce((m, s2) => (m && m.peak >= s2.peak ? m : s2), null);
+
   const days = [...byDay.values()].sort((a, b) => b.date.localeCompare(a.date));
   const temps = days.map((d) => d.avgTemp).filter((v) => v != null);
   const overallAvg = temps.length ? +(temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1) : null;
@@ -275,7 +314,12 @@ async function buildEnvironment(start, stop) {
       { label: "Days covered", value: days.length },
       { label: "Avg temperature", value: overallAvg != null ? `${overallAvg} °C` : "—" },
       { label: "Peak temperature", value: Number.isFinite(peakTemp) ? `${peakTemp} °C` : "—" },
-      { label: "Peak gas", value: Number.isFinite(peakGas) ? `${peakGas} ppm` : "—" },
+      {
+        label: "Peak gas",
+        value: Number.isFinite(peakGas)
+          ? `${peakGas} ppm${worstSensor ? ` · ${worstSensor.label}` : ""}`
+          : "—",
+      },
     ],
     // Ascending for the chart — the table is newest-first, but a time axis that ran
     // backwards would be read wrong by everyone.
@@ -303,12 +347,26 @@ async function buildEnvironment(start, stop) {
         },
       ];
     })(),
-    table: {
-      columns: ["Date", "Avg Temp °C", "Max Temp °C", "Min Temp °C", "Avg Hum %", "Peak Gas ppm"],
-      rows: days.map((d) => [
-        d.date, d.avgTemp ?? "—", d.maxTemp ?? "—", d.minTemp ?? "—", d.avgHum ?? "—", d.maxGas ?? "—",
-      ]),
-    },
+    // Two tables: the daily readings, and WHICH sensor produced them. Same shape as
+    // buildServer's "Servers Monitored" — the per-subject table that turns an aggregate
+    // into something a reader can act on. Omitted entirely when the period predates the
+    // per-sensor series, rather than printed empty.
+    tables: [
+      {
+        title: "Daily readings",
+        columns: ["Date", "Avg Temp °C", "Max Temp °C", "Min Temp °C", "Avg Hum %", "Peak Gas ppm"],
+        rows: days.map((d) => [
+          d.date, d.avgTemp ?? "—", d.maxTemp ?? "—", d.minTemp ?? "—", d.avgHum ?? "—", d.maxGas ?? "—",
+        ]),
+      },
+      ...(sensors.length
+        ? [{
+            title: "Smoke sensors monitored",
+            columns: ["Sensor", "Location", "Peak ppm", "Avg ppm"],
+            rows: sensors.map((s2) => [`MQ2-${s2.channel}`, s2.label, s2.peak, s2.avg]),
+          }]
+        : []),
+    ],
   };
 }
 
@@ -1065,15 +1123,20 @@ async function buildUps(start, stop, deviceId) {
   };
 }
 
-async function buildAlerts(start, stop, deviceId) {
+async function buildAlerts(start, stop, deviceId, scopeKind = null) {
   const scoped = deviceId != null;
+  // Room scope is the absence of a device, not a device: environment alerts are raised
+  // with deviceId null (sensorHandler.js), so "only the room" is `device_id IS NULL` —
+  // which is why it cannot be expressed as a device id and needs its own branch.
+  const roomOnly = scopeKind === ROOM_SCOPE;
+  const where = scoped ? "AND a.device_id = ?" : roomOnly ? "AND a.device_id IS NULL" : "";
   const [rows] = await db.query(
     `SELECT a.created_at, a.type, a.title, a.severity, a.status, a.metric_value,
             COALESCE(NULLIF(d.display_name, ''), d.device_name) AS device_name
        FROM alerts a
        LEFT JOIN devices d ON d.device_id = a.device_id
       WHERE a.created_at BETWEEN ? AND ?
-        ${scoped ? "AND a.device_id = ?" : ""}
+        ${where}
       ORDER BY a.created_at DESC`,
     scoped ? [start, stop, deviceId] : [start, stop],
   );
@@ -1298,6 +1361,10 @@ function toClient(r) {
     // deleted (FK is ON DELETE SET NULL) — the report itself is still valid history.
     deviceId: r.device_id ?? null,
     deviceName: r.device_name ?? null,
+    // 'room' = the server room itself. Orthogonal to deviceId, never both: the room is
+    // not a `devices` row, so it cannot be expressed as one.
+    scopeKind: r.scope_kind ?? null,
+    scopeName: r.scope_kind === ROOM_SCOPE ? ROOM_SCOPE_LABEL : (r.device_name ?? null),
     periodStart: iso(r.period_start),
     periodEnd: iso(r.period_end),
     createdAt: iso(r.created_at),
@@ -1309,8 +1376,14 @@ function toClient(r) {
   };
 }
 
+// The scope that is not a device. `reports.device_id` has a foreign key to `devices`, so
+// there is no id that can mean "the server room" — this travels in `scope_kind` instead
+// (migration 2026-09-18_report_room_scope.sql) and is the string the picker submits.
+export const ROOM_SCOPE = "room";
+const ROOM_SCOPE_LABEL = "Server Room";
+
 const BASE_SELECT = `
-  SELECT r.report_id, r.title, r.type, r.device_id, r.status, r.generated_by, r.file_path,
+  SELECT r.report_id, r.title, r.type, r.device_id, r.scope_kind, r.status, r.generated_by, r.file_path,
          r.paper_size, r.reference_no,
          r.period_start, r.period_end, r.created_at,
          u.name AS generated_by_name, COALESCE(NULLIF(d.display_name, ''), d.device_name) AS device_name
@@ -1324,6 +1397,14 @@ const BASE_SELECT = `
 async function scopeOptions(type) {
   const allowed = SCOPE_TYPES[type];
   if (!allowed?.length) return [];
+
+  // `esp32` appears in the alerts scope list but NEVER in `devices` — the ESP32 is
+  // authenticated by DEVICE_SECRET over a socket and has no row, so the query below can
+  // only ever return nothing for it. The option it stands for is synthesised here.
+  const roomOption = allowed.includes("esp32")
+    ? [{ id: ROOM_SCOPE, name: `${ROOM_SCOPE_LABEL} (temperature · humidity · gas)`, type: "esp32", location: null }]
+    : [];
+
   const [rows] = await db.query(
     `SELECT device_id, COALESCE(NULLIF(display_name, ''), device_name) AS device_name, device_type, location
        FROM devices
@@ -1331,12 +1412,15 @@ async function scopeOptions(type) {
       ORDER BY device_type, device_name`,
     allowed,
   );
-  return rows.map((d) => ({
-    id: d.device_id,
-    name: d.device_name,
-    type: d.device_type,
-    location: d.location ?? null,
-  }));
+  return [
+    ...roomOption,
+    ...rows.map((d) => ({
+      id: d.device_id,
+      name: d.device_name,
+      type: d.device_type,
+      location: d.location ?? null,
+    })),
+  ];
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -1420,7 +1504,16 @@ async function create({ userId, type, title, periodStart, periodEnd, deviceId, p
   // is a mistake worth surfacing, not quietly widening to the whole server room.
   let scopeId = null;
   let scopeName = null;
-  if (deviceId != null && deviceId !== "") {
+  let scopeKind = null;
+  if (deviceId === ROOM_SCOPE) {
+    // Checked against the SAME list a device scope is checked against, so the room can
+    // only be asked for on a report type that actually covers room-level rows.
+    if (!SCOPE_TYPES[type]?.includes("esp32")) {
+      throw badRequest(`A ${TYPE_LABEL[type]} report does not cover the server room's own readings.`);
+    }
+    scopeKind = ROOM_SCOPE;
+    scopeName = ROOM_SCOPE_LABEL;
+  } else if (deviceId != null && deviceId !== "") {
     const id = Number(deviceId);
     if (!Number.isInteger(id) || id <= 0) throw badRequest("Invalid device id.");
     const allowed = SCOPE_TYPES[type];
@@ -1442,9 +1535,9 @@ async function create({ userId, type, title, periodStart, periodEnd, deviceId, p
   const finalTitle = (title && title.trim()) || defaultTitle(type, scopeName);
 
   const [ins] = await db.query(
-    `INSERT INTO reports (generated_by, title, type, device_id, status, period_start, period_end, paper_size)
-     VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
-    [userId, finalTitle.slice(0, 100), type, scopeId, start, end, page],
+    `INSERT INTO reports (generated_by, title, type, device_id, scope_kind, status, period_start, period_end, paper_size)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+    [userId, finalTitle.slice(0, 100), type, scopeId, scopeKind, start, end, page],
   );
 
   const created = toClient(await getRaw(ins.insertId));
@@ -1553,7 +1646,7 @@ async function build(id) {
   try {
     const start = new Date(row.period_start);
     const end = new Date(row.period_end);
-    const payload = await BUILDERS[row.type](start, end, row.device_id ?? null);
+    const payload = await BUILDERS[row.type](start, end, row.device_id ?? null, row.scope_kind ?? null);
     const generatedAt = new Date();
 
     // The control number is assigned HERE, not at insert, and only on the path that
