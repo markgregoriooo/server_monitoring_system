@@ -26,15 +26,8 @@ const latest = new Map(); // id -> shaped summary for GET /api/mikrotik
 
 const STATUS_LABEL = { online: "Online", offline: "Offline", warning: "Warning", maintenance: "Maintenance" };
 const labelStatus = (s) => STATUS_LABEL[s] ?? "Offline";
-// A decrypt failure here is almost always ONE thing: MIKROTIK_ENC_KEY changed since
-// the password was saved, so every stored credential is undecryptable. CLAUDE.md warns
-// about exactly this and describes the symptom as "the poller then fails to log in with
-// no obvious cause" — and this catch was the reason there was no obvious cause. It
-// returned "" silently, so RouterOS rejected an empty password and the log showed an
-// authentication error, pointing at the credentials rather than at the key.
-//
+
 // Logged once per process: the poller runs every 30s and would otherwise fill the log.
-// See audits/error-flow-report-2026-08-25.md — F-02.
 let decryptFailureReported = false;
 const safeDecrypt = (v) => {
   if (!v) return "";
@@ -71,7 +64,7 @@ async function loadDevices() {
   // Pollable = has an IP + a username configured.
   return rows.filter((r) => r.ip && r.apiUser);
 }
-
+// creating the mikrotik connection
 const connFor = (d) => ({
   host: d.ip,
   port: d.apiPort || 8728,
@@ -173,22 +166,6 @@ async function pollDevice(io, d) {
   try {
     sample = await collect(d, labels); // throws if unreachable
   } catch (err) {
-    // THE ICMP RESULT USED TO BE THROWN AWAY HERE.
-    //
-    // `collect` threw before `await icmpPromise` was ever reached, so a ping that had
-    // already been sent — and answered — was discarded, and the failure was reported as
-    // a flat "unreachable". Two consequences, both of which hid the thing this poller
-    // exists to see:
-    //
-    //  • No latency_ms / packet_loss_pct was stored for the WHOLE outage, so the one
-    //    chart that could explain an API failure is blank across exactly the window
-    //    worth reading. (Verified on Campus MikroTik: an API outage from 2026-08-25
-    //    04:04 to 2026-08-27 02:37 left three ICMP points in thirty days.)
-    //  • "MikroTik unreachable" was raised as a CRITICAL alert against a router that
-    //    may be up, healthy, and two milliseconds away.
-    //
-    // The SNMP poller has always drawn this distinction (pollRouter's catch says "but
-    // the host ANSWERS ICMP … so SNMP is the problem"). This is the same treatment.
     //
     // Handled here rather than rethrown: pollAll's catch calls setReachable(), which
     // resets the `latest` cache entry, and that would wipe the ICMP figures again.
@@ -223,20 +200,7 @@ async function pollDevice(io, d) {
     console.error(`[MIKROTIK_POLLER] poll failed for ${d.name} (${d.ip}): ${cause} — ${verdict}`);
     await setReachable(io, d, false, verdict);
 
-    // Store what ICMP could still measure. The argument is the one CLAUDE.md already
-    // makes for the ping-only router path: latency and loss are the only two things
-    // available here, so dropping the point during an outage blanks the chart at
-    // precisely the moment it is worth reading. An empty `interfaces` array is safe —
-    // every numeric rule reads null → NaN and bails, and the per-interface loop does
-    // not run; the unreachable alert itself is already raised by setReachable above.
-    // `reachable: false`, NOT icmp.reachable — deliberately, and it is the whole
-    // subtlety of this path. writeNetworkSample derives both the broadcast status and
-    // the stored `reachable` field from this one flag ("Online" unless it is exactly
-    // false), so handing it the ICMP verdict would emit `networkMetrics {status:
-    // "Online"}` immediately after setReachable emitted `networkStatus {status:
-    // "Offline"}` — every dashboard flipping between the two on each poll. From this
-    // system's point of view the device IS down: it cannot be monitored.
-    //
+
     // Nothing is lost by saying so. The ICMP fields below are still written, so the
     // stored record reads "unreachable, yet answering in 2.3 ms with no loss" — which
     // is precisely the signature of a live router with a dead API, and is a sharper
@@ -338,6 +302,39 @@ async function pollDevice(io, d) {
 
 // ─── Main loop ──────────────────────────────────────────────────────────────────
 let polling = false;
+
+/**
+ * Poll ONE MikroTik immediately, then leave the 30s cadence untouched.
+ *
+ * Same reasoning as snmpPollerService.pollDeviceNow — see the long note there. The wait is
+ * shorter here (MIKROTIK_POLL_INTERVAL_MS, 30s) but the feedback matters more: a MikroTik is
+ * registered with a USERNAME AND PASSWORD, so "no data yet" and "those credentials are
+ * wrong" look identical until something actually tries to log in.
+ *
+ * Never throws — the caller fires and forgets so the HTTP response is not held behind an API
+ * timeout.
+ */
+export async function pollDeviceNow(io, deviceId) {
+  const id = Number(deviceId);
+  try {
+    const d = (await loadDevices()).find((x) => Number(x.id) === id);
+    if (!d) return false;
+    try {
+      await pollDevice(io, d);
+      return true;
+    } catch (err) {
+      console.error(
+        `[MIKROTIK_POLLER] first poll of ${d.name} (${d.ip}) failed:`,
+        err?.message ?? err,
+      );
+      await setReachable(io, d, false);
+      return false;
+    }
+  } catch (err) {
+    console.error("[MIKROTIK_POLLER] immediate poll error:", describeError(err));
+    return false;
+  }
+}
 
 async function pollAll(io) {
   if (polling) return;
@@ -648,6 +645,7 @@ async function removeDevice(id) {
 
 export default {
   pollAll,
+  pollDeviceNow,
   getMikrotikDevices,
   createDevice,
   saveConnection,

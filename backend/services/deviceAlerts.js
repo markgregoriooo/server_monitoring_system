@@ -268,8 +268,28 @@ async function checkRouter(io, device, sample) {
   // "unreachable": working or dead, with no degraded state in between.
   //
   // Both come from icmpPing via the poller, on SNMP and ping devices alike.
-  events.push(await evalMetric({ deviceId: id, metricName: "router_latency", type: "router_latency", value: numOrNaN(sample.latencyMs), label: "Latency", unit: " ms" }));
-  events.push(await evalMetric({ deviceId: id, metricName: "router_loss", type: "router_loss", value: numOrNaN(sample.packetLossPct), label: "Packet loss", unit: "%" }));
+  //
+  // ⚠️ ONLY WHILE THE DEVICE IS ANSWERING. icmpPing reports `packetLossPct: 100` for an
+  // unreachable host, which is a correct MEASUREMENT and a useless ALERT: every outage
+  // raised two criticals, and the louder of the two named the wrong problem. Nobody paged
+  // for "Packet loss 100%" learns anything "Router offline" had not already said, and the
+  // packet-loss wording sends them looking for a bad cable when the box is simply down.
+  //
+  // Degradation only means something while the device is still replying — a link dropping
+  // a third of its packets is exactly the state these two exist to catch, and it is a state
+  // of a device that is UP. Once it is down, `device_offline` owns the incident.
+  //
+  // `!== false` rather than truthiness: the SNMP path sets `reachable: true` explicitly, but
+  // a sample that never set the field at all must keep being evaluated rather than silently
+  // losing its link-quality alerting.
+  //
+  // An alert that was ALREADY open when the device went down is deliberately left open: the
+  // degradation that preceded the outage is real history, and it auto-resolves on recovery
+  // when loss returns to normal.
+  if (sample.reachable !== false) {
+    events.push(await evalMetric({ deviceId: id, metricName: "router_latency", type: "router_latency", value: numOrNaN(sample.latencyMs), label: "Latency", unit: " ms" }));
+    events.push(await evalMetric({ deviceId: id, metricName: "router_loss", type: "router_loss", value: numOrNaN(sample.packetLossPct), label: "Packet loss", unit: "%" }));
+  }
 
   // Unexpected reboot — uptime went backwards vs the last poll. The 60s slack absorbs
   // poll jitter and TimeTicks rounding, so only a genuine restart trips it.

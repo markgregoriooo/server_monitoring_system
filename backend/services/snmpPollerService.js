@@ -11,7 +11,6 @@ import client, {
   upsOutputState,
 } from "./snmpClient.js";
 import icmpPing from "./icmpPing.js";
-import agentService from "./agentService.js";
 import deviceAlerts from "./deviceAlerts.js";
 import alertBandState from "./alertBandState.js";
 import { writeNetworkSample } from "./writeNetworkMetrics.js";
@@ -19,7 +18,6 @@ import { writeUpsSample } from "./writeUpsMetrics.js";
 import { logDevice } from "./deviceLogs.js";
 import {
   badRequest,
-  numOrNull,
   inRange,
   UPS_BOUNDS,
   normalizePort,
@@ -445,9 +443,13 @@ async function pollRouterByPing(io, d) {
 
   await setReachable(io, d, icmp.reachable);
   await writeNetworkSample(io, d, sample);
-  // Safe with an empty sample: every numeric rule reads null → NaN and bails, and the
+  // Safe with an empty sample: cpu/mem/clients are null → NaN and bail, and the
   // per-interface loop doesn't run. The alert that matters here — the device going
   // unreachable — is already raised by setReachable → deviceAlerts.checkReachability.
+  //
+  // ⚠️ latency and loss are NOT null on a dead host — icmpPing returns `packetLossPct: 100`
+  // — so this used to raise a second critical, "Packet loss 100%", alongside every outage.
+  // checkRouter now gates those two on `sample.reachable`; see the note there.
   await deviceAlerts.checkRouter(io, d, sample);
 
   latestNetwork.set(Number(d.id), {
@@ -594,6 +596,54 @@ async function pollAll(io) {
     console.error("[SNMP_POLLER] load error:", describeError(err));
   } finally {
     polling = false;
+  }
+}
+
+/**
+ * Poll ONE device right now, out of band, then leave the interval alone.
+ *
+ * The poller is data-driven, so a newly registered device was always picked up "within one
+ * cycle" — but one cycle is up to SNMP_POLL_INTERVAL_MS (60s by default). From the admin's
+ * side that is a minute of an empty panel with no way to tell a slow poller from a wrong IP,
+ * a wrong community or a typo'd port. The feedback you want from Add is "it answered", and
+ * you want it while you are still looking at the form.
+ *
+ * ⚠️ Deliberately NOT a reset of the interval, and not a rescheduled first tick: the cadence
+ * is a property of the fleet, not of whichever device was added last, and restarting the
+ * timer on every registration would let someone adding six devices push every OTHER device's
+ * poll back by six intervals.
+ *
+ * Runs ALONGSIDE a cycle rather than waiting for one (`polling` is not consulted): the guard
+ * exists to stop overlapping full sweeps, and blocking here would reintroduce exactly the
+ * wait this removes. A device polled twice in quick succession just produces a small counter
+ * delta, which the rate maths already handles.
+ *
+ * Never throws — callers fire-and-forget it so the HTTP response is not held behind an SNMP
+ * timeout, and an unhandled rejection from a background probe would take the process down.
+ */
+export async function pollDeviceNow(io, deviceId) {
+  const id = Number(deviceId);
+  try {
+    const d = (await loadDevices()).find((x) => Number(x.id) === id);
+    if (!d) return false;
+    try {
+      if (d.type === "router") await pollRouter(io, d);
+      else if (d.type === "ups") await pollUps(io, d);
+      return true;
+    } catch (err) {
+      // Same treatment as inside pollAll: name the reason, mark it offline, move on. A
+      // device that does not answer its very first poll is the most useful thing this can
+      // report — it usually means the IP, port or community is wrong.
+      console.error(
+        `[SNMP_POLLER] first poll of ${d.type} "${d.name}" (${d.ip}) failed:`,
+        describeError(err),
+      );
+      await setReachable(io, d, false);
+      return false;
+    }
+  } catch (err) {
+    console.error("[SNMP_POLLER] immediate poll error:", describeError(err));
+    return false;
   }
 }
 
@@ -921,6 +971,7 @@ async function removeDevice(id, type) {
 
 export default {
   pollAll,
+  pollDeviceNow,
   collectRouter,
   collectUps,
   loadDevices,

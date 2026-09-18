@@ -93,7 +93,7 @@ export async function ping(host, { count = PING_COUNT, timeoutMs = PING_TIMEOUT_
   //                         stderr and produces NO stdout. A host that is merely down
   //                         still prints a summary line containing numbers.
   //
-  // ⚠️ Detected by the ABSENCE of digits in stdout, never by matching words in stderr.
+  //  Detected by the ABSENCE of digits in stdout, never by matching words in stderr.
   // `ping` is localized — the whole reason pingOutput.js reads numbers and `ms` rather
   // than English — so "Operation not permitted" is not a string to rely on. "stdout
   // carried no numbers at all" is true in every language.

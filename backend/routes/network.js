@@ -16,12 +16,20 @@ router.get("/", authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/network ─ register a router/switch for SNMP monitoring (admin) ──
-// The poller picks it up on its next cycle (≤ SNMP_POLL_INTERVAL_MS) — no restart.
+// Polled IMMEDIATELY on registration, then on the normal cycle — no restart.
 router.post("/", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     const device = await snmpPollerService.addNetworkDevice(req.body || {});
     // Broadcast so other open dashboards insert it live (reuses the metrics merge).
     req.app.get("io")?.emit("networkMetrics", { device });
+    /* Poll it once, RIGHT NOW, without waiting for the next cycle. Fire-and-forget on
+       purpose: the response must not be held behind an SNMP timeout (up to several seconds
+       on a wrong IP), and the result arrives on its own through the same `networkMetrics`
+       broadcast the poller already uses. So the panel fills in a second or two rather than
+       up to a minute, and a wrong IP/community/port shows as Offline immediately instead of
+       being indistinguishable from "the poller has not got round to it yet".
+       The interval itself is untouched — see pollDeviceNow. */
+    void snmpPollerService.pollDeviceNow(req.app.get("io"), device.id);
     res.status(201).json({ device });
   } catch (err) {
     next(err);

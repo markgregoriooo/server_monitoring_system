@@ -40,6 +40,12 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res, next) =>
     // 409 when the name is already taken, 400 for the rest.
     if (!r.ok) return res.status(r.status ?? 400).json({ error: r.error || "Create failed." });
     await emitDevice(req.app.get("io"), r.id);
+    /* Log in and poll it once immediately, rather than leaving the card blank for up to
+       MIKROTIK_POLL_INTERVAL_MS. Worth more here than on SNMP: a MikroTik is registered with
+       a USERNAME AND PASSWORD, so "no data yet" and "those credentials are wrong" look the
+       same until something actually tries to connect. Fire-and-forget — the result arrives
+       on the usual broadcast, and the 30s cadence is untouched. */
+    void mikrotikPollerService.pollDeviceNow(req.app.get("io"), r.id);
     res.status(201).json({ id: r.id });
   } catch (err) {
     next(err);
