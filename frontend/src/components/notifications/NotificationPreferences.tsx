@@ -7,7 +7,13 @@ type Severity = "info" | "warning" | "critical";
 // Only the email controls are surfaced — they're the ones enforced server-side
 // (the in-app bell/toast/sound are controlled live from the bell panel).
 export default function NotificationPreferences() {
-  const [emailEnabled, setEmailEnabled] = useState(true);
+  // Both defaults below are FALSE to match the server's PREF_DEFAULTS. Alert email is
+  // opt-in (notificationService.PREF_DEFAULTS), so a toggle that renders "on" before the
+  // fetch lands, or when the fetch fails, tells a new user they are subscribed when they
+  // are not — and the one thing they might do about it is switch it off, which saves the
+  // value they already had and leaves them subscribed to nothing while believing they
+  // just unsubscribed. Wrong in the direction that is hardest to notice.
+  const [emailEnabled, setEmailEnabled] = useState(false);
   const [minSeverity, setMinSeverity] = useState<Severity>("critical");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -29,7 +35,7 @@ export default function NotificationPreferences() {
       // fetch fails and we fall back to defaults, so the button is never stuck.
       const prefs = res.success ? res.data?.prefs : null;
       const next = {
-        emailEnabled: prefs ? Boolean(prefs.emailEnabled) : true,
+        emailEnabled: prefs ? Boolean(prefs.emailEnabled) : false,
         minSeverity: (prefs?.minEmailSeverity as Severity) ?? "critical",
       };
       setEmailEnabled(next.emailEnabled);

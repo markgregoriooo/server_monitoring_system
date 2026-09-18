@@ -3,6 +3,7 @@ import db from "../config/mysql.js";
 // the client — so "Email already exists." reached the user as "Server error. Please try
 // again later." See audits/error-handling-report-2026-08-25.md — E-04.
 import { badRequest, notFound, conflict } from "../utils/httpError.js";
+import { PREF_DEFAULTS } from "./notificationService.js";
 
 // ─── Role & status vocabularies ───────────────────────────────────────────────
 // `validRoles` was written out three times and `validStatuses` twice — and the two
@@ -199,6 +200,39 @@ const userService = {
        VALUES (?, ?, ?, ?, 'google', 'it_staff', 'pending', ?, ?, NOW())`,
       [name, username, normEmail, googleSub, picture, avatar],
     );
+
+    // Write this account's notification preferences NOW, rather than leaving the row
+    // absent until the first time somebody presses Save on the Settings page.
+    //
+    // An absent row means the EMAIL channel is decided by whatever fallback
+    // notificationService happens to carry, and for most of this system's life that
+    // fallback was ON: an account began receiving critical alert email the moment an
+    // admin approved it, which is before its owner has signed in once, seen a dashboard,
+    // or been shown the Privacy Notice. Recording the decision here means a later change
+    // to that fallback cannot silently re-subscribe people who never asked.
+    //
+    // Best-effort on purpose, and this is one of the few best-effort writes that is
+    // genuinely safe to lose: the fallback now agrees with what this row would say
+    // (PREF_DEFAULTS), so losing it leaves the account quiet rather than loud. Failing a
+    // registration over a preferences row would lock somebody out of the system to
+    // protect a default they already have.
+    try {
+      await db.query(
+        `INSERT INTO notification_prefs (user_id, email_enabled, popup_enabled)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE user_id = user_id`,
+        [
+          result.insertId,
+          PREF_DEFAULTS.emailEnabled ? 1 : 0,
+          PREF_DEFAULTS.popupEnabled ? 1 : 0,
+        ],
+      );
+    } catch (err) {
+      console.warn(
+        `[users] could not seed notification_prefs for user ${result.insertId}: ` +
+          `${err?.code || err?.message || err} — falling back to PREF_DEFAULTS (email off)`,
+      );
+    }
 
     const [[row]] = await db.query(
       `SELECT user_id AS id, name, username, email, role, status, profile_image, avatar

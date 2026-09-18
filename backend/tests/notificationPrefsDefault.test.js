@@ -1,0 +1,124 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// ─── Alert email is OPT-IN, and it has to stay that way ───────────────────────
+//
+// The bug this guards against already happened once. `raiseAlert` resolved each
+// recipient's email preference with `COALESCE(p.email_enabled, 1)` and nothing ever
+// wrote a `notification_prefs` row until somebody pressed Save on the Settings page —
+// so an account started receiving critical alert email the moment an admin approved it.
+// Before its owner had signed in, before they could reach the toggle that turns it off,
+// and before they had been shown the Privacy Notice that says what we do with their
+// address.
+//
+// It is guarded by a TEST rather than by a comment because of how it fails: silently,
+// and at somebody else's mailbox. Nothing throws, no log line appears, the dashboard is
+// perfect, and the only person who finds out is a staff member wondering why a system
+// they have never opened is emailing them at 3 a.m. Flip any one of the four values
+// below back and the behaviour returns with no other symptom.
+//
+// Source text is parsed, not imported: notificationService reaches config/mysql.js and
+// config/env.js, and `npm test` runs with no MySQL and no .env. Same approach, and the
+// same reason, as agentTokenHash.test.js parsing its migration and contract.test.js
+// parsing the Go collector.
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const read = (...p) => fs.readFileSync(path.join(__dirname, "..", ...p), "utf8");
+
+/** Drop `--` comment lines so the migration's own prose cannot satisfy a check. */
+const sqlCode = (s) =>
+  s.split("\n").filter((l) => !l.trimStart().startsWith("--")).join("\n");
+
+/** Drop `//` comment lines, for the same reason. */
+const jsCode = (s) =>
+  s.split("\n").filter((l) => !l.trimStart().startsWith("//")).join("\n");
+
+const migration = sqlCode(
+  read("..", "migrations", "2026-09-18_notification_prefs_default_off.sql"),
+);
+const notificationService = jsCode(read("services", "notificationService.js"));
+const userService = jsCode(read("services", "userService.js"));
+const prefsComponent = jsCode(
+  read("..", "frontend", "src", "components", "notifications", "NotificationPreferences.tsx"),
+);
+
+test("PREF_DEFAULTS makes alert email opt-in", () => {
+  const m = notificationService.match(/PREF_DEFAULTS\s*=\s*\{([^}]*)\}/);
+  assert.ok(m, "PREF_DEFAULTS is gone — every default below has lost its single source");
+  assert.match(
+    m[1],
+    /emailEnabled:\s*false/,
+    "emailEnabled must default to false: email is the only channel that reaches somebody " +
+      "who has never signed in, so it is the only one that needs consent first",
+  );
+});
+
+test("the recipient query binds that default instead of hard-coding one", () => {
+  assert.match(
+    notificationService,
+    /COALESCE\(p\.email_enabled,\s*\?\)/,
+    "the email fallback must be a bound parameter, not a literal — a literal is a second " +
+      "definition of the default, hidden in a query string where PREF_DEFAULTS cannot reach it",
+  );
+  assert.doesNotMatch(
+    notificationService,
+    /COALESCE\(p\.email_enabled,\s*1\)/,
+    "this is the original bug verbatim: a missing prefs row means email ON, and every " +
+      "newly approved account has a missing prefs row",
+  );
+});
+
+test("getPrefs reads its fallbacks from PREF_DEFAULTS", () => {
+  assert.match(
+    notificationService,
+    /emailEnabled:\s*row\s*\?\s*Boolean\(row\.email_enabled\)\s*:\s*PREF_DEFAULTS\.emailEnabled/,
+    "getPrefs must fall back to PREF_DEFAULTS — it is what the Settings page renders, so a " +
+      "literal here shows a toggle that disagrees with what the fan-out will actually do",
+  );
+});
+
+test("registration seeds the row, so the fallback is never what decides", () => {
+  assert.match(
+    userService,
+    /INSERT INTO notification_prefs[\s\S]{0,400}PREF_DEFAULTS\.emailEnabled/,
+    "registerGoogleUser must seed notification_prefs from PREF_DEFAULTS: an explicit row " +
+      "records the decision, so a later change to the fallback cannot re-subscribe people",
+  );
+});
+
+test("the migration backfills existing users and splits on last_login", () => {
+  assert.match(
+    migration,
+    /INSERT INTO\s+`?notification_prefs`?/,
+    "without a backfill, flipping the default silently mutes every existing user — a " +
+      "monitoring system getting quieter with nobody asking is the worse bug",
+  );
+  assert.match(
+    migration,
+    /IF\(\s*u?\.?`?last_login`?\s+IS NULL\s*,\s*0\s*,\s*1\s*\)/,
+    "the split must be last_login: somebody who has signed in keeps the email they have " +
+      "been getting, somebody who never has stops getting mail for an account nobody uses",
+  );
+  assert.match(
+    migration,
+    /`?email_enabled`?\s+tinyint\(4\)\s+NOT NULL\s+DEFAULT\s+0/i,
+    "the column default must be 0, so a row inserted by hand is silent too",
+  );
+});
+
+test("the Settings toggle does not render 'on' before it knows", () => {
+  assert.doesNotMatch(
+    prefsComponent,
+    /emailEnabled:\s*prefs\s*\?\s*Boolean\(prefs\.emailEnabled\)\s*:\s*true/,
+    "a failed fetch must not show the toggle on: the user would read it as subscribed, " +
+      "and switching it 'off' saves the value it already had",
+  );
+  assert.doesNotMatch(
+    prefsComponent,
+    /useState\(true\);\s*\/\/?.*emailEnabled|\[emailEnabled,\s*setEmailEnabled\]\s*=\s*useState\(true\)/,
+    "the pre-fetch default must be false, to match PREF_DEFAULTS",
+  );
+});

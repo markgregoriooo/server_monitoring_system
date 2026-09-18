@@ -19,6 +19,24 @@ export function init(io) {
 const SEVERITIES = ["info", "warning", "critical"];
 const SEV_RANK = { info: 0, warning: 1, critical: 2 };
 
+// What a user who has never touched the Settings page gets. ONE definition, read by the
+// recipient query below, by getPrefs(), and by userService.registerGoogleUser seeding a
+// row for a brand-new account — three places that used to each carry their own literal.
+//
+// ⚠️ `emailEnabled: false` is the deliberate part, and it makes alert email an opt-IN.
+// The bell, the toast and the OS popup all require a signed-in browser, so they cannot
+// reach somebody who has never used the system; EMAIL can, and did. An approved account
+// with no prefs row was mailed critical alerts before its owner had ever seen the
+// dashboard, could not switch them off without signing in (the toggle is behind the
+// login), and had never been shown the Privacy Notice that says what we do with their
+// address (RA 10173 — privacy-policy.md). Nobody is mailed until they ask to be.
+//
+// Turning it on is one toggle on Settings → Notification preferences.
+// `migrations/2026-09-18_notification_prefs_default_off.sql` backfilled an explicit row
+// for everyone who had already signed in, so this did not quietly mute anybody who was
+// relying on the old default.
+export const PREF_DEFAULTS = { emailEnabled: false, popupEnabled: true };
+
 function normalizeSeverity(s) {
   const v = String(s ?? "").toLowerCase();
   return SEVERITIES.includes(v) ? v : null;
@@ -98,18 +116,20 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
     );
     const alertId = ins.insertId;
 
-    // 2) recipients — every active user, with their email + email preferences
-    //    (a missing notification_prefs row falls back to defaults: enabled, and the
-    //    env-configured minimum severity).
+    // 2) recipients — every active user, with their email + email preferences.
+    //    A missing notification_prefs row falls back to PREF_DEFAULTS: the feed row and
+    //    the live push still happen, the EMAIL does not. Bound as a parameter rather than
+    //    written into the SQL, so the default has one definition and not a second one
+    //    hiding inside a query string.
     const emailMinDefault = normalizeSeverity(process.env.NOTIFY_EMAIL_MIN_SEVERITY) || "critical";
     const [users] = await db.query(
       `SELECT u.user_id, u.email,
-              COALESCE(p.email_enabled, 1)              AS email_enabled,
+              COALESCE(p.email_enabled, ?)              AS email_enabled,
               COALESCE(p.min_email_severity, ?)         AS min_email_severity
          FROM users u
          LEFT JOIN notification_prefs p ON p.user_id = u.user_id
         WHERE u.status = 'active'`,
-      [emailMinDefault],
+      [PREF_DEFAULTS.emailEnabled ? 1 : 0, emailMinDefault],
     );
     if (!users.length) return alertId;
 
@@ -255,7 +275,7 @@ async function clearAll(userId) {
 }
 
 // ─── Per-user preferences (notification_prefs) ─────────────────────────────────
-// A missing row = defaults (email on, popups on, min severity from env).
+// A missing row = PREF_DEFAULTS (email OFF, popups on) + the env minimum severity.
 
 function defaultMinSeverity() {
   return normalizeSeverity(process.env.NOTIFY_EMAIL_MIN_SEVERITY) || "critical";
@@ -268,8 +288,8 @@ async function getPrefs(userId) {
     [userId],
   );
   return {
-    emailEnabled: row ? Boolean(row.email_enabled) : true,
-    popupEnabled: row ? Boolean(row.popup_enabled) : true,
+    emailEnabled: row ? Boolean(row.email_enabled) : PREF_DEFAULTS.emailEnabled,
+    popupEnabled: row ? Boolean(row.popup_enabled) : PREF_DEFAULTS.popupEnabled,
     minEmailSeverity: row?.min_email_severity ?? defaultMinSeverity(),
   };
 }

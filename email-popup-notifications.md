@@ -27,8 +27,19 @@ There's also a **third, in-memory** state: `alertBandState` — "what severity d
 see for this device+metric?" It isn't persisted and resets on restart. It exists to stop a metric
 sitting at critical from re-alerting every poll.
 
-**Supporting tables:** `notification_prefs` (per-user email on/off + min severity; missing row =
-defaults) and `alert_rules` (configurable thresholds).
+**Supporting tables:** `notification_prefs` (per-user email on/off + min severity) and
+`alert_rules` (configurable thresholds).
+
+> **Alert email is OPT-IN.** A missing `notification_prefs` row means email **off**
+> (`notificationService.PREF_DEFAULTS`), and `userService.registerGoogleUser` seeds a row at
+> registration so the fallback is never what decides. It used to mean email **on**, which had
+> the system mailing critical alerts to an account the moment an admin approved it — before
+> its owner had signed in, before they could reach the toggle that turns it off, and before
+> they had been shown the Privacy Notice. The bell, the toast and the OS popup need a
+> signed-in browser and so are unaffected; email is the one channel that reaches someone who
+> has never used the system. `migrations/2026-09-18_notification_prefs_default_off.sql`
+> backfilled an explicit row for every existing user, `email_enabled = 1` for anyone who had
+> signed in at least once, so the change muted nobody who was relying on the old default.
 
 ---
 
