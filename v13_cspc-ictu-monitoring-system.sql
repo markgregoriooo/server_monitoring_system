@@ -335,6 +335,56 @@ CREATE TABLE `device_network` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `gas_sensors`
+--
+-- One row per physical MQ-2 channel. `channel` is 1-based and maps to the firmware's
+-- MQ2_PINS[channel-1], exactly as aircon_state.ir_channel maps to IR_CHANNEL_PINS.
+--
+-- The split is the same one the IR channel pool uses: the DEVICE knows which ADC pins it
+-- has, the DATABASE knows which of them somebody actually soldered a sensor to and where
+-- that sensor points. Neither can answer the other's question, and baking either into the
+-- firmware means a reflash to add a sensor.
+--
+-- The 4-channel ceiling is HARDWARE, not schema: ADC2 is unusable while WiFi is on, and
+-- GPIO 32/33 are reserved for IR channels 3 and 4.
+-- See migrations/2026-09-17_gas_sensors.sql
+--
+
+CREATE TABLE `gas_sensors` (
+  `channel` tinyint(3) UNSIGNED NOT NULL,
+  -- The pin the DEVICE reported for this channel on its last connect, remembered so the
+  -- "wire a sensor" dialog can name a GPIO before the ESP32 has ever connected to this
+  -- process. The firmware stays the source of truth; this is a cache of its answer.
+  `gpio` tinyint(3) UNSIGNED DEFAULT NULL,
+  -- Where this sensor physically IS. NULL until somebody says, and the UI falls back to
+  -- "MQ2-<channel>" — the same COALESCE-to-a-technical-name pattern as devices.display_name.
+  `location_label` varchar(100) DEFAULT NULL,
+  -- Is a sensor actually soldered to this pin? An unwired ADC input FLOATS: it does not
+  -- read zero, it reads noise, and noise through the MQ-2 curve is a plausible-looking ppm
+  -- that can trip a smoke alarm. A channel stays silent until somebody asserts the hardware
+  -- exists — the same reason enabledChannels[] starts false for unwired IR pins.
+  `enabled` tinyint(1) NOT NULL DEFAULT 0,
+  `updated_by` int(11) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+--
+-- Dumping data for table `gas_sensors`
+--
+-- Channels 1 and 2 ship ENABLED because those two sensors are the ones already wired and
+-- running; a fresh install must not come up with smoke detection switched off. Channels 3
+-- and 4 exist but stay disabled — the pins are free, the sensors are not there yet.
+--
+
+INSERT INTO `gas_sensors` (`channel`, `gpio`, `location_label`, `enabled`) VALUES
+(1, 34, NULL, 1),
+(2, 35, NULL, 1),
+(3, 36, NULL, 0),
+(4, 39, NULL, 0);
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `ir_commands`
 --
 
@@ -396,7 +446,15 @@ CREATE TABLE `network_interfaces` (
 
 CREATE TABLE `notification_prefs` (
   `user_id` int(11) NOT NULL,
-  `email_enabled` tinyint(4) NOT NULL DEFAULT 1,
+  -- Alert email is OPT-IN. This shipped as DEFAULT 1, and since nothing wrote a row until
+  -- somebody pressed Save on the Settings page, the default decided the channel for every
+  -- account that had never been used: approving a registration started mailing it critical
+  -- alerts before its owner had signed in, could reach this toggle, or had been shown the
+  -- Privacy Notice. The bell, the toast and the popup all need a signed-in browser; email
+  -- is the one channel that reaches a stranger, so it is the one that waits to be asked.
+  -- Mirrored by notificationService.PREF_DEFAULTS, which registerGoogleUser seeds a row
+  -- from. See migrations/2026-09-18_notification_prefs_default_off.sql
+  `email_enabled` tinyint(4) NOT NULL DEFAULT 0,
   `popup_enabled` tinyint(4) NOT NULL DEFAULT 1,
   `min_email_severity` enum('info','warning','critical') NOT NULL DEFAULT 'critical',
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
@@ -416,6 +474,13 @@ CREATE TABLE `reports` (
   `paper_size` enum('a4','letter','folio') NOT NULL DEFAULT 'folio' COMMENT 'Page size the PDF was rendered at; folio = long bond, 8.5x13in',
   `reference_no` varchar(40) DEFAULT NULL COMMENT 'Assigned at build time, e.g. ICTU-SRV-2026-001. NULL until generated.',
   `device_id` int(11) DEFAULT NULL,
+  -- A second, ORTHOGONAL scope. `device_id` carries a foreign key to `devices`, so there is
+  -- no id that means "the server room" and no sentinel that would survive the constraint —
+  -- and the ESP32 is not a `devices` row, which is why its alerts are written with
+  -- `device_id IS NULL`. NULL here keeps its original meaning (campus-wide), so every
+  -- report generated before this existed still reads exactly as it did.
+  -- The two are never both set. See migrations/2026-09-18_report_room_scope.sql
+  `scope_kind` varchar(16) DEFAULT NULL COMMENT 'NULL = campus-wide, ''room'' = room-level alerts only (device_id IS NULL)',
   `status` enum('pending','generated','failed') DEFAULT NULL,
   `file_path` varchar(255) DEFAULT NULL,
   `period_start` timestamp NULL DEFAULT current_timestamp(),
@@ -710,6 +775,13 @@ ALTER TABLE `device_network`
   ADD PRIMARY KEY (`network_id`),
   ADD UNIQUE KEY `devices_id_UNIQUE` (`device_id`),
   ADD KEY `fk_device_network_devices1_idx` (`device_id`);
+
+--
+-- Indexes for table `gas_sensors`
+--
+ALTER TABLE `gas_sensors`
+  ADD PRIMARY KEY (`channel`),
+  ADD KEY `fk_gas_sensors_user` (`updated_by`);
 
 --
 -- Indexes for table `ir_commands`
@@ -1036,6 +1108,12 @@ ALTER TABLE `device_metrics_config`
 --
 ALTER TABLE `device_network`
   ADD CONSTRAINT `fk_device_network_devices1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+--
+-- Constraints for table `gas_sensors`
+--
+ALTER TABLE `gas_sensors`
+  ADD CONSTRAINT `fk_gas_sensors_user` FOREIGN KEY (`updated_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
 -- Constraints for table `ir_commands`
