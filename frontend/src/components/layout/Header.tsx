@@ -6,6 +6,7 @@ import { useTheme } from "../../context/ThemeContext";
 import NotificationPanel from "../notifications/NotificationPanel";
 import { usePip } from "../../pip/PipContext";
 import { BRAND } from "../../branding";
+import { pageNameFor } from "../../pageTitles";
 import { avatarUrl } from "../../utils/format";
 
 type HeaderProps = {
@@ -13,27 +14,20 @@ type HeaderProps = {
   onMenuToggle?: () => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  /** Raise the My Profile modal. The modal itself is owned by the Sidebar, so this asks
+   *  AppShell to signal it rather than rendering a second copy of the form. */
+  onOpenProfile?: () => void;
 };
 
-// Breadcrumb map: pathname → [section, page]
-const breadcrumbs: Record<string, [string, string]> = {
-  "/":                [BRAND.name, "Dashboard"],
-  "/server-metrics":  [BRAND.name, "Server Metrics"],
-  "/network":         [BRAND.name, "Network Monitoring"],
-  "/ups":             [BRAND.name, "UPS Monitoring"],
-  "/environment":     [BRAND.name, "Environment Monitoring"],
-  "/air-conditioner": [BRAND.name, "Air Conditioner"],
-  "/history":         [BRAND.name, "History Logs"],
-  "/reports":         [BRAND.name, "Reports"],
-  "/settings":        [BRAND.name, "Settings"],
-  "/user-management": [BRAND.name, "User Management"],
-  "/alerts":          [BRAND.name, "Alerts"],
-  "/alert-rules":     [BRAND.name, "Alert Rules"],
-};
+// The page half of the breadcrumb comes from src/pageTitles.ts, shared with the browser
+// tab title. It used to be a private copy here, and `/mikrotik` and `/analytics` were
+// never added to it — so the breadcrumb on both pages read "Dashboard".
 
 function LivePing() {
   return (
-    <span className="flex items-center gap-1.5">
+    // shrink-0: a two-element badge that is already only ~40px wide has nothing to give,
+    // and squashing it turns the dot into an ellipse.
+    <span className="flex items-center gap-1.5 shrink-0">
       <span className="relative flex h-1.5 w-1.5">
         <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
           style={{ background: "#73BF69" }} />
@@ -48,13 +42,14 @@ function LivePing() {
   );
 }
 
-export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: HeaderProps) {
+export default function Header({ onMenuToggle, collapsed, onToggleCollapse, onOpenProfile }: HeaderProps) {
   const { user }    = useAuth();
   const { unreadCount, openAlertCount, pendingAgentCount, pendingUserCount } = useNotifications();
   const { supported: pipSupported, isOpen: pipOpen, open: openPip, close: closePip } = usePip();
   const { theme, toggleTheme } = useTheme();
   const location    = useLocation();
-  const [section, page] = breadcrumbs[location.pathname] ?? [BRAND.name, "Dashboard"];
+  const section = BRAND.name;
+  const page = pageNameFor(location.pathname) ?? "Dashboard";
 
   // Notification bell dropdown — close on outside-click or Escape.
   const [bellOpen, setBellOpen] = useState(false);
@@ -100,7 +95,10 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
   ) : null;
 
   return (
-    <header className="h-10 flex items-center justify-between px-4 flex-shrink-0"
+    /* `gap-4` is load-bearing, not cosmetic. `justify-between` only spreads the two groups
+       while there is slack — once they fill the bar it spreads NOTHING, and LIVE ends up
+       against the theme button with no space at all. The gap is the guaranteed floor. */
+    <header className="h-10 flex items-center justify-between gap-4 px-4 flex-shrink-0"
       style={{
         background:   "var(--gf-header)",
         borderBottom: "1px solid var(--gf-panel-border)",
@@ -108,7 +106,7 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
       }}>
 
       {/* LEFT — mobile menu + breadcrumb */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 min-w-0">
         <button onClick={onMenuToggle}
           aria-label="Open menu"
           className="gf-icon-btn flex lg:hidden relative">
@@ -131,11 +129,15 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
           </button>
         )}
 
-        {/* Grafana-style breadcrumb */}
-        <div className="flex items-center gap-1.5 text-[13px]">
-          <span style={{ color: "var(--gf-text-muted)" }}>{section}</span>
-          <span style={{ color: "var(--gf-text-dim)" }}>/</span>
-          <span className="font-semibold" style={{ color: "var(--gf-text-primary)" }}>{page}</span>
+        {/* Grafana-style breadcrumb.
+            `min-w-0` + truncate makes THIS the thing that yields when the bar is tight. It
+            is the most expendable: the page you are on is also named in the sidebar and in
+            the page's own heading, whereas LIVE has nowhere else to appear. Without it the
+            breadcrumb refuses to shrink and pushes LIVE into the theme button instead. */}
+        <div className="flex items-center gap-1.5 text-[13px] min-w-0">
+          <span className="truncate" style={{ color: "var(--gf-text-muted)" }}>{section}</span>
+          <span className="hidden sm:inline" style={{ color: "var(--gf-text-dim)" }}>/</span>
+          <span className="font-semibold truncate hidden sm:inline" style={{ color: "var(--gf-text-primary)" }}>{page}</span>
         </div>
 
         <LivePing />
@@ -216,9 +218,16 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
           {bellOpen && <NotificationPanel onClose={() => setBellOpen(false)} />}
         </div>
 
-        {/* User avatar — clicking handled in Sidebar ProfileModal */}
+        {/* User avatar — opens the same My Profile modal the sidebar's profile row does.
+            It LOOKED clickable (an avatar in a top bar always does) and did nothing, which
+            on a phone mattered more than anywhere else: the sidebar is behind a hamburger,
+            so the one visible route to the profile was the one that was inert. */}
         {user && (
-          <div className="w-6 h-6 rounded overflow-hidden flex-shrink-0"
+          <button
+            onClick={onOpenProfile}
+            aria-label="My profile"
+            title={`${user.name} — My profile`}
+            className="w-6 h-6 rounded overflow-hidden flex-shrink-0 transition-opacity hover:opacity-80 active:scale-95"
             style={{ border: "1px solid var(--gf-panel-border)" }}>
             {user.profile_image ? (
               <img src={avatarUrl(user.profile_image) ?? ""} alt={user.name}
@@ -230,7 +239,7 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse }: He
                 {user.avatar}
               </div>
             )}
-          </div>
+          </button>
         )}
       </div>
     </header>

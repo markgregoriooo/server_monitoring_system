@@ -17,6 +17,11 @@ interface SidebarProps {
   onClose: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  /** Bumped by AppShell when the header's avatar is clicked. A COUNTER rather than a
+   *  boolean: a boolean would need resetting to false before it could fire again, so
+   *  clicking the avatar, closing the modal and clicking again would do nothing the second
+   *  time. Every increment is a fresh request. */
+  openProfileSignal?: number;
 }
 
 // ─── Nav icons (inline SVG, 14×14) ───────────────────────────────────────────
@@ -189,10 +194,17 @@ function readOpenGroups(): Record<string, boolean> {
   }
 }
 
-export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollapse }: SidebarProps) {
+export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollapse, openProfileSignal }: SidebarProps) {
   const { user, logout } = useAuth();
   const { openAlertCount, pendingAgentCount, pendingUserCount } = useNotifications();
+  /* The modal is owned HERE, but the header's avatar must open the same one — two
+     instances would be two copies of the form, each able to save a different username. So
+     the header raises a counter in AppShell and this watches it, rather than either side
+     lifting the whole modal out. */
   const [profileOpen, setProfileOpen] = useState(false);
+  useEffect(() => {
+    if (openProfileSignal) setProfileOpen(true);
+  }, [openProfileSignal]);
   // Success toast shown AFTER the profile modal closes (same style as UserManagement).
   const [profileToast, setProfileToast] = useState("");
   const showProfileToast = (msg: string) => {
