@@ -5,6 +5,8 @@ import { useAuth } from "../context/AuthContext";
 import { tempZone, tempColor, zoneOf, zoneColor, ZONE_DEFAULTS } from "../utils/tempZone";
 import type { IRZones, TempZone } from "../utils/tempZone";
 import { resolveColor, alphaColor } from "../utils/canvasColor";
+import { fitCanvas } from "../utils/hidpiCanvas";
+import { useCanvasRedraw } from "../hooks/useCanvasRedraw";
 import { STATUS } from "../theme/gf";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
@@ -127,14 +129,18 @@ function Panel({
 
 function Sparkline({ data, color, height = 38 }: { data: number[]; color: string; height?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const redraw = useCanvasRedraw(ref);
 
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    const ctx = c.getContext("2d");
+    // Measured, not assumed: this canvas is `width: 100%`, so a fixed 280-pixel bitmap
+    // was stretched across the whole tile — the widest scale-up of the three hand-drawn
+    // canvases, and so the blurriest on a phone.
+    const W = c.clientWidth || 280;
+    const H = height;
+    const ctx = fitCanvas(c, W, H);
     if (!ctx) return;
-    const W = (c.width = 280);
-    const H = (c.height = height);
     ctx.clearRect(0, 0, W, H);
     const pts = data.slice(-48);
     if (pts.length < 2) return;
@@ -165,7 +171,7 @@ function Sparkline({ data, color, height = 38 }: { data: number[]; color: string
     ctx.lineWidth = 1.5;
     ctx.lineJoin = "round";
     ctx.stroke();
-  }, [data, color, height]);
+  }, [data, color, height, redraw]);
 
   return <canvas ref={ref} style={{ width: "100%", height, display: "block" }} />;
 }
@@ -996,12 +1002,22 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
                     style={{ left: `${posPct(liveTemp)}%`, color: "#fff", background: "rgba(0,0,0,0.75)", border: `1px solid ${GF.border}` }}>
                     {liveTemp.toFixed(1)}°
                   </div>
-                  <div className="absolute -translate-x-1/2 z-20"
-                    style={{ left: `${posPct(liveTemp)}%`, top: 20, height: 56, width: 2, background: "#fff", boxShadow: "0 0 4px rgba(0,0,0,0.6)" }} />
+                  <div className="absolute -translate-x-1/2 z-20 h-10 sm:h-14"
+                    style={{ left: `${posPct(liveTemp)}%`, top: 20, width: 2, background: "#fff", boxShadow: "0 0 4px rgba(0,0,0,0.6)" }} />
                 </>
               )}
               {/* zone segments (width ∝ temperature span) */}
-              <div className="flex w-full rounded-[2px] overflow-hidden" style={{ height: 56 }}>
+              {/* ⚠️ Five segments share the viewport width and each one is sized by the
+                  TEMPERATURE SPAN it covers, not by the text inside it — so segment width is
+                  whatever the admin's boundaries make it, and on a phone the default map
+                  gives the two 2°C zones about 44px each. "Near Critical" and "AC → 22°C"
+                  both need roughly double that, so both lines were being clipped mid-word
+                  ("Near Cri…", "AC → 2…") in the segments that matter most.
+                  What a phone keeps is the SHAPE — proportional widths, the zone colours,
+                  the boundary temperatures and the live marker. The wording moves to the
+                  five rows below, which are vertical, colour-matched by the same dot, and
+                  already say "set AC to 22°C" in full. */}
+              <div className="flex w-full rounded-[2px] overflow-hidden h-10 sm:h-14">
                 {ZONES.map((z, i) => {
                   const w = (segPts[i + 1] ?? 0) - (segPts[i] ?? 0);
                   const active = i === activeZone;
@@ -1014,8 +1030,18 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
                         borderTop: `2px solid ${z.color}`,
                         boxShadow: active ? `inset 0 0 0 1px ${z.color}` : "none",
                       }}>
-                      <span className="text-[11px] font-bold leading-tight truncate max-w-full" style={{ color: z.color }}>{z.name}</span>
-                      <span className="text-[11px] leading-tight whitespace-nowrap" style={{ color: GF.textDim }}>AC → {z.target}</span>
+                      {/* Wraps on a phone instead of ellipsising: "Near Critical" splits over
+                          two lines and fits, where one clipped line read as a different zone
+                          name. Still `overflow-hidden` above, so a pathologically narrow
+                          segment (boundaries set 0.5°C apart) clips rather than spilling into
+                          its neighbour. */}
+                      <span className="text-[10px] sm:text-[11px] font-bold leading-[1.15] whitespace-normal sm:truncate max-w-full" style={{ color: z.color }}>{z.name}</span>
+                      {/* Desktop only. A bare "28°" would be worse than absent here — the axis
+                          under this bar is ROOM temperature, so an unprefixed number inside a
+                          segment reads as the room, which is the exact confusion the "AC →"
+                          prefix exists to prevent. Either the prefix fits or the figure waits
+                          for the rows below. */}
+                      <span className="hidden sm:inline text-[11px] leading-tight whitespace-nowrap" style={{ color: GF.textDim }}>AC → {z.target}</span>
                     </div>
                   );
                 })}
@@ -1333,7 +1359,7 @@ export default function AirConditioner() {
               color={tempColor(roomTemp, zones)}
               // States the zone outright — a colour alone cannot say whether 27.5°C is
               // ACCEPTABLE or NEAR CRITICAL, and those cool to different temperatures.
-              sub={typeof roomTemp === "number" ? `${tempZone(roomTemp, zones).label} · LIVE` : "DHT11 · LIVE"}
+              sub={typeof roomTemp === "number" ? `${tempZone(roomTemp, zones).label} · LIVE` : "DHT22 · LIVE"}
               spark={tempHist}
             />
             <StatPanel
@@ -1341,7 +1367,7 @@ export default function AirConditioner() {
               value={typeof humidity === "number" ? humidity.toFixed(1) : "--"}
               unit="%"
               color={humColor(humidity)}
-              sub="DHT11 · LIVE"
+              sub="DHT22 · LIVE"
               spark={humHist}
             />
             <StatPanel

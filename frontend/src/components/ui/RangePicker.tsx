@@ -193,7 +193,7 @@ export default function RangePicker({
   const shown = error || localError;
 
   return (
-    <div className="relative flex items-center gap-2" ref={wrapRef}>
+    <div className="relative flex items-center gap-2 max-w-full" ref={wrapRef}>
       {/* Active custom window, so the chart is never unlabelled about its period */}
       {isCustom && (
         <span className={activeWindowCls}>
@@ -207,17 +207,27 @@ export default function RangePicker({
             {presetLabel[p]}
           </button>
         ))}
+        {/* ICON-ONLY on a phone. Five presets plus a calendar icon AND the word "Custom"
+            runs past a 360px screen, and "Custom" is the one label that is redundant — it
+            is the only non-preset in the group, and a calendar icon says "pick dates" on
+            its own. The word comes back from `sm`, where there is room for it. */}
         <button
           onClick={openEditor}
           title="Custom time range"
+          aria-label="Custom time range"
           className={`${btnCls(isCustom)} inline-flex items-center gap-1`}
         >
-          {/* Icon tracks the button size, or it reads as a speck on the md variant. */}
-          <svg width={size === "md" ? 12 : 10} height={size === "md" ? 12 : 10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          {/* Icon tracks the button size, or it reads as a speck on the md variant.
+              A notch larger on a phone, where it is carrying the button by itself. */}
+          <svg
+            width={size === "md" ? 13 : 12} height={size === "md" ? 13 : 12}
+            className="sm:w-[12px] sm:h-[12px]"
+            viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          >
             <rect x="3" y="5" width="18" height="16" rx="2" />
             <path d="M3 10h18M8 3v4M16 3v4" />
           </svg>
-          Custom
+          <span className="hidden sm:inline">Custom</span>
         </button>
       </div>
 

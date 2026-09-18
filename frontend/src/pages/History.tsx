@@ -468,7 +468,9 @@ export default function History() {
             <button onClick={() => setSearchInput("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-[13px]" style={{ color: gf.textDim }}>✕</button>
           )}
         </div>
-        <div className="flex gap-1">
+        {/* Full width on a phone so the five segments read as ONE control. Squeezed onto the
+            end of the search row they looked like leftovers. */}
+        <div className="flex gap-1 w-full sm:w-auto">
           {DAYS.map((d) => (
             <Seg key={d.value} active={rangeMode === "preset" && days === d.value}
               onClick={() => { setRangeMode("preset"); setDays(d.value); setPage(1); }}>{d.label}</Seg>
@@ -487,13 +489,14 @@ export default function History() {
           }}>Custom</Seg>
         </div>
         {rangeMode === "custom" && (
-          <div className="flex items-center gap-1">
+          /* Two native date pickers plus an arrow do not fit beside anything on a phone. */
+          <div className="flex items-center gap-1 w-full sm:w-auto">
             <input name="customStart"
               type="date"
               value={customStart}
               max={customEnd || undefined}
               onChange={(e) => { setCustomStart(e.target.value); setPage(1); }}
-              className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none"
+              className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none flex-1 sm:flex-none min-w-0"
               style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
             />
             <span className="text-[12px]" style={{ color: gf.textDim }}>→</span>
@@ -502,37 +505,44 @@ export default function History() {
               value={customEnd}
               min={customStart || undefined}
               onChange={(e) => { setCustomEnd(e.target.value); setPage(1); }}
-              className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none"
+              className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none flex-1 sm:flex-none min-w-0"
               style={{ background: gf.panel, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
             />
           </div>
         )}
       </div>
 
-      {/* Filter pills */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div className="flex flex-wrap items-center gap-1">
-          <span className="text-[10px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Category</span>
+      {/* Filter pills — STACK into one group per row on a phone.
+          Side by side, each group wraps independently: Category's eight pills take three
+          lines, and the vertical divider that was meant to separate it from Severity ends up
+          floating beside the middle of that block while the "Severity" label starts halfway
+          along a line. Three labelled rows instead, and the dividers go — they exist to
+          separate things sitting on ONE line, which below `sm` they never are. */}
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-x-3 gap-y-2">
+        <div className="flex flex-wrap items-center gap-1 w-full sm:w-auto">
+          <span className="text-[10px] tracking-widest uppercase mr-0.5 w-full sm:w-auto" style={{ color: gf.textMuted }}>Category</span>
           {CATEGORIES.map((c) => (
             <Pill key={c} active={category === c} color={c === "all" ? gf.accent : catMeta(c).color} onClick={() => { setCategory(c); setPage(1); }}>
               {c === "all" ? "all" : catMeta(c).label}
             </Pill>
           ))}
         </div>
-        <div className="h-4 w-px" style={{ background: gf.border }} />
-        <div className="flex flex-wrap items-center gap-1">
-          <span className="text-[10px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Severity</span>
+        <div className="h-4 w-px hidden sm:block" style={{ background: gf.border }} />
+        <div className="flex flex-wrap items-center gap-1 w-full sm:w-auto">
+          <span className="text-[10px] tracking-widest uppercase mr-0.5 w-full sm:w-auto" style={{ color: gf.textMuted }}>Severity</span>
           {SEVERITIES.map((s) => (
             <Pill key={s} active={severity === s} color={s === "all" ? gf.accent : sevColor(s)} onClick={() => { setSeverity(s); setPage(1); }}>{s}</Pill>
           ))}
         </div>
-        <div className="h-4 w-px" style={{ background: gf.border }} />
-        <div className="flex flex-wrap items-center gap-1">
-          <span className="text-[10px] tracking-widest uppercase mr-0.5" style={{ color: gf.textDim }}>Actor</span>
+        <div className="h-4 w-px hidden sm:block" style={{ background: gf.border }} />
+        <div className="flex flex-wrap items-center gap-1 w-full sm:w-auto">
+          <span className="text-[10px] tracking-widest uppercase mr-0.5 w-full sm:w-auto" style={{ color: gf.textMuted }}>Actor</span>
+          {/* The select takes the rest of the row on a phone — a 120px dropdown holding
+              "System (automated)" truncates the only text that identifies the choice. */}
           <select name="actor"
             value={actor}
             onChange={(e) => { setActor(e.target.value); setPage(1); }}
-            className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none"
+            className="text-[12px] px-2 py-1 rounded-[2px] focus:outline-none flex-1 sm:flex-none min-w-0"
             style={{ background: gf.panel, border: `1px solid ${actor !== "all" ? gf.accent : gf.border}`, color: gf.textPrimary }}
           >
             <option value="all">All actors</option>

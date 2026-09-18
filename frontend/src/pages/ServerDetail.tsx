@@ -6,6 +6,12 @@ import { socket } from "../socket/socket";
 import { useTheme } from "../context/ThemeContext";
 import RangePicker, { DEFAULT_RANGE, rangeSpanSec, presetLabel } from "../components/ui/RangePicker";
 import { withGaps, gapIndices } from "../utils/seriesGaps";
+import { fitCanvas } from "../utils/hidpiCanvas";
+import { useCanvasRedraw } from "../hooks/useCanvasRedraw";
+
+// The size each gauge OCCUPIES, in CSS pixels — see utils/hidpiCanvas.
+const GAUGE_W = 180;
+const GAUGE_H = 110;
 import type { RangeValue } from "../components/ui/RangePicker";
 import type { Volume } from "../types/server";
 import { fmtAxisTime as fmtTime, fmtDateTime, rateMBs, MULTI_DAY_SEC } from "../utils/format";
@@ -95,13 +101,14 @@ function GaugePanel({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const isLight = theme === "light";
+  const redraw = useCanvasRedraw(canvasRef);
 
   useEffect(() => {
     const c = canvasRef.current;
     if (!c) return;
-    const ctx = c.getContext("2d");
+    const ctx = fitCanvas(c, GAUGE_W, GAUGE_H);
     if (!ctx) return;
-    const w = c.width, h = c.height;
+    const w = GAUGE_W, h = GAUGE_H;
     const cx = w / 2, cy = h * 0.72, r = Math.min(w, h) * 0.38;
     const startA = Math.PI * 0.85;
     const endA   = Math.PI * 2.15;
@@ -154,7 +161,7 @@ function GaugePanel({
     ctx.fillStyle = isLight ? "rgba(71,85,105,0.75)" : "rgba(200,210,220,0.55)";
     ctx.font = `${Math.round(r * 0.22)}px monospace`;
     ctx.fillText(unit, cx, cy + r * 0.28);
-  }, [pct, color, value, unit, isLight]);
+  }, [pct, color, value, unit, isLight, redraw]);
 
   return (
     <div className="bg-slate-100 dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg overflow-hidden flex flex-col">
@@ -162,7 +169,7 @@ function GaugePanel({
         <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">{title}</span>
       </div>
       <div className="flex-1 flex items-center justify-center py-1">
-        <canvas ref={canvasRef} width={180} height={110} style={{ width: "100%", maxWidth: 180, height: "auto" }} />
+        <canvas ref={canvasRef} width={GAUGE_W} height={GAUGE_H} style={{ width: "100%", maxWidth: GAUGE_W, height: "auto" }} />
       </div>
     </div>
   );
@@ -592,8 +599,10 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         />
       </div>
 
-      {/* Range selector */}
-      <div className="flex items-center justify-between gap-3">
+      {/* Range selector — WRAPS on a phone. The label and the six-button group cannot share
+          a 360px line, and `justify-between` stops spreading the moment they fill it, so the
+          two ran straight into each other. The label goes above; the group keeps one line. */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">
           Performance {history.length === 0 ? "· no data for this range" : range.kind === "preset" ? `· last ${presetLabel[range.preset]}` : "· custom range"}
         </span>

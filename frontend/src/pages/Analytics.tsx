@@ -308,11 +308,14 @@ const ROUTER_METRICS = new Set<string>([
   "router_cpu", "router_mem", "router_clients", "router_latency", "router_loss",
 ]);
 
+/* `short` is what a phone shows. Only one label actually needs it — "Trends & Anomalies" is
+   wide enough on its own to push "Recommendations" off the strip, and the page's own heading
+   says "Anomalies" a few pixels below anyway. */
 const TABS = [
-  { key: "forecasts", label: "Forecasts" },
-  { key: "trends", label: "Trends & Anomalies" },
-  { key: "alerts", label: "Alerts" },
-  { key: "recs", label: "Recommendations" },
+  { key: "forecasts", label: "Forecasts", short: "Forecasts" },
+  { key: "trends", label: "Trends & Anomalies", short: "Trends" },
+  { key: "alerts", label: "Alerts", short: "Alerts" },
+  { key: "recs", label: "Recommendations", short: "Recommendations" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -826,21 +829,40 @@ export default function Analytics() {
         </div>
       </div>
 
-      {/* ── Tabs — each tab lazy-loads its own data (see the load effects above) ── */}
-      <div className="flex flex-wrap items-center gap-1" style={{ borderBottom: `1px solid ${gf.divider}` }}>
+      {/* ── Tabs — each tab lazy-loads its own data (see the load effects above) ──
+          SCROLLS sideways rather than wrapping. As `flex-wrap`, a phone pushed
+          "Recommendations" onto a second line where it sat alone BELOW the underline that
+          defines the tab strip — it stopped looking like a tab and started looking like a
+          stray button. One scrolling line keeps the row and its baseline intact, which is
+          also what every mobile tab bar does, so the swipe is already learned. */}
+      <div
+        className="flex items-center gap-1 overflow-x-auto"
+        style={{
+          borderBottom: `1px solid ${gf.divider}`,
+          // Keep the strip one line; let it scroll instead of reflowing.
+          flexWrap: "nowrap",
+          // The bar is ~40px tall — a scrollbar inside it would eat a quarter of that and
+          // sit across the active tab's underline. Touch devices show an overlay one anyway.
+          scrollbarWidth: "none",
+          // Snap so a swipe lands on a tab edge rather than mid-label.
+          scrollSnapType: "x proximity",
+        }}
+      >
         {TABS.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className="px-3 py-2 text-[1em] transition-colors"
+            className="px-3 py-2 text-[1em] transition-colors whitespace-nowrap shrink-0"
             style={{
               marginBottom: -1,
               color: tab === t.key ? gf.textPrimary : gf.textMuted,
               borderBottom: `2px solid ${tab === t.key ? gf.accent : "transparent"}`,
               fontWeight: tab === t.key ? 600 : 400,
+              scrollSnapAlign: "start",
             }}
           >
-            {t.label}
+            <span className="sm:hidden">{t.short}</span>
+            <span className="hidden sm:inline">{t.label}</span>
           </button>
         ))}
       </div>

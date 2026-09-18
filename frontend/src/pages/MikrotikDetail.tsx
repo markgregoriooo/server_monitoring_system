@@ -539,8 +539,12 @@ export default function MikrotikDetail({
 
   return (
     <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
-      {/* Header */}
-      <div className="flex items-center gap-3 px-0.5">
+      {/* Header — WRAPS on a phone. As one row it was: back button (~110px, fixed) +
+          identity (flexible) + Configure/status/timestamp (~180px, fixed), so on a 360px
+          screen the identity got what was left — about 70px — and the subtitle truncated to
+          "Server Room · 19…". The identity is the only part that says WHICH router you are
+          looking at, and it was the only part being sacrificed. */}
+      <div className="flex items-center gap-3 px-0.5 flex-wrap">
         <button
           onClick={onBack}
           className="flex items-center gap-1.5 text-[15px] transition-colors text-[var(--gf-text-muted)] hover:text-[var(--gf-text-primary)]"
@@ -550,15 +554,20 @@ export default function MikrotikDetail({
           </svg>
           All MikroTiks
         </button>
-        <div className="min-w-0">
-          <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>{d.name}</h1>
-          <div className="text-[13px] truncate" style={{ color: gf.textDim }}>
-            {d.location} · {d.ip}
-            {d.routerosVersion ? ` · RouterOS ${d.routerosVersion}` : ""}
-            {d.boardModel ? ` · ${d.boardModel}` : ""}
+        {/* Takes the full width on its own line below `sm`, so nothing else competes. */}
+        <div className="min-w-0 w-full sm:w-auto order-last sm:order-none">
+          <h1 className="text-[16px] sm:text-[15px] font-semibold sm:truncate" style={{ color: gf.textPrimary }}>{d.name}</h1>
+          {/* WRAPS on a phone rather than truncating — there is no second column to protect
+              there, so clipping only hides the IP and the model. `textDim` measures ~3:1 on
+              the page background, under the 4.5:1 floor for text this small, so it is lifted
+              to textMuted; it is still the quieter of the two lines. */}
+          <div className="text-[13px] sm:truncate leading-relaxed" style={{ color: gf.textMuted }}>
+            {d.location} · <span className="whitespace-nowrap">{d.ip}</span>
+            {d.routerosVersion ? <> · <span className="whitespace-nowrap">RouterOS {d.routerosVersion}</span></> : null}
+            {d.boardModel ? <> · <span className="whitespace-nowrap">{d.boardModel}</span></> : null}
           </div>
         </div>
-        <span className="ml-auto flex items-center gap-2 shrink-0">
+        <span className="ml-auto flex items-center gap-2 shrink-0 flex-wrap justify-end">
           {onConfigure && (
             <button
               onClick={onConfigure}

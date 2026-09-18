@@ -619,8 +619,8 @@ export default function AlertRules() {
                 {/* group header */}
                 <button
                   onClick={() => toggleCollapse(g.key)}
-                  className="w-full flex items-center gap-2.5 px-3 transition-colors"
-                  style={{ height: 40, background: gf.header, borderBottom: open ? `1px solid ${gf.divider}` : "none" }}
+                  className="w-full flex items-center gap-2 sm:gap-2.5 px-3 py-2 transition-colors text-left"
+                  style={{ minHeight: 40, background: gf.header, borderBottom: open ? `1px solid ${gf.divider}` : "none" }}
                 >
                   <svg
                     width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={gf.textMuted} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
@@ -628,20 +628,23 @@ export default function AlertRules() {
                   >
                     <path d="M9 6l6 6-6 6" />
                   </svg>
-                  <span style={{ color: isGlobal ? gf.accent : PURPLE }}>
+                  <span className="shrink-0" style={{ color: isGlobal ? gf.accent : PURPLE }}>
                     {isGlobal ? <GlobeIcon /> : <ServerIcon />}
                   </span>
-                  <span className="text-[14px] font-semibold truncate" style={{ color: gf.textPrimary }}>
+                  <span className="text-[14px] font-semibold truncate min-w-0" style={{ color: gf.textPrimary }}>
                     {g.name}
                   </span>
                   <span
-                    className="px-1.5 py-0.5 rounded-full text-[11px] font-medium"
+                    className="px-1.5 py-0.5 rounded-full text-[11px] font-medium shrink-0"
                     style={{ color: gf.textMuted, background: gf.hoverStrong }}
                   >
                     {g.rules.length}
                   </span>
+                  {/* Hidden on a phone. It restates the icon immediately to its left, and it
+                      is 90px of a 360px header — spent saying what the globe already said,
+                      while the group NAME beside it gets truncated to pay for it. */}
                   <span
-                    className="px-1.5 py-0.5 rounded-[2px] text-[10px] tracking-wider uppercase font-medium"
+                    className="hidden sm:inline px-1.5 py-0.5 rounded-[2px] text-[10px] tracking-wider uppercase font-medium shrink-0"
                     style={
                       isGlobal
                         ? { color: gf.accent, background: gf.accentDim }
@@ -658,16 +661,21 @@ export default function AlertRules() {
                     const meta = metricMeta(r.metricName);
                     const sev = SEV_COLOR[r.severity] ?? gf.textMuted;
                     return (
+                      /* STACKS on a phone. As one row, the severity pill, the Active toggle and
+                         the two icon buttons are all `shrink-0` and take ~200px of a 360px
+                         screen, so the only flexible thing left — the rule itself — was
+                         truncated to a few characters. The controls are decoration; the
+                         sentence "CPU when value > 90%" is the entire content of the page. */
                       <div
                         key={r.id}
-                        className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5 transition-colors"
+                        className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-x-3 gap-y-2 px-3 py-2.5 transition-colors"
                         style={{
                           borderTop: idx === 0 ? "none" : `1px solid ${gf.divider}`,
                           opacity: r.isActive ? 1 : 0.5,
                         }}
                       >
                         {/* metric + condition */}
-                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 min-w-0 w-full sm:flex-1">
                           <span
                             className="grid place-items-center rounded-md shrink-0"
                             style={{ width: 32, height: 32, background: `${meta.color}1f`, color: meta.color }}
@@ -675,8 +683,12 @@ export default function AlertRules() {
                             <MetricIcon name={r.metricName} />
                           </span>
                           <div className="min-w-0">
-                            <div className="flex items-baseline gap-1.5 min-w-0">
-                              <span className="text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>
+                            <div className="flex items-baseline gap-1.5 min-w-0 flex-wrap">
+                              {/* `sm:truncate`, not `truncate`: on a wide row an over-long name
+                                  should clip rather than reflow the row, but on a phone there is
+                                  no second column to protect — clipping there just hides the
+                                  thing you came to read. */}
+                              <span className="text-[15px] sm:text-[14px] font-semibold sm:font-medium sm:truncate" style={{ color: gf.textPrimary }}>
                                 {meta.label}
                               </span>
                               {/* Port-scoped rules look identical to device-wide ones
@@ -690,18 +702,25 @@ export default function AlertRules() {
                                 </span>
                               )}
                             </div>
-                            <div className="text-[12px] truncate" style={{ color: gf.textMuted }}>
+                            {/* The one line on this page that carries the actual setting, so it
+                                is the one that must survive a phone: a size up from the desktop
+                                12px, and the threshold itself at full contrast. */}
+                            <div className="text-[13.5px] sm:text-[12px] mt-0.5 sm:mt-0 sm:truncate" style={{ color: gf.textMuted }}>
                               when value{" "}
-                              <span className="font-semibold" style={{ color: gf.textPrimary }}>
+                              <span className="font-bold" style={{ color: gf.textPrimary }}>
                                 {r.comparison} {r.thresholdValue}
                                 {meta.unit}
                               </span>
                             </div>
-                            <div className="text-[11px] truncate mt-0.5" style={{ color: gf.textDim }}>
+                            {/* textDim measures ~3:1 against the panel — under the 4.5:1 floor
+                                for text this small, and unreadable on a phone in daylight.
+                                Lifted to textMuted (~4.5:1); it is still clearly the quietest
+                                line of the three. */}
+                            <div className="text-[12px] sm:text-[11px] sm:truncate mt-0.5" style={{ color: gf.textMuted }}>
                               {r.updatedByName ? (
                                 <>
                                   edited by{" "}
-                                  <span style={{ color: gf.textMuted }}>{r.updatedByName}</span>
+                                  <span style={{ color: gf.textPrimary }}>{r.updatedByName}</span>
                                   {fmtWhen(r.updatedAt) && ` · ${fmtWhen(r.updatedAt)}`}
                                 </>
                               ) : (
@@ -711,6 +730,10 @@ export default function AlertRules() {
                           </div>
                         </div>
 
+                        {/* Severity, the toggle and the actions travel TOGETHER — on a phone
+                            they form the row's second line, spread edge to edge so the tap
+                            targets are not bunched in one corner. */}
+                        <div className="flex items-center gap-2 w-full sm:w-auto sm:contents justify-between pl-[44px] sm:pl-0">
                         {/* severity */}
                         <span
                           className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-semibold shrink-0"
@@ -801,6 +824,7 @@ export default function AlertRules() {
                               </button>
                             </span>
                           )}
+                        </div>
                         </div>
                       </div>
                     );
