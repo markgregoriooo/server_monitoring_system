@@ -4,6 +4,7 @@ import { sendSensorHistory }    from "../handlers/querySensorHistoryHandler.js";
 import airconService            from "../services/airconService.js";
 import alertRulesService        from "../services/alertRulesService.js";
 import esp32Monitor             from "../services/esp32Monitor.js";
+import gasSensorService         from "../services/gasSensorService.js";
 
 export const handleConnection = (io, socket) => {
   console.log("Client connected:", socket.id, socket.isDevice ? "[ESP32]" : "[browser]");
@@ -24,6 +25,14 @@ export const handleConnection = (io, socket) => {
     airconService.getDeviceIRConfig()
       .then(cfg => socket.emit("acConfig", cfg))
       .catch(err => console.error("[acConfig push error]", err));
+    // Which MQ-2 channels are actually wired. Same one-boolean-per-channel shape as
+    // `irConfig`, so the firmware reuses the parser it already has rather than learning a
+    // second. An unwired ADC pin floats and reads NOISE, not zero, so a channel stays unread
+    // until an admin asserts the hardware exists — the same reason enabledChannels[] starts
+    // false for unwired IR pins. Re-pushed on change; see routes/gasSensors.js.
+    gasSensorService.getDeviceConfig()
+      .then(cfg => socket.emit("gasConfig", cfg))
+      .catch(err => console.error("[gasConfig push error]", err));
   } else if (socket.user?.id) {
     // Browser: join a per-user room so notifications can target this user across
     // all their open tabs (io.to(`user:<id>`).emit("notification", …)).
@@ -38,6 +47,22 @@ const registerEvents = (io, socket) => {
   socket.on("changeRange", (range) => {
     if (socket.isDevice) return;
     handleChangeRange(socket, range);
+  });
+
+  /* ESP32 device only — which ADC pin each gas channel sits on (sent on every connect).
+     The device is the only thing that knows this, so it tells us rather than the dashboard
+     holding a second copy of MQ2_PINS[] that goes stale the day the board is re-pinned.
+     A reload() follows because the cached rows carry `gpio`, and the map only just arrived. */
+  socket.on("gasSensorMap", async (data) => {
+    if (!socket.isDevice) return;
+    try {
+      await gasSensorService.setPinMap(data?.sensors ?? []);
+      await gasSensorService.reload();
+      io.emit("gasSensorsUpdated", { sensors: gasSensorService.cached() });
+    } catch (err) {
+      console.error("[gasSensorMap] reload failed:", err);
+    }
+    console.log("[GAS] Pin map received:", gasSensorService.getPinMap());
   });
 
   // ESP32 device only — GPIO channel map (sent on every connect)
@@ -79,7 +104,13 @@ const registerEvents = (io, socket) => {
   // ESP32 device only — live sensor data
   socket.on("sensorData", (data) => {
     if (!socket.isDevice) return;
-    console.log("sensorData received:", data);
+    // `mq2_1_ppm` / `mq2_2_ppm` are still SENT and still handled — they are what a backend
+    // that has not been updated reads, and the only shape pre-cutover history is stored in.
+    // They are just not worth PRINTING: `gas_ppm` already carries every channel, so logging
+    // both shapes shows the same two numbers twice and invites the reader to wonder which is
+    // authoritative (it is the array). Dropped from the line only, never from the payload.
+    const { mq2_1_ppm, mq2_2_ppm, ...shown } = data ?? {};
+    console.log("sensorData received:", shown);
     handleSensorData(socket, data);
   });
 

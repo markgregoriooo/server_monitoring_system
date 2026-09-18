@@ -74,6 +74,28 @@ export function sendSensorHistory(socket, range = "-1h") {
       |> sort(columns: ["_time"], desc: false)
   `;
 
+  /* ── Per-sensor gas (`sensor_gas`, one series per channel) ──────────────────────────
+     A THIRD query rather than more fields on the first, because these points carry a
+     `channel` TAG: pivoting them into the numeric query would either collapse the channels
+     together or split every row by channel, and the numeric query's `group(["_field"])` is
+     load-bearing for exactly the opposite reason (see the note above it).
+
+     Grouped by channel so each sensor is its own continuous series, and left as a per-row
+     `gas` object rather than flattened into gas_1/gas_2/... fields: the number of sensors is
+     data now, and a fixed set of field names is the thing this whole change was undoing.
+
+     ⚠️ The legacy mq2_1_ppm/mq2_2_ppm fields STAY in the numeric query. They are the only
+     gas history that exists from before the cutover, so dropping them would blank every
+     chart older than today. A row carries whichever it has; the client prefers `gas`. */
+  const gasQuery = `
+    from(bucket: "${bucket}")
+      |> range(${safeRangeClause})
+      |> filter(fn: (r) => r._measurement == "sensor_gas" and r._field == "ppm")
+      |> group(columns: ["channel"])
+      ${aggregateWindow}
+      |> sort(columns: ["_time"], desc: false)
+  `;
+
   // ── Tag fields query (last value per window — tags can't be aggregated) ──
   const tagQuery = `
     from(bucket: "${bucket}")
@@ -96,6 +118,9 @@ export function sendSensorHistory(socket, range = "-1h") {
         humidity:    d.humidity    ?? null,
         mq2_1_ppm:  d.mq2_1_ppm  ?? null,
         mq2_2_ppm:  d.mq2_2_ppm  ?? null,
+        // Filled by gasQuery below: { "1": 38.2, "3": 41.0 }. Absent for windows older than
+        // the multi-sensor cutover, where the legacy pair above is all there is.
+        gas:         null,
         heat_index:  d.heat_index  ?? null,
         smoke_status:       null,
         temp_status:        null,
@@ -120,17 +145,37 @@ export function sendSensorHistory(socket, range = "-1h") {
           console.error("[HISTORY] Tag query error:", describeError(error));
         },
         complete() {
-          // Belt and braces on the Flux `sort` above: this array's order is really the
-          // MAP'S INSERTION order, which is whatever order rows streamed in. The chart
-          // plots it as given — a category axis, so it draws points in array order and
-          // cannot re-sort them — and every consumer reads "latest" as the last element.
-          // Sorting here means neither depends on how Flux happens to table the result.
-          const history = Array.from(numericMap.values())
-            .sort((a, b) => new Date(a.time) - new Date(b.time));
-          console.log("[HISTORY] Sent:", history.length, "records");
-          socket.emit("sensorHistory", history);
+          queryClient.queryRows(gasQuery, {
+            next(row, tableMeta) {
+              const d = tableMeta.toObject(row);
+              const entry = numericMap.get(d._time);
+              // Only attach to windows the numeric query already produced. A gas point with
+              // no matching environment row would be a row with no temperature, humidity or
+              // status — which the chart would draw as a gap in everything else.
+              if (!entry || d._value == null) return;
+              (entry.gas ??= {})[String(d.channel)] = d._value;
+            },
+            error(error) {
+              console.error("[HISTORY] Gas query error:", describeError(error));
+            },
+            complete() {
+              emitHistory();
+            },
+          });
         },
       });
     },
   });
+
+  function emitHistory() {
+    // Belt and braces on the Flux `sort` above: this array's order is really the
+    // MAP'S INSERTION order, which is whatever order rows streamed in. The chart
+    // plots it as given — a category axis, so it draws points in array order and
+    // cannot re-sort them — and every consumer reads "latest" as the last element.
+    // Sorting here means neither depends on how Flux happens to table the result.
+    const history = Array.from(numericMap.values())
+      .sort((a, b) => new Date(a.time) - new Date(b.time));
+    console.log("[HISTORY] Sent:", history.length, "records");
+    socket.emit("sensorHistory", history);
+  }
 }

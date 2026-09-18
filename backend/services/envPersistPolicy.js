@@ -3,9 +3,18 @@
 // cadence. This decides only what reaches InfluxDB and the on-site backup files.
 //
 // Why: the ESP32 sends every 3s (LOG_INTERVAL), which is right for the MQ-2 — smoke is a
-// safety signal and detection latency matters — but wrong for the DHT11. That sensor has
-// 1°C / 1% resolution and ±2°C accuracy, and a server room does not move 1°C in three
-// seconds, so consecutive temperature samples differ by quantisation noise or not at all.
+// safety signal and detection latency matters — but wrong for the DHT22. That sensor has
+// 0.1°C / 0.1% resolution and ±0.5°C accuracy, and a server room does not move measurably
+// in three seconds, so consecutive temperature samples differ by noise in the last digit or
+// not at all.
+//
+// ⚠️ The DHT11 this replaced resolved only 1°C / 1%RH, which made the deadbands below very
+// nearly unreachable: a change small enough to be noise was also too small for the sensor to
+// report, so in practice ANY temperature change it could express forced a store. A DHT22
+// reports that noise, so the deadbands now do real work instead of being a formality —
+// they are what stops a 0.1°C flutter writing a point every 3s, i.e. exactly the regime
+// this policy exists to avoid. Raising the sensor's resolution made the policy MORE load-
+// bearing, not less.
 // At 3s the room stream costs ~28,800 samples/day: ~1.7 servers' worth of writes, and the
 // same number of appends to the micro SD the backup writer lives on, which is the least
 // reliable component in the build.
@@ -30,9 +39,13 @@ export const DEFAULTS = Object.freeze({
   /** ppm. Above the MQ-2's clean-air noise, well under the seeded 150 ppm warning rule, so
    *  a genuine rise is captured on the 3s tick that first sees it. */
   gasDeadband: 15,
-  /** °C. The DHT11 resolves 1°C, so anything it can actually report crosses this. */
+  /** °C. The DHT22 resolves 0.1°C, so this is a real filter — five resolution steps, above
+   *  the sensor's own jitter and its ±0.5°C accuracy, and far below any room excursion worth
+   *  seeing on a chart. Under the old DHT11 (1°C resolution) this threshold was effectively
+   *  a no-op; do not read it as one now. */
   tempDeadband: 0.5,
-  /** %RH. */
+  /** %RH. Same reasoning as the temperature deadband: the DHT22 resolves 0.1%RH, so this
+   *  filters real jitter rather than sitting below what the sensor can express. */
   humDeadband: 2,
 });
 
@@ -86,6 +99,12 @@ export function shouldPersist(sample, last, opts = DEFAULTS) {
   // does not is exactly the disagreement two sensors exist to show.
   if (moved(sample.mq2_1_ppm, last.mq2_1_ppm, opts.gasDeadband)) return { persist: true, reason: "gas-1" };
   if (moved(sample.mq2_2_ppm, last.mq2_2_ppm, opts.gasDeadband)) return { persist: true, reason: "gas-2" };
+  // Sensors 3 and 4 have no legacy slot of their own, so they are covered by the worst-channel
+  // aggregate. Without this a rise on a NEWLY ADDED sensor would wait for the 30s heartbeat
+  // instead of being stored on the 3s tick that saw it — and the tick that first sees smoke is
+  // the one worth having. Still judged per-sensor above, because two sensors disagreeing is the
+  // reason there are two.
+  if (moved(sample.gas_ppm, last.gas_ppm, opts.gasDeadband)) return { persist: true, reason: "gas" };
 
   if (moved(sample.temperature, last.temperature, opts.tempDeadband)) return { persist: true, reason: "temperature" };
   if (moved(sample.humidity, last.humidity, opts.humDeadband)) return { persist: true, reason: "humidity" };

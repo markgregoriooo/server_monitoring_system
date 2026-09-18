@@ -6,6 +6,8 @@ import alertBandState from "../services/alertBandState.js";
 import esp32Monitor from "../services/esp32Monitor.js";
 import backupService from "../services/backupService.js";
 import envPersistPolicy from "../services/envPersistPolicy.js";
+import gasSensorService from "../services/gasSensorService.js";
+import { normalizeGas, worstGas, legacyFields } from "../services/gasReadings.js";
 import { describeError } from "../utils/httpError.js";
 
 const SEV_RANK = alertRulesService.SEV_RANK;
@@ -32,9 +34,14 @@ let lastPersisted = null;
 // can re-arm it: after a resolve, a still-breaching metric re-alerts on the next reading.
 
 // metric_name (must match the seeded rules) → how to read it + phrase the alert.
+// `d.__gas` is the normalised per-channel array, attached once per reading in sensorHandler
+// so the rules, the write, the backup and the broadcast all judge the same numbers.
 const ENV_METRICS = {
   temperature: { value: (d) => d.temperature, unit: "°C", label: "Server room temperature" },
-  gas: { value: (d) => Math.max(d.mq2_1_ppm, d.mq2_2_ppm), unit: "ppm", label: "Server room gas" },
+  // MAX across the wired sensors, not the mean — see gasReadings.worstGas. Null when no
+  // channel reported, which skips the metric rather than evaluating 0 ppm and resolving a
+  // smoke alert on no evidence.
+  gas: { value: (d) => worstGas(d.__gas ?? [])?.ppm ?? null, unit: "ppm", label: "Server room gas" },
   humidity: { value: (d) => d.humidity, unit: "%", label: "Server room humidity" },
 };
 
@@ -89,12 +96,24 @@ async function maybeRaiseEnvAlert(data) {
         key === "gas" &&
         (data.smoke_status === "CRITICAL" || data.smoke_status === "DANGER");
       const word = band === "critical" ? "critical" : band === "warning" ? "high" : band;
+
+      // WHICH sensor. Two MQ-2s are only worth having if they sit apart — over the rack and
+      // over the UPS cabinet, say — and at that point "gas critical: 412 ppm" does not tell
+      // anyone which end of the room to run to. Named from the worst channel, since that is
+      // the reading the band was decided on.
+      const at =
+        key === "gas"
+          ? (() => {
+              const w = worstGas(data.__gas ?? []);
+              return w ? ` at ${gasSensorService.labelFor(w.channel)}` : "";
+            })()
+          : "";
       await notificationService.raiseAlert({
         deviceId: null, // ESP32 isn't a devices row — this is a room-level (system) alert
         type: key,
         severity: band,
-        title: smoke ? "Smoke detected — server room" : `${meta.label} ${word}`,
-        message: `${meta.label} ${word}: ${Math.round(v * 10) / 10}${meta.unit}`,
+        title: smoke ? `Smoke detected — server room${at}` : `${meta.label} ${word}`,
+        message: `${meta.label} ${word}: ${Math.round(v * 10) / 10}${meta.unit}${at}`,
         metricValue: v,
         alertRuleId: rule?.alert_rule_id ?? null,
       });
@@ -119,8 +138,10 @@ export async function sensorHandler(socket, data) {
     !data ||
     typeof data.temperature !== "number" ||
     typeof data.humidity !== "number" ||
-    typeof data.mq2_1_ppm !== "number" ||
-    typeof data.mq2_2_ppm !== "number" ||
+    // Gas is deliberately NOT required here any more. It arrives either as `gas_ppm[]` (new
+    // firmware) or as mq2_1/mq2_2 (old), and how many channels are populated is a property of
+    // the wiring, not of a valid reading — normalizeGas sorts that out below. Demanding two
+    // numeric fields would reject a 4-sensor device outright.
     typeof data.heat_index !== "number" ||
     typeof data.smoke_status !== "string" ||
     typeof data.environment_status !== "string"
@@ -133,20 +154,35 @@ export async function sensorHandler(socket, data) {
   // and auto-resolves an open offline alert the instant it comes back.
   esp32Monitor.markSeen();
 
+  // Resolve the per-channel gas readings ONCE, here, and hang them off the payload. The
+  // rules, the InfluxDB write, the backup copy and the broadcast must all judge the same
+  // numbers; re-deriving them at four call sites is how they drift.
+  // Channels an admin has not confirmed are wired are dropped — a floating ADC pin reads
+  // noise, not zero, and MQ-2 noise through an exponential curve looks like a real ppm.
+  data.__gas = normalizeGas(data, gasSensorService.enabledChannels());
+  const legacy = legacyFields(data.__gas);   // mq2_1_ppm / mq2_2_ppm, for everything written
+                                             // against the two-sensor shape
+  const worst = worstGas(data.__gas);
+
   const timestamp = new Date();   // precision: ms (matches writeClient config)
 
   // ---- Store, or not ----
-  // The DHT11 resolves 1°C and a server room does not move 1°C in three seconds, so most
+  // The DHT22 resolves 0.1°C and a server room does not move measurably in three seconds, so most
   // readings carry no information the last one didn't. Store on a slow heartbeat plus
   // whenever something actually moved — a gas rise, a status transition, a real temperature
   // excursion — which keeps a smoke event captured on the 3s tick that first sees it while
   // a stable room costs one point per 30s instead of ten. See services/envPersistPolicy.js.
+  // envPersistPolicy judges gas on the two legacy slots, which is still right: its job is
+  // "did anything move enough to be worth storing", and the deadband is per-sensor. Channels
+  // 3+ are folded in via gas_ppm so a rise on a NEW sensor still forces a store rather than
+  // waiting for the 30s heartbeat — the one case where missing a tick matters.
   const sample = {
     at: now,
     temperature: data.temperature,
     humidity: data.humidity,
-    mq2_1_ppm: data.mq2_1_ppm,
-    mq2_2_ppm: data.mq2_2_ppm,
+    mq2_1_ppm: legacy.mq2_1_ppm ?? null,
+    mq2_2_ppm: legacy.mq2_2_ppm ?? null,
+    gas_ppm: worst?.ppm ?? null,
     heat_index: data.heat_index,
     smoke_status: data.smoke_status,
     temp_status: data.temp_status,
@@ -159,7 +195,7 @@ export async function sensorHandler(socket, data) {
 
     console.log(
       `[SENSOR] Temp: ${data.temperature}°C | Humidity: ${data.humidity}%` +
-        ` | MQ2-1: ${data.mq2_1_ppm} ppm | MQ2-2: ${data.mq2_2_ppm} ppm` +
+        ` | ${data.__gas.map((g) => `${gasSensorService.labelFor(g.channel)}: ${g.ppm} ppm`).join(" | ") || "no gas sensor"}` +
         ` | HI: ${data.heat_index}°C` +
         ` | Smoke: ${data.smoke_status} | Env: ${data.environment_status}` +
         ` | stored (${reason})`,
@@ -169,16 +205,34 @@ export async function sensorHandler(socket, data) {
     const point = new Point("sensor_environment")
       .floatField("temperature", data.temperature)
       .floatField("humidity", data.humidity)
-      .floatField("mq2_1_ppm", data.mq2_1_ppm)
-      .floatField("mq2_2_ppm", data.mq2_2_ppm)
       .floatField("heat_index", data.heat_index)
       .tag("smoke_status", data.smoke_status)
       .tag("temp_status", data.temp_status)
       .tag("environment_status", data.environment_status)
       .timestamp(timestamp);
+    // The two legacy slots are still written, so every query, chart and report built against
+    // `mq2_1_ppm` / `mq2_2_ppm` keeps working across the cutover and keeps reading old history
+    // unchanged. Only written when that channel actually reported — a disabled channel 2 must
+    // leave a GAP, not a zero, or `mean()` over the range quietly halves the room's gas level.
+    if (legacy.mq2_1_ppm != null) point.floatField("mq2_1_ppm", legacy.mq2_1_ppm);
+    if (legacy.mq2_2_ppm != null) point.floatField("mq2_2_ppm", legacy.mq2_2_ppm);
+    // The aggregate the dashboard tile and the alert rules judge — max across every wired
+    // sensor, so a third or fourth one counts without every consumer learning a new field name.
+    if (worst) point.floatField("gas_ppm", worst.ppm);
+
+    // One point PER SENSOR, tagged by channel — the same shape as `server_volumes` per mount
+    // and `network_traffic` per interface. This is what makes a 3rd sensor a row in a table
+    // rather than a schema change, and what lets a chart draw one line per location.
+    const gasPoints = data.__gas.map((g) =>
+      new Point("sensor_gas")
+        .tag("channel", String(g.channel))
+        .floatField("ppm", g.ppm)
+        .timestamp(timestamp),
+    );
 
     try {
       writeClient.writePoint(point);
+      for (const gp of gasPoints) writeClient.writePoint(gp);
       await writeClient.flush();
     } catch (error) {
       console.error("[SENSOR] InfluxDB Error:", error);
@@ -190,8 +244,10 @@ export async function sensorHandler(socket, data) {
     backupService.record("env", {
       temperature: data.temperature,
       humidity: data.humidity,
-      mq2_1_ppm: data.mq2_1_ppm,
-      mq2_2_ppm: data.mq2_2_ppm,
+      ...legacy,
+      // The per-channel array too: the backup has to be able to restore what was stored, and
+      // from 2026-09-17 what is stored includes sensors the two legacy slots cannot express.
+      gas: data.__gas,
       heat_index: data.heat_index,
       smoke_status: data.smoke_status,
       temp_status: data.temp_status,
@@ -204,8 +260,12 @@ export async function sensorHandler(socket, data) {
     socket.broadcast.volatile.emit("sensorData", {
       temperature: data.temperature,
       humidity: data.humidity,
-      mq2_1_ppm: data.mq2_1_ppm,
-      mq2_2_ppm: data.mq2_2_ppm,
+      // Legacy pair kept so an open dashboard tab from before the cutover keeps rendering.
+      ...legacy,
+      // Per-sensor, with the label resolved here rather than in the browser — the label lives
+      // in MySQL and the client has no reason to hold a second copy of it.
+      gas: data.__gas.map((g) => ({ ...g, label: gasSensorService.labelFor(g.channel) })),
+      gas_ppm: worst?.ppm ?? null,
       heat_index: data.heat_index,
       smoke_status: data.smoke_status,
       temp_status: data.temp_status,

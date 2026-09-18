@@ -487,6 +487,33 @@ export const api = {
     }
   },
 
+  // ── MQ-2 gas sensors: which channels are wired, and where each one is ──────────────
+  // Read by both roles (the Environment page needs the labels to draw its lines); the PATCH
+  // is admin-only server-side, because asserting a sensor is wired is a hardware claim and a
+  // wrong one arms a floating ADC pin to raise smoke alarms.
+  getGasSensors: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/gas-sensors");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Both fields optional: renaming and (un)wiring are separate acts, and the server
+  // COALESCEs so an omitted one is never blanked. `locationLabel: ""` is a deliberate clear.
+  updateGasSensor: async (
+    channel: number,
+    body: { locationLabel?: string; enabled?: boolean },
+  ): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.patch(`/gas-sensors/${channel}`, body);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getNetworkLogs: async (id: number): Promise<ApiResult> => {
     try {
       const res = await apiClient.get(`/network/${id}/logs`);
@@ -999,7 +1026,7 @@ export const api = {
     title?: string;
     periodStart?: string;
     periodEnd?: string;
-    deviceId?: number;
+    deviceId?: number | string;   // a device_id, or "room" for the server room itself
     paperSize?: PaperSizeKey;
   }): Promise<ApiResult> => {
     try {

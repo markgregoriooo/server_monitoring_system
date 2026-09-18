@@ -1,5 +1,7 @@
 import { writeClient, Point } from "../config/influx.js";
 import backupService from "../services/backupService.js";
+import gasSensorService from "../services/gasSensorService.js";
+import { normalizeGas, worstGas, legacyFields } from "../services/gasReadings.js";
 import { parseDeviceTime } from "../services/backfillTime.js";
 
 // Backfill of readings the ESP32 buffered to its micro SD while the socket was down,
@@ -62,8 +64,10 @@ export async function offlineDataHandler(socket, data) {
     !data ||
     typeof data.temperature        !== "number" ||
     typeof data.humidity           !== "number" ||
-    typeof data.mq2_1_ppm          !== "number" ||
-    typeof data.mq2_2_ppm          !== "number" ||
+    // Gas is not required here either — how many channels a buffered row carries depends
+    // on the firmware that wrote it and on how many sensors were fitted at the time. See
+    // the same relaxation in sensorHandler.
+
     typeof data.heat_index         !== "number" ||
     typeof data.smoke_status       !== "string" ||
     typeof data.temp_status        !== "string" ||
@@ -91,19 +95,36 @@ export async function offlineDataHandler(socket, data) {
     return;
   }
 
+  // Same normalisation as the live path, so a replayed reading lands in the same
+  // per-sensor series as a live one and a chart cannot tell them apart. A row buffered by
+  // the two-sensor firmware carries no `gas_ppm`, and normalizeGas falls back to the
+  // legacy pair — which is the whole point of accepting both shapes.
+  const gas = normalizeGas(data, gasSensorService.enabledChannels());
+  const legacy = legacyFields(gas);
+
   const point = new Point("sensor_environment")
     .floatField("temperature", data.temperature)
     .floatField("humidity",    data.humidity)
-    .floatField("mq2_1_ppm",   data.mq2_1_ppm)
-    .floatField("mq2_2_ppm",   data.mq2_2_ppm)
     .floatField("heat_index",  data.heat_index)
     .tag("smoke_status",       data.smoke_status)
     .tag("temp_status",        data.temp_status)
     .tag("environment_status", data.environment_status)
     .timestamp(timestamp);   // ← the device's RTC time, not now
+  if (legacy.mq2_1_ppm != null) point.floatField("mq2_1_ppm", legacy.mq2_1_ppm);
+  if (legacy.mq2_2_ppm != null) point.floatField("mq2_2_ppm", legacy.mq2_2_ppm);
+  const worst = worstGas(gas);
+  if (worst) point.floatField("gas_ppm", worst.ppm);
 
   try {
     writeClient.writePoint(point);
+    for (const g of gas) {
+      writeClient.writePoint(
+        new Point("sensor_gas")
+          .tag("channel", String(g.channel))
+          .floatField("ppm", g.ppm)
+          .timestamp(timestamp),
+      );
+    }
     pending++;
     scheduleFlush();
   } catch (error) {
@@ -122,8 +143,8 @@ export async function offlineDataHandler(socket, data) {
     backfilled: true,
     temperature: data.temperature,
     humidity: data.humidity,
-    mq2_1_ppm: data.mq2_1_ppm,
-    mq2_2_ppm: data.mq2_2_ppm,
+    ...legacy,
+    gas,
     heat_index: data.heat_index,
     smoke_status: data.smoke_status,
     temp_status: data.temp_status,

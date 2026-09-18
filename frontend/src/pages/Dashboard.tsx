@@ -14,6 +14,7 @@ import type { RangeValue } from "../components/ui/RangePicker";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useRoomThresholds } from "../hooks/useRoomThresholds";
+import { useGasSensors } from "../hooks/useGasSensors";
 import {
   gasColor, gasLabel, temperatureColor, temperatureLabel, alertTint, withAlpha,
 } from "../utils/envThresholds";
@@ -46,6 +47,10 @@ interface SensorData {
   // and makes a real fire look borderline — a dangerous reading anywhere in the room is
   // dangerous. Same rule sensorHandler and the analytics engine use.
   mq2_1_ppm?: number;
+  /** Aggregate across every fitted sensor, and the per-sensor breakdown with labels already
+   *  resolved. Both added when gas went multi-sensor; absent on a pre-cutover payload. */
+  gas_ppm?: number;
+  gas?: { channel: number; ppm: number; label: string }[];
   mq2_2_ppm?: number;
   timestamp: string;
 }
@@ -296,17 +301,22 @@ function Panel({
       style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
     >
       {title !== undefined && (
+        /* `height: 32` fixed + a title and controls that both refuse to shrink meant the
+           TITLE paid for every control on a phone — truncated to a word or two while the
+           buttons kept their full width. minHeight lets it take a second line instead, and
+           `min-w-0` on the title is what actually lets truncate work inside a flex row. */
         <div
-          className="flex items-center justify-between px-3 shrink-0"
-          style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}
+          className="flex items-center justify-between gap-2 px-3 shrink-0 flex-wrap sm:flex-nowrap py-1.5 sm:py-0"
+          style={{ minHeight: 32, borderBottom: `1px solid ${gf.divider}` }}
         >
           <span
-            className="text-[13px] font-medium tracking-wide truncate"
+            className="text-[13px] font-medium tracking-wide truncate min-w-0"
             style={{ color: gf.textPrimary, opacity: 0.85 }}
+            title={title}
           >
             {title}
           </span>
-          {right && <div className="flex items-center gap-2">{right}</div>}
+          {right && <div className="flex items-center gap-2 shrink-0">{right}</div>}
         </div>
       )}
       <div
@@ -430,21 +440,27 @@ function StatPanel({
       className="relative overflow-hidden rounded-[2px] flex flex-col"
       style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 104 }}
     >
-      <div className="flex items-center justify-between px-3 pt-2.5 z-10">
+      <div className="flex items-center justify-between gap-1.5 px-3 pt-2.5 z-10">
+        {/* `tracking-widest` costs roughly a character of width per five letters, which a
+            two-column phone grid (~160px a tile) does not have. Normal tracking on a phone,
+            the wide look back from `sm`. Truncated either way so a long label can never push
+            the status dot off the tile. */}
         <span
-          className="text-[12px] tracking-widest uppercase"
+          className="text-[12px] sm:tracking-widest uppercase truncate min-w-0"
           style={{ color: gf.textMuted }}
+          title={label}
         >
           {label}
         </span>
         <span
-          className="w-1.5 h-1.5 rounded-full"
+          className="w-1.5 h-1.5 rounded-full shrink-0"
           style={{ background: color, boxShadow: `0 0 6px ${color}` }}
         />
       </div>
       <div className="px-3 pt-1.5 z-10">
+        {/* 30px is a lot of a 160px tile once a three-digit reading and a unit are in it. */}
         <span
-          className="text-[30px] font-bold leading-none"
+          className="text-[26px] sm:text-[30px] font-bold leading-none"
           style={{ color }}
         >
           {value}
@@ -455,7 +471,24 @@ function StatPanel({
           </span>
         )}
         {sub && (
-          <div className="text-[11px] mt-1 tracking-widest" style={{ color: gf.textDim }}>
+          /* The line that broke this on a phone. `tracking-widest` at 11px turned
+             "SMOKE / GAS — critical · Above UPS cabinet" into something far wider than the
+             tile, and `textDim` measures ~3:1 on the panel — under the 4.5:1 floor for text
+             this small. Normal tracking, lifted contrast, and capped at two lines so a long
+             subtitle wraps instead of running out of the tile; the full text stays available
+             on hover/long-press. */
+          <div
+            className="text-[11px] mt-1 sm:tracking-widest pb-0.5"
+            style={{
+              color: gf.textMuted,
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+              wordBreak: "break-word",
+            }}
+            title={sub}
+          >
             {sub}
           </div>
         )}
@@ -517,7 +550,15 @@ export default function Dashboard() {
   const [chartTemps, setChartTemps] = useState<number[]>([]);
   const [chartHums, setChartHums] = useState<number[]>([]);
   const [chartGas, setChartGas] = useState<number[]>([]);
+  // How many sensors the aggregate is actually over. "higher of 2" was hardcoded and would
+  // have quietly lied the moment a third was fitted.
+  const { enabled: gasFitted } = useGasSensors();
+  const gasFittedCount = gasFitted.length;
   const [liveGas, setLiveGas] = useState<number | string>("--");
+  // WHERE the worst reading is coming from. The tile is an aggregate across every fitted
+  // sensor, and once those sensors sit in different parts of the room the number alone stops
+  // being actionable: "412 ppm" is a fact, "412 ppm at Above UPS cabinet" is an instruction.
+  const [worstGasAt, setWorstGasAt] = useState<string | null>(null);
   const [chartLabels, setChartLabels] = useState<string[]>([]);
   // The same points' timestamps. The labels are formatted for the axis and cannot be
   // parsed back into instants ("14:20" has no date), but detecting a gap needs the real
@@ -642,8 +683,20 @@ export default function Dashboard() {
       setChartTimes((p) => [...p.slice(-300), Date.parse(data.timestamp)]);
       setChartTemps((p) => [...p.slice(-300), data.temperature]);
       setChartHums((p) => [...p.slice(-300), data.humidity]);
-      const gas = Math.max(Number(data.mq2_1_ppm ?? 0), Number(data.mq2_2_ppm ?? 0));
+      // Prefer the server's aggregate: it spans EVERY fitted sensor, where the legacy pair
+      // only ever covered channels 1-2 and would ignore a third or fourth entirely.
+      const gas =
+        typeof data.gas_ppm === "number"
+          ? data.gas_ppm
+          : Math.max(Number(data.mq2_1_ppm ?? 0), Number(data.mq2_2_ppm ?? 0));
       setLiveGas(gas);
+      // The label is resolved server-side and travels with the reading, so the browser never
+      // holds a second copy of a name an admin can change mid-session.
+      const worst = (data.gas ?? []).reduce(
+        (a, b) => (a && a.ppm >= b.ppm ? a : b),
+        null as { channel: number; ppm: number; label: string } | null,
+      );
+      setWorstGasAt(worst?.label ?? null);
       setChartGas((p) => [...p.slice(-300), gas]);
     };
 
@@ -1120,7 +1173,7 @@ export default function Dashboard() {
           value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : "--"}
           unit="°C"
           color={sensorDead ? gf.textMuted : temperatureColor(liveTemp, thresholds, gf.textMuted)}
-          sub={sensorDead ? sensorSub : `${temperatureLabel(liveTemp, thresholds) ?? "DHT11"} · LIVE`}
+          sub={sensorDead ? sensorSub : `${temperatureLabel(liveTemp, thresholds) ?? "DHT22"} · LIVE`}
           spark={chartTemps}
         />
         {/* Keeps its own blue while within the `humidity` rules, orange/red once past
@@ -1130,7 +1183,7 @@ export default function Dashboard() {
           value={typeof liveHum === "number" ? liveHum.toFixed(1) : "--"}
           unit="%"
           color={sensorDead ? gf.textMuted : alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, ENV_HUM, gf.textMuted)}
-          sub={sensorDead ? sensorSub : "DHT11 · LIVE"}
+          sub={sensorDead ? sensorSub : "DHT22 · LIVE"}
           spark={chartHums}
         />
         <StatPanel
@@ -1162,11 +1215,16 @@ export default function Dashboard() {
           // numbers repeated here — so retuning a rule cannot leave the tile saying
           // "clean" in orange. A dead sensor overrides all of it: "clean" is a claim about
           // the room, and with nothing reporting there is no basis for making it.
+          // Named by LOCATION once one is set, because that is the half somebody can act on.
+          // Falls back to the plain wording while the sensors are unnamed or offline.
           sub={
             sensorDead ? sensorSub
-              : gasLabel(liveGas, thresholds) === "CRITICAL" ? "SMOKE / GAS — critical"
-                : gasLabel(liveGas, thresholds) === "WARNING" ? "elevated — ventilate"
-                  : typeof liveGas === "number" ? "clean · higher of 2 sensors"
+              : gasLabel(liveGas, thresholds) === "CRITICAL"
+                ? `SMOKE / GAS — critical${worstGasAt ? ` · ${worstGasAt}` : ""}`
+                : gasLabel(liveGas, thresholds) === "WARNING"
+                  ? `elevated — ventilate${worstGasAt ? ` · ${worstGasAt}` : ""}`
+                  : typeof liveGas === "number"
+                    ? `clean${gasFittedCount ? ` · highest of ${gasFittedCount}` : ""}`
                     : "MQ-2 · LIVE"
           }
           spark={chartGas}
@@ -1479,6 +1537,10 @@ export default function Dashboard() {
                       {!sensorDead && ac.enabled && ac.uptime && ac.uptime !== "offline" ? ` · on for ${ac.uptime}` : ""}
                     </span>
                   </div>
+                  {/* Three columns hold at 260px (the card's own floor), so this stays a
+                      grid rather than stacking — "Mode / Set / Fan" read as a row, and
+                      stacking them would triple the card's height on the one screen with
+                      the least of it. */}
                   <div className="grid grid-cols-3 gap-px" style={{ background: gf.divider }}>
                     {[
                       ["Mode", ac.mode],

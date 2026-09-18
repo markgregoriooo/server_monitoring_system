@@ -24,6 +24,7 @@ import esp32Monitor from "../services/esp32Monitor.js";
 import snmpPollerService from "../services/snmpPollerService.js";
 import mikrotikPollerService from "../services/mikrotikPollerService.js";
 import backupService from "../services/backupService.js";
+import gasSensorService from "../services/gasSensorService.js";
 import reportService from "../services/reportService.js";
 import auditService from "../services/auditService.js";
 import deviceLogs from "../services/deviceLogs.js";
@@ -47,65 +48,14 @@ import alertRuleRoutes from "../routes/alertRules.js";
 import widgetLayoutRoutes from "../routes/widgetLayout.js";
 import historyRoutes from "../routes/history.js";
 import analyticsRoutes from "../routes/analytics.js";
+import gasSensorRoutes from "../routes/gasSensors.js";
 import { describeError } from "../utils/httpError.js";
 
-// Surface missing auth config at BOOT rather than at the first sign-in attempt.
-// Login is Google-only, so an unset client id/secret means nobody can get into
-// the dashboard at all — far cheaper to learn here than from an opaque 401 in
-// the middle of a deployment.
-//
-// Deliberately a loud warning, NOT process.exit: the ingest paths (ESP32 sockets,
-// Go agents) don't need Google, and killing a monitoring backend would stop data
-// collection over a problem that only blocks the UI.
-const REQUIRED_AUTH_ENV = ["JWT_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"];
-const missingAuthEnv = REQUIRED_AUTH_ENV.filter((k) => !(process.env[k] ?? "").trim());
-if (missingAuthEnv.length > 0) {
-  console.error(
-    `[CONFIG] Missing in backend/.env: ${missingAuthEnv.join(", ")}.\n` +
-      "[CONFIG] Google sign-in will fail for EVERY user until these are set " +
-      "(the backend does not reload .env — restart after editing).",
-  );
-}
 
-// Size this from what ONE DASHBOARD LOAD actually costs, not from a feel for what
-// "a lot of requests" is. The old value was 500/15min with a comment claiming headroom
-// for multi-panel page loads; it did not have it, and the failure mode is ugly — every
-// panel 429s at once and the Dashboard renders empty, which reads as a crash rather than
-// as a limit being hit.
-//
-// The real arithmetic, counted off the network log of a single Dashboard mount:
-//   ~19 requests   AuthContext (/auth/me), NotificationContext (notifications, alerts/
-//                  count, agents/pending, users/pending), useRoomThresholds, useWidget-
-//                  Layout, Dashboard (servers, ups, network, mikrotik, aircon, alerts,
-//                  sensor-status) and LiveSummaryContext — which re-fetches five of the
-//                  same endpoints for the PiP widget.
-//   x2             React StrictMode double-invokes effects IN DEV.
-//   + ~10          the socket `connect` handler re-runs several of those on every
-//                  (re)connect, including after each Vite HMR reload.
-// So one dev page load is 50-70 requests, and every file save reloads the page. 500 was
-// roughly eight loads — a few minutes of work — after which the whole UI went blank.
-//
-// This is a LAN dashboard for a handful of ICTU staff, so the limiter is here to stop a
-// script hammering the API, not to ration normal use. Override per deployment with
-// RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_MIN.
 const RATE_WINDOW_MIN = Number(process.env.RATE_LIMIT_WINDOW_MIN) || 15;
 const RATE_MAX = Number(process.env.RATE_LIMIT_MAX) || 3000;
 const RATE_IPV6_SUBNET = 56;
 
-// Budget per USER where we can tell who is asking, per IP only where we cannot.
-//
-// Keying on IP alone is a self-inflicted denial of service here: every ICTU staffer sits
-// behind the same campus NAT, so the dashboard would hand them ONE shared budget and the
-// first person to hard-refresh a few times would lock out everyone else — during a demo,
-// or during the incident they all opened the dashboard to look at.
-//
-// The token is VERIFIED, not merely decoded. `jwt.decode` would let anyone mint a token
-// claiming any `id`: either a fresh budget on demand, or someone else's budget deliberately
-// exhausted. Verification is an HMAC over a short string, so the cost is negligible next to
-// the query the request is about to make. authMiddleware verifies again per route — this
-// runs before it (the limiter is global, and some routes are public), and duplicating a
-// microsecond of HMAC is the right trade against threading auth state through the limiter.
-//
 // The IP fallback must go through `ipKeyGenerator`, not `req.ip`. Returning a raw IP
 // silently discards the ipv6Subnet setting below, and an attacker with any IPv6 /64 could
 // then rotate addresses for unlimited budget — which is the whole reason that option is set.
@@ -127,22 +77,9 @@ const globalLimiter = rateLimit({
   max: RATE_MAX,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  // No `ipv6Subnet` here on purpose: express-rate-limit IGNORES it whenever a custom
-  // keyGenerator is set, and warned about the contradiction at every boot
-  // (ERR_ERL_IPV6SUBNET_OR_KEYGENERATOR). userOrIpKey applies RATE_IPV6_SUBNET itself
-  // via ipKeyGenerator, so the grouping is real — it was just declared twice, once
-  // where it did nothing.
   keyGenerator: userOrIpKey,
-  // Agent metric ingestion has its own (more generous) limiter in routes/servers.js.
-  // Exempt it here so a busy fleet of agents never consumes the dashboard's budget.
-  // Covers /metrics AND /metrics/batch — a fleet reconnecting after an outage
-  // backfills in a burst, which is exactly when the dashboard is being watched.
   skip: (req) => req.method === "POST" && req.path.startsWith("/api/servers/metrics"),
-  // Log it. A 429 is invisible from the server side otherwise, and from the browser it
-  // looks like a broken page rather than a limit — every panel simply has no data.
   handler: (req, res) => {
-    // Log the KEY, not just the IP: `u:7` vs `ip:…` is the difference between one user
-    // burning their own budget and unauthenticated traffic burning a shared one.
     console.warn(
       `[RATE] 429 ${req.method} ${req.originalUrl} key=${userOrIpKey(req)} ip=${req.ip} ` +
         `— over ${RATE_MAX} requests in ${RATE_WINDOW_MIN}min. Raise RATE_LIMIT_MAX if this is normal use.`,
@@ -154,12 +91,6 @@ const globalLimiter = rateLimit({
 const app = express();
 const server = http.createServer(app);
 
-// F-05: restrict cross-origin access to the known dashboard origin(s).
-// Override via WEB_ORIGIN in .env (comma-separated). ESP32 is a non-browser
-// Socket.IO client, so CORS does not affect device connections.
-// WEB_ORIGIN = comma-separated list of allowed dashboard origins, OR "*" to allow ANY
-// origin (handy on a LAN whose IP changes). Unset OR blank falls back to the safe
-// default below, so a missing/empty value never crashes the server or locks out the UI.
 const WEB_ORIGIN =
   (process.env.WEB_ORIGIN ?? "").trim() ||
   "http://localhost:5173,http://192.168.100.9:5173";
@@ -174,62 +105,15 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   },
   allowEIO3: true, //bcz ESP32 uses Engine.IO v3
-  // ─── Refuse the JSONP polling transport ─────────────────────────────────────
-  //
-  // engine.io picks it purely from the presence of a `j` query parameter
-  // (node_modules/engine.io/build/transports/index.js — `if ("string" === typeof
-  // req._query.j)`), and it is still shipped in 6.6.9. A JSONP reply is loaded by the
-  // browser as a `<script>`, so it is the one response on this server that is NOT
-  // subject to CORS: `cors.origin` above cannot constrain it, because a script tag
-  // never asks.
-  //
-  // Nothing here needs it. The dashboard is a modern socket.io-client (websocket, with
-  // XHR polling as the fallback) and the ESP32 connects with an explicit
-  // `?EIO=3&transport=websocket`. `allowEIO3` is on for the ESP32's PROTOCOL version,
-  // which is a separate axis from the transport — leaving JSONP reachable was an
-  // unintended consequence of it, not a requirement of it.
-  //
-  // The practical exposure today is small, and it is worth being precise about why:
-  // this API carries NO ambient credentials — no cookies anywhere, auth is a Bearer
-  // token the browser never attaches on its own — so a cross-origin script tag cannot
-  // ride a victim's session. It reaches an unauthenticated handshake and is rejected.
-  // What it can still do is spend that victim's failed-handshake budget
-  // (services/handshakeLimiter.js) from any page they happen to visit. Closing the
-  // transport removes a CORS-exempt channel from the surface and costs nothing.
   allowRequest: (req, done) => {
-    // Parsed off the raw URL: engine.io has not populated `_query` yet at this point.
     const isJsonp = /[?&]j=/.test(req.url ?? "");
     if (isJsonp) {
-      // 3 = FORBIDDEN in engine.io's error-code enum.
       return done(3, false);
     }
     return done(null, true);
   },
-  // Socket.IO's own body cap, stated rather than inherited — the counterpart to
-  // express.json()'s limit below, for the ingest path Express never sees. 1 MB is
-  // the library default and is already ~1000x the largest real frame (an ESP32
-  // `offlineData` replay chunk is 5 rows), so this is a ceiling, not a budget.
   maxHttpBufferSize: Number(process.env.SOCKET_MAX_PAYLOAD_BYTES) || 1e6,
 });
-
-// ─── NO STATIC FILE SERVING ───────────────────────────────────────────────────
-//
-// `app.use("/uploads", express.static("uploads"))` used to sit here and it was an
-// UNAUTHENTICATED read of `backend/uploads/` — 23 real staff profile photos, served
-// to anyone who could reach the port, with no token and no role check. The avatar
-// UPLOAD path was deleted when login went Google-only (`middleware/upload.js` is
-// gone, `PATCH /users/me` no longer takes multipart), so the writer was removed and
-// the reader was left behind: a dead feature still handing out personal data.
-//
-// That is a Data Privacy Act (RA 10173) exposure, not just an untidy route — the
-// Privacy Notice this system makes people accept does not describe a public photo
-// directory. Removed rather than gated behind authMiddleware, because an `<img src>`
-// cannot send an Authorization header, so gating it would break the avatars it
-// serves while still leaving the feature alive. Live avatars are absolute Google URLs
-// (`googleAuthService` re-syncs `profile_image` on EVERY sign-in); a legacy
-// `/uploads/...` value now degrades to initials — see frontend/src/utils/format.ts.
-//
-// See audits/api-infra-security-2026-08-25.md — A-02.
 
 // Security response headers, BEFORE the routes and before the limiter: a 429 or a
 // 404 is not exempt from being framed or MIME-sniffed. See middleware/securityHeaders.js.
@@ -238,38 +122,12 @@ app.use(securityHeaders());
 // exposedHeaders lets the browser READ our sliding-session renewal header
 // (cross-origin responses hide custom headers from JS unless listed here).
 app.use(cors({ origin: CORS_ORIGIN, exposedHeaders: ["X-Renewed-Token"] }));
-// ─── trust proxy ──────────────────────────────────────────────────────────────
-//
-// How many proxy hops in front of this process may be BELIEVED when they claim a
-// client's address via X-Forwarded-For. The production path is ICTU's edge → the
-// campus nginx → here, hence 2 (deployment-guide.md §5).
-//
-// ⚠️ This number is a security control, not a formality. Set it HIGHER than the real
-// hop count and the surplus entries are attacker-supplied: a client that sends
-// `X-Forwarded-For: a, b, c` chooses its own `req.ip`, which means its own bucket in
-// every IP-keyed limiter here (sign-in 30/15min, agent enrollment 30/15min, metric
-// ingest) and its own value in `system_logs.ip_address` — the row that IS the
-// evidence for a Privacy Notice acceptance. It was hardcoded to 2, so a developer
-// running with no proxy at all, or a deployment that ends up with one, had no way to
-// correct it short of editing this file.
-//
-// The default stays 2 so the documented deployment is unchanged. Set TRUST_PROXY=0
-// when nothing sits in front of this process, or to the real hop count otherwise.
-// See audits/api-infra-security-2026-08-25.md — A-03.
+
+
 const TRUST_PROXY = process.env.TRUST_PROXY ?? "2";
 app.set("trust proxy", /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_PROXY);
 const TRUST_PROXY_HOPS = /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : 0;
 
-// ⚠️ ORDER: the limiter runs BEFORE the body parser, deliberately.
-//
-// It used to sit after `express.json()`, which meant a request that was about to be
-// rejected had already had up to 100 kB of JSON read off the socket and parsed. That is
-// work done on behalf of a client you have just decided to refuse — and the flood the
-// limiter exists to stop is exactly when you least want to be doing it.
-//
-// Safe because the limiter never touches the body: `userOrIpKey` reads the Authorization
-// header, and `skip` reads `req.path`. `trust proxy` above is app-level config applied at
-// startup, so `req.ip` is already correct here regardless of statement order.
 app.use(globalLimiter);
 
 // Explicit request-body cap. This was `express.json()` — which does apply a 100kb
@@ -431,6 +289,10 @@ esp32Monitor.init(io).catch((e) =>
 // rotating NDJSON files on BACKUP_DIR (a micro SD / USB drive on the backend, or a
 // local folder). An independent copy that survives a DB wipe + a power outage.
 backupService.init();
+// Which MQ-2 channels are wired and what each is called. Loaded once and cached: it is read
+// on EVERY 3s reading to resolve labels and gate ingest, and a per-reading SELECT would put
+// the smoke path in front of the same 10-connection pool the pollers and dashboard share.
+gasSensorService.init();
 
 // Warm the configurable-threshold cache so the first metric POST evaluates against
 // rules without a cold DB read (getEffectiveRules also lazy-loads as a fallback).
@@ -461,20 +323,13 @@ app.use("/api/alert-rules", alertRuleRoutes);
 app.use("/api/widget-layout", widgetLayoutRoutes);
 app.use("/api/history", historyRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/gas-sensors", gasSensorRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" })
 })
 
-// ─── Central error handler ────────────────────────────────────────────────────
-//
-// `message` used to be set from `err.message` for EVERY status, including 5xx —
-// directly under a comment claiming "5xx stays generic so unexpected internals aren't
-// leaked". Only `error` was gated. So an unexpected failure sent its raw text to the
-// client: a mysql2 error carries the SQL state and table name
-// ("ER_NO_SUCH_TABLE: Table 'cspc.reports' doesn't exist"), and a filesystem error
-// carries an absolute server path. The client never read `message` either — api.ts's
-// handleError reads `data.error` — so it was leakage with no consumer.
+// Central error handler
 app.use((err, req, res, _next) => {
   const status = err.status || 500;
 
