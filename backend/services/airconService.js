@@ -161,11 +161,26 @@ async function addUnit({ name, ir_channel, userId, userName }) {
   }
 }
 
+// Returns WHAT was removed ({ name, ir_channel }) rather than a bare boolean, because
+// the row is gone by the time the caller could look it up — and "Removed AC unit 3" is
+// not an audit entry anyone can act on months later. null = nothing matched.
+//
+// Read-then-delete, not DELETE ... RETURNING: MySQL has no RETURNING clause. The gap
+// between the two statements is harmless here — a concurrent delete just means
+// affectedRows is 0 and we report not-found, which is the truth either way.
 async function removeUnit(id) {
+  const [[row]] = await db.query(`
+    SELECT d.device_name AS name, a.ir_channel
+    FROM devices d
+    LEFT JOIN aircon_state a ON a.device_id = d.device_id
+    WHERE d.device_id = ? AND d.device_type = 'aircon'
+  `, [id]);
+  if (!row) return null;
+
   const [result] = await db.query(`
     DELETE FROM devices WHERE device_id = ? AND device_type = 'aircon'
   `, [id]);
-  return result.affectedRows > 0;
+  return result.affectedRows > 0 ? row : null;
 }
 
 async function toggle(id, userId, userName) {

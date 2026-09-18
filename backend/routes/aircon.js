@@ -3,6 +3,7 @@ import { authMiddleware, requireRole } from "../middleware/auth.js";
 import airconService from "../services/airconService.js";
 import { describeError } from "../utils/httpError.js";
 import { isDeviceConnected, NO_DEVICE_MESSAGE } from "../sockets/deviceRoom.js";
+import { audit, clientInfo } from "../services/auditService.js";
 
 const router = express.Router();
 
@@ -103,6 +104,18 @@ router.post("/", authMiddleware, requireRole("admin", "it_staff"), async (req, r
       userId: req.user.id, userName: req.user.name,
     });
     await pushIRConfig(req.app.get("io"));
+
+    // Registering a unit ARMS an IR channel — from here the ESP32 fires captured codes at
+    // real hardware on every zone change. Toggling that same unit on and off was already
+    // recorded (aircon_logs); the act that put it under automatic control was not.
+    audit({
+      userId: req.user.id,
+      module: "aircon",
+      action: "aircon_add",
+      details: `Registered "${name.trim()}" on IR channel ${ch}`,
+      ...clientInfo(req),
+    });
+
     res.status(201).json({ success: true, deviceId });
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
@@ -117,9 +130,21 @@ router.post("/", authMiddleware, requireRole("admin", "it_staff"), async (req, r
 // ── DELETE /api/aircon/:id ────────────────────────────────────────────────────
 router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
-    const deleted = await airconService.removeUnit(req.params.id);
-    if (!deleted) return res.status(404).json({ error: "Unit not found" });
+    const removed = await airconService.removeUnit(req.params.id);
+    if (!removed) return res.status(404).json({ error: "Unit not found" });
     await pushIRConfig(req.app.get("io"));
+
+    // The mirror of the add: this disarms the channel, and cooling silently stops being
+    // controlled. Named from the row read before the DELETE — after it there is nothing
+    // left to identify, and a bare id is not something anyone can act on later.
+    audit({
+      userId: req.user.id,
+      module: "aircon",
+      action: "aircon_remove",
+      details: `Removed "${removed.name}"${removed.ir_channel ? ` from IR channel ${removed.ir_channel}` : ""}`,
+      ...clientInfo(req),
+    });
+
     res.json({ success: true });
   } catch (err) {
     next(err);
