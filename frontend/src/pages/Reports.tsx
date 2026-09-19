@@ -147,8 +147,28 @@ const daysAgoStr = (n: number) => new Date(Date.now() - n * 24 * 3600 * 1000).to
 // you which page size the file was rendered at, whether it covered one device or the
 // whole campus, or what control number it was filed under — and those are exactly the
 // questions someone asks when they have the printed copy in front of them.
-function ReportDrawerRow({ report: r, isOpen, paperSizes }: {
+function ReportDrawerRow({ report, isOpen, paperSizes }: {
   report: Report; isOpen: boolean; paperSizes: Record<string, PaperSizeOption>;
+}) {
+  return (
+    <tr>
+      <td colSpan={7} className="p-0">
+        <ReportDrawerBody report={report} isOpen={isOpen} paperSizes={paperSizes} max={320} />
+      </td>
+    </tr>
+  );
+}
+
+// The drawer's CONTENT, split from the <tr> above so the phone card can open the very
+// same panel: a <tr> cannot live inside a card, and a second copy of these fields would
+// be a second place to edit every time a report gains one.
+//
+// `max` is the collapsed/expanded max-height. It is a prop because the field grid is
+// four columns on a desktop and ONE on a phone, so the same seven fields are roughly
+// twice as tall there — a single constant would either clip the card or leave a gap
+// under the table.
+function ReportDrawerBody({ report: r, isOpen, paperSizes, max }: {
+  report: Report; isOpen: boolean; paperSizes: Record<string, PaperSizeOption>; max: number;
 }) {
   const paper = paperSizes[r.paperSize];
   const rows: { label: string; value: string; mono?: boolean }[] = [
@@ -182,40 +202,36 @@ function ReportDrawerRow({ report: r, isOpen, paperSizes }: {
   ];
 
   return (
-    <tr>
-      <td colSpan={7} className="p-0">
-        <div
-          className="overflow-hidden transition-all duration-300 ease-in-out"
-          style={{ maxHeight: isOpen ? 320 : 0, borderTop: isOpen ? `1px solid ${gf.divider}` : "none" }}
-        >
-          <div className="p-3.5" style={{ background: gf.bg }}>
-            <div className="text-[11px] tracking-wider uppercase mb-2.5" style={{ color: gf.textDim }}>
-              How this report was generated
-            </div>
-            <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
-              {rows.map((f) => (
-                <div key={f.label}>
-                  <div className="text-[11px]" style={{ color: gf.textDim }}>{f.label}</div>
-                  <div
-                    className={`text-[13px] mt-0.5 break-words ${f.mono ? "font-mono" : ""}`}
-                    style={{ color: gf.textPrimary }}
-                  >
-                    {f.value}
-                  </div>
-                </div>
-              ))}
-            </div>
-            {/* The template is frozen per report at generate time, so an admin who
-                changes the letterhead later does not silently restate what an already
-                filed document looks like. Worth saying once, here. */}
-            <div className="text-[11px] mt-3" style={{ color: gf.textDim }}>
-              The letterhead and page size were frozen when this report was built — changing
-              the template later does not alter it.
-            </div>
-          </div>
+    <div
+      className="overflow-hidden transition-all duration-300 ease-in-out"
+      style={{ maxHeight: isOpen ? max : 0, borderTop: isOpen ? `1px solid ${gf.divider}` : "none" }}
+    >
+      <div className="p-3.5" style={{ background: gf.bg }}>
+        <div className="text-[11px] tracking-wider uppercase mb-2.5" style={{ color: gf.textDim }}>
+          How this report was generated
         </div>
-      </td>
-    </tr>
+        <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
+          {rows.map((f) => (
+            <div key={f.label}>
+              <div className="text-[11px]" style={{ color: gf.textDim }}>{f.label}</div>
+              <div
+                className={`text-[13px] mt-0.5 break-words ${f.mono ? "font-mono" : ""}`}
+                style={{ color: gf.textPrimary }}
+              >
+                {f.value}
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* The template is frozen per report at generate time, so an admin who
+            changes the letterhead later does not silently restate what an already
+            filed document looks like. Worth saying once, here. */}
+        <div className="text-[11px] mt-3" style={{ color: gf.textDim }}>
+          The letterhead and page size were frozen when this report was built — changing
+          the template later does not alter it.
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -611,10 +627,74 @@ export default function Reports() {
 
   const selectCls = "text-[13px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer";
 
+  // Row actions (CSV / PDF / email / delete), defined once and rendered by both the
+  // table cell and the phone card, so a report cannot offer a different set of actions
+  // depending on screen width.
+  //
+  // ⚠️ EVERY control here calls stopPropagation. Both layouts toggle the detail drawer
+  // on click, so without it downloading a report would also open its drawer — and the
+  // delete confirmation would reopen the row it is asking about.
+  const reportActions = (r: Report) => {
+    const ready = r.status === "generated";
+    if (confirmId === r.id) {
+      return (
+        <span className="inline-flex items-center gap-1.5">
+          <span className="text-[12px]" style={{ color: gf.textMuted }}>Delete?</span>
+          <button onClick={(e) => { e.stopPropagation(); remove(r.id); }} className="gf-raise px-2 py-1 rounded-md text-[12px] font-medium" style={{ color: "#fff", background: RED }}>Yes</button>
+          <button onClick={(e) => { e.stopPropagation(); setConfirmId(null); }} className="px-2 py-1 rounded-md text-[12px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>No</button>
+        </span>
+      );
+    }
+    return (
+      <>
+        <DownloadBtn label="CSV" disabled={!ready || !!busy[`${r.id}-csv`]} onClick={(e) => { e.stopPropagation(); download(r, "csv"); }} />
+        <DownloadBtn label="PDF" disabled={!ready || !!busy[`${r.id}-pdf`]} onClick={(e) => { e.stopPropagation(); download(r, "pdf"); }} />
+        {/* Mails the PDF to the signed-in user. Disabled until the background build has
+            produced a file. Same raised/recessed rule as the download buttons beside it
+            — a mixed row would read as three unrelated controls. */}
+        <button
+          onClick={(e) => { e.stopPropagation(); emailReport(r); }}
+          disabled={!ready || !!busy[`mail-${r.id}`]}
+          className={`grid place-items-center w-8 h-8 rounded-[3px] transition-all disabled:cursor-not-allowed ${ready ? "gf-btn" : ""}`}
+          style={
+            ready
+              ? { color: gf.textPrimary }
+              : {
+                  color: gf.textDim,
+                  background: gf.bg,
+                  border: `1px solid ${gf.border}`,
+                  boxShadow: "var(--gf-btn-shadow-active)",
+                  opacity: 0.6,
+                }
+          }
+          title={ready ? "Email this report to me (PDF)" : "Not ready to email yet"}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 6.5h18v11H3zM3 7l9 6 9-6" />
+          </svg>
+        </button>
+        {canDelete && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setConfirmId(r.id); }}
+            className="grid place-items-center w-7 h-7 rounded-md transition-colors"
+            style={{ color: gf.textMuted }}
+            title="Delete report"
+            onMouseEnter={(e) => { e.currentTarget.style.background = `${RED}1f`; e.currentTarget.style.color = RED; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = gf.textMuted; }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" />
+            </svg>
+          </button>
+        )}
+      </>
+    );
+  };
+
   return (
     <div className="p-4 lg:p-6" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
       {/* Header */}
-      <div className="flex items-start justify-between gap-3 mb-4">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
           <h1 className="text-[16px] font-bold" style={{ color: gf.textPrimary }}>
             Reports
@@ -628,7 +708,10 @@ export default function Reports() {
         {canGenerate && (
           <button
             onClick={openModal}
-            className="gf-btn inline-flex items-center gap-2 text-[14px] font-medium whitespace-nowrap"
+            /* basis-full below `sm`: the button is ~160px of non-shrinking
+               whitespace-nowrap, which on a 390px screen leaves the heading and its
+               paragraph about 190px to wrap inside. Its own row reads better. */
+            className="gf-btn inline-flex items-center gap-2 text-[14px] font-medium whitespace-nowrap basis-full justify-center sm:basis-auto sm:justify-start"
             style={{ height: 32, padding: "0 12px", color: "var(--gf-text-primary)" }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
@@ -693,7 +776,79 @@ export default function Reports() {
         <EmptyState filtered={filtersActive} canGenerate={canGenerate} onGenerate={openModal} onClear={() => { setTypeFilter("all"); setSearch(""); }} />
       ) : (
         <div className="rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
-          <div className="overflow-x-auto">
+          {/* Phone: seven columns — four of them action buttons — is a sideways scroll,
+              and CSV / PDF / email / delete are exactly what ends up off the right edge.
+              Cards below `md`, the table unchanged from `md` up. The card opens the SAME
+              drawer the row does, via the shared ReportDrawerBody. */}
+          <div className="md:hidden">
+            {filtered.map((r, i) => {
+              const meta = typeMeta(r.type);
+              const sc = STATUS_COLOR[r.status] ?? gf.textMuted;
+              const open = openId === r.id;
+              return (
+                <div
+                  key={r.id}
+                  style={{
+                    borderTop: i === 0 ? "none" : `1px solid ${gf.divider}`,
+                    background: open ? gf.hover : "transparent",
+                  }}
+                >
+                  {/* The toggle is on this inner block, not the whole card — tapping
+                      inside an OPEN drawer must not close the thing you just opened. */}
+                  <div
+                    onClick={() => setOpenId((prev) => (prev === r.id ? null : r.id))}
+                    className="flex flex-col gap-2 px-3 py-3 cursor-pointer"
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <span className="grid place-items-center rounded-md shrink-0" style={{ width: 28, height: 28, background: `${meta.color}1f`, color: meta.color }}>
+                        <TypeIcon type={r.type} />
+                      </span>
+                      {/* break-words, not the table's `truncate max-w-[240px]`: the title
+                          is what someone is scanning for, and a phone has no hover. */}
+                      <span className="font-medium break-words flex-1 min-w-0" style={{ color: gf.textPrimary }}>
+                        {r.title}
+                      </span>
+                      <span className="text-[12px] shrink-0 transition-transform" style={{ color: gf.textDim, transform: open ? "rotate(180deg)" : "none" }}>
+                        ▾
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-semibold" style={{ color: meta.color, background: `${meta.color}1f` }}>
+                        {meta.label}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-semibold" style={{ color: sc, background: `${sc}1f` }}>
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: sc }} />
+                        {r.status}
+                      </span>
+                      {/* The control number stays on the collapsed card: searching this
+                          page for a number read off a printout has to work on a phone
+                          too, and it is the one field that identifies the filed copy. */}
+                      {r.referenceNo && (
+                        <span className="text-[11px] tracking-wider" style={{ color: gf.textDim }}>{r.referenceNo}</span>
+                      )}
+                    </div>
+
+                    <div className="text-[11px] break-words" style={{ color: gf.textMuted }}>
+                      {fmtPeriod(r)}
+                      {r.deviceName ? ` · ${r.deviceName}` : ""}
+                    </div>
+                    <div className="text-[11px]" style={{ color: gf.textDim }}>
+                      {fmtDateTime(r.createdAt)} · {r.generatedByName ?? "—"}
+                    </div>
+
+                    {/* flex-wrap: the four buttons fit a 390px card, but the delete
+                        CONFIRMATION ("Delete?" / Yes / No) that replaces them does not. */}
+                    <div className="flex items-center gap-1.5 flex-wrap pt-0.5">{reportActions(r)}</div>
+                  </div>
+
+                  <ReportDrawerBody report={r} isOpen={open} paperSizes={paperSizes} max={620} />
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full border-collapse text-[13px]">
               <thead>
                 <tr style={{ background: gf.header }}>
@@ -708,7 +863,6 @@ export default function Reports() {
                 {filtered.map((r, i) => {
                   const meta = typeMeta(r.type);
                   const sc = STATUS_COLOR[r.status] ?? gf.textMuted;
-                  const ready = r.status === "generated";
                   return (
                     <Fragment key={r.id}>
                     <tr
@@ -771,59 +925,7 @@ export default function Reports() {
                         </span>
                       </td>
                       <td className="px-3 py-2.5">
-                        <div className="flex items-center justify-end gap-1.5">
-                          {confirmId === r.id ? (
-                            <span className="inline-flex items-center gap-1.5">
-                              <span className="text-[12px]" style={{ color: gf.textMuted }}>Delete?</span>
-                              <button onClick={(e) => { e.stopPropagation(); remove(r.id); }} className="gf-raise px-2 py-1 rounded-md text-[12px] font-medium" style={{ color: "#fff", background: RED }}>Yes</button>
-                              <button onClick={(e) => { e.stopPropagation(); setConfirmId(null); }} className="px-2 py-1 rounded-md text-[12px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}>No</button>
-                            </span>
-                          ) : (
-                            <>
-                              <DownloadBtn label="CSV" disabled={!ready || !!busy[`${r.id}-csv`]} onClick={(e) => { e.stopPropagation(); download(r, "csv"); }} />
-                              <DownloadBtn label="PDF" disabled={!ready || !!busy[`${r.id}-pdf`]} onClick={(e) => { e.stopPropagation(); download(r, "pdf"); }} />
-                              {/* Mails the PDF to the signed-in user. Disabled until
-                                  the background build has produced a file. */}
-                              {/* Same raised/recessed rule as the download buttons beside
-                                  it — a mixed row would read as three unrelated controls. */}
-                              <button
-                                onClick={(e) => { e.stopPropagation(); emailReport(r); }}
-                                disabled={!ready || !!busy[`mail-${r.id}`]}
-                                className={`grid place-items-center w-8 h-8 rounded-[3px] transition-all disabled:cursor-not-allowed ${ready ? "gf-btn" : ""}`}
-                                style={
-                                  ready
-                                    ? { color: gf.textPrimary }
-                                    : {
-                                        color: gf.textDim,
-                                        background: gf.bg,
-                                        border: `1px solid ${gf.border}`,
-                                        boxShadow: "var(--gf-btn-shadow-active)",
-                                        opacity: 0.6,
-                                      }
-                                }
-                                title={ready ? "Email this report to me (PDF)" : "Not ready to email yet"}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M3 6.5h18v11H3zM3 7l9 6 9-6" />
-                                </svg>
-                              </button>
-                              {canDelete && (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setConfirmId(r.id); }}
-                                  className="grid place-items-center w-7 h-7 rounded-md transition-colors"
-                                  style={{ color: gf.textMuted }}
-                                  title="Delete report"
-                                  onMouseEnter={(e) => { e.currentTarget.style.background = `${RED}1f`; e.currentTarget.style.color = RED; }}
-                                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = gf.textMuted; }}
-                                >
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" />
-                                  </svg>
-                                </button>
-                              )}
-                            </>
-                          )}
-                        </div>
+                        <div className="flex items-center justify-end gap-1.5">{reportActions(r)}</div>
                       </td>
                     </tr>
                     <ReportDrawerRow report={r} isOpen={openId === r.id} paperSizes={paperSizes} />
@@ -849,7 +951,12 @@ export default function Reports() {
                   which put configuration that changes a few times a year permanently
                   below the thing people come here to read. Behind a tab, the page is
                   what its name says: a list of generated reports. */}
-              <div className="flex items-center gap-1">
+              {/* min-w-0 + overflow-x-auto, and the close button below is shrink-0: the
+                  two tab labels come to ~265px, which on a 360px phone leaves almost
+                  nothing for the X. Squeezing it out of a modal that also closes on Esc
+                  and on a backdrop tap would still be a dead end on a touch screen,
+                  where neither exists. The tabs scroll instead. */}
+              <div className="flex items-center gap-1 min-w-0 overflow-x-auto">
                 {(
                   [
                     ["generate", "Generate report"],
@@ -862,7 +969,7 @@ export default function Reports() {
                       key={id}
                       type="button"
                       onClick={() => setModalTab(id as "generate" | "template")}
-                      className="text-[13px] font-semibold tracking-wide px-3 py-1.5 rounded-[3px] transition-all"
+                      className="text-[13px] font-semibold tracking-wide px-3 py-1.5 rounded-[3px] transition-all whitespace-nowrap shrink-0"
                       style={
                         on
                           ? { color: gf.textPrimary, background: gf.hover, boxShadow: `inset 0 -2px 0 ${gf.accent}` }
@@ -874,7 +981,7 @@ export default function Reports() {
                   );
                 })}
               </div>
-              <button onClick={() => setModalOpen(false)} className="grid place-items-center w-7 h-7 rounded-md" style={{ color: gf.textMuted }} title="Close (Esc)">
+              <button onClick={() => setModalOpen(false)} className="grid place-items-center w-7 h-7 rounded-md shrink-0 ml-2" style={{ color: gf.textMuted }} title="Close (Esc)">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
@@ -1108,7 +1215,11 @@ export default function Reports() {
                           e.target.value = ""; // re-selecting the same file must still fire
                         }}
                       />
-                      <div className="flex items-center gap-1.5">
+                      {/* flex-wrap: Replace + Remove + the "PNG / JPEG · 2 MB" hint come
+                          to ~260px, and once the grid collapses to ONE column on a phone
+                          the hint is what gets pushed out — the line that says which
+                          files will be accepted, next to the button that accepts them. */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <button
                           type="button"
                           disabled={busy}
@@ -1138,7 +1249,7 @@ export default function Reports() {
 
               {/* ── Signature block ── */}
               <div className="mt-5 pt-4" style={{ borderTop: `1px solid ${gf.divider}` }}>
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
                   <span className="text-[11px] tracking-wider uppercase" style={{ color: gf.textDim }}>
                     Signature lines
                   </span>
@@ -1174,13 +1285,21 @@ export default function Reports() {
                     const set = (patch: Partial<Signatory>) =>
                       setSigDraft((d) => d.map((x, j) => (j === i ? { ...x, ...patch } : x)));
                     return (
-                      <div key={i} className="flex items-center gap-2">
+                      // ⚠️ flex-wrap + a real min-width on both inputs. This row was two
+                      // `flex-1 min-w-0` fields beside a fixed ~90px of Auto checkbox and
+                      // ✕ button: inside the modal on a 390px phone that left each field
+                      // about 105px, so "Name (blank = sign by hand)" showed as roughly
+                      // "Name (blank…" and the field you type a person's title into could
+                      // not display the title. min-w-[180px] makes them wrap to their own
+                      // lines there while staying on one row from tablet up, where the
+                      // modal is wide enough that nothing changes.
+                      <div key={i} className="flex flex-wrap items-center gap-2">
                         <input
                           value={sig.role}
                           onChange={(e) => set({ role: e.target.value })}
                           placeholder="Prepared by:"
                           maxLength={60}
-                          className="text-[13px] px-2 py-1.5 rounded-[2px] outline-none flex-1 min-w-0"
+                          className="text-[13px] px-2 py-1.5 rounded-[2px] outline-none flex-1 min-w-[180px]"
                           style={inputStyle}
                         />
                         {/* Disabled rather than hidden when auto is on, so the row
@@ -1193,7 +1312,7 @@ export default function Reports() {
                           disabled={sig.auto}
                           placeholder={sig.auto ? "Whoever generates the report" : "Name (blank = sign by hand)"}
                           maxLength={60}
-                          className="text-[13px] px-2 py-1.5 rounded-[2px] outline-none flex-1 min-w-0 disabled:opacity-60"
+                          className="text-[13px] px-2 py-1.5 rounded-[2px] outline-none flex-1 min-w-[180px] disabled:opacity-60"
                           style={inputStyle}
                         />
                         <label className="flex items-center gap-1.5 text-[12px] shrink-0 cursor-pointer" style={{ color: gf.textMuted }} title="Print the name of whoever generated the report">

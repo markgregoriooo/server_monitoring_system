@@ -38,6 +38,73 @@ const STATUS_COLOR: Record<string, string> = {
 const sourceLabel = (a: Alert) =>
   a.deviceName ?? (a.deviceId == null ? "Server room" : `Device ${a.deviceId}`);
 
+// Who acted, and when. Rendered twice — under the status pill in the table and on the
+// phone card — so it lives here rather than being written out twice: the fallback chain
+// (resolved time, else acknowledged time, else no time at all) is exactly the kind of
+// detail that drifts between two copies.
+const actorLine = (a: Alert): string | null => {
+  if (!a.acknowledgedByName || a.status === "active") return null;
+  const when =
+    a.status === "resolved" && a.resolvedAt
+      ? relativeTime(a.resolvedAt)
+      : a.acknowledgedAt
+        ? relativeTime(a.acknowledgedAt)
+        : null;
+  return `by ${a.acknowledgedByName}${when ? ` · ${when}` : ""}`;
+};
+
+function Pill({ color, children }: { color: string; children: React.ReactNode }) {
+  return (
+    <span
+      className="px-1.5 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-medium"
+      style={{ color, background: `${color}1f` }}
+    >
+      {children}
+    </span>
+  );
+}
+
+// Acknowledge / Resolve, shared by the table row and the phone card so an alert can
+// never offer different actions depending on the width of the screen. `full` stretches
+// the buttons across a card — on a phone a 70px tap target at the end of a row is the
+// one thing you came to press and the hardest thing to hit.
+function AlertActions({
+  a,
+  busy,
+  onAct,
+  full,
+}: {
+  a: Alert;
+  busy: boolean;
+  onAct: (id: number, action: "acknowledge" | "resolve") => void;
+  full?: boolean;
+}) {
+  if (a.status === "resolved") return null;
+  const btn = `px-2 py-1 rounded-md text-[12px] transition-colors disabled:opacity-50${full ? " flex-1" : ""}`;
+  return (
+    <span className={full ? "flex gap-1.5 w-full" : "inline-flex gap-1.5"}>
+      {a.status === "active" && (
+        <button
+          onClick={() => onAct(a.id, "acknowledge")}
+          disabled={busy}
+          className={btn}
+          style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
+        >
+          Acknowledge
+        </button>
+      )}
+      <button
+        onClick={() => onAct(a.id, "resolve")}
+        disabled={busy}
+        className={`gf-raise ${btn}`}
+        style={{ color: "#fff", background: GREEN }}
+      >
+        Resolve
+      </button>
+    </span>
+  );
+}
+
 export default function Alerts() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [filter, setFilter] = useState<Filter>("active");
@@ -107,7 +174,9 @@ export default function Alerts() {
             (alerts also auto-resolve when the metric recovers).
           </p>
         </div>
-        <div className="flex gap-1">
+        {/* flex-wrap: four toggles plus the acknowledged badge overrun a 360px phone,
+            and an un-wrapped row pushes "resolved" off the edge rather than shrinking. */}
+        <div className="flex flex-wrap gap-1">
           {/* inline-flex + gap so the tab can carry the acknowledged count badge; the
               12px sizing and the `capitalize` moved onto the inner span both come from
               main's readability pass.
@@ -142,9 +211,64 @@ export default function Alerts() {
         </div>
       </div>
 
-      {/* Table */}
+      {/* Incident list — TWO layouts over one data source.
+          A six-column table on a 390px phone is a sideways scroll, and the columns that
+          end up off the right edge are the message and the buttons: the two things the
+          page exists for. Below `md` the same alerts render as cards; from `md` up it is
+          the table, unchanged. Same split UpsMonitoring.tsx already uses for its list. */}
       <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
-        <div className="overflow-x-auto">
+        {/* Phone */}
+        <div className="md:hidden">
+          {loading ? (
+            <div className="px-3 py-6 text-center text-[13px]" style={{ color: gf.textDim }}>
+              Loading…
+            </div>
+          ) : alerts.length === 0 ? (
+            <div className="px-3 py-6 text-center text-[13px]" style={{ color: gf.textDim }}>
+              No {filter === "all" ? "" : filter} alerts.
+            </div>
+          ) : (
+            alerts.map((a, i) => (
+              <div
+                key={a.id}
+                className="flex flex-col gap-2 px-3 py-3"
+                style={{
+                  borderTop: i > 0 ? `1px solid ${gf.border}` : "none",
+                  color: gf.textPrimary,
+                  opacity: a.status === "resolved" ? 0.6 : 1,
+                }}
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Pill color={SEV_COLOR[a.severity] ?? gf.textMuted}>{a.severity}</Pill>
+                  <Pill color={STATUS_COLOR[a.status] ?? gf.textMuted}>{a.status}</Pill>
+                  <span className="ml-auto text-[11px]" style={{ color: gf.textDim }}>
+                    {relativeTime(a.createdAt)}
+                  </span>
+                </div>
+
+                {/* break-words, not the table's `truncate`: on a phone this text is the
+                    whole reason the row is on screen, and there is no hover tooltip to
+                    recover a cut-off message from. */}
+                <div>
+                  <div className="text-[13px] font-medium break-words">{a.title}</div>
+                  <div className="text-[12px] break-words" style={{ color: gf.textMuted }}>
+                    {a.message}
+                  </div>
+                </div>
+
+                <div className="text-[11px] break-words" style={{ color: gf.textDim }}>
+                  {sourceLabel(a)}
+                  {actorLine(a) ? ` · ${actorLine(a)}` : ""}
+                </div>
+
+                <AlertActions a={a} busy={busyId === a.id} onAct={act} full />
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Tablet and up */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-[13px]" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: gf.header, color: gf.textDim }}>
@@ -183,15 +307,7 @@ export default function Alerts() {
                     }}
                   >
                     <td className="px-3 py-2 whitespace-nowrap">
-                      <span
-                        className="px-1.5 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-medium"
-                        style={{
-                          color: SEV_COLOR[a.severity] ?? gf.textMuted,
-                          background: `${SEV_COLOR[a.severity] ?? "#888"}1f`,
-                        }}
-                      >
-                        {a.severity}
-                      </span>
+                      <Pill color={SEV_COLOR[a.severity] ?? gf.textMuted}>{a.severity}</Pill>
                     </td>
                     <td className="px-3 py-2 max-w-[320px]">
                       <div className="font-medium truncate">{a.title}</div>
@@ -206,49 +322,15 @@ export default function Alerts() {
                       {relativeTime(a.createdAt)}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
-                      <span
-                        className="px-1.5 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-medium"
-                        style={{
-                          color: STATUS_COLOR[a.status] ?? gf.textMuted,
-                          background: `${STATUS_COLOR[a.status] ?? "#888"}1f`,
-                        }}
-                      >
-                        {a.status}
-                      </span>
-                      {a.acknowledgedByName && a.status !== "active" && (
+                      <Pill color={STATUS_COLOR[a.status] ?? gf.textMuted}>{a.status}</Pill>
+                      {actorLine(a) && (
                         <div className="text-[11px] mt-0.5" style={{ color: gf.textDim }}>
-                          by {a.acknowledgedByName}
-                          {a.status === "resolved" && a.resolvedAt
-                            ? ` · ${relativeTime(a.resolvedAt)}`
-                            : a.acknowledgedAt
-                              ? ` · ${relativeTime(a.acknowledgedAt)}`
-                              : ""}
+                          {actorLine(a)}
                         </div>
                       )}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-right">
-                      <span className="inline-flex gap-1.5">
-                        {a.status === "active" && (
-                          <button
-                            onClick={() => act(a.id, "acknowledge")}
-                            disabled={busyId === a.id}
-                            className="px-2 py-1 rounded-md text-[12px] transition-colors disabled:opacity-50"
-                            style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
-                          >
-                            Acknowledge
-                          </button>
-                        )}
-                        {a.status !== "resolved" && (
-                          <button
-                            onClick={() => act(a.id, "resolve")}
-                            disabled={busyId === a.id}
-                            className="gf-raise px-2 py-1 rounded-md text-[12px] transition-colors disabled:opacity-50"
-                            style={{ color: "#fff", background: GREEN }}
-                          >
-                            Resolve
-                          </button>
-                        )}
-                      </span>
+                      <AlertActions a={a} busy={busyId === a.id} onAct={act} />
                     </td>
                   </tr>
                 ))

@@ -88,34 +88,21 @@ export const DUR = {
 } as const;
 
 /**
- * True on phone-width viewports.
+ * True on phone-width viewports. Re-exported from `hooks/useIsNarrow` — it moved
+ * there when the Settings page needed the same test, and is kept exported here so
+ * the landing components that already import it from this module are unaffected.
  *
- * Used to pick the DESIGN WIDTH of the mini-UI mocks, not to hide things. A mock
+ * Here it picks the DESIGN WIDTH of the mini-UI mocks, not what to hide. A mock
  * laid out for 560px and scaled into a 343px column lands at 0.61, which turns
  * its 9px labels into 5px — legible as a shape, useless as text. Handing the
  * same mock a 360px design box instead means it renders at roughly 1:1 on a
  * phone and stays readable.
  *
- * Matches Tailwind's `sm` breakpoint so the mocks change over at the same width
- * as the layout around them, rather than at some second, invisible boundary.
+ * The default (640) matches Tailwind's `sm` breakpoint so the mocks change over at
+ * the same width as the layout around them, rather than at some second, invisible
+ * boundary.
  */
-export function useIsNarrow(breakpoint = 640): boolean {
-  const query = `(max-width: ${breakpoint - 0.02}px)`;
-  const [narrow, setNarrow] = useState<boolean>(
-    () => typeof window !== "undefined" && window.matchMedia?.(query).matches === true,
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mql = window.matchMedia(query);
-    const onChange = (e: MediaQueryListEvent) => setNarrow(e.matches);
-    setNarrow(mql.matches);
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, [query]);
-
-  return narrow;
-}
+export { useIsNarrow } from "../../hooks/useIsNarrow";
 
 /**
  * True once the page has scrolled past `threshold`.

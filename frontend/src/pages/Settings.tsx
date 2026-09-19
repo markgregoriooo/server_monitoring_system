@@ -6,6 +6,7 @@ import { initials, avatarUrl } from "../utils/format";
 import ProfileModal from "../components/layout/ProfileModal";
 import NotificationPreferences from "../components/notifications/NotificationPreferences";
 import WidgetBuilder from "../pip/WidgetBuilder";
+import { useIsNarrow } from "../hooks/useIsNarrow";
 
 // Personal settings — everything on this page is PER-USER and scoped to the signed-in
 // account: profile (users row), notification prefs (notification_prefs, keyed by user_id,
@@ -27,6 +28,9 @@ export default function Settings() {
   const { theme, toggleTheme } = useTheme();
   const [profileOpen, setProfileOpen] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
+  // Phone check for the pop-out widget builder below. `md` — the same boundary the
+  // tables on Alerts / History / User Management switch layout at.
+  const narrow = useIsNarrow(768);
 
   const showSaved = (msg: string) => {
     setSavedMsg(msg);
@@ -48,7 +52,10 @@ export default function Settings() {
         <div className="text-sm font-bold mb-1" style={titleColor}>Profile</div>
         <div className="text-[13px] mb-4" style={subColor}>Your account identity.</div>
 
-        <div className="flex items-center gap-4">
+        {/* flex-wrap + basis-full: on a phone the 112px button eats the space the email
+            needs, truncating the one line here that cannot be guessed from the rest.
+            Below `sm` it drops to its own full-width row instead. */}
+        <div className="flex items-center gap-4 flex-wrap">
           {imageSrc ? (
             <img
               src={imageSrc}
@@ -73,7 +80,7 @@ export default function Settings() {
           <button
             type="button"
             onClick={() => setProfileOpen(true)}
-            className="gf-btn text-[14px] px-3 py-1.5 flex-shrink-0"
+            className="gf-btn text-[14px] px-3 py-1.5 flex-shrink-0 basis-full sm:basis-auto"
             style={{ color: "var(--gf-text-primary)" }}
           >
             Edit profile
@@ -84,8 +91,23 @@ export default function Settings() {
       {/* ── Notification preferences (per-user, persisted in notification_prefs) ── */}
       <NotificationPreferences />
 
-      {/* ── Customize Widget (per-user, persisted in widget_prefs) ── */}
-      <WidgetBuilder />
+      {/* ── Customize Widget (per-user, persisted in widget_prefs) ──
+          Desktop only. The widget it builds is a Document Picture-in-Picture window,
+          which no mobile browser implements — so on a phone this is a drag-and-drop
+          builder for a window that can never be opened on that device, and dragging
+          tiles past a scrolling page is the worst way to find that out.
+
+          NOT RENDERED rather than hidden with `md:hidden`: WidgetBuilder mounts
+          useWidgetLayout (a GET /api/widget-prefs) and subscribes to LiveSummary, so
+          a CSS-hidden copy would still spend a request out of the per-user rate
+          budget on every Settings visit from a phone.
+
+          ⚠️ The gate is the VIEWPORT, deliberately not `pipSupported`. The builder is
+          meant to stay visible on a desktop browser without the API (Firefox, Safari)
+          — the layout saves to the account and is used later from Chrome or Edge,
+          which is what the "Pop-out itself needs Chrome or Edge" note inside it is
+          for. Capability decides what the button does; width decides what fits. */}
+      {!narrow && <WidgetBuilder />}
 
       {/* ── Appearance (per-user, persisted in localStorage: cspc_theme) ── */}
       <div className="p-5" style={panelStyle}>

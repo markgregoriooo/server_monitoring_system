@@ -114,11 +114,16 @@ function StatusBadge({ status, lastLogin }: { status?: string; lastLogin?: strin
   return <Pill color={s.color} dot neutral>{s.label}</Pill>;
 }
 
-function StatPanel({ label, value, color }: { label: string; value: number; color: string }) {
+// `sub` is the count that is NOT in the headline number — invited accounts under
+// Active, pending registrations under Total. It exists because the alternative was a
+// headline that quietly folded two different things together, which is exactly how
+// the Active card came to disagree with the table beneath it.
+function StatPanel({ label, value, color, sub }: { label: string; value: number; color: string; sub?: string }) {
   return (
     <div className="p-3 rounded-[2px] bg-[var(--gf-panel)] border border-[var(--gf-panel-border)]">
       <div className="text-[11px] uppercase tracking-widest mb-1.5 text-[var(--gf-text-muted)]">{label}</div>
       <div className="text-2xl font-bold leading-none" style={{ color }}>{value}</div>
+      {sub && <div className="text-[11px] mt-1 leading-tight text-[var(--gf-text-dim)]">{sub}</div>}
     </div>
   );
 }
@@ -338,7 +343,18 @@ export default function UserManagement() {
     if (r.success) {
       setPending((prev) => prev.filter((x) => x.id !== p.id));
       reloadUsers();
-      showToast(`${p.name} approved as ${role === "admin" ? "Admin" : "IT Staff"}.`);
+      const label = role === "admin" ? "Admin" : "IT Staff";
+      /* The approval email is the ONLY way this person learns their account works — they
+         hold no session, so nothing can be pushed to them. If it didn't go out, say so
+         loudly: the admin is the only one who can pass the word on by other means, and a
+         silent failure leaves someone waiting for a message that is never coming. Shown
+         in the error style despite the approval having succeeded — the colour is what
+         gets it read, and the wording keeps the two outcomes distinct. */
+      if (r.data?.emailed === false) {
+        showToast(`${p.name} approved as ${label}, but the email could not be sent — tell them directly.`, "error");
+      } else {
+        showToast(`${p.name} approved as ${label}. Notification email sent.`);
+      }
     } else {
       showToast(r.error ?? "Failed to approve user.", "error");
     }
@@ -350,7 +366,11 @@ export default function UserManagement() {
     const r = await api.rejectUser(p.id);
     if (r.success) {
       setPending((prev) => prev.filter((x) => x.id !== p.id));
-      showToast(`${p.name}'s request was rejected.`);
+      if (r.data?.emailed === false) {
+        showToast(`${p.name}'s request was rejected, but the email could not be sent.`, "error");
+      } else {
+        showToast(`${p.name}'s request was rejected. They have been notified.`);
+      }
     } else {
       showToast(r.error ?? "Failed to reject user.", "error");
     }
@@ -366,8 +386,22 @@ export default function UserManagement() {
     return matchSearch && matchRole && u.status !== "pending";
   });
 
-  const totalActive   = users.filter((u) => !u.status || u.status === "active").length;
+  // ⚠️ "Active" means two different things on this page, so it is counted as two.
+  // `StatusBadge` calls an approved account that has NEVER signed in "Invited", not
+  // "Active" — so a single card counting `status === 'active'` read 7 while the table
+  // under it showed 6 Active and 1 Invited. Both were right about their own question;
+  // they just used one word. The headline now counts people who have actually signed
+  // in, and the invited ones are named underneath rather than folded in silently.
+  const isActiveRow   = (u: User) => !u.status || u.status === "active";
+  const signedIn      = users.filter((u) => isActiveRow(u) && u.last_login).length;
+  const invited       = users.filter((u) => isActiveRow(u) && !u.last_login).length;
   const totalInactive = users.filter((u) => u.status === "inactive").length;
+  // Every count that describes THE LIST has to hide `pending` rows, because the list
+  // does: `filtered` sends them to the approval panel above instead. Counting them
+  // here is what made the panel header read "6 of 8" with two rows that could never
+  // be shown, and made Active + Inactive fail to add up to Total.
+  const listed        = users.filter((u) => u.status !== "pending").length;
+  const pendingCount  = users.length - listed;
   const roleGroups    = ["admin", "it_staff"].reduce((acc, r) => {
     acc[r] = users.filter((u) => u.role === r).length;
     return acc;
@@ -452,6 +486,32 @@ export default function UserManagement() {
   // so the Enable/Disable control points the right way for a rejected registration.
   const isEnabled   = (u: User) => !u.status || u.status === "active";
 
+  // Row actions, defined once and rendered by BOTH layouts below (phone card + table
+  // row). A plain function called as `{userActions(u)}`, deliberately not a component
+  // declared in here: a component defined inside a render is a new type on every
+  // render, so React would tear down and rebuild these buttons each time.
+  const userActions = (u: User) => (
+    <>
+      {!isSelf(u) && (
+        <ActionBtn onClick={() => openEdit(u)} title="Edit user">✎ Edit</ActionBtn>
+      )}
+      {!isProtected(u) && (
+        <ActionBtn
+          onClick={() => handleToggleStatus(u)}
+          title={isEnabled(u) ? "Disable account" : "Enable account"}
+        >
+          {isEnabled(u) ? "⊘ Disable" : "⊕ Enable"}
+        </ActionBtn>
+      )}
+      {!isProtected(u) && (
+        <ActionBtn onClick={() => setDeleteTarget(u)} title="Delete user" danger>✕ Delete</ActionBtn>
+      )}
+      {isProtected(u) && isAdmin(u) && (
+        <span className="text-[12px] text-[var(--gf-text-dim)] px-1">Protected</span>
+      )}
+    </>
+  );
+
   // ─────────────────────────────────────────────────────────────────────────────
 
   return (
@@ -478,14 +538,19 @@ export default function UserManagement() {
       <div className="flex items-baseline gap-2 min-w-0 px-0.5">
         <h1 className="text-[15px] font-semibold truncate text-[var(--gf-text-primary)]">User Management</h1>
         <span className="text-[13px] hidden sm:inline text-[var(--gf-text-dim)]">
-          {users.length} user{users.length !== 1 ? "s" : ""}
+          {listed} user{listed !== 1 ? "s" : ""}
         </span>
       </div>
 
       {/* ── Stat cards ── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <StatPanel label="Total Users" value={users.length}             color="var(--gf-text-primary)" />
-        <StatPanel label="Active"      value={totalActive}              color={GREEN} />
+        {/* Conditional SPREAD, not `sub={x || undefined}`: tsconfig sets
+            exactOptionalPropertyTypes, under which passing an explicit `undefined` to
+            an optional prop is an error. */}
+        <StatPanel label="Total Users" value={listed} color="var(--gf-text-primary)"
+          {...(pendingCount > 0 ? { sub: `+${pendingCount} pending` } : {})} />
+        <StatPanel label="Active"      value={signedIn} color={GREEN}
+          {...(invited > 0 ? { sub: `+${invited} invited` } : {})} />
         <StatPanel label="Inactive"    value={totalInactive}            color={GREY} />
         <StatPanel label="Admins"      value={roleGroups["admin"] ?? 0} color={GOLD} />
       </div>
@@ -533,7 +598,9 @@ export default function UserManagement() {
                     <div className="text-[12px] truncate text-[var(--gf-text-muted)]">{p.email}</div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
+                {/* flex-wrap: the role picker (128px) plus Approve and Reject overrun a
+                    360px phone, and without it the Reject button leaves the screen. */}
+                <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
                   <SelectField
                     value={roleFor(p.id)}
                     onChange={(v) => setPendingRoles((m) => ({ ...m, [p.id]: v }))}
@@ -609,14 +676,71 @@ export default function UserManagement() {
       <Panel
         title="Accounts"
         noPad
-        right={<span className="text-[12px] text-[var(--gf-text-dim)]">{filtered.length} of {users.length}</span>}
+        right={<span className="text-[12px] text-[var(--gf-text-dim)]">{filtered.length} of {listed}</span>}
       >
         {loading ? (
           <div className="text-center py-14 text-[var(--gf-text-muted)] text-sm">Loading…</div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-14 text-[var(--gf-text-dim)] text-xs">No users match the current filter.</div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          {/* TWO layouts over one list. A seven-column account table is a sideways
+              scroll on a handset, and Role / Status / Actions — everything an admin
+              opens this page to change — are exactly the columns that fall off the
+              right edge. Cards below `md`, the table unchanged from `md` up. Same
+              split UpsMonitoring.tsx already uses for the UPS list. */}
+          <div className="md:hidden flex flex-col">
+            {filtered.map((u, i) => (
+              <div
+                key={u.id}
+                className="flex flex-col gap-2.5 px-3 py-3"
+                style={{ borderTop: i > 0 ? "1px solid var(--gf-divider)" : "none" }}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-[2px] overflow-hidden flex-shrink-0 flex items-center justify-center text-xs font-bold" style={{ background: `${roleColor(u.role)}1A`, color: roleColor(u.role), border: `1px solid ${roleColor(u.role)}40` }}>
+                    {u.profile_image ? (
+                      <img src={avatarUrl(u.profile_image) ?? ""} alt={u.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                    ) : (
+                      u.avatar || initials(u.name)
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold leading-tight text-[var(--gf-text-primary)] truncate">
+                      {u.name}
+                      {isProtected(u) && (
+                        <span className="ml-1.5 text-[11px] text-[var(--gf-text-muted)] bg-[var(--gf-hover)] px-1.5 py-0.5 rounded-[2px]">
+                          {isLastActiveAdmin(u) ? "last admin" : "you"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[12px] truncate text-[var(--gf-text-muted)]">@{u.username}</div>
+                  </div>
+                  <span className="flex-shrink-0"><RoleBadge role={u.role} /></span>
+                </div>
+
+                {/* break-all, not truncate: the email is the identity Google login
+                    matches on, and it is the one field here you cannot guess the rest
+                    of once it has been cut off. */}
+                <div className="text-[12px] break-all text-[var(--gf-text-muted)]">
+                  {u.email || <span className="text-[var(--gf-text-dim)]">—</span>}
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap text-[12px]">
+                  <StatusBadge status={u.status} lastLogin={u.last_login} />
+                  <span className="text-[var(--gf-text-dim)]">
+                    {u.last_login
+                      ? `last login ${new Date(u.last_login).toLocaleDateString("en-PH", { month: "short", day: "2-digit", year: "numeric" })}`
+                      : "never signed in"}
+                  </span>
+                  <span className="text-[var(--gf-text-dim)] ml-auto">#{String(u.id).padStart(3, "0")}</span>
+                </div>
+
+                <div className="flex items-center gap-1.5 flex-wrap">{userActions(u)}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr>
@@ -671,31 +795,14 @@ export default function UserManagement() {
 
                     {/* Actions */}
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
-                        {!isSelf(u) && (
-                          <ActionBtn onClick={() => openEdit(u)} title="Edit user">✎ Edit</ActionBtn>
-                        )}
-                        {!isProtected(u) && (
-                          <ActionBtn
-                            onClick={() => handleToggleStatus(u)}
-                            title={isEnabled(u) ? "Disable account" : "Enable account"}
-                          >
-                            {isEnabled(u) ? "⊘ Disable" : "⊕ Enable"}
-                          </ActionBtn>
-                        )}
-                        {!isProtected(u) && (
-                          <ActionBtn onClick={() => setDeleteTarget(u)} title="Delete user" danger>✕ Delete</ActionBtn>
-                        )}
-                        {isProtected(u) && isAdmin(u) && (
-                          <span className="text-[12px] text-[var(--gf-text-dim)] px-1">Protected</span>
-                        )}
-                      </div>
+                      <div className="flex items-center gap-1.5">{userActions(u)}</div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Panel>
 

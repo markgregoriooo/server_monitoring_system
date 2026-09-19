@@ -157,6 +157,19 @@ function Tile({ label, value, color }: { label: string; value: number | string; 
   );
 }
 
+// One label/value pair inside a daily card (the phone layout of the Environment
+// daily table). The table's seventh column, Alerts, is deliberately NOT one of these:
+// it moves up beside the date, because it is the one number on the row worth seeing
+// without reading the other six.
+function DayMetric({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] tracking-widest uppercase truncate" style={{ color: gf.textDim }}>{label}</div>
+      <div className="text-[13px] font-medium mt-0.5" style={{ color }}>{value}</div>
+    </div>
+  );
+}
+
 function Badge({ label, color, subtle }: { label: string; color: string; subtle?: boolean }) {
   return (
     <span
@@ -258,7 +271,9 @@ function DailySummary() {
         <Tile label="Env alerts" value={totalEvents} color="#E02F44" />
       </div>
 
-      <div className="flex items-center gap-2">
+      {/* flex-wrap: the UTC caveat is a full sentence and squeezes the range buttons
+          to unreadable slivers on a phone — it belongs on its own line there. */}
+      <div className="flex items-center gap-2 flex-wrap">
         <div className="flex gap-1">
           {DAILY_DAYS.map((d) => (
             <Seg key={d.value} active={days === d.value} onClick={() => setDays(d.value)}>
@@ -271,51 +286,79 @@ function DailySummary() {
         </span>
       </div>
 
+      {/* TWO layouts over one set of rows: cards below `md`, the table from `md` up —
+          seven numeric columns is a sideways scroll on a phone. The three states
+          (loading / InfluxDB error / no rows) are hoisted OUT of the tbody so they are
+          written once for both layouts rather than once per layout. */}
       <div className="rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-[13px] border-collapse">
-            <thead>
-              <tr style={{ background: gf.header }}>
-                {["Date", "Avg temp", "Max temp", "Min temp", "Avg humidity", "Peak gas", "Alerts"].map((h) => (
-                  <th key={h} className="text-left px-3 py-2 font-semibold whitespace-nowrap"
-                    style={{ color: gf.textMuted, borderBottom: `1px solid ${gf.border}` }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={7} className="px-3 py-10 text-center" style={{ color: gf.textMuted }}>Loading…</td></tr>
-              ) : error ? (
-                <tr><td colSpan={7} className="px-3 py-10 text-center">
-                  <div style={{ color: "#E02F44" }}>{error}</div>
-                  <div className="mt-1 text-[12px]" style={{ color: gf.textDim }}>
-                    Daily summaries read InfluxDB — check it is running and that INFLUX_BUCKET
-                    matches the bucket the sensor writes to.
+        {loading ? (
+          <div className="px-3 py-10 text-center" style={{ color: gf.textMuted }}>Loading…</div>
+        ) : error ? (
+          <div className="px-3 py-10 text-center">
+            <div style={{ color: "#E02F44" }}>{error}</div>
+            <div className="mt-1 text-[12px]" style={{ color: gf.textDim }}>
+              Daily summaries read InfluxDB — check it is running and that INFLUX_BUCKET
+              matches the bucket the sensor writes to.
+            </div>
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="px-3 py-10 text-center">
+            <div style={{ color: gf.textMuted }}>No environment readings in the last {days} days.</div>
+            <div className="mt-1 text-[12px]" style={{ color: gf.textDim }}>
+              Rows appear once the ESP32 has been reporting for at least one day.
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Phone: one card per day, the six metrics on a 3-up grid. */}
+            <div className="md:hidden">
+              {rows.map((r, i) => (
+                <div key={r.date} className="px-3 py-3" style={{ borderTop: i > 0 ? `1px solid ${gf.border}` : "none" }}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-[13px] font-medium" style={{ color: gf.textPrimary }}>{r.date}</span>
+                    <span className="text-[12px] whitespace-nowrap" style={{ color: r.events > 0 ? "#FF780A" : gf.textDim }}>
+                      {r.events} alert{r.events === 1 ? "" : "s"}
+                    </span>
                   </div>
-                </td></tr>
-              ) : rows.length === 0 ? (
-                <tr><td colSpan={7} className="px-3 py-10 text-center">
-                  <div style={{ color: gf.textMuted }}>No environment readings in the last {days} days.</div>
-                  <div className="mt-1 text-[12px]" style={{ color: gf.textDim }}>
-                    Rows appear once the ESP32 has been reporting for at least one day.
+                  <div className="grid grid-cols-3 gap-x-3 gap-y-2 mt-2">
+                    <DayMetric label="Avg temp" value={metric(r.avgTemp, "°C")} color={tempColor(r.avgTemp)} />
+                    <DayMetric label="Max temp" value={metric(r.maxTemp, "°C")} color={r.maxTemp == null ? gf.textDim : "#E02F44"} />
+                    <DayMetric label="Min temp" value={metric(r.minTemp, "°C")} color={r.minTemp == null ? gf.textDim : GREEN} />
+                    <DayMetric label="Avg humidity" value={metric(r.avgHum, "%")} color={r.avgHum == null ? gf.textDim : "#5794F2"} />
+                    <DayMetric label="Peak gas" value={metric(r.peakGas, "ppm")} color={gasColor(r.peakGas)} />
                   </div>
-                </td></tr>
-              ) : (
-                rows.map((r) => (
-                  <tr key={r.date} style={{ borderTop: `1px solid ${gf.border}` }}>
-                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: gf.textPrimary }}>{r.date}</td>
-                    <td className="px-3 py-2 font-bold whitespace-nowrap" style={{ color: tempColor(r.avgTemp) }}>{metric(r.avgTemp, "°C")}</td>
-                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.maxTemp == null ? gf.textDim : "#E02F44" }}>{metric(r.maxTemp, "°C")}</td>
-                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.minTemp == null ? gf.textDim : GREEN }}>{metric(r.minTemp, "°C")}</td>
-                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.avgHum == null ? gf.textDim : "#5794F2" }}>{metric(r.avgHum, "%")}</td>
-                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: gasColor(r.peakGas) }}>{metric(r.peakGas, "ppm")}</td>
-                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.events > 0 ? "#FF780A" : gf.textDim }}>{r.events}</td>
+                </div>
+              ))}
+            </div>
+
+            {/* Tablet and up */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-[13px] border-collapse">
+                <thead>
+                  <tr style={{ background: gf.header }}>
+                    {["Date", "Avg temp", "Max temp", "Min temp", "Avg humidity", "Peak gas", "Alerts"].map((h) => (
+                      <th key={h} className="text-left px-3 py-2 font-semibold whitespace-nowrap"
+                        style={{ color: gf.textMuted, borderBottom: `1px solid ${gf.border}` }}>{h}</th>
+                    ))}
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.date} style={{ borderTop: `1px solid ${gf.border}` }}>
+                      <td className="px-3 py-2 whitespace-nowrap" style={{ color: gf.textPrimary }}>{r.date}</td>
+                      <td className="px-3 py-2 font-bold whitespace-nowrap" style={{ color: tempColor(r.avgTemp) }}>{metric(r.avgTemp, "°C")}</td>
+                      <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.maxTemp == null ? gf.textDim : "#E02F44" }}>{metric(r.maxTemp, "°C")}</td>
+                      <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.minTemp == null ? gf.textDim : GREEN }}>{metric(r.minTemp, "°C")}</td>
+                      <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.avgHum == null ? gf.textDim : "#5794F2" }}>{metric(r.avgHum, "%")}</td>
+                      <td className="px-3 py-2 whitespace-nowrap" style={{ color: gasColor(r.peakGas) }}>{metric(r.peakGas, "ppm")}</td>
+                      <td className="px-3 py-2 whitespace-nowrap" style={{ color: r.events > 0 ? "#FF780A" : gf.textDim }}>{r.events}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
     </>
   );
@@ -574,9 +617,75 @@ export default function History() {
         )}
       </div>
 
-      {/* Table */}
+      {/* Activity timeline — TWO layouts, one list. Six columns with the message
+          truncated at 420px is already tight on a laptop; on a phone the message and
+          the source are off the right edge entirely. Cards below `md`, table from `md`
+          up, and the row EXPANDS on tap in both — states hoisted out of the tbody so
+          they are written once. */}
       <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
-        <div className="overflow-x-auto">
+        {loading ? (
+          <div className="px-3 py-8 text-center" style={{ color: gf.textDim }}>Loading…</div>
+        ) : events.length === 0 ? (
+          <div className="px-3 py-8 text-center" style={{ color: gf.textDim }}>No events match the current filters.</div>
+        ) : (
+        <>
+        {/* Phone */}
+        <div className="md:hidden">
+          {events.map((e, i) => {
+            const am = actorMeta(e.actorType);
+            const cm = catMeta(e.category);
+            const open = expanded === e.id;
+            const src = e.device ?? (e.category === "environment" ? "Server room" : "—");
+            return (
+              <div
+                key={e.id}
+                onClick={() => setExpanded(open ? null : e.id)}
+                className="flex flex-col gap-1.5 px-3 py-3 cursor-pointer"
+                style={{
+                  borderTop: i > 0 ? `1px solid ${gf.border}` : "none",
+                  background: open ? gf.accentDim : i % 2 ? gf.hover : "transparent",
+                  color: gf.textPrimary,
+                }}
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: sevColor(e.severity) }} />
+                  <span className="text-[12px]" style={{ color: gf.textMuted }}>{fmtTime(e.timestamp)}</span>
+                  {/* The dot is for scanning down the list, the word is for meaning —
+                      colour alone is not a label anyone can read out. */}
+                  <span className="text-[11px] tracking-wider uppercase font-medium" style={{ color: sevColor(e.severity) }}>
+                    {e.severity}
+                  </span>
+                  <span className="ml-auto flex-shrink-0"><Badge label={cm.label} color={cm.color} subtle /></span>
+                </div>
+
+                {/* Two lines collapsed, all of it once tapped — the same expand the table
+                    row has. On a phone this is the one column that cannot be read any
+                    other way, so it gets two lines rather than the table's single. */}
+                <div className={open ? "break-words" : "line-clamp-2"}>{e.message}</div>
+
+                <div className="flex items-center gap-2 text-[11px] min-w-0">
+                  <Badge label={am.label} color={am.color} />
+                  {e.actorType !== "system" && (
+                    <span className="truncate" style={{ color: gf.textMuted }}>{e.actorName}</span>
+                  )}
+                  <span className="ml-auto flex-shrink-0" style={{ color: gf.textDim }}>{src}</span>
+                </div>
+
+                {open && (
+                  // No `actor:` row — unlike the table, the card already shows it above.
+                  <div className="flex flex-col gap-1 mt-1 text-[12px]" style={{ color: gf.textMuted }}>
+                    <span>action: <span style={{ color: gf.textPrimary }}>{e.action}</span></span>
+                    <span>source: <span style={{ color: gf.textPrimary }}>{e.source ?? "—"}</span></span>
+                    <span>when: <span style={{ color: gf.textPrimary }}>{fmtTime(e.timestamp)}</span> · {relTime(e.timestamp)}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Tablet and up */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-[13px]" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: gf.header, color: gf.textDim }}>
@@ -587,12 +696,7 @@ export default function History() {
               </tr>
             </thead>
             <tbody>
-              {loading ? (
-                <tr><td colSpan={6} className="px-3 py-8 text-center" style={{ color: gf.textDim }}>Loading…</td></tr>
-              ) : events.length === 0 ? (
-                <tr><td colSpan={6} className="px-3 py-8 text-center" style={{ color: gf.textDim }}>No events match the current filters.</td></tr>
-              ) : (
-                events.map((e, i) => {
+              {events.map((e, i) => {
                   const am = actorMeta(e.actorType);
                   const cm = catMeta(e.category);
                   const open = expanded === e.id;
@@ -637,11 +741,12 @@ export default function History() {
                       <td className="px-3 py-2 whitespace-nowrap" style={{ color: gf.textMuted }}>{src}</td>
                     </tr>
                   );
-                })
-              )}
+                })}
             </tbody>
           </table>
         </div>
+        </>
+        )}
       </div>
 
       {/* Pagination */}

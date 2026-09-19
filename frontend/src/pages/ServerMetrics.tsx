@@ -324,9 +324,19 @@ function ServerCard({ s, isAdmin, onView, onRename, onDelete, onMaintenance }: {
         <MetricBar label="Mem" value={s.memory} />
         <MetricBar label="Disk" value={s.diskUsed} />
       </div>
-      <div className="flex items-center justify-between gap-2 mt-3 pt-2.5" style={{ borderTop: `1px solid ${gf.divider}` }}>
+      {/* ⚠️ flex-wrap, and the button group is NOT shrink-0.
+          For an admin this row carries four GhostButtons — View + Rename + Maintain +
+          Remove — which at 13px with px-2.5 padding comes to ~290px inside a card whose
+          inner width on a 390px phone is ~315px. With `shrink-0` on the group, the
+          uptime was the only item left to absorb the overflow, and `truncate` cut
+          "↑ 12d 4h" down to a stray "↑ 1…" — which reads as a lone number sitting
+          beside the View button, not as an uptime.
+          Wrapping moves the buttons to their own line instead. it_staff sees one
+          button, so that case still fits on a single line exactly as before.
+          Same shape MikrotikMonitoring.tsx already uses for its device card. */}
+      <div className="flex items-center justify-between gap-2 mt-3 pt-2.5 flex-wrap" style={{ borderTop: `1px solid ${gf.divider}` }}>
         <span className="text-[13px] truncate" style={{ color: gf.textMuted }}>↑ {s.uptime}</span>
-        <div className="flex gap-2 shrink-0">
+        <div className="flex flex-wrap gap-2">
           <GhostButton onClick={onView}>View</GhostButton>
           {isAdmin && <GhostButton onClick={onRename}>Rename</GhostButton>}
           {isAdmin && (
