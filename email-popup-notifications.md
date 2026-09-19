@@ -228,6 +228,65 @@ npm run mail:check -- you@example.com     # also send one real test alert
 
 ---
 
+## 8b. Account-status email (approved / rejected)
+
+Two emails that are **not** notifications, and are deliberately exempt from the rules the
+rest of this document describes.
+
+| | |
+|---|---|
+| Sent by | `routes/users.js` → `POST /users/:id/approve` and `/reject` |
+| Content | `services/accountEmailTemplate.js` (pure) |
+| Transport | `emailService.sendAccountApprovedEmail` / `sendAccountRejectedEmail` |
+| Tests | `backend/tests/accountEmail.test.js` — no SMTP, no `.env` |
+
+### Why it exists
+
+An approved user previously had **no way to find out**. `userApproved` is a socket event
+that reaches *admins*, and the approved person holds no session, so nothing can be pushed
+to them. Their only signal was retrying the sign-in and noticing the message had changed.
+
+### Why it bypasses the opt-in
+
+`notification_prefs.email_enabled` defaults to **off** (§8, and
+`migrations/2026-09-18_notification_prefs_default_off.sql`) because alert email is an
+ongoing stream of operational data the person never asked for. An approval email is the
+opposite case: a single reply to an action they started by registering. Routing it through
+that flag would let a default meant to protect someone from alerts suppress the one message
+telling them their account works.
+
+It also bypasses the Privacy Notice gate, because acceptance is **impossible** at that
+moment — a pending user has never held a session, so `PolicyGate` has never rendered and
+`users.policy_version` is unset. Gate on it and the mail can never be sent: they cannot
+accept until they can sign in, and cannot know to sign in without the mail.
+
+### What the emails say, and what they don't
+
+- **Approved** — name, the account address, the **role in the dashboard's own words**
+  (`ROLE_LABEL`, pinned to `frontend/src/data/users.ts` by a test that parses it), a link
+  to the dashboard, and a line warning that the Privacy Notice appears on first sign-in.
+  Someone not expecting that gate reads it as the approval not having worked.
+- **Rejected** — one neutral sentence and a route back to ICTU. **No reason** (a rejection
+  can be a security decision, and an email that explains itself confirms what was noticed)
+  and **no admin name** (accountability is in `system_logs`; naming them makes one staff
+  member the personal support contact for everyone they approved).
+
+### Operational notes
+
+- **Awaited, not fire-and-forget.** The senders never throw and return a boolean, so they
+  cannot fail the approval — and awaiting lets the response carry `emailed`, which the
+  User Management toast turns into *"approved — but the email could not be sent, tell them
+  directly."* A silent failure leaves somebody waiting for a message that never comes.
+- **SMTP unconfigured** → `emailed:false`, approval still succeeds.
+- **Double approval** is impossible: `approveUser` throws `conflict` unless the row is
+  `pending`, so no duplicate mail.
+- ⚠️ **`NOTIFY_EMAIL_TO` catches these too.** With it set, a test approval notifies *you*,
+  not the person you just approved.
+- **The link** comes from `APP_PUBLIC_URL`, falling back to the first `WEB_ORIGIN` entry.
+  If neither yields an `http(s)` address the link is **omitted**, never guessed.
+
+---
+
 ## 9. Deployment
 
 ### 9.1 First — get the mailbox from ICTU (do this early, it's the long pole)

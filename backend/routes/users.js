@@ -1,6 +1,7 @@
 import express from "express";
 import asyncHandler from "../utils/asyncHandler.js";
 import userService from "../services/userService.js";
+import emailService from "../services/emailService.js";
 import { audit, clientInfo } from "../services/auditService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 
@@ -154,8 +155,26 @@ router.post(
       description: `Approved registration ${user.name} (${user.email}) as ${user.role}`,
       ...clientInfo(req),
     });
+    // Tell the person their account is live. Until this existed, an approved user had
+    // NO way to find out: `userApproved` below is a socket event that only reaches
+    // admins, and the approved user holds no session for anything to be pushed to. The
+    // only signal was retrying the sign-in and noticing the message had changed.
+    //
+    // Awaited rather than fire-and-forget. The sender never throws and returns a
+    // boolean, so this cannot fail the approval — and awaiting is what lets the
+    // response say whether the person was actually reached. An admin who sees it failed
+    // can pass the word on another way; a silent failure leaves someone waiting for a
+    // message that is never coming.
+    const emailed = await emailService.sendAccountApprovedEmail(user);
+    if (!emailed) {
+      console.warn(
+        `[users] approved ${user.email} but no notification email went out — ` +
+          `SMTP unconfigured, or the send failed (see any [email] line above).`,
+      );
+    }
+
     req.app.get("io")?.emit("userApproved", { id: user.id });
-    res.json({ success: true, user });
+    res.json({ success: true, user, emailed });
   }),
 );
 
@@ -176,9 +195,26 @@ router.post(
       level: "warning",
       ...clientInfo(req),
     });
+    // Close the loop for the person too. Neutral by design — no reason and no actor,
+    // see services/accountEmailTemplate.js — because a rejection can be a security
+    // decision, and an email that explains itself tells whoever registered exactly what
+    // was noticed. The case this exists for is the one rejected by mistake, who
+    // otherwise has no way to learn of it or say so.
+    //
+    // Sent AFTER rejectUser, so a request for a user who does not exist (or is not
+    // pending) throws first and nobody is mailed about a state change that never
+    // happened.
+    const emailed = await emailService.sendAccountRejectedEmail(target);
+    if (!emailed) {
+      console.warn(
+        `[users] rejected ${target?.email ?? `#${id}`} but no notification email went ` +
+          `out — SMTP unconfigured, or the send failed (see any [email] line above).`,
+      );
+    }
+
     // Refresh open admin pending lists (the row left the 'pending' state).
     req.app.get("io")?.emit("userPending", { id });
-    res.json({ success: true });
+    res.json({ success: true, emailed });
   }),
 );
 

@@ -1,6 +1,7 @@
 import "../config/env.js";
 import nodemailer from "nodemailer";
 import { describeError } from "../utils/httpError.js";
+import accountTpl from "./accountEmailTemplate.js";
 
 // Alert + report email over SMTP (nodemailer).
 //
@@ -36,6 +37,26 @@ const SMTP_PASS = (process.env.SMTP_PASS || "").replace(/\s+/g, "");
 const TO_OVERRIDE = (process.env.NOTIFY_EMAIL_TO || "").trim();
 
 const ENABLED = Boolean(SMTP_USER && SMTP_PASS);
+
+// ─── The dashboard address to put in a link ──────────────────────────────────
+//
+// Only account email needs this: an alert goes to somebody already using the system,
+// but an approval goes to somebody who has never reached it and needs to be told where
+// it is.
+//
+// APP_PUBLIC_URL is preferred, with WEB_ORIGIN's FIRST entry as the fallback so an
+// existing deployment gets a working link with no new config. The fallback is only a
+// fallback, deliberately: WEB_ORIGIN is a CORS allow-list, so it may legitimately hold
+// several origins in any order, or the literal `*` — none of which is a URL to send a
+// person. `*` and anything not http(s) are rejected rather than pasted into an email.
+function resolveAppUrl() {
+  const explicit = (process.env.APP_PUBLIC_URL || "").trim();
+  if (explicit) return explicit;
+  const first = (process.env.WEB_ORIGIN || "").split(",")[0].trim();
+  if (!first || first === "*" || !/^https?:\/\//i.test(first)) return "";
+  return first;
+}
+const APP_URL = resolveAppUrl();
 
 // Gmail rewrites From to the authenticated mailbox unless it's a verified alias, so
 // SMTP_USER is what actually appears on the message when MAIL_FROM isn't set.
@@ -220,6 +241,40 @@ async function sendReportEmail(to, report, pdfBuffer) {
   });
 }
 
+// ─── Account status ──────────────────────────────────────────────────────────
+//
+// TRANSACTIONAL, not notifications. Both bypass `notification_prefs.email_enabled` and
+// the Privacy Notice gate on purpose — see the header of accountEmailTemplate.js for
+// why each exemption is correct rather than an oversight.
+//
+// Same contract as the other two senders: returns true/false, never throws, no-op when
+// SMTP is unconfigured. That is what lets the route await them without an approval ever
+// being able to fail because of a mail server.
+//
+// ⚠️ NOTIFY_EMAIL_TO applies here too. With it set, every one of these goes to the
+// override address instead of to the person — correct for testing, and a silent
+// surprise if it is left set on a real deployment.
+
+/** Tell an approved user their account is live, and where. */
+async function sendAccountApprovedEmail(user) {
+  return send({
+    to: user?.email,
+    subject: accountTpl.approvedSubject(),
+    html: accountTpl.approvedHtml(user, APP_URL),
+    text: accountTpl.approvedText(user, APP_URL),
+  });
+}
+
+/** Tell a rejected user their request was not approved. No reason, no actor. */
+async function sendAccountRejectedEmail(user) {
+  return send({
+    to: user?.email,
+    subject: accountTpl.rejectedSubject(),
+    html: accountTpl.rejectedHtml(user),
+    text: accountTpl.rejectedText(user),
+  });
+}
+
 // Connect + authenticate without sending. Used by `npm run mail:check` so a bad App
 // Password surfaces on demand instead of on the first real alert. Never throws.
 async function verify() {
@@ -240,4 +295,12 @@ function close() {
   }
 }
 
-export default { isEnabled, sendAlertEmail, sendReportEmail, verify, close };
+export default {
+  isEnabled,
+  sendAlertEmail,
+  sendReportEmail,
+  sendAccountApprovedEmail,
+  sendAccountRejectedEmail,
+  verify,
+  close,
+};

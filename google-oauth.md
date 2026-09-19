@@ -75,7 +75,18 @@ googleAuthService.authenticate()
         │    else    → recordSignInDenied() + that status
         ▼
    admin approves (assign role) / rejects in User Management
+        │
+        ▼
+   the person is EMAILED the outcome                 ← the only channel that reaches them:
+   (emailService.sendAccountApproved/RejectedEmail)     they hold no session, and
+                                                        `userApproved` only reaches admins
 ```
+
+> The approval mail names the **role** and warns that the Privacy Notice gate appears on
+> first sign-in; the rejection names **no reason and no admin**. Both are transactional, so
+> they deliberately bypass the `notification_prefs` opt-in and the policy gate — a pending
+> user cannot have accepted a notice they have never been shown. Full reasoning:
+> `email-popup-notifications.md` §8b.
 
 ---
 
@@ -158,7 +169,8 @@ can approve others, so you are never locked into a single admin.
 | `services/authService.js` | `issueSession(user)` — builds/signs the JWT (shared); `recordSignInDenied()` — audits refused attempts; `getMe`, `logout` |
 | `services/userService.js` | `findByGoogleSub`, `findByEmail`, `registerGoogleUser`, `linkGoogleSub`, `syncGoogleProfile`, `listPending`, `approveUser(role)`, `rejectUser` |
 | `routes/auth.js` | `POST /api/auth/google` (only login route; body `{ code }`) + `googleLimiter`; `/me`, `/logout` |
-| `routes/users.js` | `GET /users/pending`, `POST /users/:id/approve`, `POST /users/:id/reject` (admin) |
+| `routes/users.js` | `GET /users/pending`, `POST /users/:id/approve`, `POST /users/:id/reject` (admin) — both answer `{ emailed }` |
+| `services/accountEmailTemplate.js` | PURE content for the approved/rejected emails; `tests/accountEmail.test.js` pins it with no SMTP |
 | `middleware/auth.js` | unchanged — already requires `status='active'` |
 
 Dependency added: **`google-auth-library`**. The code exchange + ID-token verification need
