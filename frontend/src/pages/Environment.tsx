@@ -233,6 +233,33 @@ const GAS_SERIES = [MQ1_SERIES, MQ2_SERIES, "#FBBF24", "#2DD4BF"] as const;
 const gasSeriesColor = (channel: number): string =>
   GAS_SERIES[(channel - 1) % GAS_SERIES.length]!;
 
+/* Which gas channels a history payload actually CARRIES, unioned with the ones the sensor
+   config already knows about.
+
+   ⚠️ Read from the DATA, never from the config alone. `useGasSensors` fetches over HTTP
+   while `sensorHistory` arrives on an already-open socket, so on a client-side navigation
+   into this page the history wins that race and `gasChannelsRef` is still empty — the gas
+   series came back `{}` and then rebuilt itself one live point every 3 s, against labels
+   that were already a full window long. Chart.js pairs data[i] with labels[i] on a category
+   axis, so the short series drew across the LEFT of the axis and the smoke line lagged its
+   own x-axis. A reload appeared to "fix" it only because a cold socket delays the history
+   long enough for the fetch to land first, which is why it looked intermittent.
+
+   Ingest now waits on nothing async; `gasChannels` still decides what is DRAWN, so a
+   channel an admin has not confirmed is wired is still not charted. */
+function channelsIn(history: HistoryData[], known: number[]): number[] {
+  const out = new Set<number>(known);
+  for (const r of history) {
+    for (const k of Object.keys(r.gas ?? {})) {
+      const n = Number(k);
+      if (Number.isFinite(n)) out.add(n);
+    }
+    if (typeof r.mq2_1_ppm === "number") out.add(1);
+    if (typeof r.mq2_2_ppm === "number") out.add(2);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
 const STATUS_BG: Record<string, string> = {
   NORMAL:   "rgba(115,191,105,0.15)",
   TOO_COLD: "rgba(87,148,242,0.15)",
@@ -1087,8 +1114,9 @@ export default function Environment() {
       /* One array per channel. `r.gas` is the per-sensor series; the legacy pair is the
          fallback, and it is the ONLY gas that exists for windows older than the cutover —
          so a range spanning it draws continuously instead of starting mid-chart. */
+      const channels = channelsIn(history, gasChannelsRef.current);
       const byCh: Record<number, (number | null)[]> = {};
-      for (const ch of gasChannelsRef.current) {
+      for (const ch of channels) {
         byCh[ch] = history.map((r) => {
           const v = r.gas?.[String(ch)];
           if (typeof v === "number") return v;
@@ -1103,7 +1131,7 @@ export default function Environment() {
         setLiveTemp(last.temperature   ?? "--");
         setLiveHum(last.humidity       ?? "--");
         const lastGas: Record<number, number> = {};
-        for (const ch of gasChannelsRef.current) {
+        for (const ch of channels) {
           const v = last.gas?.[String(ch)];
           const legacy = ch === 1 ? last.mq2_1_ppm : ch === 2 ? last.mq2_2_ppm : null;
           const n = typeof v === "number" ? v : legacy;
@@ -1138,8 +1166,19 @@ export default function Environment() {
       setLiveGasCh(liveByCh);
       setGasSeries((prev) => {
         const next: Record<number, (number | null)[]> = {};
-        for (const ch of gasChannelsRef.current) {
-          next[ch] = [...(prev[ch] ?? []).slice(-999), liveByCh[ch] ?? null];
+        /* A channel appearing mid-session — a sensor just enabled, or a config that landed
+           after the history — is padded to the length its siblings already have. Appending
+           to an empty array would start it one point long against a full window of labels,
+           which is the same misalignment channelsIn exists to prevent. */
+        const len = Math.max(0, ...Object.values(prev).map((a) => a.length));
+        const chans = new Set<number>([
+          ...Object.keys(prev).map(Number),
+          ...Object.keys(liveByCh).map(Number),
+          ...gasChannelsRef.current,
+        ]);
+        for (const ch of chans) {
+          const series = prev[ch] ?? new Array<number | null>(len).fill(null);
+          next[ch] = [...series.slice(-999), liveByCh[ch] ?? null];
         }
         return next;
       });
