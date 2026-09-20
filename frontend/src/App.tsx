@@ -16,6 +16,7 @@ import { WidgetLayoutProvider } from "./pip/useWidgetLayout";
 import PipHost from "./pip/PipHost";
 import { roleConfig } from "./data/users";
 import { useDocumentTitle } from "./hooks/useDocumentTitle";
+import { useScrollMemory } from "./hooks/useScrollMemory";
 
 import Login from "./pages/auth/Login";
 import Unauthorized from "./pages/auth/Unauthorized";
@@ -104,6 +105,13 @@ function AppShell() {
   // signed-in shell below, because /login and /privacy are returned from this component
   // by their own early returns and would otherwise keep whatever title the last page set.
   useDocumentTitle();
+
+  /* Keeps each route at the offset the user left it on. Mounted here for the same reason
+     as the title above: /login and /privacy leave this component through their own early
+     returns, and they are the two routes that scroll the DOCUMENT — so without this,
+     reading the privacy notice to the bottom and coming back dropped the sign-in page in
+     at the notice's offset. */
+  useScrollMemory();
 
   // Ctrl/Cmd + B toggles the sidebar (like a code editor)
   useEffect(() => {
