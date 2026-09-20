@@ -281,15 +281,26 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
 
   return (
     <>
-      {/* Mobile overlay */}
+      {/* Phone / tablet backdrop. `touch-none` is load-bearing: without it a drag that
+          STARTS on the backdrop chains to the document and rubber-bands the page behind an
+          open drawer, which reads as the dashboard scrolling itself. The matching freeze of
+          the real scroll container lives on <main> in App.tsx. */}
       {mobileOpen && (
-        <div className="fixed inset-0 bg-black/70 z-20 lg:hidden" onClick={onClose} />
+        <div
+          className="fixed inset-0 bg-black/70 z-20 lg:hidden touch-none"
+          onClick={onClose}
+        />
       )}
 
+      {/* Width is per breakpoint, not one number for every screen. Below lg this is an
+          OVERLAY, so it is sized to be read — 280px on a phone, 320px from sm up — while the
+          desktop rail stays 208px because that one permanently subtracts from the page.
+          Deliberately short of full width: the visible strip of backdrop is what says the
+          drawer is temporary, and it is also the tap target that closes it. */}
       <aside
         className={`
           fixed lg:static inset-y-0 left-0 z-30
-          w-52 ${collapsed ? "lg:w-0" : "lg:w-52"}
+          w-[280px] sm:w-80 ${collapsed ? "lg:w-0" : "lg:w-52"}
           flex flex-col h-full flex-shrink-0 overflow-hidden
           ${collapsed ? "" : "gf-rail"}
           transition-[transform,width] duration-300 ease-in-out
@@ -341,7 +352,9 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
         </div>
 
         {/* ── Navigation ── */}
-        <nav className="flex-1 py-1.5 overflow-y-auto">
+        {/* `overscroll-contain` stops a flick that reaches the end of the nav from
+            continuing into whatever is behind the drawer. */}
+        <nav className="flex-1 py-1.5 overflow-y-auto overscroll-contain">
           <div className="px-3 pt-2 pb-1">
             <span className="text-[10px] tracking-widest uppercase"
               style={{ color: "var(--gf-text-dim)" }}>

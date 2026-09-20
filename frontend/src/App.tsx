@@ -174,7 +174,17 @@ function AppShell() {
           onOpenProfile={() => setProfileSignal((n) => n + 1)}
         />
 
-        <main className="flex-1 overflow-y-auto">
+        {/* The shell above is `h-screen overflow-hidden`, so THIS is the page scroll
+            container — a document- or body-level scroll lock would be a no-op here. While
+            the drawer is open below lg, freeze it so the page behind the backdrop cannot be
+            scrolled out from under it. The `lg:` half is not decoration: without it,
+            widening to desktop while `mobileOpen` is still set would leave the dashboard
+            permanently unscrollable, and nothing on a desktop ever clears that flag. */}
+        <main
+          className={`flex-1 ${
+            mobileOpen ? "overflow-hidden lg:overflow-y-auto" : "overflow-y-auto"
+          }`}
+        >
           {/* Keyed on the path so navigating away CLEARS a caught error — otherwise the
               boundary keeps showing the failed page after the user has moved on. Placed
               inside <main> on purpose: the sidebar and header stay usable, so a broken
