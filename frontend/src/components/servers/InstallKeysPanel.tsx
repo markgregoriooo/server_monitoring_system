@@ -360,12 +360,19 @@ export default function InstallKeysPanel() {
       style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
     >
       {/* Header */}
+      {/* A FIXED 32px row with a truncating title cut "Agent install keys · 2 active"
+          in half on a phone: at 13px, `tracking-widest` (0.1em) spends ~38px on letter
+          spacing alone, and the "+ New key" button takes the rest. The title now steps
+          down a size and a tracking step below sm — which fits it on one line at 360px —
+          and may WRAP instead of being clipped on anything narrower. `minHeight` with
+          symmetric padding reproduces the old 32px exactly wherever it still fits on one
+          line, so the desktop header is unchanged. */}
       <div
-        className="flex items-center justify-between gap-2 px-3 shrink-0"
-        style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}
+        className="flex items-center justify-between gap-2 px-3 py-1.5 shrink-0"
+        style={{ minHeight: 32, borderBottom: `1px solid ${gf.divider}` }}
       >
         <span
-          className="text-[13px] font-medium tracking-widest uppercase truncate"
+          className="min-w-0 text-[12px] sm:text-[13px] font-medium tracking-wider sm:tracking-widest uppercase"
           style={{ color: gf.textMuted }}
         >
           Agent install keys{activeCount > 0 ? ` · ${activeCount} active` : ""}
@@ -384,10 +391,6 @@ export default function InstallKeysPanel() {
       </div>
 
       <div className="flex flex-col gap-3" style={{ padding: 12 }}>
-        <p className="text-[12px] leading-relaxed" style={{ color: gf.textDim }}>
-          Used once to enrol a server. Revoking blocks new enrolments only.
-        </p>
-
         {/* Create form */}
         {open && (
           <div
@@ -498,25 +501,23 @@ export default function InstallKeysPanel() {
                 <CopyButton text={revealedKey} label="Copy key" />
               </div>
 
-              <div className="text-[12px] leading-relaxed" style={{ color: gf.textMuted }}>
-                Stored encrypted — re-open it any time with <strong>Show command</strong> in
-                the list below. Each view is recorded in the audit log.
+              <div className="text-[12px]" style={{ color: gf.textDim }}>
+                Re-openable from the list below.
               </div>
 
               <div className="h-px w-full" style={{ background: gf.divider }} />
 
               <div className="flex flex-col gap-2.5">
                 <div className="text-[12px]" style={{ color: gf.textMuted }}>
-                  Run this on the server you want to monitor, from the installer folder:
+                  Run on the target server, from the installer folder:
                 </div>
                 <CommandLine os="Windows · PowerShell (as Administrator)" command={psCommand(revealedKey)} />
                 <CommandLine os="Linux · bash" command={shCommand(revealedKey)} />
               </div>
 
-              <div className="text-[12px] leading-relaxed" style={{ color: gf.textDim }}>
-                The installer waits for approval — the server then appears under Pending
-                approvals below. Already-installed machines need <code>-ReEnroll</code> to
-                move onto this key.
+              <div className="text-[12px]" style={{ color: gf.textDim }}>
+                Then approve it under Pending approvals. Already installed? Add{" "}
+                <code>-ReEnroll</code>.
               </div>
             </div>
           </div>
