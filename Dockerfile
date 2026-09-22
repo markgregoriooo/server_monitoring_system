@@ -95,8 +95,14 @@ EXPOSE 3000
 # it answers "is the process serving HTTP?" without reporting the whole system
 # unhealthy during a MySQL blip — the backend is designed to outlive its stores.
 # start-period covers the boot-time config validation and the first poll tick.
+# ⚠️ ${PORT:-3000}, not ${PORT}. The ENV above sets 3000, but compose's
+# env_file OVERRIDES image ENV — so a blank `PORT=` line in backend/.env (which
+# is what the template ships) makes PORT an empty string here. The URL then
+# reads http://127.0.0.1:/api/... and every check fails, while the server is
+# serving perfectly on 3000 because src/server.js does `Number(PORT) || 3000`.
+# The result is a container that works and reports itself unhealthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -q -O /dev/null "http://127.0.0.1:${PORT}/api/policy/version" || exit 1
+  CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-3000}/api/policy/version" || exit 1
 
 # Exec form, so node is PID 1 and receives SIGTERM directly. That matters here:
 # the shutdown handler flushes the backup buffer synchronously (src/server.js),
