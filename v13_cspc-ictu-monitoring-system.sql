@@ -1088,7 +1088,17 @@ ALTER TABLE `alert_notifications`
 -- Constraints for table `alert_rules`
 --
 ALTER TABLE `alert_rules`
-  ADD CONSTRAINT `fk_alert_rules_devices2` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  -- ⚠️ NO `ON UPDATE CASCADE` here, unlike every other FK in this file. `device_id`
+  -- feeds the PERSISTENT generated column `scope_device` above, and MariaDB refuses a
+  -- cascading UPDATE action on a column a generated column is built from:
+  --   ERROR 1901: Function or expression 'device_id' cannot be used in the
+  --               GENERATED ALWAYS AS clause of `scope_device`
+  -- 10.4 accepted it and 10.11 does not, so the clause made this file abort ON IMPORT
+  -- at this line — and because the import is one pass, EVERY constraint below was then
+  -- silently skipped, leaving a database that has all its tables and only some of its
+  -- foreign keys. Nothing is lost by dropping it: device_id is an AUTO_INCREMENT
+  -- surrogate that is never updated, so the cascade could never have fired.
+  ADD CONSTRAINT `fk_alert_rules_devices2` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE,
   ADD CONSTRAINT `fk_alert_rules_updated_by` FOREIGN KEY (`updated_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --

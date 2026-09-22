@@ -1,0 +1,178 @@
+# ============================================================================
+#  CSPC-ICTU Monitoring System — the whole stack
+# ----------------------------------------------------------------------------
+#  Four containers on one private network:
+#
+#      db         MariaDB      users, devices, alerts, reports, audit trail
+#      influxdb   InfluxDB 2   every time-series (environment, servers, SNMP)
+#      backend    this repo    API + Socket.IO + the pollers        :3000
+#      frontend   nginx        the built dashboard                  :8080
+#
+#  First run:
+#      cp .env.docker.example .env      # fill it in — compose reads it
+#      docker compose up -d --build
+#      docker compose logs -f backend
+#
+#  Day to day:
+#      docker compose ps                # what is running, and is it healthy
+#      docker compose up -d backend     # after editing backend/.env
+#          ⚠️ NOT `restart` — env_file is read when a container is CREATED, so
+#          restart reuses the old values and the edit appears to do nothing.
+#          `up -d` notices the change and recreates the container.
+#      docker compose down              # stop everything, KEEP the data
+#      docker compose down -v           # ⚠️ also deletes the volumes = the data
+#
+#  ⚠️ Cloudflare's tunnel is NOT a container here. cloudflared runs on the host
+#     and points at localhost:3000 and localhost:8080, which is what the two
+#     published ports below are for. See deployment-guide.md §5.
+# ============================================================================
+
+services:
+  # ── MariaDB ──────────────────────────────────────────────────────────────
+  # MariaDB, not MySQL: v13_cspc-ictu-monitoring-system.sql is a 10.4 dump, and
+  # the alert-rule uniqueness index relies on persistent generated columns that
+  # were verified on MariaDB (CLAUDE.md, alertRulesService).
+  db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD in .env}
+      MARIADB_DATABASE: ${DB_NAME:-cspc-ictu-monitoring-system}
+      MARIADB_USER: ${DB_USER:?set DB_USER in .env}
+      MARIADB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      TZ: ${TZ:-Asia/Manila}
+    volumes:
+      - db-data:/var/lib/mysql
+      # Loaded ONCE, on the very first start, when the data volume is empty.
+      # It does nothing on later starts — an existing database is never
+      # re-initialised, so this cannot clobber live data. To re-seed you must
+      # delete the volume on purpose (`docker compose down -v`).
+      - ./v13_cspc-ictu-monitoring-system.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      # Pings over TCP (-h 127.0.0.1), NOT the local socket, and that detail is
+      # load-bearing on the very first start. While the schema is importing, the
+      # entrypoint is running a TEMPORARY server with --skip-networking: a
+      # socket-based check passes against it, compose reports the database
+      # healthy, and then the temporary server shuts down to hand over to the
+      # real one — so the backend starts against a database that is going away.
+      # (Seen once here: the first `up` died with "dependency failed to start".)
+      # A TCP check simply cannot see the temporary server, so "healthy" means
+      # the real server is accepting the connections the backend will make.
+      test: ['CMD-SHELL', 'mariadb-admin ping -h 127.0.0.1 -u root -p"$$MARIADB_ROOT_PASSWORD" --silent']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      # Generous: this covers the one-off schema import on first boot, and
+      # failures inside the start period do not count against the retries.
+      start_period: 90s
+    # Deliberately NOT published to the host. Nothing outside this stack needs
+    # to reach MySQL, and 3306 on a campus LAN is a standing invitation. Add
+    # `ports: ["127.0.0.1:3306:3306"]` temporarily if you need Workbench.
+
+  # ── InfluxDB 2 ───────────────────────────────────────────────────────────
+  influxdb:
+    image: influxdb:2.7-alpine
+    restart: unless-stopped
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUX_USERNAME:-cspc}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUX_PASSWORD:?set INFLUX_PASSWORD in .env (min 8 chars)}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUX_ORG:-cspc-ictu}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUX_BUCKET:-monitoring}
+      # The token the backend authenticates with. Same value on both services,
+      # from one line of .env, so they cannot drift apart.
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
+      TZ: ${TZ:-Asia/Manila}
+    volumes:
+      - influx-data:/var/lib/influxdb2
+      - influx-config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ── Backend ──────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      # Everything the app needs that is NOT about reaching the two databases:
+      # JWT_SECRET, DEVICE_SECRET, the Google credentials, SMTP, the encryption
+      # keys, every tuning knob. Keep using the file you already maintain.
+      - backend/.env
+    environment:
+      # These OVERRIDE env_file, and they have to: backend/.env says
+      # DB_HOST=localhost, which inside a container means the container itself.
+      # `db` and `influxdb` are the service names above — Docker's internal DNS
+      # resolves them on the private network.
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-cspc-ictu-monitoring-system}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
+      INFLUX_ORG: ${INFLUX_ORG:-cspc-ictu}
+      INFLUX_BUCKET: ${INFLUX_BUCKET:-monitoring}
+      TZ: ${TZ:-Asia/Manila}
+    ports:
+      # Published on ALL interfaces on purpose. The ESP32 opens its socket to
+      # this port and the Go agents POST to it, both over the campus LAN — they
+      # never go through the tunnel. Firewall it to the agent subnets.
+      - "3000:3000"
+    volumes:
+      # Named volumes, so the data outlives `docker compose down` and any
+      # rebuild of the image. backups is the on-site copy that is meant to
+      # survive the database itself — see backup-storage.md.
+      - backend-backups:/app/backups
+      - backend-reports:/app/reports
+      - backend-branding:/app/branding
+    depends_on:
+      # Wait for HEALTHY, not merely started. The backend survives its stores
+      # being down, but a first boot against an empty MariaDB logs a wall of
+      # connection errors that reads like a broken deployment.
+      db:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+
+  # ── Dashboard ────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # ⚠️ BUILD args, not runtime env — Vite bakes these into the JS. Change
+        # either and you must rebuild: `docker compose up -d --build frontend`.
+        # VITE_API_URL is the PUBLIC origin (no port) when the tunnel is in
+        # front; leave it blank for a plain LAN install.
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:?set VITE_GOOGLE_CLIENT_ID in .env}
+        # Branding. The fallbacks are the real CSPC values, so leaving these
+        # out of .env still produces a correctly-branded dashboard — they are
+        # here so another institution can rebrand without touching any code.
+        VITE_APP_NAME: ${VITE_APP_NAME:-CSPC-ICTU}
+        VITE_APP_FULL_NAME: ${VITE_APP_FULL_NAME:-Camarines Sur Polytechnic Colleges – Information and Communications Technology Unit}
+        VITE_APP_SUBTITLE: ${VITE_APP_SUBTITLE:-MONITORING}
+        VITE_APP_TAGLINE: ${VITE_APP_TAGLINE:-SERVER INFRASTRUCTURE MONITORING SYSTEM}
+        VITE_LOGO_TEXT: ${VITE_LOGO_TEXT:-CC}
+        VITE_LOGO_SRC: ${VITE_LOGO_SRC:-/logo-128.png}
+    restart: unless-stopped
+    ports:
+      # 8080 because that is what the tunnel's catch-all rule already points at
+      # (cloudflare-tunnel-setup.md ingress).
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  db-data:
+  influx-data:
+  influx-config:
+  backend-backups:
+  backend-reports:
+  backend-branding:

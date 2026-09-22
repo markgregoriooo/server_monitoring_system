@@ -1,0 +1,57 @@
+# What NOT to send to the Docker daemon as build context.
+#
+# Two jobs. The first is speed: without this file the context is the whole repo
+# INCLUDING frontend/node_modules and .git — hundreds of megabytes copied before
+# the build even starts. The second is the one that matters: `COPY` can only
+# reach what is in the context, so anything excluded here can never be baked
+# into an image that gets handed to a client.
+
+# ── Secrets. The reason this file exists. ───────────────────────────────────
+# backend/.env holds JWT_SECRET, the MySQL password, the Google client secret,
+# the SMTP app password, MIKROTIK_ENC_KEY and DEVICE_SECRET. An image layer is
+# readable by anyone who has the image — `docker history` / `docker save` — so a
+# copied .env is a credential handed over with the container, permanently.
+# Configuration is passed at RUN time instead (--env-file / compose env).
+**/.env
+**/.env.*
+!**/.env.example
+**/secrets.h
+
+# ── Never rebuild from someone else's install ───────────────────────────────
+# node_modules is platform-specific; copying a Windows tree into a Linux image
+# is how "it worked on my machine" happens. `npm ci` builds it in the image.
+**/node_modules
+
+# ── Runtime state, not build input ──────────────────────────────────────────
+# These are volumes in the running container. Copying a dev machine's copies in
+# would ship stale reports and someone else's backup data to the client.
+backend/backups/
+backend/reports/
+backend/branding/
+**/*.log
+**/logs/
+
+# ── Not runtime input for either image ──────────────────────────────────────
+# Both Dockerfiles build from this same root context, so frontend/ source must
+# stay IN (frontend/Dockerfile compiles it). Its build output goes out: stage 1
+# runs npm run build itself, and copying a stale local dist/ over it is how you
+# deploy last week's dashboard without noticing.
+frontend/dist/
+agent/
+iot/
+ops/
+dev-snmpsim/
+
+# ── Documentation, history, tooling ─────────────────────────────────────────
+.git/
+.github/
+.vscode/
+.idea/
+audits/
+docs/
+migrations/
+*.md
+*.mwb
+*.sql
+Dockerfile
+.dockerignore
