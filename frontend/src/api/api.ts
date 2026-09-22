@@ -29,6 +29,61 @@ export interface ApiResult<T = any> {
   error?: string;
 }
 
+/** POST /network/test and POST /ups/test — "can this device be monitored, and HOW?"
+ *
+ *  Mirrors the return of backend `services/deviceProbe.js`. `ok:false` with `error` set
+ *  means the INPUT was rejected (blank or malformed IP, impossible port) and nothing was
+ *  probed; `ok:true` means the probe ran and `verdict` holds the answer — which may still
+ *  be a refusal. The two are different things and the form says so differently. */
+export interface ProbeResult {
+  ok: boolean;
+  /** Only when ok === false: why the probe could not even be attempted. */
+  error?: string;
+  ip?: string;
+  port?: number;
+  communityGiven?: boolean;
+  icmp?: { reachable: boolean; latencyMs: number | null; packetLossPct: number | null };
+  snmp?: {
+    attempted: boolean;
+    answered: boolean;
+    sysName: string | null;
+    sysDescr: string | null;
+    uptimeSeconds: number | null;
+    error: string | null;
+  };
+  ifCount?: number;
+  ifNames?: string[];
+  ups?: {
+    isUps: boolean;
+    chargePct: number | null;
+    runtimeMin: number | null;
+    outputState: string | null;
+  };
+  verdict?: {
+    /** ups | snmp_router | snmp_bare | ping_only | unreachable — stable, keyed off by the UI. */
+    code: string;
+    /** Judged against what the form is trying to register, not in the abstract. */
+    ok: boolean;
+    registerAs: string | null;
+    title: string;
+    detail: string;
+  };
+}
+
+/** `deviceFirstPoll` — how the FIRST poll of a just-registered device went, pushed to
+ *  the admin who registered it (and to nobody else). The poll is fire-and-forget so the
+ *  response is not held behind an SNMP/API timeout, which used to mean its verdict
+ *  reached the server console and no human at all. */
+export interface DeviceFirstPoll {
+  id: number | string;
+  name: string;
+  kind: "router" | "ups" | "mikrotik";
+  ok: boolean;
+  reason: string | null;
+  /** 'ping' routers never report interfaces — an empty port list is not a failure. */
+  mode: string;
+}
+
 /** Page sizes a report can be rendered at. Mirrors PAPER_SIZES in
  *  backend/services/reportTemplate.js — `folio` is Philippine long bond (8.5x13in),
  *  which is ICTU's default. */
@@ -579,6 +634,28 @@ export const api = {
     }
   },
 
+  /** Probe an address BEFORE registering it. Persists nothing.
+   *
+   *  The Add form's answer to "I filled this in and nothing ever appeared": a wrong IP,
+   *  a wrong community or a blocked UDP 161 is caught here, next to the field that
+   *  caused it, instead of becoming a device that sits Offline with no explanation.
+   *  Runs the same SNMP/ICMP code the poller runs — see backend services/deviceProbe.js.
+   *
+   *  A blank `community` is passed through as blank and means "verify ICMP", because
+   *  that is what a blank community registers. */
+  testNetworkDevice: async (payload: {
+    ip: string;
+    community?: string;
+    snmpPort?: number | string | undefined;
+  }): Promise<ApiResult<ProbeResult>> => {
+    try {
+      const res = await apiClient.post("/network/test", payload);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   deleteNetworkDevice: async (id: number): Promise<ApiResult> => {
     try {
       const res = await apiClient.delete(`/network/${id}`);
@@ -615,6 +692,25 @@ export const api = {
   }): Promise<ApiResult> => {
     try {
       const res = await apiClient.post("/ups", payload);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  /** Probe an address BEFORE registering it as a UPS. Persists nothing.
+   *
+   *  Stricter than the router probe by design: an address that answers ping, or answers
+   *  SNMP without implementing UPS-MIB, FAILS here even though the identical result
+   *  passes on the Add router form. A UPS has no ping-only mode — a reply to ping only
+   *  proves its management card has power. */
+  testUpsDevice: async (payload: {
+    ip: string;
+    community?: string;
+    snmpPort?: number | string | undefined;
+  }): Promise<ApiResult<ProbeResult>> => {
+    try {
+      const res = await apiClient.post("/ups/test", payload);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

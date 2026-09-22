@@ -8,6 +8,8 @@ import type { NetDevice } from "./NetworkDetail";
 import { GF as gf, STATUS } from "../theme/gf";
 import { formatUptime } from "../utils/format";
 import { GhostButton, StatPanel, Field, Meta } from "../components/ui/primitives";
+import { useProbe, ProbeResultPanel, probePassed } from "../components/devices/DeviceProbe";
+import type { DeviceFirstPoll } from "../api/api";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── Router list page ─────────────────────────────────────────────────────────
@@ -35,7 +37,10 @@ const inputStyle: React.CSSProperties = {
   fontFamily: "'JetBrains Mono', monospace",
 };
 
-// Blank form for "Add router". Community defaults to the ubiquitous read-only "public".
+// Blank form for "Add router". The community starts EMPTY, not at "public": here a blank
+// community is a real choice — it registers the router for ICMP-only monitoring — so
+// pre-filling a guess would silently opt every router into SNMP. (The UPS form does start
+// at "public", because a UPS has no ping-only mode.)
 interface NetForm {
   name: string;
   ip: string;
@@ -43,12 +48,18 @@ interface NetForm {
   snmpPort: string;
   location: string;
 }
+
+// Blank, not pre-filled — same reasoning as the Add MikroTik form: a real value in a field
+// is not a suggestion, it is text the admin has to delete before typing their own, every
+// time. The suggestion lives on as a placeholder instead, and parseCommon falls back to
+// "CSPC-ICTU Server Room" when the field is left empty, so the same value reaches the DB
+// either way.
 const EMPTY_NET_FORM: NetForm = {
   name: "",
   ip: "",
   community: "", // blank = ICMP-only monitoring (see the note in save())
   snmpPort: "161",
-  location: "CSPC-ICTU Server Room",
+  location: "",
 };
 
 function loadColor(v: number) {
@@ -281,7 +292,12 @@ export default function NetworkMonitoring() {
   // Which row's drawer is open (one at a time), same as ServerMetrics.
   const [openId, setOpenId] = useState<string | null>(null);
   const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
-  const [toast, setToast] = useState("");
+  // Toasts carry a TONE now. A registration whose first poll failed is not a success,
+  // and reporting it in the same green box as a working one is how the old
+  // "Router added — polling starts within a minute" managed to be reassuring and wrong
+  // at the same moment.
+  const [toast, setToast] = useState<{ msg: string; tone: "ok" | "warn" } | null>(null);
+  const probe = useProbe();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Deep-link from a notification: /network?device=<id> opens that router's detail
@@ -295,15 +311,37 @@ export default function NetworkMonitoring() {
     searchParams.delete("device");
     setSearchParams(searchParams, { replace: true });
   }, [devices, searchParams, setSearchParams]);
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(""), 3000);
+  // A warning stays up longer than a confirmation: it asks the reader to go and do
+  // something, and 3 seconds is not enough to read a reason and an address.
+  const showToast = (msg: string, tone: "ok" | "warn" = "ok") => {
+    setToast({ msg, tone });
+    setTimeout(() => setToast(null), tone === "warn" ? 9000 : 3000);
   };
 
   const openAdd = () => {
     setForm(EMPTY_NET_FORM);
     setFormError("");
+    probe.reset();
     setFormOpen(true);
+  };
+
+  // Any edit to a field the probe depends on invalidates the probe. A green tick
+  // vouching for an address that has since been retyped is worse than no tick.
+  const editConn = (patch: Partial<NetForm>) => {
+    setForm((f) => ({ ...f, ...patch }));
+    probe.reset();
+  };
+
+  const test = async () => {
+    if (!form.ip.trim()) return setFormError("Enter an IP address to test.");
+    setFormError("");
+    await probe.run(() =>
+      api.testNetworkDevice({
+        ip: form.ip.trim(),
+        community: form.community.trim(),
+        snmpPort: form.snmpPort.trim() || undefined,
+      }),
+    );
   };
 
   const save = async () => {
@@ -327,7 +365,14 @@ export default function NetworkMonitoring() {
       const added = mapNet(res.data.device);
       setDevices((prev) => (prev.some((d) => d.id === added.id) ? prev : [...prev, added]));
       setFormOpen(false);
-      showToast("Router added — polling starts within a minute.");
+      probe.reset();
+      // Deliberately does NOT claim the device is working. The backend polls it once
+      // immediately and sends the verdict back on `deviceFirstPoll` a second or two
+      // later — that handler replaces this line with what actually happened. Saying
+      // "polling starts within a minute" here, as this used to, was a promise the page
+      // was in no position to make and was exactly as reassuring on a mistyped
+      // community as on a real router.
+      showToast("Router registered — testing it now…");
     } else {
       setFormError(res.error || "Could not add router.");
     }
@@ -341,7 +386,7 @@ export default function NetworkMonitoring() {
       setDetailId((prev) => (prev === id ? null : prev));
       showToast("Router removed.");
     } else {
-      showToast(res.error || "Could not remove router.");
+      showToast(res.error || "Could not remove router.", "warn");
     }
   };
 
@@ -388,13 +433,38 @@ export default function NetworkMonitoring() {
       setDevices((prev) => prev.filter((d) => d.id !== id));
       setDetailId((prev) => (prev === id ? null : prev));
     };
+    // How the just-registered device's FIRST poll went. Sent only to the admin who
+    // registered it, so this is never somebody else's device flashing a warning at you.
+    // Without it the failure lived in the server console: the card said Offline, which
+    // is what an unpolled healthy router also says, and there was nothing on screen to
+    // tell the admin whether to wait or to go and fix the community string.
+    const onFirstPoll = (d: DeviceFirstPoll) => {
+      if (d?.kind !== "router") return; // UPS and MikroTik have their own pages
+      if (d.ok) {
+        showToast(
+          d.mode === "ping"
+            ? `${d.name} is answering ping — monitored for up/down, latency and loss.`
+            : `${d.name} answered SNMP — now polling.`,
+        );
+      } else {
+        showToast(
+          `${d.name} did not answer its first poll${d.reason ? ` — ${d.reason}` : ""}. ` +
+            `Check the IP, the community and that UDP 161 is open to the backend. ` +
+            `It stays registered and keeps retrying.`,
+          "warn",
+        );
+      }
+    };
+
     socket.on("networkMetrics", onMetrics);
     socket.on("networkStatus", onStatus);
     socket.on("networkRemoved", onRemoved);
+    socket.on("deviceFirstPoll", onFirstPoll);
     return () => {
       socket.off("networkMetrics", onMetrics);
       socket.off("networkStatus", onStatus);
       socket.off("networkRemoved", onRemoved);
+      socket.off("deviceFirstPoll", onFirstPoll);
     };
   }, []);
 
@@ -580,17 +650,17 @@ export default function NetworkMonitoring() {
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="IP address">
-                  <input name="ip" value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.1" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="ip" value={form.ip} onChange={(e) => editConn({ ip: e.target.value })} placeholder="192.168.1.1" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
                 <Field label="SNMP port">
-                  <input name="snmpPort" value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="snmpPort" value={form.snmpPort} onChange={(e) => editConn({ snmpPort: e.target.value })} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
               </div>
               <Field label="SNMP community (read-only, v2c) — leave blank for ping-only">
-                <input name="community" value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="blank = monitor by ping only" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="community" value={form.community} onChange={(e) => editConn({ community: e.target.value })} placeholder="blank = monitor by ping only" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <Field label="Location">
-                <input name="location" value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="location" value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} placeholder="CSPC-ICTU Server Room" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               {/* The note changes with the mode, because the two register very
                   different devices and the difference is invisible once saved. */}
@@ -609,26 +679,55 @@ export default function NetworkMonitoring() {
                     cannot enable SNMP on, such as an ISP-owned router.
                   </>
                 )}{" "}
-                Polling begins on the next cycle (≤60s) — no restart needed.
+                Polled once the moment you add it, then every cycle (≤60s) — no restart needed.
               </p>
+
+              {/* Test BEFORE saving. This is the whole point: an address that answers
+                  nothing, or a community the device ignores, is caught here next to the
+                  field that caused it — instead of becoming a registered device whose
+                  card says Offline for a reason that only ever reached the server log. */}
+              <ProbeResultPanel state={probe.state} />
+
               {formError && <div className="text-[12px]" style={{ color: RED }}>{formError}</div>}
-              <div className="flex gap-2 mt-1">
-                <button onClick={save} disabled={saving} className="gf-raise text-[13px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: BLUE }}>
+              <div className="flex flex-wrap gap-2 mt-1">
+                <button onClick={save} disabled={saving || probe.state.phase === "testing"} className="gf-raise text-[13px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: BLUE }}>
                   {saving ? "Adding…" : "Add router"}
+                </button>
+                <button onClick={test} disabled={probe.state.phase === "testing" || saving} className="text-[13px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
+                  {probe.state.phase === "testing" ? "Testing…" : "Test connection"}
                 </button>
                 <button onClick={() => setFormOpen(false)} className="text-[13px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
                   Cancel
                 </button>
               </div>
+              {/* Never BLOCKS the save on a failed probe. A device can legitimately be
+                  registered before it is reachable — cabled next week, or behind a
+                  firewall rule somebody else has to open — and refusing that would just
+                  teach people to skip the test. It states the consequence instead. */}
+              {probe.state.phase === "done" && !probePassed(probe.state) && (
+                <p className="text-[11px]" style={{ color: ORANGE }}>
+                  You can still add it — it will show as Offline until whatever is named above is fixed.
+                </p>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Toast */}
+      {/* Toast. Two tones — see showToast. The warning one is wider and wraps, because
+          it carries a reason and a next step, not just a confirmation. */}
       {toast && (
-        <div className="fixed top-5 right-5 z-[100] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl" style={{ color: GREEN, background: `${GREEN}14`, borderColor: `${GREEN}40`, fontFamily: "'JetBrains Mono', monospace" }}>
-          <span>✓</span> {toast}
+        <div
+          className="fixed top-5 right-5 z-[100] flex items-start gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl max-w-sm"
+          style={{
+            color: toast.tone === "warn" ? ORANGE : GREEN,
+            background: toast.tone === "warn" ? `${ORANGE}14` : `${GREEN}14`,
+            borderColor: toast.tone === "warn" ? `${ORANGE}40` : `${GREEN}40`,
+            fontFamily: "'JetBrains Mono', monospace",
+          }}
+        >
+          <span className="shrink-0">{toast.tone === "warn" ? "!" : "✓"}</span>
+          <span className="leading-relaxed">{toast.msg}</span>
         </div>
       )}
     </div>

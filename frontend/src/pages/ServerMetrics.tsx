@@ -24,6 +24,9 @@ interface Server {
   displayName: string | null; // admin-set label (null = none)
   ip: string;
   status: string;
+  /** Approved, but its agent has never once reached the backend. See below — this is
+   *  NOT the same event as "Offline" and needs the opposite reaction. */
+  awaitingFirstReport: boolean;
   cpu: number;
   memory: number;
   memoryTotalGB: number;
@@ -68,6 +71,7 @@ function mapServerRow(r: any): Server {
     displayName: r.displayName ?? null,
     ip: r.ip ?? "—",
     status: r.status ?? "Offline",
+    awaitingFirstReport: Boolean(r.awaitingFirstReport),
     cpu: Number(r.cpu ?? 0),
     memory: Number(r.memory ?? 0),
     memoryTotalGB: r.memoryTotalMB ? +(r.memoryTotalMB / 1024).toFixed(1) : 0,
@@ -97,6 +101,10 @@ function mergeLive(prev: Server | undefined, p: any): Server {
   return {
     ...base,
     status: p.status ?? base.status,
+    // Receiving a metric IS the first report. Clearing it here rather than waiting for
+    // the next list fetch means the badge stops saying "Never reported" at the moment
+    // the thing it describes stops being true.
+    awaitingFirstReport: false,
     cpu: Math.round(p.cpuPercent ?? base.cpu),
     memory: Math.round(p.memPercent ?? base.memory),
     memoryTotalGB: p.memTotalMB ? +(p.memTotalMB / 1024).toFixed(1) : base.memoryTotalGB,
@@ -291,12 +299,24 @@ function MetricBar({ label, value }: { label: string; value: number }) {
   );
 }
 
-function StatusDot({ status }: { status: string }) {
-  const c = statusColor(status);
+// A server that has NEVER reported is not a server that went down, and until this
+// existed both said a flat "Offline". They call for opposite actions: Offline means go
+// and look at a machine that was working; this means the agent has not reached the
+// backend even once — wrong -server URL, a firewall, or a service installed and never
+// started. Nothing on this page distinguished them, so an admin who approved an
+// enrollment and then watched a red dot had no way to tell "installed wrong" from
+// "installed fine, box is off". Amber, not red, because nothing has broken yet.
+function StatusDot({ status, awaiting }: { status: string; awaiting?: boolean }) {
+  const pending = Boolean(awaiting) && status !== "Maintenance";
+  const c = pending ? ORANGE : statusColor(status);
+  const label = pending ? "Never reported" : status;
   return (
-    <span className="inline-flex items-center gap-1.5">
+    <span
+      className="inline-flex items-center gap-1.5"
+      title={pending ? "Approved, but this server's agent has never sent a metric. Check that the agent service is running and that its -server URL points at this backend." : undefined}
+    >
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: c, boxShadow: `0 0 5px ${c}` }} />
-      <span className="text-[13px]" style={{ color: gf.textMuted }}>{status}</span>
+      <span className="text-[13px]" style={{ color: pending ? ORANGE : gf.textMuted }}>{label}</span>
     </span>
   );
 }
@@ -317,7 +337,7 @@ function ServerCard({ s, isAdmin, onView, onRename, onDelete, onMaintenance }: {
           {renamed && <div className="text-[12px] font-mono truncate" style={{ color: gf.textDim }}>host: {s.hostname}</div>}
           <div className="text-[13px] font-mono truncate" style={{ color: gf.textMuted }}>{s.ip}</div>
         </button>
-        <StatusDot status={s.status} />
+        <StatusDot status={s.status} awaiting={s.awaitingFirstReport} />
       </div>
       <div className="grid grid-cols-3 gap-3 mt-3">
         <MetricBar label="CPU" value={s.cpu} />
@@ -869,7 +889,7 @@ export default function ServerMetrics() {
                           )}
                         </td>
                         <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{s.ip}</td>
-                        <td className="px-3 py-2.5"><StatusDot status={s.status} /></td>
+                        <td className="px-3 py-2.5"><StatusDot status={s.status} awaiting={s.awaitingFirstReport} /></td>
                         <td className="px-3 py-2.5"><TableBar value={s.cpu} /></td>
                         <td className="px-3 py-2.5"><TableBar value={s.memory} /></td>
                         <td className="px-3 py-2.5"><TableBar value={s.diskUsed} /></td>

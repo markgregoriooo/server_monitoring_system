@@ -8,6 +8,7 @@ import type { MkDevice } from "./MikrotikDetail";
 import { GF as gf, STATUS } from "../theme/gf";
 import { formatUptime } from "../utils/format";
 import { GhostButton, StatPanel, Meta } from "../components/ui/primitives";
+import type { DeviceFirstPoll } from "../api/api";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── MikroTik list page ───────────────────────────────────────────────────────
@@ -129,6 +130,35 @@ function Panel({
 // One labelled fact in a drawer's summary strip. The strip used to be bare values —
 // "RB951G-2HnD", "monitor-ro", "8729 · TLS" — which only reads if you already know
 // which field is which. The key is what makes a value information.
+// ─── Status, with the one state that is NOT a status ──────────────────────────
+//
+// A MikroTik with no RouterOS login has never been polled, so `status` is "Offline" —
+// which is wrong in the way that matters: the router is not down, nobody has told us how
+// to log in, and the fix is an admin action rather than a trip to the rack. That
+// distinction used to be written only inside the expandable drawer, so the list showed a
+// red "Offline" and the sentence explaining it was one click away and easy to never find.
+// It belongs on the row, where the status it is correcting is.
+function MkStatus({ d }: { d: MkDevice }) {
+  if (!d.monitored) {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5"
+        title="No read-only RouterOS login is set for this router, so it has never been polled. Use Configure to set one."
+      >
+        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ORANGE, boxShadow: `0 0 5px ${ORANGE}` }} />
+        <span className="text-[13px] whitespace-nowrap" style={{ color: ORANGE }}>API not configured</span>
+      </span>
+    );
+  }
+  const c = statusColor(d.status);
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c, boxShadow: `0 0 5px ${c}` }} />
+      <span className="text-[13px]" style={{ color: gf.textMuted }}>{d.status}</span>
+    </span>
+  );
+}
+
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
 // Same pattern as ServerMetrics' ServerDrawerRow: the row carries what you scan, the
 // drawer the ports and identity you'd otherwise open the detail page for.
@@ -152,8 +182,11 @@ function MkDrawerRow({ d, isOpen, colSpan }: { d: MkDevice; isOpen: boolean; col
               <Meta label="Uptime" value={formatUptime(d.uptimeSeconds)} />
             </div>
             {!d.monitored ? (
+              /* The row already carries the flag (see MkStatus). This is the expanded
+                 half: what to actually do about it. */
               <div className="text-[13px]" style={{ color: ORANGE }}>
-                API not configured — set the read-only RouterOS login (admin).
+                No RouterOS login is set, so this router has never been polled. An admin can
+                set a read-only API user with <span style={{ color: gf.textPrimary }}>Configure</span>.
               </div>
             ) : d.interfaces.length === 0 ? (
               <div className="text-[13px]" style={{ color: gf.textDim }}>
@@ -265,9 +298,15 @@ function PasswordField({
 // ─── Admin: add a new MikroTik ────────────────────────────────────────────────
 
 function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdded: (msg: string) => void; usedNames: string[] }) {
-  const [name, setName] = useState("Campus MikroTik");
+  // Blank, not pre-filled. A real value sitting in a field is not a suggestion — it is
+  // text the admin has to select and delete before typing their own, on every single
+  // add, and the one that slips through unedited registers a router called "Campus
+  // MikroTik". The old values live on as PLACEHOLDERS, which say the same thing and
+  // cost nothing to ignore. Location may be left empty: createDevice falls back to
+  // "Server Room" server-side, so the same value lands in the DB either way.
+  const [name, setName] = useState("");
   const [ip, setIp] = useState("");
-  const [location, setLocation] = useState("Server Room");
+  const [location, setLocation] = useState("");
   const [apiPort, setApiPort] = useState<number>(8728);
   const [useTls, setUseTls] = useState(false);
   const [apiUsername, setApiUsername] = useState("");
@@ -276,6 +315,15 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
   const [err, setErr] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // Any edit to a field the probe depends on invalidates the probe. A green "OK —
+  // RouterOS 7.x" sitting beside a password that has since been retyped is worse than
+  // no result at all: it vouches for a credential nothing ever tried. Same rule as the
+  // Add router / Add UPS forms — see components/devices/DeviceProbe.tsx.
+  const edit = <T,>(setter: (v: T) => void) => (v: T) => {
+    setTestResult(null);
+    setter(v);
+  };
 
   // Verify the login before creating anything — nothing is persisted by this call.
   const test = async () => {
@@ -327,7 +375,10 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
     if (apiPassword) body.apiPassword = apiPassword;
     const r = await api.addMikrotik(body);
     setBusy(false);
-    if (r.success) onAdded("MikroTik added");
+    // Does not claim it works. The backend logs in and polls it once immediately, and
+    // that verdict arrives on `deviceFirstPoll` a second or two later — which replaces
+    // this line with what actually happened.
+    if (r.success) onAdded("MikroTik registered — testing the API login…");
     else setErr(r.error || "Add failed — did you run the migration?");
   };
 
@@ -345,22 +396,22 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
         <div className="p-4 flex flex-col gap-3">
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Name</label>
-            <input name="name" className={inputCls} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} />
+            <input name="name" className={inputCls} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="Campus MikroTik" />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelCls} style={{ color: gf.textMuted }}>IP address</label>
-              <input name="ip" className={inputCls} style={inputStyle} value={ip} onChange={(e) => setIp(e.target.value)} placeholder="192.168.88.1" />
+              <input name="ip" className={inputCls} style={inputStyle} value={ip} onChange={(e) => edit(setIp)(e.target.value)} placeholder="192.168.88.1" />
             </div>
             <div>
               <label className={labelCls} style={{ color: gf.textMuted }}>Location</label>
-              <input name="location" className={inputCls} style={inputStyle} value={location} onChange={(e) => setLocation(e.target.value)} />
+              <input name="location" className={inputCls} style={inputStyle} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Server Room" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelCls} style={{ color: gf.textMuted }}>API Port</label>
-              <input name="apiPort" type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => setApiPort(Number(e.target.value))} />
+              <input name="apiPort" type="number" className={inputCls} style={inputStyle} value={apiPort} onChange={(e) => edit(setApiPort)(Number(e.target.value))} />
             </div>
             <label className="flex items-center gap-2 text-[14px] cursor-pointer self-end pb-1.5" style={{ color: gf.textPrimary }}>
               <input name="useTls"
@@ -368,6 +419,7 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
                 checked={useTls}
                 onChange={(e) => {
                   const on = e.target.checked;
+                  setTestResult(null);
                   setUseTls(on);
                   // Move the port with the toggle. The label promises 8729, but the port
                   // is a separate field — leaving it at 8728 means speaking TLS to a
@@ -381,11 +433,11 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
           </div>
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Username (read-only RouterOS user)</label>
-            <input name="apiUsername" className={inputCls} style={inputStyle} value={apiUsername} onChange={(e) => setApiUsername(e.target.value)} placeholder="monitor-ro" autoComplete="off" />
+            <input name="apiUsername" className={inputCls} style={inputStyle} value={apiUsername} onChange={(e) => edit(setApiUsername)(e.target.value)} placeholder="monitor-ro" autoComplete="off" />
           </div>
           <div>
             <label className={labelCls} style={{ color: gf.textMuted }}>Password</label>
-            <PasswordField value={apiPassword} onChange={setApiPassword} placeholder="RouterOS API password" />
+            <PasswordField value={apiPassword} onChange={edit(setApiPassword)} placeholder="RouterOS API password" />
             <p className="text-[11px] mt-1" style={{ color: gf.textDim }}>Stored encrypted (AES-256-GCM).</p>
           </div>
           {err && (
@@ -395,6 +447,16 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
             <div className="text-[13px] px-2 py-1.5 rounded-[2px]" style={{ color: testResult.ok ? GREEN : RED, background: (testResult.ok ? GREEN : RED) + "14", border: `1px solid ${(testResult.ok ? GREEN : RED)}40` }}>
               {testResult.msg}
             </div>
+          )}
+          {/* Never BLOCKS the save on a failed or skipped test: a MikroTik can
+              legitimately be registered before its API service is enabled, or before
+              somebody else opens the port. Refusing would just teach people to skip the
+              test. It states the consequence instead. Same rule on all three Add forms. */}
+          {!testResult?.ok && (
+            <p className="text-[11px]" style={{ color: gf.textDim }}>
+              Not verified yet. Adding without a successful test is allowed — the card will
+              show as Offline until the API login works.
+            </p>
           )}
           <div className="flex items-center justify-between gap-2 pt-1">
             <button onClick={test} disabled={testing || busy} className="text-[13px] px-3 py-1.5 rounded-[2px]" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, opacity: testing || busy ? 0.6 : 1 }}>
@@ -542,7 +604,14 @@ export default function MikrotikMonitoring() {
   const isAdmin = user?.role === "admin";
   const [configFor, setConfigFor] = useState<MkDevice | null>(null);
   const [adding, setAdding] = useState(false);
-  const [toast, setToast] = useState("");
+  // Toasts carry a TONE, so a registration whose first RouterOS login failed is not
+  // reported in the same green box as one that worked. Same shape as the Network and
+  // UPS pages.
+  const [toast, setToast] = useState<{ msg: string; tone: "ok" | "warn" } | null>(null);
+  const showToast = (msg: string, tone: "ok" | "warn" = "ok") => {
+    setToast({ msg, tone });
+    setTimeout(() => setToast(null), tone === "warn" ? 9000 : 3000);
+  };
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   // Which row's drawer is open (one at a time), same as ServerMetrics.
@@ -575,8 +644,7 @@ export default function MikrotikMonitoring() {
     }
     setDevices((prev) => prev.filter((x) => x.id !== id));
     setDetailId((cur) => (cur === id ? null : cur));
-    setToast("MikroTik removed");
-    setTimeout(() => setToast(""), 3000);
+    showToast("MikroTik removed");
   };
 
   const load = () =>
@@ -615,13 +683,34 @@ export default function MikrotikMonitoring() {
       setDevices((prev) => prev.filter((d) => d.id !== id));
       setDetailId((cur) => (cur === id ? null : cur));
     };
+    // How the just-registered MikroTik's FIRST API login went. Sent only to the admin
+    // who registered it. This matters more here than on the SNMP pages: a MikroTik is
+    // registered with a USERNAME AND PASSWORD, so "no data yet" and "those credentials
+    // are wrong" were indistinguishable until something actually tried to connect —
+    // and when it did, the answer went to the server console and to nobody else.
+    const onFirstPoll = (d: DeviceFirstPoll) => {
+      if (d?.kind !== "mikrotik") return; // routers and UPS have their own pages
+      if (d.ok) {
+        showToast(`${d.name} logged in over the RouterOS API — now polling.`);
+      } else {
+        showToast(
+          `${d.name} could not be polled${d.reason ? ` — ${d.reason}` : ""}. ` +
+            `Check the username, the password, the API port and that the api service is ` +
+            `enabled on the router. It stays registered and keeps retrying.`,
+          "warn",
+        );
+      }
+    };
+
     socket.on("networkMetrics", onMetrics);
     socket.on("networkStatus", onStatus);
     socket.on("networkRemoved", onRemoved);
+    socket.on("deviceFirstPoll", onFirstPoll);
     return () => {
       socket.off("networkMetrics", onMetrics);
       socket.off("networkStatus", onStatus);
       socket.off("networkRemoved", onRemoved);
+      socket.off("deviceFirstPoll", onFirstPoll);
     };
   }, []);
 
@@ -659,16 +748,16 @@ export default function MikrotikMonitoring() {
             onClose={() => setConfigFor(null)}
             onSaved={(msg) => {
               setConfigFor(null);
-              setToast(msg);
+              showToast(msg);
               load();
-              setTimeout(() => setToast(""), 3000);
             }}
           />
         )}
         {toast && (
-          <div className="fixed top-5 right-5 z-[80] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl"
-            style={{ color: GREEN, background: GREEN + "14", borderColor: GREEN + "40" }}>
-            <span>✓</span> {toast}
+          <div className="fixed top-5 right-5 z-[80] flex items-start gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl max-w-sm"
+            style={{ color: toast.tone === "warn" ? ORANGE : GREEN, background: (toast.tone === "warn" ? ORANGE : GREEN) + "14", borderColor: (toast.tone === "warn" ? ORANGE : GREEN) + "40" }}>
+            <span className="shrink-0">{toast.tone === "warn" ? "!" : "✓"}</span>
+            <span className="leading-relaxed">{toast.msg}</span>
           </div>
         )}
       </>
@@ -741,11 +830,16 @@ export default function MikrotikMonitoring() {
             {devices.map((d) => (
               <div key={d.id} className="rounded-[2px] p-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
                 <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: d.monitored ? statusColor(d.status) : ORANGE, boxShadow: `0 0 5px ${d.monitored ? statusColor(d.status) : ORANGE}` }} />
                   <span className="text-[14px] font-medium truncate flex-1" style={{ color: gf.textPrimary }}>{d.name}</span>
                   <PortsCell d={d} />
                 </div>
                 <div className="text-[12px] font-mono mt-0.5 truncate" style={{ color: gf.textDim }}>{d.ip} · ↑ {formatUptime(d.uptimeSeconds)}</div>
+                {!d.monitored && (
+                  <div className="text-[12px] mt-1" style={{ color: ORANGE }}>
+                    API not configured — set the read-only RouterOS login.
+                  </div>
+                )}
                 <div className="flex gap-2 mt-2 flex-wrap">
                   <GhostButton onClick={() => setDetailId(d.id)}>View</GhostButton>
                   {isAdmin && <GhostButton onClick={() => setConfigFor(d)}>Configure</GhostButton>}
@@ -783,12 +877,7 @@ export default function MikrotikMonitoring() {
                         {d.boardModel && <div className="text-[12px] font-normal" style={{ color: gf.textDim }}>{d.boardModel}</div>}
                       </td>
                       <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{d.ip}</td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-                          <span className="text-[13px]" style={{ color: gf.textMuted }}>{d.status}</span>
-                        </span>
-                      </td>
+                      <td className="px-3 py-2.5 whitespace-nowrap"><MkStatus d={d} /></td>
                       <td className="px-3 py-2.5 whitespace-nowrap">
                         <span className="text-[13px] tabular-nums" style={{ color: d.cpuPercent != null ? loadColor(Math.round(d.cpuPercent)) : gf.textDim }}>
                           {d.cpuPercent != null ? `${Math.round(d.cpuPercent)}%` : "—"}
@@ -839,9 +928,8 @@ export default function MikrotikMonitoring() {
           onClose={() => setAdding(false)}
           onAdded={(msg) => {
             setAdding(false);
-            setToast(msg);
+            showToast(msg);
             load();
-            setTimeout(() => setToast(""), 3000);
           }}
         />
       )}
@@ -852,19 +940,19 @@ export default function MikrotikMonitoring() {
           onClose={() => setConfigFor(null)}
           onSaved={(msg) => {
             setConfigFor(null);
-            setToast(msg);
+            showToast(msg);
             load();
-            setTimeout(() => setToast(""), 3000);
           }}
         />
       )}
 
       {toast && (
         <div
-          className="fixed top-5 right-5 z-[80] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl"
-          style={{ color: GREEN, background: GREEN + "14", borderColor: GREEN + "40" }}
+          className="fixed top-5 right-5 z-[80] flex items-start gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl max-w-sm"
+          style={{ color: toast.tone === "warn" ? ORANGE : GREEN, background: (toast.tone === "warn" ? ORANGE : GREEN) + "14", borderColor: (toast.tone === "warn" ? ORANGE : GREEN) + "40" }}
         >
-          <span>✓</span> {toast}
+          <span className="shrink-0">{toast.tone === "warn" ? "!" : "✓"}</span>
+          <span className="leading-relaxed">{toast.msg}</span>
         </div>
       )}
     </div>

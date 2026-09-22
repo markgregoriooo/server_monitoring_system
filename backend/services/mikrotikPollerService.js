@@ -24,6 +24,34 @@ const TIMEOUT_MS = Number(process.env.MIKROTIK_API_TIMEOUT_MS) || 5000;
 const prevIface = new Map(); // `${id}:${name}` -> { rx(BigInt), tx(BigInt), t(ms) }
 const latest = new Map(); // id -> shaped summary for GET /api/mikrotik
 
+// ─── Tombstones: devices deleted while a poll was IN FLIGHT ────────────────────
+//
+// A poll takes up to MIKROTIK_API_TIMEOUT_MS (5s) — and takes the FULL timeout precisely
+// when the device is misconfigured, which is the one most likely to be deleted. Delete it
+// in that window and the in-flight poll still ran to completion: it wrote a
+// router_metrics point for a device that no longer exists, and broadcast `networkMetrics`
+// for it. The dashboard's merge treats an id it does not know as a NEW device and appends
+// it — so the row the admin had just deleted reappeared, and stayed until a reload.
+//
+// `removeDevice` records the id here; the two functions that write or emit consult it.
+// Time-bounded rather than permanent so the map cannot grow for the life of the process,
+// and generously — one poll interval would be enough, several minutes costs nothing and
+// also covers a device deleted during a slow retry.
+const removedAt = new Map(); // id -> ms timestamp of the DELETE
+const TOMBSTONE_MS = 5 * 60 * 1000;
+function markRemoved(id) {
+  removedAt.set(Number(id), Date.now());
+}
+function isRemoved(id) {
+  const t = removedAt.get(Number(id));
+  if (t == null) return false;
+  if (Date.now() - t > TOMBSTONE_MS) {
+    removedAt.delete(Number(id));
+    return false;
+  }
+  return true;
+}
+
 const STATUS_LABEL = { online: "Online", offline: "Offline", warning: "Warning", maintenance: "Maintenance" };
 const labelStatus = (s) => STATUS_LABEL[s] ?? "Offline";
 
@@ -122,6 +150,10 @@ async function collect(d, labels) {
 // was written; this one never did. See pollDevice's catch.
 async function setReachable(io, d, online, reason = "") {
   const id = Number(d.id);
+  // Deleted mid-poll — see the tombstone note above. Everything below writes to the
+  // device row, the device log, the alert state or the browsers, all of which would be
+  // resurrecting a device an admin removed.
+  if (isRemoved(id)) return;
   if (!online) latest.set(id, { status: "Offline", reachable: false, uptimeSeconds: null, interfaces: [] });
   const newStatus = online ? "online" : "offline";
   if (d.status === newStatus) return;
@@ -166,6 +198,12 @@ async function pollDevice(io, d) {
   try {
     sample = await collect(d, labels); // throws if unreachable
   } catch (err) {
+    // ⚠️ Every `return` below is a FAILED poll that this function deliberately does not
+    // rethrow (pollAll's catch would reset the cache and wipe the ICMP figures). That
+    // made "did not throw" mean nothing, and pollDeviceNow — which reports the result of
+    // a registration back to the admin — read it as success. A MikroTik added with a
+    // wrong password therefore answered with "logged in over the RouterOS API — now
+    // polling". Each path now returns its own verdict, and the toast says what happened.
     //
     // Handled here rather than rethrown: pollAll's catch calls setReachable(), which
     // resets the `latest` cache entry, and that would wipe the ICMP figures again.
@@ -188,7 +226,7 @@ async function pollDevice(io, d) {
           `from a rejected API login.`,
       );
       await setReachable(io, d, false);
-      return;
+      return { reachable: false, reason: `${cause} — and ICMP is unavailable on the backend host (${icmp.probeError})` };
     }
 
     const verdict = icmp.reachable
@@ -217,6 +255,7 @@ async function pollDevice(io, d) {
       connectedClients: null,
       interfaces: [],
     };
+    if (isRemoved(d.id)) return { reachable: false, reason: "device was removed mid-poll" };
     await writeNetworkSample(
       io,
       { id: d.id, name: d.name, ip: d.ip, type: d.type, location: d.location },
@@ -242,12 +281,13 @@ async function pollDevice(io, d) {
       connectedClients: null,
       interfaces: [],
     });
-    return;
+    return { reachable: false, reason: `${cause} — ${verdict}` };
   }
 
   const icmp = await icmpPromise;
   sample.latencyMs = icmp.latencyMs;
   sample.packetLossPct = icmp.packetLossPct;
+  if (isRemoved(d.id)) return { reachable: false, reason: "device was removed mid-poll" };
   await setReachable(io, d, true);
   await writeNetworkSample(
     io,
@@ -298,6 +338,8 @@ async function pollDevice(io, d) {
   } catch (err) {
     console.error("[MIKROTIK_POLLER] last_seen update error:", describeError(err));
   }
+
+  return { reachable: true, reason: null };
 }
 
 // ─── Main loop ──────────────────────────────────────────────────────────────────
@@ -313,26 +355,34 @@ let polling = false;
  *
  * Never throws — the caller fires and forgets so the HTTP response is not held behind an API
  * timeout.
+ *
+ * Returns `{ ok, reason }` rather than a bare boolean so the caller can TELL SOMEBODY: a
+ * failed first login used to reach the server console and nowhere else. routes/mikrotik.js
+ * forwards it to the admin who registered the device. Same contract as
+ * snmpPollerService.pollDeviceNow.
  */
 export async function pollDeviceNow(io, deviceId) {
   const id = Number(deviceId);
   try {
     const d = (await loadDevices()).find((x) => Number(x.id) === id);
-    if (!d) return false;
+    if (!d) return { ok: false, reason: "device not found" };
     try {
-      await pollDevice(io, d);
-      return true;
+      // ⚠️ `pollDevice` resolves on the failure path too — see the note in its catch.
+      // Reading "it did not throw" as success is what made a MikroTik added with a wrong
+      // password toast "logged in over the RouterOS API — now polling".
+      const r = await pollDevice(io, d);
+      if (r?.reachable) return { ok: true, reason: null };
+      return { ok: false, reason: r?.reason ?? "the router did not answer" };
     } catch (err) {
-      console.error(
-        `[MIKROTIK_POLLER] first poll of ${d.name} (${d.ip}) failed:`,
-        err?.message ?? err,
-      );
+      const reason = describeError(err);
+      console.error(`[MIKROTIK_POLLER] first poll of ${d.name} (${d.ip}) failed:`, reason);
       await setReachable(io, d, false);
-      return false;
+      return { ok: false, reason };
     }
   } catch (err) {
-    console.error("[MIKROTIK_POLLER] immediate poll error:", describeError(err));
-    return false;
+    const reason = describeError(err);
+    console.error("[MIKROTIK_POLLER] immediate poll error:", reason);
+    return { ok: false, reason };
   }
 }
 
@@ -634,6 +684,7 @@ async function removeDevice(id) {
   );
   if (result.affectedRows === 0) return false;
 
+  markRemoved(deviceId); // a poll may already be in flight — see the tombstone note
   latest.delete(deviceId);
   for (const key of prevIface.keys()) {
     if (key.startsWith(`${deviceId}:`)) prevIface.delete(key);

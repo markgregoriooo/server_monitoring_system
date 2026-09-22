@@ -7,6 +7,8 @@ import UpsDetail, { batteryHealth } from "./UpsDetail";
 import type { UpsDevice } from "./UpsDetail";
 import { GF as gf, STATUS } from "../theme/gf";
 import { GhostButton, StatPanel, Field, Meta } from "../components/ui/primitives";
+import { useProbe, ProbeResultPanel, probePassed } from "../components/devices/DeviceProbe";
+import type { DeviceFirstPoll } from "../api/api";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── UPS list page ────────────────────────────────────────────────────────────
@@ -40,12 +42,18 @@ interface UpsForm {
   commType: string;
   serialNumber: string;
 }
+
+// Blank, not pre-filled — same reasoning as the Add MikroTik form: a real value in a field
+// is not a suggestion, it is text the admin has to delete before typing their own, every
+// time. The suggestion lives on as a placeholder instead, and parseCommon falls back to
+// "CSPC-ICTU Server Room" when the field is left empty, so the same value reaches the DB
+// either way.
 const EMPTY_UPS_FORM: UpsForm = {
   name: "",
   ip: "",
   community: "public",
   snmpPort: "161",
-  location: "CSPC-ICTU Server Room",
+  location: "",
   brand: "",
   model: "",
   batteryCapacity: "",
@@ -328,7 +336,10 @@ export default function UpsMonitoring() {
   // Which row's drawer is open (one at a time), same as ServerMetrics.
   const [openId, setOpenId] = useState<string | null>(null);
   const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
-  const [toast, setToast] = useState("");
+  // Toasts carry a TONE — see NetworkMonitoring for why a registration that failed its
+  // first poll must not be reported in the same green box as one that worked.
+  const [toast, setToast] = useState<{ msg: string; tone: "ok" | "warn" } | null>(null);
+  const probe = useProbe();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Deep-link from a notification: /ups?device=<id> opens that UPS's detail once the
@@ -342,15 +353,37 @@ export default function UpsMonitoring() {
     searchParams.delete("device");
     setSearchParams(searchParams, { replace: true });
   }, [devices, searchParams, setSearchParams]);
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(""), 3000);
+  const showToast = (msg: string, tone: "ok" | "warn" = "ok") => {
+    setToast({ msg, tone });
+    setTimeout(() => setToast(null), tone === "warn" ? 9000 : 3000);
   };
 
   const openAdd = () => {
     setForm(EMPTY_UPS_FORM);
     setFormError("");
+    probe.reset();
     setFormOpen(true);
+  };
+
+  // Editing anything the probe depends on invalidates the probe — see NetworkMonitoring.
+  const editConn = (patch: Partial<UpsForm>) => {
+    setForm((f) => ({ ...f, ...patch }));
+    probe.reset();
+  };
+
+  // Stricter than the router probe: an address that answers ping, or answers SNMP
+  // without UPS-MIB, FAILS here. A UPS has no ping-only mode — pinging a battery only
+  // proves its management card has power. See services/deviceProbeVerdict.js.
+  const test = async () => {
+    if (!form.ip.trim()) return setFormError("Enter an IP address to test.");
+    setFormError("");
+    await probe.run(() =>
+      api.testUpsDevice({
+        ip: form.ip.trim(),
+        community: form.community.trim(),
+        snmpPort: form.snmpPort.trim() || undefined,
+      }),
+    );
   };
 
   const save = async () => {
@@ -376,7 +409,10 @@ export default function UpsMonitoring() {
       const added = mapUps(res.data.device);
       setDevices((prev) => (prev.some((d) => d.id === added.id) ? prev : [...prev, added]));
       setFormOpen(false);
-      showToast("UPS added — polling starts within a minute.");
+      probe.reset();
+      // Says what is happening, not what will work. The verdict of the immediate first
+      // poll arrives on `deviceFirstPoll` and replaces this — see NetworkMonitoring.
+      showToast("UPS registered — testing it now…");
     } else {
       setFormError(res.error || "Could not add UPS.");
     }
@@ -390,7 +426,7 @@ export default function UpsMonitoring() {
       setDetailId((prev) => (prev === id ? null : prev));
       showToast("UPS removed.");
     } else {
-      showToast(res.error || "Could not remove UPS.");
+      showToast(res.error || "Could not remove UPS.", "warn");
     }
   };
 
@@ -437,13 +473,32 @@ export default function UpsMonitoring() {
       setDevices((prev) => prev.filter((d) => d.id !== id));
       setDetailId((prev) => (prev === id ? null : prev));
     };
+    // How the just-registered UPS's FIRST poll went — sent only to the admin who
+    // registered it. Until this existed, a wrong community produced a card that said
+    // Offline and a reason that reached the server console and nobody else.
+    const onFirstPoll = (d: DeviceFirstPoll) => {
+      if (d?.kind !== "ups") return; // routers and the MikroTik have their own pages
+      if (d.ok) {
+        showToast(`${d.name} answered UPS-MIB — now polling battery, runtime and load.`);
+      } else {
+        showToast(
+          `${d.name} did not answer its first poll${d.reason ? ` — ${d.reason}` : ""}. ` +
+            `Check the IP, the community, and that the UPS network card has SNMP v2c ` +
+            `enabled. It stays registered and keeps retrying.`,
+          "warn",
+        );
+      }
+    };
+
     socket.on("upsMetrics", onMetrics);
     socket.on("upsStatus", onStatus);
     socket.on("upsRemoved", onRemoved);
+    socket.on("deviceFirstPoll", onFirstPoll);
     return () => {
       socket.off("upsMetrics", onMetrics);
       socket.off("upsStatus", onStatus);
       socket.off("upsRemoved", onRemoved);
+      socket.off("deviceFirstPoll", onFirstPoll);
     };
   }, []);
 
@@ -680,15 +735,15 @@ export default function UpsMonitoring() {
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="IP address">
-                  <input name="ip" value={form.ip} onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.50" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="ip" value={form.ip} onChange={(e) => editConn({ ip: e.target.value })} placeholder="192.168.1.50" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
                 <Field label="SNMP port">
-                  <input name="snmpPort" value={form.snmpPort} onChange={(e) => setForm((f) => ({ ...f, snmpPort: e.target.value }))} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="snmpPort" value={form.snmpPort} onChange={(e) => editConn({ snmpPort: e.target.value })} placeholder="161" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="SNMP community (v2c)">
-                  <input name="community" value={form.community} onChange={(e) => setForm((f) => ({ ...f, community: e.target.value }))} placeholder="public" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                  <input name="community" value={form.community} onChange={(e) => editConn({ community: e.target.value })} placeholder="public" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
                 </Field>
                 <Field label="Comm. type">
                   <select name="commType" value={form.commType} onChange={(e) => setForm((f) => ({ ...f, commType: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer" style={inputStyle}>
@@ -714,29 +769,53 @@ export default function UpsMonitoring() {
                 </Field>
               </div>
               <Field label="Location">
-                <input name="location" value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
+                <input name="location" value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} placeholder="CSPC-ICTU Server Room" className="w-full text-[13px] px-2 py-1.5 rounded-[2px] outline-none" style={inputStyle} />
               </Field>
               <p className="text-[12px] leading-relaxed" style={{ color: gf.textDim }}>
-                UPS-MIB (RFC 1628) over SNMP v2c — the UPS must have a network/SNMP card. Confirm UDP {form.snmpPort || "161"} is reachable from the backend host. Polling begins on the next cycle (≤60s).
+                UPS-MIB (RFC 1628) over SNMP v2c — the UPS must have a network/SNMP card. Confirm UDP {form.snmpPort || "161"} is reachable from the backend host. Polled once the moment you add it, then every cycle (≤60s).
               </p>
+
+              {/* Test BEFORE saving — the check that turns "nothing ever appeared" into
+                  a sentence naming which field is wrong. See NetworkMonitoring. */}
+              <ProbeResultPanel state={probe.state} />
+
               {formError && <div className="text-[12px]" style={{ color: RED }}>{formError}</div>}
-              <div className="flex gap-2 mt-1">
-                <button onClick={save} disabled={saving} className="gf-raise text-[13px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: BLUE }}>
+              <div className="flex flex-wrap gap-2 mt-1">
+                <button onClick={save} disabled={saving || probe.state.phase === "testing"} className="gf-raise text-[13px] font-semibold px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: "#fff", background: BLUE }}>
                   {saving ? "Adding…" : "Add UPS"}
+                </button>
+                <button onClick={test} disabled={probe.state.phase === "testing" || saving} className="text-[13px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95 disabled:opacity-50" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
+                  {probe.state.phase === "testing" ? "Testing…" : "Test connection"}
                 </button>
                 <button onClick={() => setFormOpen(false)} className="text-[13px] font-medium px-4 py-2 rounded-md transition-colors active:scale-95" style={{ color: gf.textMuted, border: `1px solid ${gf.border}`, background: "transparent" }}>
                   Cancel
                 </button>
               </div>
+              {/* Never blocks the save — a UPS can be registered before its network card
+                  is configured. It states the consequence instead. */}
+              {probe.state.phase === "done" && !probePassed(probe.state) && (
+                <p className="text-[11px]" style={{ color: ORANGE }}>
+                  You can still add it — it will show as Offline until whatever is named above is fixed.
+                </p>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Toast */}
+      {/* Toast. Two tones — see showToast. */}
       {toast && (
-        <div className="fixed top-5 right-5 z-[100] flex items-center gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl" style={{ color: GREEN, background: `${GREEN}14`, borderColor: `${GREEN}40`, fontFamily: "'JetBrains Mono', monospace" }}>
-          <span>✓</span> {toast}
+        <div
+          className="fixed top-5 right-5 z-[100] flex items-start gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl max-w-sm"
+          style={{
+            color: toast.tone === "warn" ? ORANGE : GREEN,
+            background: toast.tone === "warn" ? `${ORANGE}14` : `${GREEN}14`,
+            borderColor: toast.tone === "warn" ? `${ORANGE}40` : `${GREEN}40`,
+            fontFamily: "'JetBrains Mono', monospace",
+          }}
+        >
+          <span className="shrink-0">{toast.tone === "warn" ? "!" : "✓"}</span>
+          <span className="leading-relaxed">{toast.msg}</span>
         </div>
       )}
     </div>

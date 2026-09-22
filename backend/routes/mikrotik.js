@@ -44,8 +44,25 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res, next) =>
        MIKROTIK_POLL_INTERVAL_MS. Worth more here than on SNMP: a MikroTik is registered with
        a USERNAME AND PASSWORD, so "no data yet" and "those credentials are wrong" look the
        same until something actually tries to connect. Fire-and-forget — the result arrives
-       on the usual broadcast, and the 30s cadence is untouched. */
-    void mikrotikPollerService.pollDeviceNow(req.app.get("io"), r.id);
+       on the usual broadcast, and the 30s cadence is untouched.
+
+       The verdict also goes back to the ADMIN WHO ADDED IT, on `user:<id>`. Until it did,
+       a failed first login was written to the server console and nowhere else, so the one
+       person who could fix the credentials was the one person not told they were wrong.
+       Same contract as routes/network.js — see the long note there. */
+    const io = req.app.get("io");
+    const userId = req.user?.id;
+    void mikrotikPollerService.pollDeviceNow(io, r.id).then(({ ok, reason }) => {
+      if (!userId) return;
+      io?.to(`user:${userId}`).emit("deviceFirstPoll", {
+        id: r.id,
+        name: String(req.body?.name ?? "").trim() || "MikroTik",
+        kind: "mikrotik",
+        ok,
+        reason,
+        mode: "api",
+      });
+    });
     res.status(201).json({ id: r.id });
   } catch (err) {
     next(err);

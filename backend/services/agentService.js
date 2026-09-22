@@ -72,8 +72,18 @@ function withLive(r) {
   const maintenance = r.status === "maintenance";
   const offline = !maintenance && (r.status === "offline" || isStale(r.lastSeen, r.metricIntervalSec));
   const live = offline ? undefined : latestMetrics.get(r.id);
+  // A server that has NEVER posted a metric is not the same thing as one that went
+  // down, and until this flag existed both rendered as a bare "Offline". They need
+  // opposite actions: an Offline server means go and look at a machine that was
+  // working, while this means the agent has not reached the backend even once — wrong
+  // -server URL, a firewall, or a service that was installed and never started. The
+  // approval itself deliberately leaves the row 'offline' (see approve()), so there is
+  // no status to read it off; `last_seen` is NULL until the first POST and is the only
+  // durable evidence that the machine has ever spoken to us.
+  const awaitingFirstReport = !maintenance && r.lastSeen == null;
   return {
     ...r,
+    awaitingFirstReport,
     status: maintenance ? "Maintenance" : offline ? "Offline" : label(r.status),
     cpu: live?.cpu ?? 0,
     memory: live?.memory ?? 0,

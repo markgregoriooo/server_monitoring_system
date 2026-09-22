@@ -2,14 +2,55 @@ import express from "express";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import { upsHistoryHandler } from "../handlers/upsHistoryHandler.js";
 import snmpPollerService from "../services/snmpPollerService.js";
+import { probe } from "../services/deviceProbe.js";
 import { getDeviceLogs } from "../services/deviceLogs.js";
 
 const router = express.Router();
+
+// Tell the admin who registered this UPS how its FIRST poll went. Same reasoning, and
+// the same `user:<id>` addressing, as routes/network.js — see the long note there.
+function reportFirstPoll(req, device) {
+  const io = req.app.get("io");
+  const userId = req.user?.id;
+  void snmpPollerService.pollDeviceNow(io, device.id).then(({ ok, reason }) => {
+    if (!userId) return;
+    io?.to(`user:${userId}`).emit("deviceFirstPoll", {
+      id: device.id,
+      name: device.name,
+      kind: "ups",
+      ok,
+      reason,
+      mode: "snmp", // a UPS has no ping fallback — see deviceProbeVerdict.upsVerdict
+    });
+  });
+}
 
 // ── GET /api/ups ─ UPS list with latest live battery/load/status (JWT) ────────
 router.get("/", authMiddleware, async (req, res, next) => {
   try {
     res.json({ devices: await snmpPollerService.getUpsDevices() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/ups/test ─ probe an address BEFORE registering it (admin) ───────
+//
+// Declared before every `/:id` route so a literal path can never be parsed as an id.
+// Nothing is persisted. `expect: "ups"` makes the verdict strict in the way this form
+// needs: an address that answers ping, or answers SNMP without implementing UPS-MIB, is
+// a FAILURE here even though the identical result would pass on the Add router form. A
+// UPS has no ping-only mode — pinging a battery only proves its management card has
+// power. See services/deviceProbeVerdict.js.
+router.post("/test", authMiddleware, requireRole("admin"), async (req, res, next) => {
+  try {
+    res.json(
+      await probe(req.body?.ip, {
+        community: req.body?.community ?? "",
+        port: req.body?.snmpPort,
+        expect: "ups",
+      }),
+    );
   } catch (err) {
     next(err);
   }
@@ -28,8 +69,9 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res, next) =>
        broadcast the poller already uses. So the panel fills in a second or two rather than
        up to a minute, and a wrong IP/community/port shows as Offline immediately instead of
        being indistinguishable from "the poller has not got round to it yet".
-       The interval itself is untouched — see pollDeviceNow. */
-    void snmpPollerService.pollDeviceNow(req.app.get("io"), device.id);
+       The interval itself is untouched — see pollDeviceNow.
+       Its verdict now also goes back to the admin who did this — see reportFirstPoll. */
+    reportFirstPoll(req, device);
     res.status(201).json({ device });
   } catch (err) {
     next(err);

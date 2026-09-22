@@ -68,6 +68,33 @@ const prevIface = new Map();
 const latestNetwork = new Map(); // id -> shaped router summary
 const latestUps = new Map(); // id -> shaped UPS summary
 
+// ─── Tombstones: devices deleted while a poll was IN FLIGHT ────────────────────
+//
+// An SNMP walk takes up to SNMP_TIMEOUT_MS x (SNMP_RETRIES + 1), and takes the FULL
+// budget precisely when the device is misconfigured — which is the one most likely to be
+// deleted. Delete it in that window and the in-flight poll still completes: it writes a
+// router_metrics / ups_metrics point for a device that no longer exists, and broadcasts
+// `networkMetrics`/`upsMetrics` for it. The dashboard treats an id it does not know as a
+// NEW device and appends it, so the row the admin just deleted reappears.
+//
+// `removeDevice` records the id; `setReachable` and the three sample writes consult it.
+// Time-bounded so the map cannot grow for the life of the process. Mirrors the identical
+// guard in mikrotikPollerService.
+const removedAt = new Map(); // id -> ms timestamp of the DELETE
+const TOMBSTONE_MS = 5 * 60 * 1000;
+function markRemoved(id) {
+  removedAt.set(Number(id), Date.now());
+}
+function isRemoved(id) {
+  const t = removedAt.get(Number(id));
+  if (t == null) return false;
+  if (Date.now() - t > TOMBSTONE_MS) {
+    removedAt.delete(Number(id));
+    return false;
+  }
+  return true;
+}
+
 const STATUS_LABEL = { online: "Online", offline: "Offline", warning: "Warning", maintenance: "Maintenance" };
 const labelStatus = (s) => STATUS_LABEL[s] ?? "Offline";
 
@@ -352,6 +379,10 @@ const typeLabel = (d) => (d.type === "ups" ? "UPS" : "Router");
 // status event so the page updates live. Reachability comes straight from the poll.
 async function setReachable(io, d, online) {
   const id = Number(d.id);
+  // Deleted mid-poll — see the tombstone note above. Everything below writes the device
+  // row, the device log, the alert state or the browsers, all of which would resurrect a
+  // device an admin has removed.
+  if (isRemoved(id)) return;
   // Keep the live cache in step with reachability so the list endpoint reflects
   // an offline device immediately (the success path caches richer data below).
   // Both branches PRESERVE the last successful readings and only overlay the down
@@ -442,6 +473,7 @@ async function pollRouterByPing(io, d) {
   };
 
   await setReachable(io, d, icmp.reachable);
+  if (isRemoved(d.id)) return;
   await writeNetworkSample(io, d, sample);
   // Safe with an empty sample: cpu/mem/clients are null → NaN and bail, and the
   // per-interface loop doesn't run. The alert that matters here — the device going
@@ -509,6 +541,7 @@ async function pollRouter(io, d) {
 
   await syncInterfaces(d.id, sample.interfaces);
   await setReachable(io, d, true);
+  if (isRemoved(d.id)) return;
   await writeNetworkSample(io, d, sample);
   await deviceAlerts.checkRouter(io, d, sample);
   latestNetwork.set(Number(d.id), {
@@ -547,6 +580,7 @@ async function pollRouter(io, d) {
 async function pollUps(io, d) {
   const sample = await collectUps(connFor(d)); // throws if unreachable
   await setReachable(io, d, true);
+  if (isRemoved(d.id)) return;
   await writeUpsSample(io, d, sample);
   await deviceAlerts.checkUps(io, d, sample);
   latestUps.set(Number(d.id), {
@@ -620,30 +654,54 @@ async function pollAll(io) {
  *
  * Never throws — callers fire-and-forget it so the HTTP response is not held behind an SNMP
  * timeout, and an unhandled rejection from a background probe would take the process down.
+ *
+ * Returns `{ ok, reason }` rather than a bare boolean so the caller can TELL SOMEBODY. The
+ * failure used to go to the server console alone, which meant an admin who mistyped a
+ * community watched a card stay Offline with no way to distinguish that from a device that
+ * is simply down. `reason` is the message the console line carries, and routes/network.js
+ * forwards it to the admin who did the registering. See deviceProbe.js for the pre-flight
+ * check that stops most of these from being created in the first place.
  */
 export async function pollDeviceNow(io, deviceId) {
   const id = Number(deviceId);
   try {
     const d = (await loadDevices()).find((x) => Number(x.id) === id);
-    if (!d) return false;
+    if (!d) return { ok: false, reason: "device not found" };
     try {
       if (d.type === "router") await pollRouter(io, d);
       else if (d.type === "ups") await pollUps(io, d);
-      return true;
+
+      // ⚠️ NOT every failure throws. `pollRouter` rethrows a failed SNMP walk, but
+      // `pollRouterByPing` does not — a ping-only router that answers nothing is a
+      // legitimate MEASUREMENT (reachable:false), written and broadcast like any other.
+      // Reading "did not throw" as success therefore reported a router registered on a
+      // wrong IP as "answering ping". The live cache is the one thing every path sets,
+      // including the ones that handle their own failure, so the verdict is read there.
+      const live = d.type === "ups" ? latestUps.get(id) : latestNetwork.get(id);
+      if (live?.status === "Online") return { ok: true, reason: null };
+      if (!live) {
+        // pollRouterByPing returns early without writing when ICMP could not be RUN at
+        // all (no `ping` binary, or the account cannot execute it). That is the absence
+        // of an observation, not an outage, and must not be reported as one.
+        return { ok: false, reason: "the ICMP probe could not be run on the backend host — see the server log" };
+      }
+      return {
+        ok: false,
+        reason: d.pingOnly ? "no ICMP reply" : "no response",
+      };
     } catch (err) {
       // Same treatment as inside pollAll: name the reason, mark it offline, move on. A
       // device that does not answer its very first poll is the most useful thing this can
       // report — it usually means the IP, port or community is wrong.
-      console.error(
-        `[SNMP_POLLER] first poll of ${d.type} "${d.name}" (${d.ip}) failed:`,
-        describeError(err),
-      );
+      const reason = describeError(err);
+      console.error(`[SNMP_POLLER] first poll of ${d.type} "${d.name}" (${d.ip}) failed:`, reason);
       await setReachable(io, d, false);
-      return false;
+      return { ok: false, reason };
     }
   } catch (err) {
-    console.error("[SNMP_POLLER] immediate poll error:", describeError(err));
-    return false;
+    const reason = describeError(err);
+    console.error("[SNMP_POLLER] immediate poll error:", reason);
+    return { ok: false, reason };
   }
 }
 
@@ -956,6 +1014,7 @@ async function removeDevice(id, type) {
   );
   if (result.affectedRows === 0) return false;
 
+  markRemoved(deviceId); // a poll may already be in flight — see the tombstone note
   if (type === "ups") {
     latestUps.delete(deviceId);
   } else {
