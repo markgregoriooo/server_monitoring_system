@@ -124,7 +124,14 @@ app.use(securityHeaders());
 app.use(cors({ origin: CORS_ORIGIN, exposedHeaders: ["X-Renewed-Token"] }));
 
 
-const TRUST_PROXY = process.env.TRUST_PROXY ?? "2";
+// `.trim() ||` rather than `??`: nullish coalescing only catches an ABSENT
+// variable, and the common case is a PRESENT but empty one — `TRUST_PROXY=`
+// sitting in a .env copied from .env.example. That empty string failed the
+// digit test below and reached Express as a string, which it reads as a list
+// of trusted IPs, so proxy-addr threw `invalid IP address:` and the process
+// died at boot, over and over, before it served a single request. Documented
+// as "blank = 2" all along; now that is also what it does.
+const TRUST_PROXY = (process.env.TRUST_PROXY ?? "").trim() || "2";
 app.set("trust proxy", /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_PROXY);
 const TRUST_PROXY_HOPS = /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : 0;
 
