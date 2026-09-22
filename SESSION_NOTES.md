@@ -2500,3 +2500,175 @@ of them.
    so its structure is verified but its layout is not. Open it in Word before relying on it.
 3. **Level 1 prints at ~4.5 pt labels** on folio. Use A3 or a fold-out for the printed
    manuscript.
+
+---
+
+## SESSION 26 — 2026-09-21
+**Branch:** `feat/mobile-layout-and-account-emails`
+**Developer:** Mark Gregorio
+
+> Registering a device that is wrong or unreachable produced **no indication at all**, on
+> every form that registers one. The device was created, its first poll failed into the
+> server console, and the card said "Offline" — which is also what a perfectly healthy
+> device that has not been polled yet says. So the admin sat waiting for something that
+> was never going to arrive.
+
+### What was actually broken
+
+Three separate silences, all reading the same way on screen:
+
+1. **No pre-flight check** on Add router or Add UPS. The MikroTik form had a *Test
+   connection* button (`POST /api/mikrotik/test`) since it was built; the two SNMP forms
+   never got one, even though `npm run probe` had been answering exactly that question
+   from a terminal for weeks.
+2. **The first poll's verdict went nowhere.** All three routes already call
+   `pollDeviceNow` immediately on registration — added in `213f96a` precisely so a wrong
+   IP would show as Offline in a second rather than a minute. But it is fire-and-forget
+   (correctly: the response must not be held behind an SNMP timeout), so its result was
+   `console.error`'d and dropped. The one person who could fix the community string was
+   the one person not told it was wrong.
+3. **The toast lied.** "Router added — polling starts within a minute." is reassuring, and
+   it was printed identically whether the device answered or not.
+
+Plus a fourth, different in mechanism: an approved **server** whose agent has never once
+reached the backend rendered as a flat "Offline", indistinguishable from a box that was
+working yesterday. `approve()` deliberately leaves the row `offline` and the sweep skips
+it, so there was no status to read it off.
+
+### Pre-flight probe, shared with the CLI
+
+`services/deviceProbe.js` (I/O) + `services/deviceProbeVerdict.js` (PURE) — the same
+split as pingOutput/icmpPing and snmpUtils/snmpClient.
+
+`scripts/probeDevice.js` was **rewritten to consume them** rather than having the logic
+copied. Its own header has always claimed "no second implementation to drift", and a probe
+that disagreed with the form would be worse than no probe at all. The script is now the
+presentation layer and nothing else.
+
+New: `POST /api/network/test` and `POST /api/ups/test` (admin, declared before every
+`/:id` route). Nothing is persisted. Both run the same SNMP/ICMP code the poller runs, so
+a pass means the poller will succeed for the same reasons.
+
+⚠️ **The verdict is judged against what is being registered, not in the abstract.** The
+identical measurement — answers ping, ignores SNMP — is a **PASS** on the Add router form
+with a blank community (that is ICMP monitoring, the only way to watch ISP-owned CPE) and
+a **FAILURE** on the Add UPS form, because a UPS has no ping-only mode: pinging a battery
+only proves its management card has power. Hence `expect`, and hence a test that pins both
+directions.
+
+⚠️ A blank community is passed through as blank rather than defaulting to `public`. On the
+form a blank community *is* the ICMP-monitoring choice, so what has to be verified is ICMP;
+guessing a community behind the admin's back would report a capability the saved device is
+never going to use. The CLI keeps its `public` default because there you are exploring an
+unknown address, not validating a form.
+
+### The first poll now reports back
+
+`pollDeviceNow` returns `{ ok, reason }` instead of a bare boolean in both pollers, and all
+three routes forward it as a new `deviceFirstPoll` socket event — addressed to
+**`user:<id>`**, the admin who did the registering, not broadcast. Other dashboards already
+get the device itself through `networkMetrics`/`networkStatus`; this is feedback on one
+person's action.
+
+⚠️ `ok` is not derivable from the card, which is why `mode` rides along: a ping-mode router
+that answers ICMP is a **success** and will never report interfaces, so an empty port list
+must not be read as a failure.
+
+### UI
+
+- `components/devices/DeviceProbe.tsx` — `useProbe()` + `<ProbeResultPanel>`, shared by
+  both SNMP forms. It shows the **measurements** as well as the verdict: "replies to ping
+  in 2 ms, ignores SNMP on UDP 161" is a sentence somebody can take to the network team,
+  where "test failed" is not.
+- ⚠️ **Editing any field the probe depends on clears the result.** A green tick sitting
+  beside an address that has since been retyped is worse than no tick — it vouches for a
+  value nothing ever tested. Applied to the MikroTik form too, which did not do this.
+- **A failed probe never blocks the save**, on any of the three forms. A device can
+  legitimately be registered before it is reachable — cabled next week, or behind a
+  firewall rule somebody else has to open — and refusing would just teach people to skip
+  the test. It states the consequence instead ("it will show as Offline until…").
+- Toasts grew a **tone**. A registration whose first poll failed is not a success and must
+  not appear in the same green box; the warning variant wraps and stays up 9s rather than
+  3, because it carries a reason and a next step.
+- ServerMetrics: `awaitingFirstReport` (backend `withLive`, from `last_seen IS NULL`)
+  renders as an amber **"Never reported"** instead of a red "Offline". The two need
+  opposite reactions — Offline means go and look at a machine that was working; this means
+  the agent has not reached the backend even once (wrong `-server` URL, a firewall, or a
+  service installed and never started).
+
+### Verified
+
+`npm test` **508/508** (14 new in `tests/deviceProbeVerdict.test.js`, including a
+combinatorial pass asserting every input combination yields a title and a detail — a branch
+returning a partial object would print "undefined" at exactly the moment somebody is trying
+to diagnose a device). `tsc --noEmit` clean, production build clean.
+
+The probe itself was exercised against three real shapes: `127.0.0.1` (answers ICMP in
+1 ms, nothing on UDP 161 → `ping_only`, which correctly passes as a router with a blank
+community, fails as a router with one, and fails as a UPS either way), `192.0.2.77`
+(TEST-NET-1, nothing answers → `unreachable`), and malformed input (bad IPv4 and port
+99999 → `{ok:false,error}`, not a throw).
+
+### Still outstanding
+
+1. **Not yet exercised against a device that actually answers SNMP** — no router or UPS on
+   this machine's network does. The `snmp_router` / `snmp_bare` / `ups` verdict branches
+   are covered by unit tests but have not been seen end to end. `dev-snmpsim/` is the way
+   to close that.
+2. The three Add forms now share a contract but not a component — MikroTik keeps its own
+   test UI because its probe is a RouterOS API login, not SNMP, and answers with different
+   fields. Worth revisiting only if a fourth device type appears.
+
+### Three bugs found in the above, same day
+
+**1. The success toast lied — `ok` meant "did not throw", not "answered".**
+
+`pollDeviceNow` inferred success from the absence of an exception. But two poll paths
+**handle their own failure and resolve normally**, by design:
+
+- `mikrotikPollerService.pollDevice` catches a failed `collect()` because rethrowing would
+  let `pollAll`'s catch reset the cache and wipe the ICMP figures it just measured.
+- `snmpPollerService.pollRouterByPing` never throws at all — for a ping-only router
+  `reachable:false` is a legitimate *measurement*, written and broadcast like any other.
+
+So a MikroTik added with a wrong password, and a ping-only router added on a wrong IP,
+both toasted **"now polling"**. Confirmed the precondition against real endpoints:
+`collect()` rejects with `Username or password is invalid` on a bad password and `-4078`
+on a closed API port — the branch was running, its verdict was just being discarded.
+
+Fixed at the source rather than by widening the catch: `pollDevice` now **returns**
+`{reachable, reason}` from each of its three exits, and the SNMP side reads the live cache
+(`latestNetwork`/`latestUps`), which is the one thing every path sets — including the ones
+that handle their own failure. The toast now carries the real reason, which for the API
+case is the full verdict: *"…but the host ANSWERS ICMP, so RouterOS is up and the API is
+the problem: service disabled, wrong port, credentials rejected, or an address-list rule"*.
+
+**2. A deleted device came back.**
+
+A poll takes up to the full API/SNMP timeout — and takes the *full* timeout precisely when
+the device is misconfigured, which is the one most likely to be deleted. Delete it inside
+that window and the in-flight poll still completed: it wrote a `router_metrics` point for a
+device that no longer existed and broadcast `networkMetrics` for it. The dashboards treat
+an unknown id as a NEW device and append it (`idx === -1 → [...prev, …]`), so the row that
+had just been removed reappeared and stayed until a reload.
+
+⚠️ Note this was **never only a UI glitch** — the stray InfluxDB point is the worse half,
+and a client-side ignore-list would have hidden it rather than fixed it. So the guard is in
+both pollers: `removeDevice` records a **tombstone**, and `setReachable` plus all four
+sample writes consult it. Time-bounded (5 min) so the map cannot grow for the life of the
+process.
+
+**3. "API not configured" was only visible inside the drawer.**
+
+A MikroTik with no RouterOS login has never been polled, so its `status` is `"Offline"` —
+wrong in the way that matters: the router is not down, nobody has told us how to log in,
+and the fix is an admin action rather than a trip to the rack. The sentence correcting that
+lived one click away, inside the expandable drawer. New `MkStatus` puts an amber **"API not
+configured"** in the Status cell itself (and on the mobile card), which is where the status
+it corrects already is; the drawer keeps the expanded half — what to actually do about it.
+
+**Verified:** 508/508, `tsc --noEmit` clean, build clean. ⚠️ Bugs 1 and 2 are fixed in code
+and their preconditions confirmed against live endpoints, but the end-to-end paths were not
+re-run — doing so would have written metrics and possibly raised alerts on the real
+database. Worth confirming by hand: add a MikroTik with a wrong password (expect a warning
+toast naming the reason), and delete a device mid-poll (expect it to stay gone).

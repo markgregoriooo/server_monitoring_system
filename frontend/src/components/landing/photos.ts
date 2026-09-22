@@ -102,7 +102,7 @@ export const LANDING_PHOTOS: LandingPhoto[] = [
   },
   {
     id: "aircon-ir",
-    src: "/landing/aircon-ir.jpg",
+    src: "/landing/aircon-ir.png",
     alt: "An infrared transmitter aimed at the server room air conditioner",
     caption: "IR transmitter aimed at the aircon",
     title: "The automation loop, in one frame",

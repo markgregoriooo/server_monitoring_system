@@ -244,7 +244,7 @@ the user's accepted version matches the one in force, and the server enforces th
 thing on **mutating** requests (403 `policy_not_accepted`) — a client-side gate never
 decided what the token could do. The document lives in one component, rendered by both the
 gate and the public `/privacy` page, because the text someone agrees to must be the text
-anyone can read without an account. Full guide: [`privacy-policy.md`](privacy-policy.md).
+anyone can read without an account.
 
 ---
 
@@ -517,12 +517,10 @@ Full guide: [`pip-widget.md`](pip-widget.md).
 | [`DOCUMENTATION.md`](DOCUMENTATION.md) | Long-form system documentation |
 | [`deployment-guide.md`](deployment-guide.md) | On-prem campus deployment, nginx, HTTPS |
 | [`google-oauth.md`](google-oauth.md) | OAuth setup, domain gate, approval flow |
-| [`privacy-policy.md`](privacy-policy.md) | Privacy Notice & Terms, the acceptance gate, RA 10173 |
 | [`server-metrics.md`](server-metrics.md) | Go agent pipeline, offline windows |
 | [`router-ups-monitoring.md`](router-ups-monitoring.md) | SNMP poller design |
 | [`mikrotik-monitoring.md`](mikrotik-monitoring.md) | RouterOS API integration |
 | [`email-popup-notifications.md`](email-popup-notifications.md) | Alerting + notification pipeline |
-| [`report-page.md`](report-page.md) | Report generation, storage, and the ICTU template |
 | [`predictive-analytics.md`](predictive-analytics.md) | Forecasting blueprint + the math, taught from scratch |
 | [`predictive-analytics-study-guide.md`](predictive-analytics-study-guide.md) | Study / defense companion |
 | [`pip-widget.md`](pip-widget.md) | PiP architecture, tile catalog, phased build log |
@@ -530,8 +528,6 @@ Full guide: [`pip-widget.md`](pip-widget.md).
 | [`Environment.md`](Environment.md) | ESP32 sensor pipeline |
 | [`esp32-wifi-provisioning.md`](esp32-wifi-provisioning.md) | Captive-portal WiFi setup for the firmware |
 | [`cloudflare-tunnel-setup.md`](cloudflare-tunnel-setup.md) | Reaching the dashboard over HTTPS before the campus hostname exists |
-| [`agent-vm-testing.md`](agent-vm-testing.md) | Host-only VM networking for agent testing |
-| [`erd-update-guide.md`](erd-update-guide.md) | Keeping the `.mwb` model in step with the SQL |
 | [`docs/dfd/`](docs/dfd/) | Data-flow diagrams |
 | [`audits/`](audits/) | Security, authorization and architecture audits |
 | [`SESSION_NOTES.md`](SESSION_NOTES.md) | Per-session development log |
