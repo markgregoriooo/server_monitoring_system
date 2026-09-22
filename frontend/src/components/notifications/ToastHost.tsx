@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useNotifications } from "../../context/NotificationContext";
 import type { AppNotification } from "../../types/notification";
-import { SEVERITY_COLOR, routeFor } from "./notificationUtils";
+import { SEVERITY_COLOR, routeFor, deviceLabel } from "./notificationUtils";
 
 const TOAST_MS = 6000;   // auto-dismiss after 6s
 const MAX_VISIBLE = 4;   // cap the stack so a burst doesn't fill the screen
@@ -68,9 +68,9 @@ export default function ToastHost() {
             <span className="block text-[12px] mt-0.5" style={{ color: "var(--gf-text-muted)" }}>
               {n.message}
             </span>
-            {n.deviceName && (
+            {deviceLabel(n) && (
               <span className="block text-[11px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
-                {n.deviceName}
+                {deviceLabel(n)}
               </span>
             )}
           </span>

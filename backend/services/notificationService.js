@@ -49,7 +49,23 @@ function toClient(r) {
     id: r.id, // alert_notifications.id — the per-user row the client marks read
     alertId: r.alert_id,
     deviceId: r.device_id,
-    deviceName: r.device_name ?? null,
+    // A server carries TWO names and a notification needs both. `display_name` is the
+    // label an admin gave it ("Main DB server") and is what every page shows; the
+    // hostname is what the agent reports and what you type into a terminal. An alert
+    // that names only one of them is a question either way — "which box is that?" if
+    // it shows the label, "which one did we call that?" if it shows the hostname.
+    //
+    // Effective name first, same COALESCE the rest of the app uses (agentService's
+    // SERVER_SELECT, analyticsService's device identity), so a renamed device reads
+    // the same here as everywhere else.
+    deviceName: (r.display_name ?? "").trim() || r.device_name || null,
+    // ...and the hostname alongside it, but ONLY when it actually differs. A device
+    // with no display name would otherwise render as "web-01 (web-01)", which is
+    // noise, so the UI can print this unconditionally when it is non-null.
+    deviceHostname:
+      (r.display_name ?? "").trim() && r.display_name.trim() !== r.device_name
+        ? r.device_name
+        : null,
     // The devices row's kind (server|router|mikrotik|ups|esp32|aircon). The client
     // needs it to know WHICH page a notification belongs to: deviceAlerts.checkRouter
     // is shared by the SNMP and MikroTik pollers, so both stamp `router_*`/`link_*`,
@@ -144,7 +160,7 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
       `SELECT n.id, n.user_id, n.is_read, n.sent_at,
               a.alert_id, a.device_id, a.type, a.title, a.message, a.severity, a.created_at,
               a.status, a.acknowledged_at, a.resolved_at,
-              d.device_name, d.device_type,
+              d.device_name, d.display_name, d.device_type,
               u.name AS acknowledged_by_name, u.role AS acknowledged_by_role
          FROM alert_notifications n
          JOIN alerts a   ON a.alert_id = n.alert_id
@@ -201,7 +217,7 @@ async function listForUser(userId, { limit = 30 } = {}) {
     `SELECT n.id, n.is_read, n.sent_at,
             a.alert_id, a.device_id, a.type, a.title, a.message, a.severity, a.created_at,
             a.status, a.acknowledged_at, a.resolved_at,
-            d.device_name, d.device_type,
+            d.device_name, d.display_name, d.device_type,
             u.name AS acknowledged_by_name, u.role AS acknowledged_by_role
        FROM alert_notifications n
        JOIN alerts a   ON a.alert_id = n.alert_id

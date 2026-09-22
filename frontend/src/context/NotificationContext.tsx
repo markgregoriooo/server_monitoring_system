@@ -10,7 +10,7 @@ import {
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.js";
-import { routeFor } from "../components/notifications/notificationUtils.js";
+import { routeFor, deviceLabel } from "../components/notifications/notificationUtils.js";
 import { socket } from "../socket/socket.js";
 import { useAuth } from "./AuthContext.js";
 import { fireDesktopNotification } from "../utils/browserNotify.js";
@@ -127,9 +127,14 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       playNotificationSound(); // chime (if not muted)
       // OS popup (if granted + tab hidden). Clicking it focuses the dashboard, marks
       // the item read and opens the device's page — the same gesture as the toast.
+      // The device goes in the BODY here, unlike the toast and the bell which have a
+      // line of their own for it. An OS popup only gets a title and a body, so a
+      // notification that named the device nowhere was the one surface you could read
+      // without learning WHICH machine it was about — and it is the surface you see
+      // when the dashboard is not even open.
       fireDesktopNotification({
         title: n.title,
-        message: n.message,
+        message: deviceLabel(n) ? `${n.message} — ${deviceLabel(n)}` : n.message,
         alertId: n.alertId,
         onActivate: () => {
           if (!n.isRead) markRead([n.id]);

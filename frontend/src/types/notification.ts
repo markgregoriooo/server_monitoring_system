@@ -18,7 +18,12 @@ export interface AppNotification {
   id: number;
   alertId: number;
   deviceId: number;
+  /** The EFFECTIVE name — an admin's display label if set, otherwise the hostname.
+   *  Matches what every page shows for the same device. */
   deviceName: string | null;
+  /** The agent-reported hostname, sent ONLY when it differs from `deviceName`, so a
+   *  device with no custom label never renders as "web-01 (web-01)". */
+  deviceHostname: string | null;
   /** `devices.device_type` (server|router|mikrotik|ups|esp32|aircon), or null for alerts
    *  with no device row. Drives which page a notification click opens — see `routeFor`. */
   deviceType: string | null;

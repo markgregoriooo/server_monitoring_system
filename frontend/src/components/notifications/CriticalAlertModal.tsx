@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useNotifications } from "../../context/NotificationContext";
 import type { AppNotification } from "../../types/notification";
-import { routeFor } from "./notificationUtils";
+import { routeFor, deviceLabel } from "./notificationUtils";
 import { api } from "../../api/api";
 import { startAlarm, stopAlarm, isAudioBlocked } from "../../utils/criticalAlarm";
 
@@ -188,9 +188,9 @@ export default function CriticalAlertModal() {
         {/* min-w-0 or `truncate` cannot shrink it — a flex item will not go below its
             content width without it, and the row overflows instead of the text ellipsing. */}
         <span className="text-[13px] font-semibold truncate min-w-0">{current.title}</span>
-        {current.deviceName && (
+        {deviceLabel(current) && (
           <span className="text-[12px] opacity-80 truncate hidden sm:inline">
-            · {current.deviceName}
+            · {deviceLabel(current)}
           </span>
         )}
         {queue.length > 1 && (
@@ -300,10 +300,10 @@ export default function CriticalAlertModal() {
           </p>
 
           <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px]">
-            {current.deviceName && (
+            {deviceLabel(current) && (
               <>
                 <dt style={{ color: "var(--gf-text-dim)" }}>Device</dt>
-                <dd style={{ color: "var(--gf-text-muted)" }}>{current.deviceName}</dd>
+                <dd style={{ color: "var(--gf-text-muted)" }}>{deviceLabel(current)}</dd>
               </>
             )}
             <dt style={{ color: "var(--gf-text-dim)" }}>Raised</dt>

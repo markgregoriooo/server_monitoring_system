@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useNotifications } from "../../context/NotificationContext";
 import type { AppNotification } from "../../types/notification";
-import { SEVERITY_COLOR, routeFor, relativeTime } from "./notificationUtils";
+import { SEVERITY_COLOR, routeFor, relativeTime, deviceLabel } from "./notificationUtils";
 import { desktopPermission, requestDesktopPermission } from "../../utils/browserNotify";
 import { isSoundEnabled, setSoundEnabled } from "../../utils/notificationSound";
 
@@ -214,9 +214,9 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
                   <span className="block text-[13px] mt-0.5 truncate" style={{ color: "var(--gf-text-muted)" }}>
                     {n.message}
                   </span>
-                  {n.deviceName && (
+                  {deviceLabel(n) && (
                     <span className="block text-[12px] mt-0.5 truncate" style={{ color: "var(--gf-text-dim)" }}>
-                      {n.deviceName}
+                      {deviceLabel(n)}
                     </span>
                   )}
                   {n.status && n.status !== "active" && (

@@ -8,6 +8,20 @@ export const SEVERITY_COLOR: Record<Severity, string> = {
   info: "#5794F2",
 };
 
+// How a device is named in every notification surface — the bell, the toast, the
+// critical modal and the OS popup. One helper because those four drifted: the bell
+// showed a name the OS popup did not carry at all, so the same alert read
+// differently depending on where you saw it.
+//
+// A server has two names and both matter. `deviceName` is the label an admin gave
+// it, which is what every page shows; `deviceHostname` is what the agent reports and
+// what you would type into a terminal. The backend only sends the hostname when it
+// DIFFERS from the label, so this never prints "web-01 (web-01)".
+export function deviceLabel(n: Pick<AppNotification, "deviceName" | "deviceHostname">): string | null {
+  if (!n.deviceName) return null;
+  return n.deviceHostname ? `${n.deviceName} (${n.deviceHostname})` : n.deviceName;
+}
+
 // Which list page owns each kind of devices row. Every one of these pages reads
 // ?device=<id> and opens that device's detail, so the deep-link shape is uniform.
 const PAGE_FOR_DEVICE_TYPE: Record<string, string> = {

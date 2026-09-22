@@ -333,7 +333,7 @@ function readApprovedToken(row) {
 
 async function listPending() {
   const [rows] = await db.query(
-    `SELECT d.device_id AS id, d.device_name AS name, d.ip_address AS ip, d.location,
+    `SELECT d.device_id AS id, COALESCE(NULLIF(d.display_name, ''), d.device_name) AS name, d.ip_address AS ip, d.location,
             s.os, s.architecture AS arch, s.cores, s.agent_version,
             n.mac_address AS mac, t.created_at AS requestedAt
        FROM devices d
@@ -596,7 +596,7 @@ async function checkThresholds(deviceId, metrics) {
 // Idempotent: rows already 'offline' are skipped, so it logs the event once.
 async function sweepOffline() {
   const [stale] = await db.query(
-    `SELECT d.device_id AS id, d.device_name AS name
+    `SELECT d.device_id AS id, COALESCE(NULLIF(d.display_name, ''), d.device_name) AS name
        FROM devices d
        JOIN agent_tokens t        ON t.device_id = d.device_id AND t.status = 'approved'
        LEFT JOIN server_specs s   ON s.device_id = d.device_id
@@ -641,7 +641,7 @@ async function markOfflineByIds(ids) {
   if (list.length === 0) return [];
   const marks = list.map(() => "?").join(",");
   const [rows] = await db.query(
-    `SELECT d.device_id AS id, d.device_name AS name
+    `SELECT d.device_id AS id, COALESCE(NULLIF(d.display_name, ''), d.device_name) AS name
        FROM devices d
        JOIN agent_tokens t ON t.device_id = d.device_id AND t.status = 'approved'
       WHERE d.device_type = 'server' AND d.status = 'online' AND d.device_id IN (${marks})`,
