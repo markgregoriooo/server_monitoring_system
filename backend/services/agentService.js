@@ -614,14 +614,65 @@ async function sweepOffline() {
     ids,
   );
 
+  return flipOffline(stale, "Server went offline — no metrics received");
+}
+
+// The transition itself, shared by the heartbeat sweep above and the fast ICMP sweep
+// (services/reachabilitySweep.js). Both must produce the SAME offline — same cache
+// eviction, same band reset, same device log — or an outage caught in 5 seconds would
+// read differently from the identical outage caught in 45.
+async function flipOffline(rows, reason) {
   const out = [];
-  for (const r of stale) {
+  for (const r of rows) {
     latestMetrics.delete(Number(r.id));
     alertBandState.resetDevice(r.id); // re-arm threshold logging for when it returns
-    const log = await logDevice(r.id, "warning", "Server went offline — no metrics received");
+    const log = await logDevice(r.id, "warning", reason);
     out.push({ id: Number(r.id), name: r.name, log });
   }
   return out;
+}
+
+// Mark specific servers offline NOW, for a caller that already has proof they are gone
+// (the host stopped answering ICMP) rather than an inference from silence. Re-checks
+// `status = 'online'` in the UPDATE's own WHERE so two sweeps racing on the same server
+// cannot both claim the transition and log it twice.
+async function markOfflineByIds(ids) {
+  const list = (Array.isArray(ids) ? ids : [ids]).map(Number).filter(Number.isInteger);
+  if (list.length === 0) return [];
+  const marks = list.map(() => "?").join(",");
+  const [rows] = await db.query(
+    `SELECT d.device_id AS id, d.device_name AS name
+       FROM devices d
+       JOIN agent_tokens t ON t.device_id = d.device_id AND t.status = 'approved'
+      WHERE d.device_type = 'server' AND d.status = 'online' AND d.device_id IN (${marks})`,
+    list,
+  );
+  if (rows.length === 0) return [];
+  const ok = rows.map((r) => r.id);
+  await db.query(
+    `UPDATE devices SET status = 'offline', updated_at = NOW()
+      WHERE status = 'online' AND device_id IN (${ok.map(() => "?").join(",")})`,
+    ok,
+  );
+  return flipOffline(rows, "Server went offline — host stopped answering ICMP");
+}
+
+// Tell everyone. Split out of src/server.js so the fast sweep raises the identical
+// alert rather than a second, subtly different one.
+async function announceOffline(io, rows) {
+  for (const o of rows ?? []) {
+    io?.emit("serverStatus", { id: o.id, status: "Offline" });
+    if (o.log) io?.emit("deviceLog", o.log);
+    await notificationService.raiseAlert({
+      deviceId: o.id,
+      type: "offline",
+      title: "Server offline",
+      message: o.name
+        ? `${o.name} went offline — no metrics received`
+        : o.log?.message || `Server ${o.id} stopped reporting`,
+      severity: "warning",
+    });
+  }
 }
 
 // ─── Dashboard reads ──────────────────────────────────────────────────────────
@@ -721,6 +772,8 @@ const agentService = {
   getDeviceLogs,
   checkThresholds,
   sweepOffline,
+  markOfflineByIds,
+  announceOffline,
   getServers,
   getServerById,
   removeServer,

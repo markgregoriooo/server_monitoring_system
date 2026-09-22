@@ -696,6 +696,8 @@ async function removeDevice(id) {
 
 export default {
   pollAll,
+  // See the note on snmpPollerService.setReachable — same reason.
+  setReachable,
   pollDeviceNow,
   getMikrotikDevices,
   createDevice,

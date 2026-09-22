@@ -23,6 +23,7 @@ import analyticsAlerts from "../services/analyticsAlerts.js";
 import esp32Monitor from "../services/esp32Monitor.js";
 import snmpPollerService from "../services/snmpPollerService.js";
 import mikrotikPollerService from "../services/mikrotikPollerService.js";
+import reachabilitySweep from "../services/reachabilitySweep.js";
 import backupService from "../services/backupService.js";
 import gasSensorService from "../services/gasSensorService.js";
 import reportService from "../services/reportService.js";
@@ -469,26 +470,27 @@ server.keepAliveTimeout = Number(process.env.HTTP_KEEPALIVE_TIMEOUT_MS) || 80_00
 // a server offline when its agent stops. Every 15s, flip stale approved servers to
 // 'offline' and push the change live to dashboards (+ a device log). Without this
 // the UI would keep showing a dead server as "Online" indefinitely.
-const OFFLINE_SWEEP_MS = 15_000;
+// 5s, not 15s. This interval is PURE LATENCY on top of the heartbeat window: the
+// window decides when a server counts as gone, and then the sweep decides how long
+// after that anybody hears about it. At 15s a 30s window could take 45s to surface,
+// a third of the delay being nothing but the gap between two ticks of a query that
+// costs one indexed lookup. See services/reachabilitySweep.js for the other half —
+// a host that stops answering ICMP no longer waits for the window at all.
+const OFFLINE_SWEEP_MS = 5_000;
 setInterval(async () => {
   try {
-    const offlined = await agentService.sweepOffline();
-    for (const o of offlined) {
-      io.emit("serverStatus", { id: o.id, status: "Offline" });
-      if (o.log) io.emit("deviceLog", o.log);
-      // A server dropping offline is notification-worthy (bell + future email).
-      await notificationService.raiseAlert({
-        deviceId: o.id,
-        type: "offline",
-        title: "Server offline",
-        message: o.name ? `${o.name} went offline — no metrics received` : (o.log?.message || `Server ${o.id} stopped reporting`),
-        severity: "warning",
-      });
-    }
+    // announceOffline lives in agentService so the fast ICMP sweep raises the exact
+    // same alert instead of a second, subtly different one.
+    await agentService.announceOffline(io, await agentService.sweepOffline());
   } catch (err) {
     console.error("[OFFLINE_SWEEP] error:", err);
   }
 }, OFFLINE_SWEEP_MS);
+
+// Fast offline detection: one ICMP echo per online device every few seconds, which
+// can only mark a device DOWN (recovery stays with the full poll that owns it). This
+// is what makes an outage surface in seconds instead of at the next SNMP walk.
+reachabilitySweep.init(io);
 
 // ESP32 liveness sweep — the environment sensor's equivalent of the offline sweep
 // above. The ESP32 has no `devices` row (so last_seen can't cover it) and pushes

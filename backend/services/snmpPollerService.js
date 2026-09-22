@@ -1031,6 +1031,10 @@ async function removeDevice(id, type) {
 export default {
   pollAll,
   pollDeviceNow,
+  // Exported for services/reachabilitySweep.js, which decides WHEN a device is
+  // unreachable on a fast ICMP cadence but must not reimplement what that MEANS —
+  // the device row, the log line, the socket event and the alert all live here.
+  setReachable,
   collectRouter,
   collectUps,
   loadDevices,
