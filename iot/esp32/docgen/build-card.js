@@ -208,7 +208,7 @@ const doc = new Document({
         table([0.26, 0.74], [
           ["Light", "Meaning"],
           ["Blue, dim", "Booting. Wait about 20 seconds"],
-          [[b("Magenta")], [t("Press "), b("BOOT"), t(" now if you want to change the WiFi — 4 seconds only")]],
+          [[b("Magenta")], [t("Press "), b("SETUP"), t(" (or BOOT) now if you want to change the WiFi — 4 seconds only")]],
           ["Red", "WiFi failed — wrong password, or network not found"],
           ["Orange", "On WiFi, but the server did not answer — Backend IP is wrong"],
           ["Green", "Connected. Nothing to do"],
@@ -219,6 +219,7 @@ const doc = new Document({
         table([0.26, 0.74], [
           ["Light", "Meaning"],
           ["Green", "Normal"],
+          [[b("Magenta")], [t("You are holding "), b("SETUP"), t(". Keep holding — at 3 s it blinks green once, then restarts into WiFi setup")]],
           ["Green + blue blink every 5 s", "Readings are not reaching the dashboard. Nothing is lost — they are saved on the memory card"],
           ["Blue, bright", "Room too cold"],
           ["Yellow", "Warning — heat, humidity or gas rising"],
@@ -283,7 +284,7 @@ const doc = new Document({
         h1("4.  Change a setting"),
         table([0.42, 0.58], [
           ["What", "Where"],
-          ["WiFi / Backend IP", "On the box — section 5"],
+          ["WiFi / Backend IP", [t("On the box — hold "), b("SETUP"), t(" 3 s, section 5")]],
           ["Alarm levels (temperature, humidity, gas)", [t("Dashboard → "), b("Alert Rules"), t(" (admin)")]],
           ["When the aircon kicks in", [t("Dashboard → "), b("Air Conditioner → Auto-Cooling Thresholds"), t(" (admin)")]],
           ["Smoke baseline, after moving the box", [t("Dashboard → "), b("Environment → Recalibrate gas")]],
@@ -294,17 +295,51 @@ const doc = new Document({
 
         /* ---- 5 ---- */
         h1("5.  Change the WiFi or server address"),
+        p([
+          b("Leave the box plugged in. "),
+          t("Hold the "), b("SETUP"), t(" button for a full "), b("3 seconds"),
+          t(" — the box restarts itself into the setup page. Nothing to unplug, no window to catch."),
+        ]),
         ...steps([
-          [t("Plug the box in — "), b("do not touch any button yet"), t(".")],
-          [t("After about 4 seconds the light turns "), b("magenta"), t(".")],
-          [t("While it is magenta, "), b("press BOOT once"), t(" (marked "), code("BOOT"), t(" or "), code("IO0"), t(").")],
-          [t("On your phone, join the WiFi "), code("CSPC-ICTU-Sensor-XXXX"), t(" (no password). The setup page opens by itself — if not, go to "), code("http://192.168.4.1"), t(".")],
+          [t("Hold "), b("SETUP"), t(". The light turns "), b("magenta"), t(" while the 3 seconds count.")],
+          [t("It blinks "), b("green"), t(" once — the hold registered. Let go; the box restarts on its own.")],
+          [t("The setup page comes up by itself. On your phone, join the WiFi "), code("CSPC-ICTU-Sensor-XXXX"), t(" (no password) — if the page does not open, go to "), code("http://192.168.4.1"), t(".")],
           [b("Configure WiFi"), t(" → pick the network ("), b("2.4 GHz only"), t("), type the password, enter the "), b("Backend IP"), t(" and port "), code("3000"), t(".")],
           [b("Save"), t(", and wait for the page to say "), b("Connected"), t(".")],
         ]),
         callout([
+          t("The 3 seconds must be unbroken — let go early and the count starts over. "),
+          b("During an alarm there is no magenta"),
+          t(" (the alarm colour keeps the light), but the hold still counts: watch for the green blink. The setup page waits about "),
+          b("3 minutes"),
+          t("; if nobody connects, the box goes back to monitoring — hold "),
+          b("SETUP"),
+          t(" again."),
+        ]),
+
+        h2("No SETUP button on the box?"),
+        /* keepNext, or the heading and this line sit at the foot of a page with their steps
+           overleaf — the one block on the card somebody reads while standing at the rack. */
+        p([t("Older boxes have none. This boot-time window also works on a box that has one, and is the only route left if the box stops before it starts running.")], { keepNext: true }),
+        ...steps([
+          [t("Plug the box in — "), b("do not touch any button yet"), t(".")],
+          [t("After about 4 seconds the light turns "), b("magenta"), t(".")],
+          [t("While it is magenta, "), b("press BOOT once"), t(" (marked "), code("BOOT"), t(" or "), code("IO0"), t("), then carry on from step 3 above.")],
+        ]),
+        callout([
           b("Do not hold BOOT while plugging in. "),
           t("That puts the chip in programming mode and it stops running. Unplug and start again."),
+        ], true),
+
+        h2("Fitting a SETUP button"),
+        p([
+          t("Once, with the box "), b("unplugged"), t(". Any momentary push-button: one leg to "),
+          code("GPIO 13"), t(", the other to "), code("GND"),
+          t(". No resistor, nothing else to add. Label it "), code("SETUP"), t("."),
+        ]),
+        callout([
+          code("GPIO 13"),
+          t(" and nothing else. The other pins left free on this board are either strapping pins — a button on one of them stops the box booting — or memory lines."),
         ], true),
 
         /* ---- 6 ---- */
@@ -313,6 +348,7 @@ const doc = new Document({
           "Wire anything while the box is plugged in.",
           "Wire an MQ-2 AOUT straight to the board — use the divider.",
           "Hold BOOT while powering on.",
+          "Wire the SETUP button to 3.3 V or 5 V — it goes to GND.",
           "Remove the coin cell from the clock module.",
           "Use a 5 GHz WiFi network.",
           "Use any pin not listed on this card.",
@@ -328,6 +364,8 @@ const doc = new Document({
           ["New sensor reads nothing", "Not added on the dashboard → section 2, step 4"],
           ["New sensor reads a strange high value", [b("Recalibrate gas"), t(" in clean air")]],
           ["Aircon does not respond", "Check the aim, and that the unit is registered → section 3"],
+          ["Nothing happens when I hold SETUP", "Hold a full 3 s without letting go. In an alarm there is no magenta — watch for the green blink"],
+          ["Setup page never came back after the restart", [t("It waits 3 minutes, then returns to monitoring. Hold "), b("SETUP"), t(" again → section 5")]],
           ["Box never appears on the dashboard", "Section 5, and check the server is running"],
         ]),
         spacer(),

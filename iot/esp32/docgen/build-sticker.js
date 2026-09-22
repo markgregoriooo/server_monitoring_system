@@ -178,7 +178,7 @@ const doc = new Document({
         p([b("When you switch it on")], { spacing: { before: 20, after: 40 } }),
         ledTable([
           [C_BLUE_DIM, "Blue", "Starting up. Wait about 20 seconds."],
-          [C_PURPLE, "Purple", "Press BOOT now to change the WiFi. 4 seconds only."],
+          [C_PURPLE, "Purple", "Press SETUP or BOOT now to change the WiFi. 4 seconds only."],
           [C_RED, "Red", "Wrong WiFi password, or no network found."],
           [C_ORANGE, "Orange", "On WiFi, but it cannot reach the server."],
           [C_GREEN, "Green", "Ready. Nothing to do."],
@@ -215,11 +215,12 @@ const doc = new Document({
 
         head("To change the WiFi"),
         ...steps([
-          "Plug it in. Do not press anything yet.",
-          "Wait about 4 seconds, until the light turns purple.",
-          [b("While it is purple"), t(", press the small BOOT button once.")],
+          [b("Hold the small SETUP button for 3 seconds."), t(" Leave the box plugged in.")],
+          "The light turns purple, then blinks green once — let go. The box restarts by itself.",
           [t("On your phone, join the WiFi "), b("CSPC-ICTU-Sensor"), t(" (no password). A setup page opens by itself — pick a 2.4 GHz network.")],
         ]),
+        p([t("No SETUP button? Plug it in, wait for purple, then press BOOT once.", { color: MUTED })],
+          { spacing: { before: 30, after: 30 } }),
         warn([b("Never hold the BOOT button while plugging it in."), t(" It will stop working. Unplug and start again.")]),
 
         head("Never"),

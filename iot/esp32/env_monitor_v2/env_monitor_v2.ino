@@ -14,6 +14,9 @@
  *  IR TX #2      : GPIO 33  ← NEW (AC unit 2)
  *  RTC DS3231    : SDA=21, SCL=22  (I2C, shared bus OK)
  *  micro SD      : SCK=18, MISO=19, MOSI=23, CS=5  (VSPI default)
+ *  Setup button  : GPIO 13 → button → GND  (INPUT_PULLUP, no resistor)
+ *                  Hold 3 s at any time to reboot into the WiFi setup
+ *                  portal. Optional — BOOT still works. See PORTAL_BUTTON_PIN2.
  *
  *  --- SD CARD OFFLINE BUFFER ---
  *  The card is a SAFETY NET for the minutes the backend cannot be
@@ -261,9 +264,39 @@ uint16_t netPort = BACKEND_PORT;
 /* ⚠️ Press BOOT *after* power-up, inside the window below — NOT while powering up.
    GPIO 0 is a strapping pin: held low at reset, the ROM enters serial download mode and
    this sketch never runs at all. The window is announced on the RGB LED (magenta) and on
-   serial, so there is a moment to press *at* rather than a gesture to time blind. */
+   serial, so there is a moment to press *at* rather than a gesture to time blind.
+
+   This is now the FALLBACK gesture, kept for boxes with no external button fitted and as
+   the one route that still works if the sketch ever hangs before loop() runs. The button
+   below is the normal one. */
 #define PORTAL_BUTTON_PIN       0
 #define PORTAL_BUTTON_WINDOW_MS 4000
+
+/* The external re-provisioning button: a plain momentary switch, one leg to this pin and
+   the other to GND, read with INPUT_PULLUP (idle HIGH, pressed LOW — the ~45 kΩ pull-up is
+   inside the chip, so there is no resistor to fit).
+
+   It exists because the BOOT gesture above is TWO acts — press EN, then catch a 4-second
+   window — and the second one is invisible unless you are already watching the LED. Held
+   for PORTAL_HOLD_MS at any time, this one asks for the portal on its own.
+
+   ⚠️ GPIO 13 is deliberate, not "a free pin". Of what this board has left (2, 12, 13, 14,
+   16, 17): GPIO 12 is MTDI, a strapping pin that must read LOW at reset — a button to GND
+   with a pull-up holds it HIGH and the chip boots expecting 1.8 V flash; GPIO 2 is
+   strapping too and carries the onboard LED; GPIO 16/17 are free on a WROOM-32 but are the
+   PSRAM lines on a WROVER, so a module swap would silently break this. 13 and 14 are plain
+   (unused JTAG); 13 is the pick. It is read digitally, so the ADC2-with-WiFi rule that
+   constrains MQ2_PINS does not apply here.
+
+   The hold is its own debounce: it needs PORTAL_HOLD_MS of CONTINUOUS low, so a bouncing
+   contact just restarts the count. No capacitor, no library. */
+#define PORTAL_BUTTON_PIN2 13
+#define PORTAL_HOLD_MS     3000
+
+/* Set while a finger is on that button and the count is running, so paintStatusLED() can
+   hand the LED over instead of repainting the room colour on the same tick and erasing the
+   only feedback that the hold is being counted. See checkPortalButton(). */
+bool portalHoldActive = false;
 
 /* How long the boot-time join is given before the box carries on into offline mode.
    Same budget as the old 20 x 500 ms wait it replaces. */
@@ -716,6 +749,14 @@ void setStatusColor(const String& envStatus, const String& tempStatus, const Str
 void paintStatusLED(unsigned long now_ms, bool reporting,
                     const String& envStatus, const String& tempStatus, const String& smokeStatus) {
   bool quiet = envStatus == "NORMAL" && tempStatus != "CRITICAL" && smokeStatus != "CRITICAL";
+  /* The re-provisioning hold outranks the offline blink — somebody is standing there with a
+     finger on the button and needs to see the count is running — but NOT the room. `quiet`
+     is the same gate the blink uses, so an alarm still owns the LED while the button is
+     held; the confirming green blip fires either way, immediately before the restart. */
+  if (portalHoldActive && quiet) {
+    setRGB(60, 0, 60);  // magenta — keep holding to re-run WiFi setup
+    return;
+  }
   if (!reporting && quiet && (now_ms % OFFLINE_BLINK_PERIOD_MS) < OFFLINE_BLINK_ON_MS) {
     setRGB(0, 0, 60);   // dim blue pulse — the room is fine, the reporting is not
     return;
@@ -1727,20 +1768,58 @@ void buildStatusBanner(bool probed, bool backendOk) {
   netStatusBanner += F("</div>");
 }
 
-/* Watch GPIO 0 for a few seconds so an installed box can be re-provisioned with no laptop
-   and no Arduino IDE. Deliberately a WINDOW AFTER boot rather than a level at reset:
+/* Did the last run ask for the portal? checkPortalButton() records the request in NVS and
+   restarts, because the portal BLOCKS for up to PORTAL_TIMEOUT_S and blocking is only ever
+   acceptable at boot — running it from loop() would mean three minutes with no MQ-2 read, no
+   buzzer and no IR, which is the failure mode that matters during a fire. A restart costs a
+   second and re-enters this path, which is already the tested one.
+
+   ⚠️ Cleared BEFORE the portal opens, not after it closes. A brownout or a watchdog reset
+   inside the portal would otherwise leave the flag set and the box would reopen the portal
+   on every boot forever — an unmonitored room, and no gesture that undoes it. */
+bool takePortalRequest() {
+  prefs.begin(NVS_NET_NAMESPACE, false);
+  bool requested = prefs.getBool("portal", false);
+  if (requested) prefs.remove("portal");
+  prefs.end();
+  return requested;
+}
+
+/* Watch the buttons for a few seconds so an installed box can be re-provisioned with no
+   laptop and no Arduino IDE. Deliberately a WINDOW AFTER boot rather than a level at reset:
    GPIO 0 is a strapping pin, so "hold BOOT while powering on" — the obvious gesture, and
    the one the plan originally called for — puts the ROM into serial download mode and this
-   sketch never runs at all. The LED turning magenta is the cue to press. */
+   sketch never runs at all. The LED turning magenta is the cue to press.
+
+   Both pins are read, so one gesture covers every box: the external button on boxes that
+   have one, BOOT on those that do not. */
 bool portalButtonPressed() {
+  /* ⚠️ Both pins are configured BEFORE the early return below, not after it. This runs once,
+     in setup(), and is the only place either pin is claimed — leave it until after the
+     return and a box that got here by the restart path would reach loop() with GPIO 13
+     still in its reset state: an input with NO pull, floating, reading LOW on stray coupling
+     whenever nothing is pressed. checkPortalButton() would then see a button being held
+     down, request the portal, restart, and arrive here again. A boot loop with a cause
+     nobody can see, on the one path that is supposed to be the easy one. */
   pinMode(PORTAL_BUTTON_PIN, INPUT_PULLUP);
-  setRGB(60, 0, 60);   // magenta = press BOOT now to change the WiFi
-  Serial.printf("[NET] Press BOOT within %lus to re-run WiFi setup",
+  pinMode(PORTAL_BUTTON_PIN2, INPUT_PULLUP);
+
+  /* The normal route in: the button was held during the last run and the box restarted
+     itself to get here. No window to catch, nothing to time. */
+  if (takePortalRequest()) {
+    Serial.println("[NET] Re-provisioning was requested by the button — opening setup.");
+    setRGB(60, 0, 60);
+    return true;
+  }
+
+  setRGB(60, 0, 60);   // magenta = press the button / BOOT now to change the WiFi
+  Serial.printf("[NET] Press the setup button or BOOT within %lus to re-run WiFi setup",
                 (unsigned long)(PORTAL_BUTTON_WINDOW_MS / 1000));
   unsigned long start = millis();
   bool pressed = false;
   while (millis() - start < PORTAL_BUTTON_WINDOW_MS) {
-    if (digitalRead(PORTAL_BUTTON_PIN) == LOW) { pressed = true; break; }
+    if (digitalRead(PORTAL_BUTTON_PIN)  == LOW ||
+        digitalRead(PORTAL_BUTTON_PIN2) == LOW) { pressed = true; break; }
     delay(10);
   }
   Serial.println(pressed ? " — PRESSED." : " — no.");
@@ -1758,6 +1837,43 @@ bool portalButtonPressed() {
     setRGB(0, 0, 50);    // back to the boot blue
   }
   return pressed;
+}
+
+/* The runtime half of the same gesture: hold the external button for PORTAL_HOLD_MS at any
+   time and the box reboots into the setup portal. This is what removes the EN press — the
+   boot window above needs a reset first, and a reset on an installed box means reaching
+   behind a rack for the plug.
+
+   Non-blocking, and called BEFORE the warmup early-return in loop(), so it answers from the
+   first tick rather than only once the MQ-2 heaters have settled. It does not open the
+   portal itself — see takePortalRequest() for why that would be the wrong place.
+
+   The release latch matters: without it the same hold would be counted again the moment the
+   box came back up, on a finger that has not moved. */
+void checkPortalButton() {
+  static unsigned long downAt  = 0;
+  static bool          latched = false;
+
+  if (digitalRead(PORTAL_BUTTON_PIN2) == LOW) {
+    if (!downAt) downAt = millis();
+    if (!latched && millis() - downAt >= PORTAL_HOLD_MS) {
+      latched = true;
+      portalHoldActive = false;
+      Serial.println("\n[NET] Setup button held — restarting into WiFi setup.");
+      setRGB(0, 255, 0);   // green blip — the hold registered. Fires even mid-alarm, since
+      delay(250);          // this is the last feedback before the box goes down.
+      prefs.begin(NVS_NET_NAMESPACE, false);
+      prefs.putBool("portal", true);
+      prefs.end();
+      buzzerOff();         // do not leave the piezo driven across the restart
+      ESP.restart();
+    }
+    portalHoldActive = !latched;
+  } else {
+    downAt  = 0;           // released early — the count starts over next time
+    latched = false;
+    portalHoldActive = false;
+  }
 }
 
 // Bounded blocking join with the configuration we already have. Same budget as the
@@ -2329,6 +2445,12 @@ void loop() {
   if (socketConfigured) socketIO.loop();
   unsigned long now_ms = millis();
 
+  /* ── Re-provisioning button ──
+     Ahead of everything, including the warmup early-return below: the gesture has to answer
+     from the first tick, and a box whose WiFi is wrong is exactly the one somebody will be
+     standing in front of holding the button while the heaters settle. */
+  checkPortalButton();
+
   bool wifiNow = (WiFi.status() == WL_CONNECTED);
 
   /* ── WiFi keep-alive ──
@@ -2356,9 +2478,11 @@ void loop() {
   /* ⚠️ A retry, never the setup portal. WiFiManager's portal BLOCKS, and this is the
      runtime path: an AP reboot or a pulled cable would stop the sensor reads, the buzzer
      and the IR for as long as it stayed open. During a fire that is the failure mode that
-     matters, so re-provisioning is a boot-time act only — the BOOT button, see
-     portalButtonPressed(). The SSID guard covers the blank box whose portal timed out;
-     WiFi.begin("") is not a thing worth doing every 15 seconds. */
+     matters, so re-provisioning stays a boot-time act — a held button restarts the box INTO
+     it rather than opening it here (checkPortalButton), which is a deliberate act by a
+     person standing at the rack, not something a flapping access point can cause. The SSID
+     guard covers the blank box whose portal timed out; WiFi.begin("") is not a thing worth
+     doing every 15 seconds. */
   if (!wifiNow && !netUnset(netSsid) && (now_ms - lastWifiRetry) >= WIFI_RETRY_MS) {
     lastWifiRetry = now_ms;
     Serial.print("[WiFi] Down — retrying SSID: ");
