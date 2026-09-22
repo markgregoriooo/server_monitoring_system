@@ -12,10 +12,10 @@
 #        -v cspc-branding:/app/branding \
 #        cspc-monitoring-backend
 #
-#  ⚠️ This image is the backend ONLY — it answers JSON and nothing else. The
-#     dashboard is a separate image (frontend/Dockerfile), and MySQL + InfluxDB
-#     are separate services again. `docker compose up` starts all four; this
-#     container on its own is an API with nothing to talk to and no UI.
+#  This image is the backend ONLY — it answers JSON and nothing else. The
+#  dashboard is a separate image (frontend/Dockerfile), and MySQL + InfluxDB are
+#  separate services again. `docker compose up` starts all four; this container
+#  on its own is an API with nothing to talk to and no UI.
 # ============================================================================
 
 # Node 22 LTS. NOT node:17 — that line was never LTS and went end-of-life in
@@ -95,7 +95,7 @@ EXPOSE 3000
 # it answers "is the process serving HTTP?" without reporting the whole system
 # unhealthy during a MySQL blip — the backend is designed to outlive its stores.
 # start-period covers the boot-time config validation and the first poll tick.
-# ⚠️ ${PORT:-3000}, not ${PORT}. The ENV above sets 3000, but compose's
+# ${PORT:-3000}, not ${PORT}. The ENV above sets 3000, but compose's
 # env_file OVERRIDES image ENV — so a blank `PORT=` line in backend/.env (which
 # is what the template ships) makes PORT an empty string here. The URL then
 # reads http://127.0.0.1:/api/... and every check fails, while the server is

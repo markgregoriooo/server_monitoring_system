@@ -2,6 +2,7 @@
 package collector
 
 import (
+	"log"
 	"math"
 	"net"
 	"runtime"
@@ -85,10 +86,50 @@ type usageFunc func(string) (*disk.UsageStat, error)
 // collectVolumes probes every fixed volume on this host.
 func collectVolumes() []Volume {
 	parts, err := disk.Partitions(false) // false = physical devices only
-	if err != nil {
-		return nil
+	return buildVolumes(usablePartitions(parts, err), disk.Usage)
+}
+
+// usablePartitions decides whether a Partitions() result is worth using.
+//
+// On Windows, `err != nil` does NOT mean the call failed. gopsutil walks the drive
+// letters and collects WARNINGS as it goes — a mapped network drive that is currently
+// disconnected, a BitLocker-locked volume, a RAW or recovery partition that happens to
+// have a letter — then returns the drives it read successfully AND those warnings
+// together (`return ret, warnings.Reference()`, disk_windows.go). A CD-ROM or empty
+// card reader is skipped silently, but anything DRIVE_FIXED or DRIVE_REMOTE that
+// cannot be read adds a warning.
+//
+// So `if err != nil { return nil }` threw away a perfectly good C: and D: because some
+// OTHER drive on the machine was unreadable. The symptom is the worst kind: metrics
+// keep arriving and look completely healthy, while the volumes list is simply empty —
+// which reads as "this host has no disks" rather than as an error. It only shows up on
+// machines that HAVE such a drive, which is why an office PC with a stale mapped share
+// reported nothing while the laptops next to it were fine.
+//
+// Partial success is the normal case here, so take what we got and only give up when
+// there is genuinely nothing.
+func usablePartitions(parts []disk.PartitionStat, err error) []disk.PartitionStat {
+	if len(parts) > 0 {
+		if err != nil {
+			warnPartitionsOnce(err)
+		}
+		return parts
 	}
-	return buildVolumes(parts, disk.Usage)
+	return nil
+}
+
+// A partition warning is a property of the MACHINE, not of the sample — it repeats
+// every cycle and would otherwise fill the log with the same line forever.
+var partitionWarned bool
+
+func warnPartitionsOnce(err error) {
+	if partitionWarned {
+		return
+	}
+	partitionWarned = true
+	log.Printf("[volumes] some drives could not be read (%v) — reporting the ones that could. "+
+		"Common causes: a disconnected mapped network drive, a BitLocker-locked volume, "+
+		"or a recovery partition with a drive letter.", err)
 }
 
 // buildVolumes filters a mount table down to real, reportable storage.

@@ -16,15 +16,15 @@
 #  Day to day:
 #      docker compose ps                # what is running, and is it healthy
 #      docker compose up -d backend     # after editing backend/.env
-#          ⚠️ NOT `restart` — env_file is read when a container is CREATED, so
+#          (NOT `restart` — env_file is read when a container is CREATED, so
 #          restart reuses the old values and the edit appears to do nothing.
-#          `up -d` notices the change and recreates the container.
+#          `up -d` notices the change and recreates the container.)
 #      docker compose down              # stop everything, KEEP the data
-#      docker compose down -v           # ⚠️ also deletes the volumes = the data
+#      docker compose down -v           # also deletes the volumes = the data
 #
-#  ⚠️ Cloudflare's tunnel is NOT a container here. cloudflared runs on the host
-#     and points at localhost:3000 and localhost:8080, which is what the two
-#     published ports below are for. See deployment-guide.md §5.
+#  Cloudflare's tunnel is NOT a container here. cloudflared runs on the host and
+#  points at localhost:3000 and localhost:8080, which is what the two published
+#  ports below are for. See deployment-guide.md §5.
 # ============================================================================
 
 services:
@@ -146,7 +146,7 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        # ⚠️ BUILD args, not runtime env — Vite bakes these into the JS. Change
+        # BUILD args, not runtime env — Vite bakes these into the JS. Change
         # either and you must rebuild: `docker compose up -d --build frontend`.
         # VITE_API_URL is the PUBLIC origin (no port) when the tunnel is in
         # front; leave it blank for a plain LAN install.

@@ -193,3 +193,42 @@ func TestBuildVolumes_EmptyTableReportsNilNotEmpty(t *testing.T) {
 		t.Errorf("want nil, got %#v", got)
 	}
 }
+
+// ── Partitions() returning drives AND an error at the same time ────────────────
+//
+// This is the Windows shape that made a client's PC report no volumes at all while
+// the laptops beside it were fine. gopsutil walks the drive letters, collects a
+// WARNING for any fixed or network drive it cannot read (a disconnected mapped
+// share, a BitLocker-locked volume, a recovery partition with a letter), and then
+// returns the drives it DID read together with those warnings as a non-nil error.
+//
+// The old code read that error as total failure and discarded everything, so one
+// unreadable drive hid every healthy one — and it looked like an empty disk list,
+// not like an error.
+
+func TestUsablePartitionsKeepsDrivesWhenErrIsOnlyWarnings(t *testing.T) {
+	parts := []disk.PartitionStat{
+		{Mountpoint: "C:", Fstype: "NTFS"},
+		{Mountpoint: "D:", Fstype: "NTFS"},
+	}
+	got := usablePartitions(parts, errors.New("Z: The device is not ready"))
+	if len(got) != 2 {
+		t.Fatalf("a warning must not discard readable drives: got %d, want 2", len(got))
+	}
+
+	// …and the whole point: those drives still become volumes.
+	vols := buildVolumes(got, func(m string) (*disk.UsageStat, error) { return gb(100, 50), nil })
+	if len(vols) != 2 {
+		t.Fatalf("expected C: and D: to be reported, got %d", len(vols))
+	}
+}
+
+func TestUsablePartitionsGivesUpOnlyWhenThereIsNothing(t *testing.T) {
+	if got := usablePartitions(nil, errors.New("GetLogicalDriveStrings failed")); got != nil {
+		t.Fatalf("a real failure with no drives must yield nil, got %v", got)
+	}
+	// No error and no drives is not a failure either — there is simply nothing.
+	if got := usablePartitions([]disk.PartitionStat{}, nil); got != nil {
+		t.Fatalf("empty result must yield nil, got %v", got)
+	}
+}

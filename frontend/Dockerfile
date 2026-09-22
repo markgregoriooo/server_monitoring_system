@@ -27,7 +27,7 @@ RUN npm ci
 
 COPY frontend/ ./
 
-# ⚠️ Vite inlines VITE_* at BUILD time — it finds and replaces the text in the
+# Vite inlines VITE_* at BUILD time — it finds and replaces the text in the
 # source. There is no runtime environment inside a browser to read, so these
 # cannot be supplied with `docker run -e` later. Change either one and the
 # image must be REBUILT.
