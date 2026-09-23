@@ -15,14 +15,15 @@ outage leaves a gap in the live view but not in the stored history.
 -----------------------------------------------------------------------
 BEFORE YOU START
 -----------------------------------------------------------------------
-  1) The backend PC must be ON and on the SAME network as this computer.
-     Ask ICTU for its LAN address — that is the <backend-server-ip> used all
-     through this guide, and it looks like 192.168.1.50. Use the address, not
-     a website name: the agent talks to the backend directly on port 3000.
-     Open  http://<backend-server-ip>:3000  in this computer's browser.
-     You should see:  {"error":"Route not found"}
-     If it does not load -> wrong network, or the firewall on the backend PC is
-     blocking port 3000. Fix that before continuing.
+  1) Ask ICTU for the monitoring site's address. That is the <url> used all
+     through this guide, e.g. https://monitoring.example.edu.ph — the full
+     https:// address, no port and no slash at the end.
+     This computer must be able to reach it.
+     Open this in this computer's browser:
+       <url>/api/policy/version
+     You should see something like:  {"version":"2026-08-11"}
+     If it does not load -> no internet / blocked by a firewall or proxy. Fix that
+     before continuing.
 
   2) Get an install key from an admin. On the dashboard:
        Server Metrics -> Agent install keys -> + New key
@@ -43,13 +44,8 @@ INSTALL
   2) If you get an execution-policy error, run this once:
        Set-ExecutionPolicy -Scope Process Bypass
 
-  3) Install. Put the key in a VARIABLE first, so it does not sit in the process
-     list or in PowerShell's saved history:
-       $env:CSPC_INSTALL_KEY = '<INSTALL_KEY>'
-       .\install.ps1 -ApiUrl "http://<backend-server-ip>:3000"
-       Remove-Item Env:\CSPC_INSTALL_KEY
-     Passing the key as a parameter still works if you prefer:
-       .\install.ps1 -ApiUrl "http://<backend-server-ip>:3000" -InstallKey "<INSTALL_KEY>"
+  3) Install. Paste the key from the dashboard in place of <INSTALL_KEY>:
+       .\install.ps1 -ApiUrl "<url>" -InstallKey "<INSTALL_KEY>"
      It installs to C:\Program Files\CSPC Monitoring Agent, registers, and waits.
 
   4) An ADMIN approves it on the dashboard:
@@ -69,9 +65,7 @@ UPGRADING AN AGENT THAT IS ALREADY INSTALLED
   swapping the program file. Stop it first (Windows locks a running .exe):
 
        Stop-Process -Name cspc-agent -Force
-       $env:CSPC_INSTALL_KEY = '<INSTALL_KEY>'
-       .\install.ps1 -ApiUrl "http://<backend-server-ip>:3000"
-       Remove-Item Env:\CSPC_INSTALL_KEY
+       .\install.ps1 -ApiUrl "<url>" -InstallKey "<INSTALL_KEY>"
 
   It warns that the key was not used — that is expected, and nothing needs
   approving again. To move this PC onto a DIFFERENT install key (only if an admin
@@ -98,8 +92,13 @@ TROUBLESHOOTING
                                      the Server Metrics page brings it back.
   Agent stopped and agent.conf is
    gone                           -> an admin removed this server, or revoked the
-                                     key it enrolled with. It needs a current key
-                                     and a fresh approval to come back.
+                                     key it enrolled with. Get a current key and
+                                     re-run INSTALL step 3 from this folder, then
+                                     an admin approves it again (step 4).
+  Key ignored / "Invalid install
+   key" with a key you know works -> an old CSPC_INSTALL_KEY variable is set in
+                                     this window and wins over -InstallKey. Clear
+                                     it:  Remove-Item Env:\CSPC_INSTALL_KEY
   Stops reporting on battery, or
    after a reboot                 -> an OLD install. Re-run step 3; this build
                                      keeps running on UPS power.

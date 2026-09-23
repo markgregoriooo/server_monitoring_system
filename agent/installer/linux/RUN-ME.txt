@@ -49,14 +49,15 @@ GETTING THIS FOLDER ONTO THE SERVER  (command line only, no desktop)
 -----------------------------------------------------------------------
 BEFORE YOU START
 -----------------------------------------------------------------------
-  1) The backend PC must be ON and on the SAME network as this server.
-     Ask ICTU for its LAN address — that is the <backend-server-ip> used all
-     through this guide, and it looks like 192.168.1.50. Use the address, not
-     a website name: the agent talks to the backend directly on port 3000.
-       curl http://<backend-server-ip>:3000
-     You should see:  {"error":"Route not found"}
-     If it fails -> wrong network, or the firewall on the backend PC is blocking
-     port 3000. Fix that before continuing.
+  1) Ask ICTU for the monitoring site's address. That is the <url> used all
+     through this guide, e.g. https://monitoring.example.edu.ph — the full
+     https:// address, no port and no slash at the end.
+     This server must be able to reach it.
+     Check it:
+       curl <url>/api/policy/version
+     You should see something like:  {"version":"2026-08-11"}
+     If it fails -> no internet / blocked by a firewall or proxy. Fix that
+     before continuing.
 
   2) Get an install key from an admin. On the dashboard:
        Server Metrics -> Agent install keys -> + New key
@@ -65,14 +66,9 @@ BEFORE YOU START
 -----------------------------------------------------------------------
 INSTALL
 -----------------------------------------------------------------------
-  1) Install (from inside this folder). Put the key in a VARIABLE first, so it does
-     not sit in the process list or in your shell history:
-       export CSPC_INSTALL_KEY='<INSTALL_KEY>'
-       sudo -E bash install.sh http://<backend-server-ip>:3000
-       unset CSPC_INSTALL_KEY
-     The -E is what carries the variable through sudo; without it the installer will
-     say the key is missing. Passing the key as an argument still works if you prefer:
-       sudo bash install.sh http://<backend-server-ip>:3000 <INSTALL_KEY>
+  1) Install (from inside this folder). Paste the key from the dashboard in place
+     of <INSTALL_KEY>:
+       sudo bash install.sh "<url>" "<INSTALL_KEY>"
      It installs to /opt/cspc-agent, registers, and waits.
 
   2) An ADMIN approves it on the dashboard:
@@ -92,9 +88,7 @@ UPGRADING AN AGENT THAT IS ALREADY INSTALLED
   swapping the program file.
 
        sudo systemctl stop cspc-agent
-       export CSPC_INSTALL_KEY='<INSTALL_KEY>'
-       sudo -E bash install.sh http://<backend-server-ip>:3000
-       unset CSPC_INSTALL_KEY
+       sudo bash install.sh "<url>" "<INSTALL_KEY>"
 
   It warns that the key was not used — that is expected, and nothing needs
   approving again. To move this server onto a DIFFERENT install key (only if an
@@ -103,6 +97,7 @@ UPGRADING AN AGENT THAT IS ALREADY INSTALLED
   Installed before August 2026, when the agent was called go-agent? Just run the
   two commands above. The installer replaces the old binary and repoints the
   service; agent.conf is untouched, so nothing needs approving again.
+  (--re-enroll goes AFTER the key:  sudo bash install.sh "<url>" "<key>" --re-enroll)
 
 -----------------------------------------------------------------------
 TROUBLESHOOTING
@@ -123,8 +118,9 @@ TROUBLESHOOTING
                                      the Server Metrics page brings it back.
   Service stopped and agent.conf
    is gone                        -> an admin removed this server, or revoked the
-                                     key it enrolled with. It needs a current key
-                                     and a fresh approval to come back.
+                                     key it enrolled with. Get a current key and
+                                     re-run INSTALL step 1 from this folder, then
+                                     an admin approves it again (step 2).
 
 KEEP THIS FOLDER PRIVATE — the install key is a shared secret. On Google Drive
 share it to named people, never "anyone with the link". Never share an agent.conf
