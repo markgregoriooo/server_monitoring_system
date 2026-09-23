@@ -89,17 +89,20 @@ async function loadCandidates() {
 
 // Route the flip to whoever owns this device type's status, so the alert, the device log
 // and the socket event are byte-for-byte what the slow path would have produced.
+// Returns false when the owner declined — a server whose agent is still reporting is
+// alive whatever ping says (see agentService.markOfflineByIds).
 async function markOffline(io, d) {
   if (d.type === "server") {
     const rows = await agentService.markOfflineByIds([d.id]);
     await agentService.announceOffline(io, rows);
-    return;
+    return rows.length > 0;
   }
   if (d.type === "mikrotik") {
     await mikrotikPollerService.setReachable(io, d, false, "MikroTik unreachable — no ICMP reply");
-    return;
+    return true;
   }
   await snmpPollerService.setReachable(io, { ...d, pingOnly: true }, false);
+  return true;
 }
 
 async function sweep(io) {
@@ -136,9 +139,11 @@ async function sweep(io) {
       failures.set(id, n);
       if (n < FAILS_BEFORE_DOWN) continue;
 
-      failures.delete(id);
       try {
-        await markOffline(io, d);
+        // Only reset the streak on a real flip. A server whose agent is still posting is
+        // declined; keeping its count lets the flip land the moment it also goes quiet.
+        if (!(await markOffline(io, d))) continue;
+        failures.delete(id);
         console.warn(
           `[FAST_OFFLINE] ${d.type} "${d.name}" (${d.ip}) — ${n} missed ICMP replies, marked offline`,
         );

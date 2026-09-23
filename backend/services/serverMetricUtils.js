@@ -127,3 +127,46 @@ export function backfillTimestamp(collectedAt, now = Date.now()) {
   if (t < now - MAX_BACKFILL_AGE_MS) return null; // older than we retain
   return new Date(t);
 }
+
+// ─── Heartbeat + shutdown notice ──────────────────────────────────────────────
+// The metric POST is expensive to send (a full collection) and expensive to store,
+// so it cannot be sent fast enough to double as a liveness signal: at 10s, three
+// missed posts is 30s before anyone hears a server died. Agents now send a
+// separate, empty HEARTBEAT every couple of seconds purely so absence is noticed
+// quickly, plus a SHUTDOWN NOTICE on the way down so a clean shutdown/restart is
+// known the moment it starts rather than inferred afterwards from silence.
+
+// Silence after which a heartbeating agent's server counts as offline. Three missed
+// beats at the agent's 2s cadence — one lost beat on a flaky link is not an outage.
+export const HEARTBEAT_TIMEOUT_SEC = Math.max(3, Number(process.env.SERVER_HEARTBEAT_TIMEOUT_SEC) || 6);
+
+// After a shutdown notice, ignore liveness from that server for this long. The notice
+// and the agent's last few posts race each other: on Windows the notice is sent by a
+// separate process (the shutdown-event task) while the main agent keeps posting until
+// Windows kills it, and an in-flight metric POST landing after the notice would flip the
+// server straight back Online and auto-resolve the critical alert that was just raised.
+export const SHUTDOWN_HOLD_SEC = Math.max(5, Number(process.env.SERVER_SHUTDOWN_HOLD_SEC) || 30);
+
+// Ids whose last heartbeat is older than the timeout. `beats` is Map<id, lastBeatMs>.
+// Only servers that HAVE heartbeated appear in the map, so an older agent that never
+// sends one is left to the metric-window sweep instead of being declared dead.
+export function staleBeats(beats, nowMs, timeoutMs = HEARTBEAT_TIMEOUT_SEC * 1000) {
+  const out = [];
+  for (const [id, at] of beats) if (nowMs - at > timeoutMs) out.push(id);
+  return out;
+}
+
+// True while a server is inside the hold window after its shutdown notice.
+export function inShutdownHold(noticeAtMs, nowMs, holdMs = SHUTDOWN_HOLD_SEC * 1000) {
+  return Number.isFinite(noticeAtMs) && nowMs - noticeAtMs >= 0 && nowMs - noticeAtMs < holdMs;
+}
+
+// What the agent says is happening. Anything unrecognised is treated as "stopped" —
+// the agent is going away for a reason we cannot name, which is still worth a page.
+export const SHUTDOWN_REASONS = {
+  shutdown: { title: "Server shutting down", verb: "is shutting down or restarting", severity: "critical" },
+  stopped: { title: "Monitoring agent stopped", verb: "stopped its monitoring agent", severity: "critical" },
+};
+export function shutdownReason(raw) {
+  return raw === "shutdown" ? "shutdown" : "stopped";
+}

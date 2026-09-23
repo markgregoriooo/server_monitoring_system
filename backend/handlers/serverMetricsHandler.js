@@ -117,10 +117,12 @@ export async function serverMetricsHandler(req, res) {
   // Also auto-resolves the open offline alert on an offline→online transition.
   let cameOnline = false;
   let maintenance = false;
+  let held = false; // inside the hold after a shutdown notice — status stays Offline
   try {
     const hb = await agentService.recordHeartbeat(device.device_id, uptimeLabel, intervalSec);
     cameOnline = hb?.cameOnline ?? false;
     maintenance = hb?.maintenance ?? false;
+    held = hb?.held ?? false;
   } catch (err) {
     console.error("[SERVER_METRICS] heartbeat error:", err);
   }
@@ -162,7 +164,9 @@ export async function serverMetricsHandler(req, res) {
       // open-alert badge (only the real "offline" condition should count as open).
       await alertsService.autoResolveMetric(device.device_id, "online");
     }
-    if (!maintenance) {
+    // Also skipped inside the hold after a shutdown notice: a box on its way down
+    // spikes CPU/memory, and "CPU high" under "Server shutting down" is noise.
+    if (!maintenance && !held) {
       events.push(
         ...(await agentService.checkThresholds(device.device_id, {
           cpu: data.cpu_percent,
@@ -189,7 +193,7 @@ export async function serverMetricsHandler(req, res) {
         ip: device.ip_address,
         location: device.location,
         os: device.os,
-        status: maintenance ? "Maintenance" : "Online",
+        status: maintenance ? "Maintenance" : held ? "Offline" : "Online",
         volumes,
         cpuPercent: data.cpu_percent,
         memPercent: data.mem_percent,

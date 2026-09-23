@@ -4,6 +4,8 @@
 //	                                                          # then START sending metrics
 //	cspc-agent -conf agent.conf                               # already enrolled: just run
 //	cspc-agent --register-only -api-url URL                   # enroll and exit (installers)
+//	cspc-agent --notify-shutdown [-reason shutdown]           # tell the backend we are going
+//	                                                          # down, then exit (Windows task)
 //
 // The install key is read from the CSPC_INSTALL_KEY environment variable. The
 // -install-key FLAG still works and is still documented by `-h`, but it is the
@@ -28,7 +30,9 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"cspc-ictu/agent/internal/collector"
@@ -45,6 +49,13 @@ import (
 // something meaningful to compare.
 const agentVersion = "1.0.0"
 
+// heartbeatEvery is the liveness cadence, deliberately separate from the metric
+// interval. A metric post is a full collection and a stored point, so it cannot be
+// sent fast enough to double as a liveness signal; this is an empty POST. The backend
+// declares a server offline after three missed beats (SERVER_HEARTBEAT_TIMEOUT_SEC,
+// 6s), so this constant and that one move together.
+const heartbeatEvery = 2 * time.Second
+
 // hostRefreshEvery is how often the agent re-sends its static host facts (IP,
 // RAM, disk size, kernel, agent version). Enrollment is otherwise the ONLY time
 // they are sent, so without this a DHCP lease change or a RAM upgrade would
@@ -60,9 +71,28 @@ func main() {
 	installKey := flag.String("install-key", "", "shared install key (enroll mode) — DEPRECATED, prefer CSPC_INSTALL_KEY; a flag is visible in the process list")
 	confPath := flag.String("conf", defaultConfPath(), "path to agent.conf")
 	interval := flag.Int("interval", 10, "metric send interval in seconds (written to conf on enroll)")
+	notifyShutdown := flag.Bool("notify-shutdown", false, "tell the backend this server is shutting down, then exit")
+	reason := flag.String("reason", "shutdown", "with --notify-shutdown: shutdown | stopped")
 	flag.Parse()
 
 	cfg, err := config.Load(*confPath)
+
+	// One-shot notice, run by the Windows installer's shutdown-event task (Event 1074 —
+	// logged the moment a shutdown or restart is initiated, while the network is still
+	// up). A separate process because the scheduled-task agent is not reliably told the
+	// machine is going down. No retries: there is no time for them.
+	if *notifyShutdown {
+		if err != nil {
+			logger.Errorf("%v", err)
+			os.Exit(1)
+		}
+		if nerr := sender.New(cfg.APIURL, cfg.DeviceToken).NotifyShutdown(*reason); nerr != nil {
+			logger.Errorf("shutdown notice failed: %v", nerr)
+			os.Exit(1)
+		}
+		logger.Infof("shutdown notice sent (%s)", *reason)
+		return
+	}
 
 	// The environment wins over the flag. Anything that sets CSPC_INSTALL_KEY has
 	// chosen the private path deliberately, so a stale -install-key left in an old
@@ -107,14 +137,59 @@ func main() {
 	logger.Infof("agent v%s started; posting to %s every %ds (device_id=%d)",
 		agentVersion, cfg.APIURL, cfg.IntervalSeconds, cfg.DeviceID)
 
+	s := sender.New(cfg.APIURL, cfg.DeviceToken)
+	go runHeartbeat(s)
+	go notifyOnSignal(s)
+
 	// runMetricLoop returns as soon as the backend rejects our token (403) —
 	// i.e. an admin removed this server. Delete the now-useless agent.conf so a
 	// later `--register` enrolls fresh, then exit.
-	runMetricLoop(sender.New(cfg.APIURL, cfg.DeviceToken), cfg.IntervalSeconds)
+	runMetricLoop(s, cfg.IntervalSeconds)
 
 	logger.Errorf("removed by the server (token revoked); deleting %s and exiting. "+
 		"Run --register again to re-add this machine.", *confPath)
 	_ = os.Remove(*confPath)
+	os.Exit(0)
+}
+
+// runHeartbeat sends an empty "still alive" every heartbeatEvery until the process
+// exits. Failures are logged on the TRANSITION only — a backend outage would otherwise
+// print a line every two seconds for as long as it lasts. A 403 is left to the metric
+// loop, which owns the decision to delete agent.conf and exit.
+func runHeartbeat(s *sender.Sender) {
+	ticker := time.NewTicker(heartbeatEvery)
+	defer ticker.Stop()
+	failing := false
+	for range ticker.C {
+		err := s.Heartbeat()
+		switch {
+		case err != nil && !failing:
+			failing = true
+			logger.Errorf("heartbeat failing: %v (will keep trying every %s)", err, heartbeatEvery)
+		case err == nil && failing:
+			failing = false
+			logger.Infof("heartbeat restored")
+		}
+	}
+}
+
+// notifyOnSignal sends the shutdown notice when the OS asks the agent to stop, then
+// exits. On Linux that is systemd's SIGTERM, both on `systemctl stop` and at system
+// shutdown (the unit is ordered after network-online.target, so it is stopped while
+// the network is still up). On Windows Go delivers the console shutdown/logoff/close
+// events as SIGTERM; the installer's Event 1074 task covers the case where a
+// scheduled-task process is never told. Sending twice is harmless — the backend
+// only acts on the first notice.
+func notifyOnSignal(s *sender.Sender) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	sig := <-ch
+	reason := shutdownReason(sig)
+	if err := s.NotifyShutdown(reason); err != nil {
+		logger.Errorf("received %v; shutdown notice failed: %v", sig, err)
+	} else {
+		logger.Infof("received %v; shutdown notice sent (%s)", sig, reason)
+	}
 	os.Exit(0)
 }
 

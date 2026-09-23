@@ -81,6 +81,11 @@ INSTALL
      Dashboard    -> this server is Online, with CPU/memory figures and a Volumes list.
      This server  -> systemctl status cspc-agent
 
+  How fast is an outage reported?
+     Shut down / reboot    -> CRITICAL alert straight away.
+     Power cut / cable out -> alert about 6 seconds later.
+     (systemctl stop cspc-agent also raises an alert: "Monitoring agent stopped".)
+
 -----------------------------------------------------------------------
 UPGRADING AN AGENT THAT IS ALREADY INSTALLED
 -----------------------------------------------------------------------
@@ -111,6 +116,10 @@ TROUBLESHOOTING
                                      for the current folder.
   "send attempt 1/3 failed"       -> backend not running, wrong address, or
                                      firewall. Re-do "Before you start" step 1.
+  Offline alerts take 30 seconds
+   or more                        -> an agent built before the heartbeat was added
+                                     (September 2026). Upgrade it
+                                     (see UPGRADING above) - nothing to approve.
   Server never appears            -> nobody approved it (step 2), and the
                                      approver must be an admin.
   Server shows "Maintenance"      -> an admin parked it on purpose; it keeps

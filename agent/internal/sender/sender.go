@@ -41,7 +41,11 @@ type Sender struct {
 	apiURL string
 	token  string
 	client *http.Client
-	spool  []collector.Payload
+	// quick carries the heartbeat and the shutdown notice. Both are only worth
+	// anything if they arrive NOW: a heartbeat that takes 10s to land has already
+	// been declared missing, and a shutdown notice has seconds before the OS kills us.
+	quick *http.Client
+	spool []collector.Payload
 }
 
 // New builds a Sender for the given backend base URL and approved token.
@@ -50,7 +54,29 @@ func New(apiURL, token string) *Sender {
 		apiURL: apiURL,
 		token:  token,
 		client: &http.Client{Timeout: 10 * time.Second},
+		quick:  &http.Client{Timeout: 3 * time.Second},
 	}
+}
+
+// Heartbeat tells the backend this server is still alive. Empty body, one attempt:
+// the next beat is two seconds away, so retrying would only pile requests up behind
+// a slow link. Returns ErrUnauthorized on a 403 like Send.
+func (s *Sender) Heartbeat() error {
+	status, err := s.postWith(s.quick, s.apiURL+"/api/servers/heartbeat", nil)
+	if status == http.StatusForbidden {
+		return ErrUnauthorized
+	}
+	return err
+}
+
+// NotifyShutdown tells the backend this server is going away, so it raises the
+// alert immediately instead of waiting for the heartbeat to go quiet. reason is
+// "shutdown" (the OS is shutting down or restarting) or "stopped" (only the agent).
+// Best-effort by nature — if it does not arrive, the missed heartbeats still do.
+func (s *Sender) NotifyShutdown(reason string) error {
+	body, _ := json.Marshal(map[string]string{"reason": reason})
+	_, err := s.postWith(s.quick, s.apiURL+"/api/servers/shutdown", body)
+	return err
 }
 
 // Buffered reports how many samples are waiting to be backfilled.
@@ -157,6 +183,10 @@ func (s *Sender) Send(p collector.Payload) error {
 }
 
 func (s *Sender) post(url string, body []byte) (int, error) {
+	return s.postWith(s.client, url, body)
+}
+
+func (s *Sender) postWith(client *http.Client, url string, body []byte) (int, error) {
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return 0, err
@@ -164,7 +194,7 @@ func (s *Sender) post(url string, body []byte) (int, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+s.token)
 
-	resp, err := s.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
 	}

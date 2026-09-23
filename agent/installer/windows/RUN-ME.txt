@@ -56,7 +56,13 @@ INSTALL
 
   Check it worked:
      Dashboard  -> this PC is Online, with CPU/memory figures and a Volumes list.
-     This PC    -> Get-ScheduledTask -TaskName "CSPC-ICTU Monitoring Agent"
+     This PC    -> Get-ScheduledTask -TaskName "CSPC-ICTU Monitoring Agent*"
+                   Two tasks: the agent, and "... - Shutdown Notice", which tells
+                   the dashboard the moment this PC shuts down or restarts.
+
+  How fast is an outage reported?
+     Shut down / restart   -> CRITICAL alert straight away.
+     Power cut / cable out -> alert about 6 seconds later.
 
 -----------------------------------------------------------------------
 UPGRADING AN AGENT THAT IS ALREADY INSTALLED
@@ -99,6 +105,10 @@ TROUBLESHOOTING
    key" with a key you know works -> an old CSPC_INSTALL_KEY variable is set in
                                      this window and wins over -InstallKey. Clear
                                      it:  Remove-Item Env:\CSPC_INSTALL_KEY
+  Offline alerts take 30 seconds
+   or more                        -> an agent built before the heartbeat was added
+                                     (September 2026). Upgrade it
+                                     (see UPGRADING above) - nothing to approve.
   Stops reporting on battery, or
    after a reboot                 -> an OLD install. Re-run step 3; this build
                                      keeps running on UPS power.

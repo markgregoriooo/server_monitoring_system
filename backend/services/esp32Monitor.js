@@ -9,11 +9,11 @@ import { describeError } from "../utils/httpError.js";
 // devices.last_seen) can't cover it. Without this, a dead sensor and a stable room
 // look identical on the dashboard: the last reading just sits there, green, forever.
 //
-// Severity is `critical` (server offline is only `warning`) on purpose: a server going
-// down is one host among many, but the ESP32 is the ONLY source of temperature / smoke
-// / humidity — losing it blinds the room entirely, which is the thing this system
-// exists to watch. `critical` is also the default NOTIFY_EMAIL_MIN_SEVERITY, so a
-// blind spot actually reaches someone instead of only bumping the bell.
+// Severity is `critical` on purpose (as is a server going offline): the ESP32 is the
+// ONLY source of temperature / smoke / humidity — losing it blinds the room entirely,
+// which is the thing this system exists to watch. `critical` is also the default
+// NOTIFY_EMAIL_MIN_SEVERITY, so a blind spot actually reaches someone instead of only
+// bumping the bell.
 //
 // The alert is room-level (`device_id = NULL`), matching how sensorHandler raises
 // temperature/gas/humidity, and it auto-resolves the moment a reading arrives.

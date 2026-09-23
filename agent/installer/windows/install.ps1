@@ -59,6 +59,7 @@ $BinarySrc  = Join-Path $PSScriptRoot "cspc-agent-windows-amd64.exe"
 $BinaryDst  = Join-Path $InstallDir "cspc-agent.exe"
 $ConfPath   = Join-Path $InstallDir "agent.conf"
 $TaskName   = "CSPC-ICTU Monitoring Agent"
+$ShutdownTaskName = "CSPC-ICTU Monitoring Agent - Shutdown Notice"
 
 # Where installs made before the 2026-08-18 rename put things. The agent shipped as
 # go-agent.exe under a folder and task of its own, and this installer keys off those
@@ -144,5 +145,27 @@ $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable `
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
   -Principal $principal -Settings $settings -Force | Out-Null
+
+# ── Shutdown notice ───────────────────────────────────────────────────────────
+# The agent above runs as a scheduled task, and Windows does not reliably tell a
+# scheduled-task process that the machine is going down — it is simply killed, and the
+# backend would only find out when the heartbeats stop. This second task fires on
+# System Event 1074 (User32), which Windows logs the moment a shutdown or restart is
+# INITIATED — Start menu, shutdown.exe, Windows Update — while the network is still up,
+# and runs a one-shot `--notify-shutdown` so the alert is raised immediately.
+# A power cut or a held power button logs nothing; the heartbeat covers those.
+$class   = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
+$onShutdown = $class | New-CimInstance -ClientOnly
+$onShutdown.Enabled = $true
+$onShutdown.Subscription = @"
+<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[Provider[@Name='User32'] and EventID=1074]]</Select></Query></QueryList>
+"@
+$notifyAction   = New-ScheduledTaskAction -Execute $BinaryDst -Argument "--notify-shutdown -reason shutdown -conf `"$ConfPath`""
+$notifySettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                    -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName $ShutdownTaskName -Action $notifyAction -Trigger $onShutdown `
+  -Principal $principal -Settings $notifySettings -Force | Out-Null
+
 Start-ScheduledTask -TaskName $TaskName
 Write-Host "Installed. Manage with: Get-ScheduledTask -TaskName $TaskName"
+Write-Host "Shutdown notice task: $ShutdownTaskName"

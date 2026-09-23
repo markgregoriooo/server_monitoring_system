@@ -188,3 +188,39 @@ test("backfillTimestamp: rejects missing/garbage values", () => {
     assert.equal(backfillTimestamp(bad, now), null, `for ${JSON.stringify(bad)}`);
   }
 });
+
+// ─── Heartbeat + shutdown notice ──────────────────────────────────────────────
+import {
+  staleBeats,
+  inShutdownHold,
+  shutdownReason,
+} from "../services/serverMetricUtils.js";
+
+test("staleBeats flags only servers silent past the timeout", () => {
+  const now = 100_000;
+  const beats = new Map([
+    [1, now - 1_000], // fresh
+    [2, now - 6_000], // exactly at the timeout — not yet
+    [3, now - 6_001], // past it
+  ]);
+  assert.deepEqual(staleBeats(beats, now, 6_000), [3]);
+});
+
+test("staleBeats ignores servers that never heartbeated (older agents)", () => {
+  assert.deepEqual(staleBeats(new Map(), 100_000, 6_000), []);
+});
+
+test("inShutdownHold covers the window after a notice and nothing else", () => {
+  assert.equal(inShutdownHold(1_000, 1_000, 30_000), true);
+  assert.equal(inShutdownHold(1_000, 30_999, 30_000), true);
+  assert.equal(inShutdownHold(1_000, 31_000, 30_000), false);
+  assert.equal(inShutdownHold(undefined, 5_000, 30_000), false);
+  assert.equal(inShutdownHold(10_000, 5_000, 30_000), false); // clock went backwards
+});
+
+test("shutdownReason folds unknown values to 'stopped'", () => {
+  assert.equal(shutdownReason("shutdown"), "shutdown");
+  assert.equal(shutdownReason("stopped"), "stopped");
+  assert.equal(shutdownReason("reboot-now"), "stopped");
+  assert.equal(shutdownReason(undefined), "stopped");
+});

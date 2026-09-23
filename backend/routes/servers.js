@@ -89,6 +89,65 @@ router.post(
   serverMetricsBatchHandler,
 );
 
+// ── Heartbeat + shutdown notice (agent bearer token) ───────────────────────────
+// A heartbeat is sent every 2s, so it cannot share the metric limiters: the device
+// budget above (300/15min) is one post per 3s, and the IP budget is sized for metric
+// posts from the whole fleet. Own limiters, sized for beats: per device one every
+// ~0.75s (leaves room for a burst after a stall), per IP enough for ~70 agents behind
+// one NAT address. Still bounded, so a leaked token cannot hammer the token lookup.
+const BEAT_DEVICE_MAX = Number(process.env.AGENT_BEAT_RATE_MAX) || 1200;
+const BEAT_IP_MAX = Number(process.env.AGENT_BEAT_RATE_IP_MAX) || 30000;
+
+const beatIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: BEAT_IP_MAX,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  ipv6Subnet: 56,
+  handler: (req, res) => {
+    console.warn(`[RATE] 429 agent heartbeat (ip) ${req.ip} — over ${BEAT_IP_MAX}/15min`);
+    res.status(429).json({ error: "Too many heartbeats. Slow down." });
+  },
+});
+
+const beatAgentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: BEAT_DEVICE_MAX,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    req.device?.device_id != null
+      ? `beat:${req.device.device_id}`
+      : `beatip:${ipKeyGenerator(req.ip, 56)}`,
+  handler: (req, res) => {
+    console.warn(`[RATE] 429 agent heartbeat device=${req.device?.device_id} — over ${BEAT_DEVICE_MAX}/15min`);
+    res.status(429).json({ error: "Too many heartbeats. Slow down." });
+  },
+});
+
+// ── POST /api/servers/heartbeat ─ "still alive", nothing else. No body. ────────
+router.post("/heartbeat", beatIpLimiter, agentAuthMiddleware, beatAgentLimiter, (req, res) => {
+  agentService.noteHeartbeat(req.device.device_id);
+  res.status(204).end();
+});
+
+// ── POST /api/servers/shutdown ─ the agent is going away. Body: { reason } ─────
+// reason: "shutdown" (the OS is shutting down / restarting) or "stopped" (only the
+// agent was stopped). Takes the server offline and raises a CRITICAL alert at once,
+// instead of waiting for the heartbeat to go quiet.
+router.post("/shutdown", beatIpLimiter, agentAuthMiddleware, beatAgentLimiter, async (req, res, next) => {
+  try {
+    const { rows, alert } = await agentService.recordShutdown(req.device.device_id, req.body?.reason);
+    await agentService.announceOffline(req.app.get("io"), rows, alert);
+    if (rows.length > 0) {
+      console.warn(`[SHUTDOWN] server ${req.device.device_id} — ${alert.title}`);
+    }
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── GET /api/servers ─ dashboard server list (JWT) ────────────────────────────
 router.get("/", authMiddleware, async (req, res, next) => {
   try {

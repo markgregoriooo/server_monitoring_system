@@ -79,7 +79,14 @@ const globalLimiter = rateLimit({
   standardHeaders: "draft-8",
   legacyHeaders: false,
   keyGenerator: userOrIpKey,
-  skip: (req) => req.method === "POST" && req.path.startsWith("/api/servers/metrics"),
+  // Agent traffic has its own limiters in routes/servers.js. The heartbeat alone is a
+  // post every 2s per server — through the global IP budget it would exhaust it for
+  // everyone behind the same address (the campus NAT, or the tunnel) within minutes.
+  skip: (req) =>
+    req.method === "POST" &&
+    (req.path.startsWith("/api/servers/metrics") ||
+      req.path === "/api/servers/heartbeat" ||
+      req.path === "/api/servers/shutdown"),
   handler: (req, res) => {
     console.warn(
       `[RATE] 429 ${req.method} ${req.originalUrl} key=${userOrIpKey(req)} ip=${req.ip} ` +
@@ -486,6 +493,25 @@ setInterval(async () => {
     console.error("[OFFLINE_SWEEP] error:", err);
   }
 }, OFFLINE_SWEEP_MS);
+
+// Heartbeat sweep — agents send an empty heartbeat every 2s, so a server that
+// dies is noticed after SERVER_HEARTBEAT_TIMEOUT_SEC (6s) instead of the 30s metric
+// window above. Every second, because this interval is pure latency on top of that
+// timeout, and the check itself is an in-memory map scan — no query unless something
+// actually went quiet. Older agents never heartbeat and stay on the sweep above.
+const HEARTBEAT_SWEEP_MS = 1_000;
+let heartbeatSweeping = false;
+setInterval(async () => {
+  if (heartbeatSweeping) return;
+  heartbeatSweeping = true;
+  try {
+    await agentService.announceOffline(io, await agentService.sweepHeartbeats());
+  } catch (err) {
+    console.error("[HEARTBEAT_SWEEP] error:", err);
+  } finally {
+    heartbeatSweeping = false;
+  }
+}, HEARTBEAT_SWEEP_MS);
 
 // Fast offline detection: one ICMP echo per online device every few seconds, which
 // can only mark a device DOWN (recovery stays with the full poll that owns it). This

@@ -671,11 +671,24 @@ unset CSPC_INSTALL_KEY
   "deauthorized by the server" (the 403 self-removal), so it should stay stopped; a
   crash should restart.
 
+**Heartbeat + shutdown notice.** Besides the metric post, the agent sends an empty
+`POST /api/servers/heartbeat` every 2s, so the backend notices a dead server after 6s
+(`SERVER_HEARTBEAT_TIMEOUT_SEC`) instead of 30s+. On its way down it sends
+`POST /api/servers/shutdown` (`{reason: "shutdown"|"stopped"}`), which raises a CRITICAL
+alert at once. Linux: systemd's SIGTERM — `systemctl is-system-running` = `stopping` tells a
+system shutdown from a `systemctl stop`. Windows: the scheduled-task agent is not reliably
+signalled, so the installer adds a second task, **"CSPC-ICTU Monitoring Agent - Shutdown
+Notice"**, triggered by System Event 1074 (User32 — logged when a shutdown/restart is
+initiated) that runs `cspc-agent.exe --notify-shutdown -reason shutdown`. A power cut sends
+nothing; the heartbeat covers it.
+
 Manage / uninstall:
 
 ```powershell
-Get-ScheduledTask -TaskName "CSPC-ICTU-MonitoringAgent"            # check
-Unregister-ScheduledTask -TaskName "CSPC-ICTU-MonitoringAgent" -Confirm:$false   # remove
+Get-ScheduledTask -TaskName "CSPC-ICTU Monitoring Agent*"            # check (both tasks)
+Stop-Process -Name cspc-agent -Force -ErrorAction SilentlyContinue      # remove:
+Unregister-ScheduledTask -TaskName "CSPC-ICTU Monitoring Agent" -Confirm:$false
+Unregister-ScheduledTask -TaskName "CSPC-ICTU Monitoring Agent - Shutdown Notice" -Confirm:$false
 ```
 ```bash
 systemctl status cspc-agent            # check

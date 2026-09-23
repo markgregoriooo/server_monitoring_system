@@ -8,6 +8,11 @@ import {
   DEFAULT_INTERVAL_SEC,
   OFFLINE_FLOOR_SEC,
   offlineWindowSec,
+  HEARTBEAT_TIMEOUT_SEC,
+  SHUTDOWN_REASONS,
+  staleBeats,
+  inShutdownHold,
+  shutdownReason,
 } from "./serverMetricUtils.js";
 // Was a byte-identical private copy here. snmpUtils is pure and import-free, so
 // taking it from there costs nothing and keeps device_network.network_segment
@@ -439,12 +444,16 @@ async function validateToken(token) {
 async function recordHeartbeat(deviceId, uptimeLabel, intervalSec = null) {
   const [[row]] = await db.query(`SELECT status FROM devices WHERE device_id = ? LIMIT 1`, [deviceId]);
   const maintenance = row?.status === "maintenance";
+  // Just announced a shutdown: a post still in flight (or the Windows agent that keeps
+  // running until the OS kills it) must not flip it back Online and auto-resolve the
+  // alert that was raised a moment ago. The sample is still stored; only status waits.
+  const held = isHeld(Number(deviceId));
   // A parked server keeps ingesting metrics, but its status is operator-owned:
   // a heartbeat must not drag it back to 'online', which would silently end the
   // window and re-arm alerting mid-reboot.
-  const cameOnline = Boolean(row) && !maintenance && row.status !== "online";
+  const cameOnline = Boolean(row) && !maintenance && !held && row.status !== "online";
 
-  if (!maintenance) {
+  if (!maintenance && !held) {
     await db.query(`UPDATE devices SET status = 'online', updated_at = NOW() WHERE device_id = ?`, [
       deviceId,
     ]);
@@ -468,7 +477,7 @@ async function recordHeartbeat(deviceId, uptimeLabel, intervalSec = null) {
       console.error("[agent] offline auto-resolve failed:", describeError(err)),
     );
   }
-  return { cameOnline, maintenance };
+  return { cameOnline, maintenance, held };
 }
 
 // Park a server for planned downtime, or bring it back. While parked the offline
@@ -627,52 +636,133 @@ async function flipOffline(rows, reason) {
     latestMetrics.delete(Number(r.id));
     alertBandState.resetDevice(r.id); // re-arm threshold logging for when it returns
     const log = await logDevice(r.id, "warning", reason);
-    out.push({ id: Number(r.id), name: r.name, log });
+    out.push({ id: Number(r.id), name: r.name, log, reason });
   }
   return out;
 }
 
-// Mark specific servers offline NOW, for a caller that already has proof they are gone
-// (the host stopped answering ICMP) rather than an inference from silence. Re-checks
-// `status = 'online'` in the UPDATE's own WHERE so two sweeps racing on the same server
-// cannot both claim the transition and log it twice.
-async function markOfflineByIds(ids) {
+// Mark specific servers offline NOW. Re-checks `status = 'online'` in the UPDATE's own
+// WHERE so two sweeps racing on the same server cannot both claim the transition and
+// log it twice — and only the rows the UPDATE actually changed are logged/announced.
+//
+// `requireMissedReport` is for the ICMP sweep. A failed ping is only acted on once the
+// agent has ALSO missed a report: for a server, an agent POST is the stronger evidence.
+// The agent pushes to the backend, so it works through NAT, from another subnet, from
+// behind a host firewall that drops echo (Windows' default), and when the IP the agent
+// reported is a WSL/Hyper-V/VirtualBox adapter the backend cannot route to. Without this
+// guard such a server flapped every agent interval — the sweep flipped it offline, the
+// next POST flipped it back online — raising an offline alert each time. 1.5 intervals
+// = one report missed, with jitter room. The heartbeat and shutdown paths pass false:
+// both come FROM the agent, so there is nothing stronger to wait for.
+async function markOfflineByIds(ids, { reason, requireMissedReport = true } = {}) {
   const list = (Array.isArray(ids) ? ids : [ids]).map(Number).filter(Number.isInteger);
   if (list.length === 0) return [];
   const marks = list.map(() => "?").join(",");
+  const missed = requireMissedReport
+    ? `AND (s.last_seen IS NULL
+             OR s.last_seen < (NOW() - INTERVAL CEIL(COALESCE(s.metric_interval_sec, ${DEFAULT_INTERVAL_SEC}) * 1.5) SECOND))`
+    : "";
   const [rows] = await db.query(
     `SELECT d.device_id AS id, COALESCE(NULLIF(d.display_name, ''), d.device_name) AS name
        FROM devices d
-       JOIN agent_tokens t ON t.device_id = d.device_id AND t.status = 'approved'
-      WHERE d.device_type = 'server' AND d.status = 'online' AND d.device_id IN (${marks})`,
+       JOIN agent_tokens t      ON t.device_id = d.device_id AND t.status = 'approved'
+       LEFT JOIN server_specs s ON s.device_id = d.device_id
+      WHERE d.device_type = 'server' AND d.status = 'online' AND d.device_id IN (${marks})
+        ${missed}`,
     list,
   );
-  if (rows.length === 0) return [];
-  const ok = rows.map((r) => r.id);
-  await db.query(
-    `UPDATE devices SET status = 'offline', updated_at = NOW()
-      WHERE status = 'online' AND device_id IN (${ok.map(() => "?").join(",")})`,
-    ok,
+  const flipped = [];
+  for (const r of rows) {
+    const [res] = await db.query(
+      `UPDATE devices SET status = 'offline', updated_at = NOW() WHERE status = 'online' AND device_id = ?`,
+      [r.id],
+    );
+    if (res.affectedRows > 0) flipped.push(r);
+  }
+  return flipOffline(
+    flipped,
+    reason ?? "Server went offline — stopped answering ICMP and missed a report",
   );
-  return flipOffline(rows, "Server went offline — host stopped answering ICMP");
 }
 
-// Tell everyone. Split out of src/server.js so the fast sweep raises the identical
-// alert rather than a second, subtly different one.
-async function announceOffline(io, rows) {
+// Tell everyone. Split out of src/server.js so every path that takes a server offline
+// raises the identical alert rather than a second, subtly different one. `alert`
+// overrides the wording/severity for the shutdown notice; type stays "offline" either
+// way, so the next report auto-resolves it exactly like any other outage.
+async function announceOffline(io, rows, alert = null) {
   for (const o of rows ?? []) {
     io?.emit("serverStatus", { id: o.id, status: "Offline" });
     if (o.log) io?.emit("deviceLog", o.log);
     await notificationService.raiseAlert({
       deviceId: o.id,
       type: "offline",
-      title: "Server offline",
-      message: o.name
-        ? `${o.name} went offline — no metrics received`
-        : o.log?.message || `Server ${o.id} stopped reporting`,
-      severity: "warning",
+      title: alert?.title ?? "Server offline",
+      // The device-log reason names the server generically ("Server went offline —
+      // no heartbeat for 6s"); the alert names it, so the bell says WHICH one and WHY.
+      message: alert
+        ? `${o.name || `Server ${o.id}`} ${alert.verb}`
+        : o.reason && o.name
+          ? o.reason.replace(/^Server/, o.name)
+          : o.log?.message || `Server ${o.id} stopped reporting`,
+      // Critical, like a router going down: ICTU asked for server outages to be
+      // urgent, and `critical` is the default NOTIFY_EMAIL_MIN_SEVERITY — at `warning`
+      // an offline server only bumped the bell and never reached anyone's inbox.
+      severity: alert?.severity ?? "critical",
     });
   }
+}
+
+// ─── Heartbeat + shutdown notice ──────────────────────────────────────────────
+// In memory on purpose: a heartbeat every 2s per server is not worth a MySQL write, and
+// a restart losing the map is harmless — the next beat (≤2s) repopulates it, and until
+// then the metric-window sweep still covers every server.
+const lastBeat = new Map(); // device_id -> ms of the last heartbeat
+const shutdownAt = new Map(); // device_id -> ms of the last shutdown notice
+
+function isHeld(id) {
+  const at = shutdownAt.get(id);
+  if (at === undefined) return false;
+  if (inShutdownHold(at, Date.now())) return true;
+  shutdownAt.delete(id);
+  return false;
+}
+
+// POST /api/servers/heartbeat. Records liveness only — no status change. Recovery stays
+// with the metric POST (recordHeartbeat), which the agent sends immediately on start, so
+// a heartbeat can never mark a server Online that has not actually reported.
+function noteHeartbeat(deviceId) {
+  const id = Number(deviceId);
+  if (isHeld(id)) return;
+  lastBeat.set(id, Date.now());
+}
+
+// Every second: any heartbeating server silent past HEARTBEAT_TIMEOUT_SEC goes offline.
+async function sweepHeartbeats() {
+  const stale = staleBeats(lastBeat, Date.now());
+  if (stale.length === 0) return [];
+  for (const id of stale) lastBeat.delete(id); // one attempt per silence, not one per tick
+  return markOfflineByIds(stale, {
+    reason: `Server went offline — no heartbeat for ${HEARTBEAT_TIMEOUT_SEC}s`,
+    requireMissedReport: false,
+  });
+}
+
+// POST /api/servers/shutdown. The agent announces it is going away. Returns the rows
+// that actually transitioned (empty when the server was already offline or is parked
+// in maintenance — a planned shutdown during a maintenance window pages nobody).
+async function recordShutdown(deviceId, rawReason) {
+  const id = Number(deviceId);
+  const reason = shutdownReason(rawReason);
+  shutdownAt.set(id, Date.now());
+  lastBeat.delete(id);
+  const rows = await markOfflineByIds([id], {
+    reason:
+      reason === "shutdown"
+        ? "Server is shutting down or restarting (notice from its agent)"
+        : "Monitoring agent was stopped (notice from its agent)",
+    requireMissedReport: false,
+  });
+  return { rows, alert: SHUTDOWN_REASONS[reason] };
 }
 
 // ─── Dashboard reads ──────────────────────────────────────────────────────────
@@ -723,6 +813,8 @@ async function removeServer(id) {
   );
   if (result.affectedRows > 0) {
     latestMetrics.delete(Number(id));
+    lastBeat.delete(Number(id));
+    shutdownAt.delete(Number(id));
     alertBandState.resetDevice(id);
   }
   return result.affectedRows > 0;
@@ -774,6 +866,9 @@ const agentService = {
   sweepOffline,
   markOfflineByIds,
   announceOffline,
+  noteHeartbeat,
+  sweepHeartbeats,
+  recordShutdown,
   getServers,
   getServerById,
   removeServer,
