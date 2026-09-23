@@ -24,6 +24,7 @@ import esp32Monitor from "../services/esp32Monitor.js";
 import snmpPollerService from "../services/snmpPollerService.js";
 import mikrotikPollerService from "../services/mikrotikPollerService.js";
 import reachabilitySweep from "../services/reachabilitySweep.js";
+import upsPowerWatch from "../services/upsPowerWatch.js";
 import backupService from "../services/backupService.js";
 import gasSensorService from "../services/gasSensorService.js";
 import reportService from "../services/reportService.js";
@@ -517,6 +518,11 @@ setInterval(async () => {
 // can only mark a device DOWN (recovery stays with the full poll that owns it). This
 // is what makes an outage surface in seconds instead of at the next SNMP walk.
 reachabilitySweep.init(io);
+
+// Fast UPS power watch: output source + battery status every 5s, and an immediate full
+// poll the moment either changes — so mains failing is reported in seconds, not at the
+// next 60s poll. See services/upsPowerWatch.js.
+upsPowerWatch.init(io);
 
 // ESP32 liveness sweep — the environment sensor's equivalent of the offline sweep
 // above. The ESP32 has no `devices` row (so last_seen can't cover it) and pushes

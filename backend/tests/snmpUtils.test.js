@@ -225,3 +225,23 @@ test("a numeric string from SNMP reads the same as a number", () => {
   assert.equal(isOnBypass("4"), true);
   assert.equal(isOnBattery("5"), true);
 });
+
+// ─── Fast UPS power watch ──────────────────────────────────────────────────────
+import { upsPowerKey } from "../services/snmpUtils.js";
+
+test("upsPowerKey changes when mains fails or the battery degrades", () => {
+  const normal = upsPowerKey("normal", 2);
+  assert.notEqual(upsPowerKey("battery", 2), normal); // mains lost
+  assert.notEqual(upsPowerKey("bypass", 2), normal); // load on raw mains
+  assert.notEqual(upsPowerKey("off", 2), normal); // output off
+  assert.notEqual(upsPowerKey("normal", 3), normal); // battery low
+});
+
+test("upsPowerKey ignores AVR flicker, which raises no alert", () => {
+  assert.equal(upsPowerKey("avr", 2), upsPowerKey("normal", 2));
+});
+
+test("upsPowerKey is stable for missing values", () => {
+  assert.equal(upsPowerKey(null, null), "unknown|?");
+  assert.equal(upsPowerKey(undefined, undefined), upsPowerKey(null, null));
+});

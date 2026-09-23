@@ -176,3 +176,18 @@ export function counterDelta(current, previous) {
   const prev = typeof previous === "bigint" ? previous : BigInt(previous ?? 0);
   return cur >= prev ? Number(cur - prev) : 0;
 }
+
+// ─── Fast UPS power watch ──────────────────────────────────────────────────────
+// The full UPS poll runs every 60s, so mains failing waited up to a minute to be
+// reported. services/upsPowerWatch.js reads ONLY the output source + battery status
+// every few seconds and triggers an immediate full poll when this key changes — the
+// full poll then raises the on-battery / bypass / output-off alert exactly as before.
+//
+// AVR (booster/reducer) folds into normal on purpose: the load is still protected and
+// raises nothing (see deviceAlerts), while a UPS on poor mains can flick in and out of
+// AVR many times a minute — each flick would otherwise cost a full SNMP poll.
+// `state` is an upsOutputState() string; batteryStatus is the RFC 1628 enum (or null).
+export function upsPowerKey(state, batteryStatus) {
+  const s = state === "avr" ? "normal" : (state ?? "unknown");
+  return `${s}|${batteryStatus ?? "?"}`;
+}

@@ -1028,9 +1028,16 @@ async function removeDevice(id, type) {
   return true;
 }
 
+// The last full poll's view of one UPS (or undefined). Read by upsPowerWatch.js as the
+// baseline its quick check compares against.
+function getLiveUps(id) {
+  return latestUps.get(Number(id));
+}
+
 export default {
   pollAll,
   pollDeviceNow,
+  getLiveUps,
   // Exported for services/reachabilitySweep.js, which decides WHEN a device is
   // unreachable on a fast ICMP cadence but must not reimplement what that MEANS —
   // the device row, the log line, the socket event and the alert all live here.
