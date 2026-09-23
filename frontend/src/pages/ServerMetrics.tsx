@@ -323,6 +323,39 @@ function StatusDot({ status, awaiting }: { status: string; awaiting?: boolean })
 
 // ─── Buttons ──────────────────────────────────────────────────────────────────
 
+// ─── OS badge ─────────────────────────────────────────────────────────────────
+
+// "W" or "L" from the agent-reported OS string ("Microsoft Windows 11 Pro …",
+// "Ubuntu 22.04", "debian 12"). The agent only ships for Windows and Linux, so any
+// real non-Windows value is Linux. Blank/unknown gets no badge rather than a guess.
+function osTag(os: string | null | undefined): "W" | "L" | null {
+  const v = (os ?? "").trim().toLowerCase();
+  if (!v || v === "—" || v === "unknown") return null;
+  if (v.includes("windows")) return "W";
+  if (v.includes("darwin") || v.includes("mac")) return null;
+  return "L";
+}
+
+// Windows blue, Linux (Tux) yellow. Deliberately NOT the status palette — green,
+// orange and red already mean healthy / warning / critical on this page, and an OS
+// badge in one of those would read as a status.
+const OS_COLOR = { W: "#5794F2", L: "#EAB839" } as const;
+
+function OsBadge({ os }: { os: string | null | undefined }) {
+  const tag = osTag(os);
+  if (!tag) return null;
+  return (
+    <span
+      title={os ?? undefined}
+      aria-label={tag === "W" ? "Windows" : "Linux"}
+      className="font-mono text-[12px] font-semibold leading-none"
+      style={{ color: OS_COLOR[tag] }}
+    >
+      {tag}
+    </span>
+  );
+}
+
 // ─── ServerCard (mobile) ──────────────────────────────────────────────────────
 
 function ServerCard({ s, isAdmin, onView, onRename, onDelete, onMaintenance }: {
@@ -333,7 +366,10 @@ function ServerCard({ s, isAdmin, onView, onRename, onDelete, onMaintenance }: {
     <div className="rounded-lg p-3" style={{ border: `1px solid ${gf.border}` }}>
       <div className="flex items-start justify-between gap-2">
         <button onClick={onView} className="min-w-0 text-left">
-          <div className="text-[15px] font-medium truncate" style={{ color: gf.textPrimary }}>{s.name}</div>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <OsBadge os={s.os} />
+            <span className="text-[15px] font-medium truncate" style={{ color: gf.textPrimary }}>{s.name}</span>
+          </div>
           {renamed && <div className="text-[12px] font-mono truncate" style={{ color: gf.textDim }}>host: {s.hostname}</div>}
           <div className="text-[13px] font-mono truncate" style={{ color: gf.textMuted }}>{s.ip}</div>
         </button>
@@ -880,7 +916,8 @@ export default function ServerMetrics() {
                         style={{ borderBottom: `1px solid ${gf.divider}`, background: openId === s.id ? gf.hover : i % 2 ? gf.hover : "transparent" }}
                       >
                         <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: gf.textPrimary }}>
-                          <div className="text-[14px] font-medium">
+                          <div className="text-[14px] font-medium flex items-center gap-1.5">
+                            <OsBadge os={s.os} />
                             {s.name}
                             <span className="ml-1.5 text-[12px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === s.id ? "rotate(180deg)" : "none" }}>▾</span>
                           </div>
