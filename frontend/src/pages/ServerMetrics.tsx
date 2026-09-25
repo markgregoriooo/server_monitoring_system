@@ -612,7 +612,7 @@ function ServerDrawerRow({ server: s, isOpen, newestAgent }: {
 
 export default function ServerMetrics() {
   const [servers, setServers]           = useState<Server[]>([]);
-  const [detailServer, setDetailServer] = useState<Server | null>(null);
+  const [loaded, setLoaded]             = useState(false);
   const [pending, setPending]           = useState<PendingAgent[]>([]);
   const [aggCpu, setAggCpu]             = useState<number[]>([]);
   const [aggMem, setAggMem]             = useState<number[]>([]);
@@ -624,9 +624,24 @@ export default function ServerMetrics() {
 
   const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
 
+  // The open detail view lives in the URL (?device=<id>), not in component state, so a
+  // refresh lands back on the same server and the browser's Back button returns to the
+  // list. It used to be a useState copy of the row, which a reload simply forgot — and
+  // the notification deep-link then deleted the param on arrival, so there was nothing
+  // left in the address bar to restore it from either. Looked up from `servers`, which
+  // the socket handlers below already keep live, so the gauges still move.
+  const detailId = searchParams.get("device");
+  const detailServer = detailId ? servers.find((s) => s.id === detailId) ?? null : null;
+  const openDetail = (id: string) => setSearchParams({ device: id });
+  const closeDetail = () => {
+    searchParams.delete("device");
+    setSearchParams(searchParams);
+  };
+
   const loadServers = () =>
     api.getServers().then((result) => {
       if (result.success && result.data) setServers((result.data.servers ?? []).map(mapServerRow));
+      setLoaded(true);
     });
 
   const loadPending = () =>
@@ -655,14 +670,11 @@ export default function ServerMetrics() {
       // A metric for a host we don't have yet (e.g. approved in another session)
       // gives only live values — pull the full row so its specs/network fill in.
       if (isNew) loadServers();
-      // Keep the open detail view live too — its gauges read from this prop.
-      setDetailServer((d) => (d && d.id === id ? mergeLive(d, data.server) : d));
     };
     const onApproved = () => { loadServers(); loadPending(); };
     const onRemoved = (data: { id: number }) => {
       const rid = String(data?.id);
       setServers((prev) => prev.filter((s) => s.id !== rid));
-      setDetailServer((d) => (d && d.id === rid ? null : d));
     };
     const onPending = () => loadPending();
     // Live offline/online flip from the backend's last_seen sweep. A stopped agent
@@ -676,8 +688,6 @@ export default function ServerMetrics() {
             ? { ...s, status: "Offline", cpu: 0, memory: 0, diskUsed: 0, uptime: "—" }
             : { ...s, status: data.status };
       setServers((prev) => prev.map(apply));
-      // Mirror the flip onto the open detail view so its gauges go Offline live.
-      setDetailServer((d) => (d ? apply(d) : d));
     };
 
     // Admin renamed a server elsewhere → patch its label live in the list + detail.
@@ -686,7 +696,6 @@ export default function ServerMetrics() {
       const apply = (s: Server): Server =>
         s.id !== id ? s : { ...s, name: data.name, displayName: data.displayName, hostname: data.hostname };
       setServers((prev) => prev.map(apply));
-      setDetailServer((d) => (d ? apply(d) : d));
     };
 
     socket.on("serverMetrics", onMetrics);
@@ -705,18 +714,14 @@ export default function ServerMetrics() {
     };
   }, []);
 
-  // Deep-link from a notification: /server-metrics?device=<id> opens that server's
-  // detail once the list has loaded, then drops the param (so Back returns to the
-  // list and a refresh doesn't re-trigger).
+  // A ?device= that names no server (removed, rejected, or a stale bookmark) would
+  // otherwise leave the page on the list with a param that means nothing — drop it once
+  // the list has loaded. A notification deep-link needs nothing else: it is the same
+  // param the detail view already reads.
   useEffect(() => {
-    const deviceParam = searchParams.get("device");
-    if (!deviceParam) return;
-    const match = servers.find((s) => s.id === String(deviceParam));
-    if (!match) return;
-    setDetailServer(match);
-    searchParams.delete("device");
-    setSearchParams(searchParams, { replace: true });
-  }, [servers, searchParams, setSearchParams]);
+    if (loaded && detailId && !detailServer) closeDetail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, detailId, detailServer]);
 
   const total  = servers.length;
   const online = servers.filter((s) => s.status === "Online").length;
@@ -755,7 +760,7 @@ export default function ServerMetrics() {
     const r = await api.deleteServer(Number(id));
     if (r.success) {
       setServers((prev) => prev.filter((s) => s.id !== id));
-      if (detailServer?.id === id) setDetailServer(null);
+      if (detailId === id) closeDetail();
     } else {
       alert(r.error ?? "Failed to remove server.");
     }
@@ -777,7 +782,6 @@ export default function ServerMetrics() {
     const status = r.data?.status ?? (currentlyParked ? "Online" : "Maintenance");
     const apply = (s: Server): Server => (s.id === id ? { ...s, status } : s);
     setServers((prev) => prev.map(apply));
-    setDetailServer((d) => (d ? apply(d) : d));
   };
 
   const handleApprove = async (id: number) => {
@@ -790,8 +794,11 @@ export default function ServerMetrics() {
   };
 
   if (detailServer) {
-    return <ServerDetail server={detailServer} onBack={() => setDetailServer(null)} />;
+    return <ServerDetail server={detailServer} onBack={closeDetail} />;
   }
+  // Refreshed on a detail URL: wait for the list rather than flashing it for a moment
+  // before the detail view appears.
+  if (detailId && !loaded) return null;
 
   const onlineColor = total === 0 ? gf.textMuted : online === total ? GREEN : online === 0 ? RED : ORANGE;
 
@@ -887,7 +894,7 @@ export default function ServerMetrics() {
                   key={s.id}
                   s={s}
                   isAdmin={isAdmin}
-                  onView={() => setDetailServer(s)}
+                  onView={() => openDetail(s.id)}
                   onRename={() => setRenameTarget(s)}
                   onDelete={() => handleDelete(s.id, s.name)}
                   onMaintenance={() => handleMaintenance(s.id, s.name, s.status === "Maintenance")}
@@ -938,7 +945,7 @@ export default function ServerMetrics() {
                             other with no gap at all. */}
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <div className="flex items-center justify-end gap-2">
-                            <GhostButton onClick={(e) => { e.stopPropagation(); setDetailServer(s); }}>View</GhostButton>
+                            <GhostButton onClick={(e) => { e.stopPropagation(); openDetail(s.id); }}>View</GhostButton>
                             {isAdmin && <GhostButton onClick={(e) => { e.stopPropagation(); setRenameTarget(s); }}>Rename</GhostButton>}
                             {isAdmin && (
                               <GhostButton onClick={(e) => {
