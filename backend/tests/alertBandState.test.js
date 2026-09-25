@@ -91,3 +91,69 @@ test("band tracking still works alongside streaks", () => {
   alertBandState.resetBand(1, "cpu");
   assert.equal(alertBandState.getBand(1, "cpu"), "normal", "resolve re-arms the detector");
 });
+
+// ─── settle(): the band to act on for one reading ─────────────────────────────
+// Replays the MSI incident of 2026-09-25: memory hovering at 88–96% against the
+// 80% warning / 95% critical rules. Before settle(), a drop from critical into
+// warning closed nothing, so the CRITICAL alert stayed open while the reading said
+// "warning" — for as long as memory never went under 80%.
+
+test("settle: critical → warning closes the critical alert after N readings", () => {
+  alertBandState.resetDevice(46);
+  const s = (prev, band) => alertBandState.settle(46, "mem", prev, band);
+
+  assert.deepEqual(s("critical", "warning"), { effective: "critical", resolveAbove: null }, "1st: hold");
+  assert.deepEqual(s("critical", "warning"), { effective: "critical", resolveAbove: null }, "2nd: hold");
+  assert.deepEqual(s("critical", "warning"), { effective: "warning", resolveAbove: "warning" },
+    "3rd: confirmed — close what outranks warning");
+  alertBandState.resetDevice(46);
+});
+
+test("settle: a return to normal closes everything", () => {
+  alertBandState.resetDevice(46);
+  alertBandState.settle(46, "mem", "critical", "normal");
+  alertBandState.settle(46, "mem", "critical", "normal");
+  assert.deepEqual(alertBandState.settle(46, "mem", "critical", "normal"),
+    { effective: "normal", resolveAbove: "normal" });
+  alertBandState.resetDevice(46);
+});
+
+test("settle: a mixed run of warning and normal readings still confirms the drop", () => {
+  alertBandState.resetDevice(46);
+  alertBandState.settle(46, "mem", "critical", "warning");
+  alertBandState.settle(46, "mem", "critical", "normal");
+  const r = alertBandState.settle(46, "mem", "critical", "warning");
+  assert.equal(r.effective, "warning", "three readings below critical = confirmed");
+  alertBandState.resetDevice(46);
+});
+
+test("settle: climbing back to the held band breaks the run", () => {
+  alertBandState.resetDevice(46);
+  alertBandState.settle(46, "mem", "critical", "warning");
+  alertBandState.settle(46, "mem", "critical", "warning");
+  assert.deepEqual(alertBandState.settle(46, "mem", "critical", "critical"),
+    { effective: "critical", resolveAbove: null }, "back at critical — the streak is gone");
+  assert.equal(alertBandState.settle(46, "mem", "critical", "warning").effective, "critical",
+    "a fresh run is needed");
+  alertBandState.resetDevice(46);
+});
+
+test("settle: escalation is instant and never resolves anything", () => {
+  alertBandState.resetDevice(46);
+  assert.deepEqual(alertBandState.settle(46, "mem", "normal", "critical"),
+    { effective: "critical", resolveAbove: null });
+  assert.deepEqual(alertBandState.settle(46, "mem", "warning", "critical"),
+    { effective: "critical", resolveAbove: null });
+  assert.deepEqual(alertBandState.settle(46, "mem", "normal", "normal"),
+    { effective: "normal", resolveAbove: null }, "normal → normal is not a recovery");
+  alertBandState.resetDevice(46);
+});
+
+test("severitiesAbove / worse", () => {
+  assert.deepEqual(alertBandState.severitiesAbove("warning"), ["critical"]);
+  assert.deepEqual(alertBandState.severitiesAbove("normal"), ["info", "warning", "critical"]);
+  assert.deepEqual(alertBandState.severitiesAbove("critical"), []);
+  assert.equal(alertBandState.worse("warning", "critical"), "critical");
+  assert.equal(alertBandState.worse("critical", "warning"), "critical");
+  assert.equal(alertBandState.worse("normal", "info"), "info");
+});

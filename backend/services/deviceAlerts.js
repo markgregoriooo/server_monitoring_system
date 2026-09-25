@@ -179,27 +179,27 @@ async function evalMetric({ deviceId, metricName, type, value, label, unit = "",
   // Counts SAMPLES, not seconds, so the wall-clock differs per source: ~3 min on the
   // 60s SNMP poll and ~1.5 min on the 30s MikroTik poll, vs ~30s for a default Go
   // agent. That is a delayed ALL-CLEAR only; nothing is detected later because of it.
-  let effectiveBand = band;
-  if (band === "normal" && prevBand !== "normal") {
-    if (alertBandState.confirmRecovery(deviceId, type)) {
-      await alertsService.autoResolveMetric(deviceId, type); // recovered → close open alert
-    } else {
-      effectiveBand = prevBand; // not convinced yet — stay in the old band
-    }
-  } else if (band !== "normal") {
-    alertBandState.breakRecovery(deviceId, type); // breaching again → run of normals broken
-  }
-  alertBandState.setBand(deviceId, type, effectiveBand); // track always, so a later breach re-arms
-
-  if (SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) return null; // only the ONSET of a worse band
-
+  // A confirmed drop closes what it has made untrue (critical → warning closes the
+  // CRITICAL alert). See alertsService.settleBand.
+  const { effective: effectiveBand, downgraded, dropped } =
+    await alertsService.settleBand(deviceId, type, prevBand, band);
   const shown = Number.isInteger(value) ? `${value}${unit}` : `${Math.round(value)}${unit}`;
+
+  // A confirmed drop is logged too, so the event history shows each problem ENDING.
+  if (dropped && !downgraded) {
+    return logDevice(deviceId, dropped === "normal" ? "info" : dropped,
+      dropped === "normal" ? `${label} recovered: ${shown}` : `${label} down to ${dropped}: ${shown}`);
+  }
+
+  // Only the ONSET of a worse band — or a confirmed drop into a band with no open alert.
+  if (!downgraded && SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) return null;
+
   const word = low
     ? band === "critical" ? "critically low" : "low"
     : band === "critical" ? "critical" : "high";
   const message = `${label} ${word}: ${shown}`;
 
-  const log = await logDevice(deviceId, band, message);
+  const log = await logDevice(deviceId, band, downgraded ? `${label} down to ${band}: ${shown}` : message);
   await notificationService.raiseAlert({
     deviceId, type, severity: band, title: `${label} ${word}`, message,
     metricValue: value, alertRuleId: rule?.alert_rule_id ?? null,
@@ -220,17 +220,11 @@ async function evalEvent({ deviceId, type, active, severity, title, message }) {
   // no threshold to put a hysteresis margin around, so this streak is the only damping
   // a flapping link or a stuttering mains supply gets. A port bouncing up/down would
   // otherwise raise + auto-resolve on every single poll.
-  let effectiveBand = band;
-  if (band === "normal" && prevBand !== "normal") {
-    if (alertBandState.confirmRecovery(deviceId, type)) {
-      await alertsService.autoResolveMetric(deviceId, type);
-    } else {
-      effectiveBand = prevBand; // not convinced the link/mains is really back yet
-    }
-  } else if (band !== "normal") {
-    alertBandState.breakRecovery(deviceId, type);
-  }
-  alertBandState.setBand(deviceId, type, effectiveBand);
+  const { effective: effectiveBand, dropped } =
+    await alertsService.settleBand(deviceId, type, prevBand, band);
+
+  // Log the end as well as the start, so "UPS on battery" is followed by its clearing.
+  if (dropped) return logDevice(deviceId, "info", `Cleared: ${title}`);
 
   if (SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) return null;
 

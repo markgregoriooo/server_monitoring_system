@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import "../chart/ChartConfig";
 import Chart from "../chart/ChartConfig";
 import { api } from "../api/api";
@@ -73,6 +74,62 @@ interface DeviceLog {
   log_level: "info" | "warning" | "critical" | "error";
   message: string;
   recorded_at: string;
+}
+
+// One open alert, as GET /api/alerts returns it (only the fields this page reads).
+interface OpenAlert {
+  id: number;
+  title: string;
+  message: string;
+  severity: "info" | "warning" | "critical";
+  status: "active" | "acknowledged" | "resolved";
+  createdAt: string;
+  acknowledgedByName: string | null;
+}
+
+// "What is wrong RIGHT NOW" — the alerts still open for this server. Kept apart from
+// the Recent events log on purpose: the log is history (every problem starting and
+// ending), this is current state. Reading "is it still critical?" off the newest log
+// line is how a closed alert came to look open.
+function ActiveAlerts({ alerts }: { alerts: OpenAlert[] | null }) {
+  if (alerts === null) return null; // still loading — don't flash "no alerts"
+  return (
+    <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg px-4 py-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">Active alerts</span>
+        {alerts.length > 0 && (
+          <Link to="/alerts" className="text-[12px] text-blue-600 dark:text-blue-400 hover:underline">
+            Open Alerts page
+          </Link>
+        )}
+      </div>
+      {alerts.length === 0 ? (
+        <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#73BF69" }} />
+          No active alerts — every metric on this server is within its thresholds.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5 mt-2 max-h-40 overflow-y-auto">
+          {alerts.map((a) => (
+            <div key={a.id} className="flex items-start gap-2.5">
+              <span className="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: logColor(a.severity) }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs text-slate-700 dark:text-slate-200 break-words">{a.message}</div>
+                <div className="text-[12px] text-slate-400 mt-0.5">
+                  since {fmtDateTime(a.createdAt)}
+                  {a.status === "acknowledged" && ` · acknowledged${a.acknowledgedByName ? ` by ${a.acknowledgedByName}` : ""}`}
+                </div>
+              </div>
+              <span className="text-[11px] uppercase font-semibold tracking-wider flex-shrink-0 mt-0.5"
+                    style={{ color: logColor(a.severity) }}>
+                {a.severity}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function logColor(level: string) {
@@ -334,6 +391,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   const [rangeError, setRangeError] = useState("");
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [logs, setLogs]       = useState<DeviceLog[]>([]);
+  const [openAlerts, setOpenAlerts] = useState<OpenAlert[] | null>(null);
 
   const memUsedGB  = +((s.memory  / 100) * s.memoryTotalGB).toFixed(1);
   const diskUsedGB = Math.round((s.diskUsed / 100) * s.diskTotalGB);
@@ -377,6 +435,27 @@ export default function ServerDetail({ server: s, onBack }: Props) {
     socket.on("serverMetrics", onMetrics);
     return () => { alive = false; socket.off("serverMetrics", onMetrics); };
   }, [s.id, range]);
+
+  // Open alerts for this server — re-read whenever one is raised (notification) or
+  // changes state (alertUpdated: acknowledged, resolved, auto-resolved) for this device.
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api.getDeviceOpenAlerts(Number(s.id)).then((r) => {
+        if (alive && r.success && r.data) setOpenAlerts(r.data.alerts ?? []);
+      });
+    load();
+    const onChange = (a: any) => {
+      if (String(a?.deviceId) === s.id) load();
+    };
+    socket.on("alertUpdated", onChange);
+    socket.on("notification", onChange);
+    return () => {
+      alive = false;
+      socket.off("alertUpdated", onChange);
+      socket.off("notification", onChange);
+    };
+  }, [s.id]);
 
   // Device event log (device_logs) for this server, kept live via deviceLog events.
   useEffect(() => {
@@ -564,6 +643,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           <span className="text-[13px] font-mono font-medium text-green-400">{s.uptime}</span>
         </div>
       </div>
+
+      <ActiveAlerts alerts={openAlerts} />
 
       {/* Top row — 2 gauge panels + 2 spark-stat panels (like Grafana top row) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:h-40">

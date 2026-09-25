@@ -10,12 +10,14 @@ const router = express.Router();
 // so both admin and it_staff can do it (managing the rules stays admin-only).
 router.use(authMiddleware, requireRole("admin", "it_staff"));
 
-// GET /api/alerts?status=active|acknowledged|resolved&limit=
+// GET /api/alerts?status=active|acknowledged|resolved|open&device=<id>&limit=
 router.get(
   "/",
   asyncHandler(async (req, res) => {
     res.json({
-      alerts: await alertsService.list({ status: req.query.status, limit: req.query.limit }),
+      alerts: await alertsService.list({
+        status: req.query.status, limit: req.query.limit, device: req.query.device,
+      }),
     });
   }),
 );

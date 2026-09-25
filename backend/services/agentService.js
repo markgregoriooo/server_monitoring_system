@@ -508,6 +508,10 @@ async function setMaintenance(deviceId, enabled) {
   // Re-arm the detectors on BOTH transitions so the first breach after the window
   // alerts, instead of being swallowed as "same band as before maintenance".
   alertBandState.resetDevice(id);
+  // Alerts still open keep their band, so they can still auto-resolve afterwards.
+  await alertsService.seedBands(id).catch((err) =>
+    console.error("[agent] band re-seed failed:", describeError(err)),
+  );
   if (!enabled) latestMetrics.delete(id); // stale numbers until the next real post
 
   // Close any open offline alert. An operator toggling this has explicitly taken
@@ -563,29 +567,36 @@ async function checkThresholds(deviceId, metrics) {
     const rules = await alertRulesService.getEffectiveRules(id, key);
     const { band, rule } = alertRulesService.nextBand(rules, v, prevBand);
 
-    // Recovery needs CONFIRMATION — one normal sample can be a dip in a metric
-    // oscillating around its threshold. Hold the previous band until N consecutive
-    // normals (alertBandState.confirmRecovery), so a server flapping across 90% raises
-    // ONE alert instead of an alert/auto-resolve storm. Escalation is unaffected.
-    let effectiveBand = band;
-    if (band === "normal" && prevBand !== "normal") {
-      if (alertBandState.confirmRecovery(id, key)) {
-        await alertsService.autoResolveMetric(id, key);
-      } else {
-        effectiveBand = prevBand; // not convinced yet — stay in the old band
-      }
-    } else if (band !== "normal") {
-      alertBandState.breakRecovery(id, key); // breaching again → run of normals broken
-    }
-    alertBandState.setBand(id, key, effectiveBand); // always track state (so a later breach re-arms)…
-
-    // …but only LOG + alert the ONSET of a worse band — not steady-state or
-    // recoveries — to keep device_logs lean and the bell quiet.
-    if (SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) continue;
-
+    // Any move DOWN the ladder needs CONFIRMATION — one sample can be a dip in a
+    // metric oscillating around its threshold. Held until N consecutive readings
+    // (ALERT_RECOVERY_SAMPLES), so a server flapping across 90% raises ONE alert
+    // instead of an alert/auto-resolve storm. A confirmed drop closes the alerts it has
+    // made untrue — critical → warning closes the CRITICAL one. Escalation is instant.
+    const { effective: effectiveBand, downgraded, dropped } =
+      await alertsService.settleBand(id, key, prevBand, band);
     const pct = Math.round(v);
+
+    // A confirmed drop is LOGGED as well as acted on. The event log used to record
+    // only the onset of a worse band, so its newest memory entry stayed "Memory
+    // critical: 96%" long after the reading fell — a start with no end, which reads as
+    // a problem still happening. Every PROBLEM now gets its RESOLVED.
+    if (dropped && !downgraded) {
+      events.push(await logDevice(id, dropped === "normal" ? "info" : dropped,
+        dropped === "normal"
+          ? `${label} recovered: ${pct}%${where}`
+          : `${label} down to ${dropped}: ${pct}%${where}`));
+      continue;
+    }
+
+    // Otherwise only LOG + alert the ONSET of a worse band — not steady state — to keep
+    // device_logs lean and the bell quiet. The one exception is a confirmed drop into a
+    // band with no open alert (see alertsService.settleBand).
+    if (!downgraded && SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) continue;
+
     const word = band === "critical" ? "critical" : band === "warning" ? "high" : band;
-    events.push(await logDevice(id, band, `${label} ${word}: ${pct}%${where}`));
+    events.push(await logDevice(id, band, downgraded
+      ? `${label} down to ${band}: ${pct}%${where}`
+      : `${label} ${word}: ${pct}%${where}`));
     await notificationService.raiseAlert({
       deviceId: id, type: key, severity: band,
       title: `${label} ${word}`, message: `${label} ${word}: ${pct}%${where}`,
@@ -634,7 +645,13 @@ async function flipOffline(rows, reason) {
   const out = [];
   for (const r of rows) {
     latestMetrics.delete(Number(r.id));
-    alertBandState.resetDevice(r.id); // re-arm threshold logging for when it returns
+    alertBandState.resetDevice(r.id); // re-arm threshold logging for when it returns…
+    // …but keep the bands of alerts still OPEN. Wiped, a Memory critical alert that was
+    // open when the server dropped off could never auto-resolve once it came back: its
+    // first normal reading would look like normal → normal, i.e. no recovery at all.
+    await alertsService.seedBands(r.id).catch((err) =>
+      console.error("[agent] band re-seed failed:", describeError(err)),
+    );
     const log = await logDevice(r.id, "warning", reason);
     out.push({ id: Number(r.id), name: r.name, log, reason });
   }

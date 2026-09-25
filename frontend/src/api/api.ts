@@ -997,6 +997,17 @@ export const api = {
     }
   },
 
+  // The alerts still open (active or acknowledged) for ONE device — what its detail
+  // page shows as "Active alerts", i.e. the current state rather than the event log.
+  getDeviceOpenAlerts: async (deviceId: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.get("/alerts", { params: { status: "open", device: deviceId } });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   getOpenAlertCount: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/alerts/count");

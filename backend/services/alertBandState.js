@@ -87,7 +87,48 @@ function resetDevice(deviceId) {
   for (const k of streaks.keys()) if (k.startsWith(prefix)) streaks.delete(k);
 }
 
+// ─── Settling a new reading ─────────────────────────────────────────────────────
+// Same ladder as alertRulesService.SEV_RANK, repeated here so this module stays
+// import-free (and therefore runnable under `npm test` with no MySQL).
+const RANK = { normal: 0, info: 1, warning: 2, critical: 3 };
+
+// Decide the band to ACT on for one reading, given the band held so far and the band
+// the reading falls in (after alertRulesService.nextBand's hysteresis).
+//
+// Returns { effective, resolveAbove }:
+//   effective     the band to store and compare against for escalation
+//   resolveAbove  null, or a band: close every open alert for this metric whose
+//                 severity OUTRANKS it ("normal" = close them all)
+//
+// A move DOWN the ladder — to normal, or from critical to warning — needs the same
+// N-sample confirmation. Until 2026-09-25 only a return to NORMAL closed anything, so a
+// metric that dropped from critical into warning and stayed there (a server whose memory
+// sits at 88%, never under the 80% warning line) kept its CRITICAL alert open
+// indefinitely, while the reading plainly said "warning". Each severity now closes when
+// its own condition clears, as it does in Prometheus/Alertmanager.
+function settle(deviceId, metric, prevBand, band) {
+  const prev = prevBand ?? DEFAULT_BAND;
+  const next = band ?? DEFAULT_BAND;
+  if ((RANK[next] ?? 0) < (RANK[prev] ?? 0)) {
+    if (confirmRecovery(deviceId, metric)) return { effective: next, resolveAbove: next };
+    return { effective: prev, resolveAbove: null }; // not convinced yet — hold
+  }
+  if (next !== DEFAULT_BAND) breakRecovery(deviceId, metric); // at or above the held band
+  return { effective: next, resolveAbove: null };
+}
+
+// Which severities outrank `band` — the alerts a confirmed drop to `band` closes.
+function severitiesAbove(band) {
+  const r = RANK[band] ?? 0;
+  return Object.keys(RANK).filter((s) => s !== DEFAULT_BAND && RANK[s] > r);
+}
+
+// The most severe of two bands (for seeding from several open alerts on one metric).
+function worse(a, b) {
+  return (RANK[b] ?? 0) > (RANK[a] ?? 0) ? b : a;
+}
+
 export default {
   getBand, setBand, resetBand, resetDevice, DEFAULT_BAND,
-  confirmRecovery, breakRecovery,
+  confirmRecovery, breakRecovery, settle, severitiesAbove, worse,
 };

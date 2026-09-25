@@ -64,18 +64,10 @@ async function settleBand(key, value) {
   const prev = alertBandState.getBand(null, key);
   const { band, rule } = alertRulesService.nextBand(rules, value, prev);
 
-  let effective = band;
-  if (band === "normal" && prev !== "normal") {
-    if (alertBandState.confirmRecovery(null, key)) {
-      await alertsService.autoResolveMetric(null, key);
-    } else {
-      effective = prev; // not convinced yet — hold the alert open
-    }
-  } else if (band !== "normal") {
-    alertBandState.breakRecovery(null, key);
-  }
-  alertBandState.setBand(null, key, effective);
-  return { band, effective, prev, rule };
+  // A confirmed drop closes what it has made untrue — gas falling from critical to
+  // warning closes the CRITICAL alert. See alertsService.settleBand.
+  const { effective, downgraded } = await alertsService.settleBand(null, key, prev, band);
+  return { band, effective, prev, rule, downgraded };
 }
 
 async function maybeRaiseEnvAlert(data) {
@@ -84,9 +76,10 @@ async function maybeRaiseEnvAlert(data) {
       const v = meta.value(data);
       if (typeof v !== "number" || Number.isNaN(v)) continue;
 
-      const { band, effective: effectiveBand, prev, rule } = await settleBand(key, v);
+      const { band, effective: effectiveBand, prev, rule, downgraded } = await settleBand(key, v);
 
-      if (SEV_RANK[effectiveBand] <= SEV_RANK[prev]) continue; // only act on escalation
+      // Only act on escalation — or on a confirmed drop into a band with no open alert.
+      if (!downgraded && SEV_RANK[effectiveBand] <= SEV_RANK[prev]) continue;
 
       // Smoke = a gas reading the firmware flags CRITICAL — give it a clearer title.
       // "DANGER" is what firmware before 2026-08-15 called that same band; accepted so

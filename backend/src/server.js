@@ -293,6 +293,9 @@ socketSessions.init(io);
 // threading `io` through every call.
 notificationService.init(io);
 alertsService.init(io); // so acknowledge/resolve + auto-resolve can broadcast alertUpdated
+// Threshold bands live in memory. Start them from the alerts that are still open, or an
+// alert left open across a restart could never auto-resolve (see alertsService.seedBands).
+alertsService.seedBands().catch((e) => console.error("[alerts] band seeding failed:", e.message));
 reportService.init(io); // so a background report build can push reportUpdated when done
 
 // ESP32 liveness. Seeds from the newest InfluxDB reading so a restart doesn't forget
