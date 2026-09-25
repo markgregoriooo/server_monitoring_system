@@ -220,12 +220,16 @@ INSERT INTO `alert_rules` (`alert_rule_id`, `device_id`, `interface_name`, `metr
 (4, NULL, NULL, 'mem', 95, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-06-14 14:10:26', NULL),
 (5, NULL, NULL, 'disk', 80, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
 (6, NULL, NULL, 'disk', 90, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
-(8, NULL, NULL, 'temperature', 34, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:23:05', NULL),
+-- temperature + humidity follow ASHRAE TC 9.9 (Thermal Guidelines, 5th ed.): WARNING at the
+-- edge of the RECOMMENDED envelope (27 °C), CRITICAL at the Class A1 ALLOWABLE limit
+-- (32 °C / 80 %RH). Was 30/34 °C and 70 %RH until 2026-09-25 — see
+-- migrations/2026-09-25_ashrae_env_thresholds.sql
+(8, NULL, NULL, 'temperature', 32, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:23:05', NULL),
 (9, NULL, NULL, 'gas', 150, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-07-23 10:20:16', NULL),
 (10, NULL, NULL, 'gas', 300, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:21:50', NULL),
 (11, NULL, NULL, 'humidity', 60, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-07-31 04:55:21', NULL),
-(12, NULL, NULL, 'humidity', 70, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-31 04:55:29', NULL),
-(16, NULL, NULL, 'temperature', 30, '>=', 'warning', 1, '2026-06-15 03:42:28', '2026-07-23 10:20:29', NULL),
+(12, NULL, NULL, 'humidity', 80, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-31 04:55:29', NULL),
+(16, NULL, NULL, 'temperature', 27, '>=', 'warning', 1, '2026-06-15 03:42:28', '2026-07-23 10:20:29', NULL),
 (17, NULL, NULL, 'router_cpu', 85, '>=', 'warning', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
 (18, NULL, NULL, 'router_cpu', 95, '>=', 'critical', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
 (19, NULL, NULL, 'router_mem', 85, '>=', 'warning', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),

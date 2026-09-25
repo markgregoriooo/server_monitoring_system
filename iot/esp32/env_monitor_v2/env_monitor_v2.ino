@@ -421,10 +421,10 @@ float gasPpm[MAX_MQ2_SENSORS] = { 0, 0, 0, 0 };
 float WARNING_PPM   = 150.0;
 float CRITICAL_PPM  = 300.0;
 float TEMP_COLD     = 22.0;
-float TEMP_WARNING  = 29.0;
-float TEMP_CRITICAL = 32.0;
-float HUM_WARNING   = 85.0;
-float HUM_CRITICAL  = 95.0;
+float TEMP_WARNING  = 27.0;   // ASHRAE recommended ceiling — same as the v13 seed
+float TEMP_CRITICAL = 32.0;   // ASHRAE Class A1 allowable ceiling
+float HUM_WARNING   = 60.0;
+float HUM_CRITICAL  = 80.0;   // ASHRAE Class A1 allowable ceiling
 
 /* ================= IR ZONES ================= */
 // Zone IDs for change detection

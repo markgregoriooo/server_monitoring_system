@@ -33,12 +33,12 @@ export interface RoomThresholds {
  *  under 500 ppm of smoke while the first request is in flight, and so a failed request
  *  degrades to the shipped thresholds rather than to "everything is fine". */
 export const ROOM_THRESHOLD_FALLBACK: RoomThresholds = {
-  tempWarn: 30,
-  tempCrit: 34,
+  tempWarn: 27,
+  tempCrit: 32,
   gasWarn: 150,
   gasCrit: 300,
   humWarn: 60,
-  humCrit: 70,
+  humCrit: 80,
 };
 
 export type EnvBand = "normal" | "warning" | "critical";
@@ -170,7 +170,7 @@ export function alertTint(
  * Temperature has a band the others do not: TOO COLD, below which the room is over-cooled.
  *
  * There is no `alert_rules` row for it — the rules only describe the hot side (seeded
- * `>= 30` warning, `>= 34` critical) — and the firmware says why: `TEMP_COLD` is the one
+ * `>= 27` warning, `>= 32` critical) — and the firmware says why: `TEMP_COLD` is the one
  * threshold `envConfig` does not overwrite, so the device keeps its compiled 22 °C and
  * lights its LED blue there. This mirrors that constant so the dashboard and the box on
  * the wall call the same room too cold. Change one and change the other
