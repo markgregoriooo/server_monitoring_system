@@ -48,6 +48,23 @@ npm run dev      # Vite dev server → http://localhost:5173
 npm run build
 ```
 
+### Docker (the ICTU deployment)
+```bash
+cp .env.docker.example .env      # compose reads THIS root .env; backend/.env is still the app config
+docker compose up -d --build
+docker compose logs -f backend
+docker compose up -d backend     # after editing backend/.env — NOT `restart` (env_file is read at container CREATE)
+docker compose down              # stop, keep data;  `down -v` ALSO DELETES the volumes = the data
+```
+Four containers: `db` (MariaDB 10.11 — not MySQL, the v13 dump and the alert-rule generated
+columns were verified on MariaDB), `influxdb` (2.7), `backend` (:3000), `frontend` (nginx, :8080).
+`v13_cspc-ictu-monitoring-system.sql` is mounted into `docker-entrypoint-initdb.d`, so it
+loads **once**, on an empty volume, and never again. Compose overrides `DB_*`/`INFLUX_*` in
+`backend/.env` with the container addresses. MySQL is deliberately not published to the host.
+The backend's `backups/`, `reports/` and `branding/` are named volumes. `VITE_*` values are
+**build args**, so changing one means `--build`. cloudflared runs on the HOST, not in
+compose (`cloudflare-tunnel-setup.md`, `deployment-guide.md` §5).
+
 ### Environment Variables (`backend/.env`)
 ```
 PORT=
@@ -97,6 +114,11 @@ SERVER_HEARTBEAT_TIMEOUT_SEC= # agents POST an empty heartbeat to /api/servers/h
 SERVER_SHUTDOWN_HOLD_SEC= # the agent POSTs /api/servers/shutdown on its way down ({reason: shutdown|stopped}) → server offline + a CRITICAL alert at once. For this long afterwards its metric posts and heartbeats cannot flip it back Online; blank = 30. Needed because the notice RACES the agent's last posts — on Windows it is sent by a separate Event-1074 scheduled task while the main agent keeps posting until the OS kills it, and one late POST would resolve the alert that was just raised
 SNMP_POLL_INTERVAL_MS= # router/UPS SNMP poll cadence; blank = 60000 (60s). Per-device community/port live in device_network, not here
 UPS_POWER_CHECK_MS=    # fast UPS power watch cadence; blank = 5000. Every online UPS is asked ONLY upsOutputSource + upsBatteryStatus (one GET, 2s timeout, no retries), and when that differs from the last full poll's view the full poll runs NOW (pollDeviceNow) — so on-battery / bypass / output-off / battery-low alert in ~5s instead of up to 60s, through the unchanged deviceAlerts path. AVR is folded into normal so a UPS flicking booster/reducer on poor mains does not trigger a poll per flick. Never judges reachability (that stays with the ICMP sweep and the full poll). UPS_POWER_CHECK=false disables. See services/upsPowerWatch.js
+ESP32_OFFLINE_AFTER_SEC= # seconds without a `sensorData` before the environment box counts as offline → CRITICAL room-level `esp32_offline` alert, auto-resolved by the next reading; blank = 30 (~10 missed readings). The ESP32 is not a `devices` row, so the server offline sweep cannot cover it. See services/esp32Monitor.js
+FAST_OFFLINE_CHECK=    # false disables the fast ICMP offline sweep; blank = enabled. One echo per ONLINE server/router/UPS/MikroTik on a short cycle, separate from the full polls. ⚠️ It can only mark a device DOWN (recovery stays with the real poll, which owns the status column) and it ignores any device it has not yet seen answer ping this process (`everAnswered`), so equipment that drops ICMP by policy is never falsely flipped. It decides WHEN only — the flip goes through each poller's own `setReachable` / agentService, so the alert and log are identical to a poller-raised one. See services/reachabilitySweep.js
+FAST_OFFLINE_CHECK_MS= # sweep cadence; blank = 5000
+FAST_OFFLINE_FAILS=    # consecutive missed sweeps before a device is flipped; blank = 2 (1 turns a single lost echo into an outage)
+FAST_OFFLINE_PING_TIMEOUT_MS= # per-echo timeout; blank = 1000
 PING_COUNT=            # ICMP echoes per router per poll; blank = 3. Fewer than 3 makes packet_loss_pct too coarse to mean anything (1 packet = 0% or 100%)
 PING_TIMEOUT_MS=       # per-reply ICMP timeout; blank = 2000. ⚠️ The OS `ping` flag units DIFFER — Windows -w is ms, Linux -W is SECONDS, macOS -W is ms — services/pingOutput.js converts; don't hand-write the flags
                        # A router registered with NO snmp_community is polled by ICMP only (up/down + latency + loss, no interfaces). We shell out to the OS `ping` rather than open a raw socket: net-ping needs Administrator on Windows and root on Linux, and running the backend elevated is a far worse trade than parsing text on a box holding JWT_SECRET. See services/icmpPing.js
@@ -244,15 +266,20 @@ so rotate anything that was committed.
 ## Architecture
 
 Server room environment monitoring system for CSPC-ICTU.  
-ESP32 (DHT22 + 2× MQ-2 + IR TX array + RGB LED) → Node.js + Socket.IO → React dashboard.
-Three ingest paths: ESP32 (push, Socket.IO), Go agents (push, HTTP), and an SNMP
-poller (**pull** — routers via IF-MIB, UPS via UPS-MIB). See `router-ups-monitoring.md`.
+ESP32 (DHT22 + up to 4× MQ-2 + IR TX array + RGB LED) → Node.js + Socket.IO → React dashboard.
+Four ingest paths: ESP32 (push, Socket.IO), Go agents (push, HTTP), an SNMP/ICMP
+poller (**pull** — routers via IF-MIB, UPS via UPS-MIB, no-community routers via ping —
+see `router-ups-monitoring.md`), and a MikroTik poller (**pull**, RouterOS API — see
+`mikrotik-monitoring.md`). Two fast side-channels sit beside the pollers:
+`reachabilitySweep` (ICMP every 5s, can only mark a device DOWN) and `upsPowerWatch`
+(one SNMP GET every 5s, triggers a full UPS poll on a power-state change).
 
 ### Tech Stack
-- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, nodemailer (alert/report email over SMTP), net-snmp
+- **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, nodemailer (alert/report email over SMTP), net-snmp, node-routeros (MikroTik API), pdfkit (reports), google-auth-library
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS, JetBrains Mono font
-- **Database:** MySQL (users, devices, aircon, agent tokens, logs) + InfluxDB (environment, server-metric, **and** router/UPS time-series)
-- **Hardware:** ESP32, DHT22, MQ-2 ×2, passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×2 (GPIO 25/33), DS3231 RTC + coin cell, micro SD (SPI, offline buffer)
+- **Database:** MySQL/MariaDB (users, devices, aircon, agent tokens, logs) + InfluxDB (environment, server-metric, **and** router/UPS time-series)
+- **Hardware:** ESP32, DHT22, MQ-2 ×4 channels (GPIO 34/35/36/39 in `MQ2_PINS[]`; only channels an admin marks wired are read), passive piezo buzzer, WS2812B RGB LED ×20, IR TX ×2 (GPIO 25/33), DS3231 RTC + coin cell, micro SD (SPI, offline buffer)
+- **Deployment:** Docker Compose (`docker-compose.yml`) — see Docker below
 
 ---
 
@@ -264,7 +291,7 @@ backend/config/
   env.js                        ← dotenv loader — imported first in every config file
   mysql.js                      ← mysql2 pool, exported as `db` (promise API)
   influx.js                     ← InfluxDB write (precision: ms) + query clients
-backend/routes/                 ← One file per resource, mounted at /api/<resource>
+backend/routes/                 ← One file per resource, mounted at /api/<resource> (kebab-case: `gasSensors.js` → `/api/gas-sensors`, `alertRules.js` → `/api/alert-rules`)
 backend/services/
   authService.js                ← JWT session issue (`issueSession`), `recordSignInDenied` audit, getMe/logout
   googleAuthService.js          ← Google OAuth login: code exchange → ID-token verify → domain gate → login-or-create-pending. See `google-oauth.md`
@@ -370,7 +397,7 @@ SESSION_NOTES.md                ← per-session work log
 | Devices, aircon_state, aircon_logs | MySQL | fully implemented |
 | Servers (devices + server_specs + device_network + agent_tokens), device_logs | MySQL | fully implemented — Go-agent enrollment |
 | Routers/UPS (devices + device_network + ups_details + network_interfaces) | MySQL | SNMP poller; devices are registered from the dashboard (**Add router / Add UPS**, admin) — the old seed-SQL template is gone |
-| Environment time-series | InfluxDB | measurement: `sensor_environment`, precision: ms |
+| Environment time-series | InfluxDB | measurement: `sensor_environment`, precision: ms (still carries the legacy `mq2_1_ppm`/`mq2_2_ppm` + worst-channel `gas_ppm`) **plus** `sensor_gas` — one point per MQ-2 channel per stored reading, tagged by `channel`, field `ppm` (same shape as `server_volumes` per mount) |
 | Server-metric time-series | InfluxDB | measurements: `server_metrics` + `server_volumes` (one point per fixed volume per sample, tagged by `mount` — the root-only `disk_*` fields stay on `server_metrics`) |
 | Router/UPS time-series | InfluxDB | measurements: `network_traffic` (per-iface, cumulative uint counters), `router_metrics`, `ups_metrics` — tagged by `device_id` |
 | **On-site backup copy (all streams)** | flat files under `BACKUP_DIR` | independent NDJSON backup of every sample (env/server/router/MikroTik/UPS), one file per stream per day, on a micro SD / USB drive on the backend. Survives DB wipe + power outage. See `backup-storage.md` |
@@ -446,6 +473,8 @@ SESSION_NOTES.md                ← per-session work log
 |-------|---------|
 | `sensorData` | live reading every ~3s → broadcast + alert evaluation on EVERY one; the InfluxDB write and backup copy are gated by `envPersistPolicy` (~30s heartbeat + immediate on a gas/status/excursion change) |
 | `offlineData` | micro-SD replay after an outage → InfluxDB write under the device's RTC time + backup mirror; no broadcast, no alerting |
+| `gasSensorMap` | MQ-2 channel → GPIO on every connect → `gasSensorService.setPinMap` (cached into `gas_sensors.gpio`) + `gasSensorsUpdated` to browsers |
+| `gasCalibrated` | result of a `calibrateGas` request → forwarded to browsers as-is |
 | `irChannelMap` | GPIO assignments on every connect → stored in airconService, forwarded to browsers |
 | `irFired` | auto IR fired → applyAutoIR() updates DB + broadcasts airconAutoUpdate |
 
@@ -478,6 +507,8 @@ SESSION_NOTES.md                ← per-session work log
 | `airconStatus` | manual on/off toggle, or a **rename** (`{ aircon: { id, name }, entry }`) |
 | `envConfigUpdated` | admin changed an **Alert Rule** → `{ thresholds }` (the same room-level `{tempWarn,tempCrit,gasWarn,gasCrit,humWarn,humCrit}` pushed to the ESP32 as `envConfig`). Broadcast to every dashboard because Dashboard/Environment colour **temperature, humidity and gas** against these (`utils/envThresholds.ts` via `hooks/useRoomThresholds.ts`) — and the admin who just retuned them is on the Alert Rules page, so is the least likely person to notice a stale Dashboard |
 | `airconAutoUpdate` | ESP32 auto IR zone change |
+| `gasSensorsUpdated` | an admin relabelled/enabled a gas channel, or the ESP32 reported its pin map → `{ sensors }` to every dashboard, so the Environment page's lines and alert wording follow the new label |
+| `gasCalibrated` | forwarded from the ESP32 after a clean-air calibration |
 | `irChannelMap` | forwarded from ESP32 on connect |
 
 ### Server → ESP32
@@ -487,6 +518,7 @@ SESSION_NOTES.md                ← per-session work log
 | `irCommand` | manual Turn On/Off from dashboard |
 | `envConfig` | on ESP32 connect + after any **Alert Rules** change → room-level `alert_rules` thresholds (`{tempWarn,tempCrit,gasWarn,gasCrit,humWarn,humCrit}`, null fields omitted). Firmware applies them at runtime so its **LED/buzzer/reported status** match the dashboard's alert thresholds (no reflash). See alertRulesService + `email-popup-notifications.md` |
 | `calibrateGas` | admin asks the ESP32 to re-measure the MQ-2 **clean-air baseline** (Ro) and save it to NVS flash. Ro is measured once per location and reused on every boot — deliberately NOT re-measured each boot, since a reboot during a gas event would record polluted air as "clean" and permanently under-report smoke. Replaces hand-editing `RO_CLEAN_AIR_*` + reflashing when the box moves. Air must be clean when triggered; out-of-range results are rejected, not stored |
+| `gasConfig` | on ESP32 connect + after any gas-channel change (`PATCH /api/gas-sensors/:channel`) → which channels are wired/enabled, same payload shape as `irConfig`. A channel not enabled is never read — a floating ADC pin reads noise that becomes a believable ppm |
 | `acConfig` | on ESP32 connect + after any **Auto-Cooling Thresholds** change (AirConditioner page, admin) → IR zone **boundaries** (`{coldBelow,normalMax,acceptableMax,nearCritMax}` °C). Firmware's `getIRZone` uses them at runtime so **WHEN IR fires** tracks the dashboard (no reflash). Target temps per zone are fixed (captured IR codes). Separate from `envConfig`/alerts on purpose — cooling should ramp *before* the alarm thresholds. Backed by `aircon_ir_config` (airconService). See `email-popup-notifications.md` |
 
 ---

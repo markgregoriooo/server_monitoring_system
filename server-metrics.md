@@ -32,9 +32,12 @@ updates to the dashboard.
                               React dashboard — Server Metrics page
 ```
 
-**The agent speaks only HTTP to the backend.** It never connects to InfluxDB and never opens
+**The agent speaks only HTTPS to the backend.** It never connects to InfluxDB and never opens
 a socket — Socket.IO is browser↔Node only. Each monitored host holds one credential for one
-endpoint, not database access.
+endpoint, not database access. Point `-api-url` at the backend's `https://` address (the TLS
+front end); the agent needs no code change for it. Plain `http://…:3000` is for a dev LAN
+only — the `AGT-` token rides in the `Authorization` header on every POST, so over HTTP
+anyone on the path can read it and report as that server.
 
 **One sample, end to end:** agent collects (500 ms blocking CPU read) → POSTs snake_case JSON
 with its Bearer token → `agentAuth` resolves the token to a device → handler validates every
@@ -294,10 +297,15 @@ rules; `historyRange.test.js` pins preset and custom-window resolution.
 
 - **Restart the backend after editing `.env`** — nodemon doesn't watch it. A mismatch shows
   as `Invalid install key` at register.
-- **`localhost` only works on the backend's own PC** — every other machine needs the LAN IP,
-  and port 3000 open. Agents cache the URL in `agent.conf`, so **pick a stable backend
-  address up front** (static IP / DHCP reservation / DNS name) or every agent needs
-  re-pointing later.
+- **`localhost` only works on the backend's own PC** — every other machine needs the
+  backend's `https://` address, and the HTTPS port open to it. Agents cache the URL in
+  `agent.conf`, so **pick a stable backend address up front** (static IP / DHCP reservation /
+  DNS name) or every agent needs re-pointing later. An agent enrolled against the old
+  `http://` URL keeps using it — change `API_URL=` in its `agent.conf` (or re-run the
+  installer with the `https://` URL) and restart the agent.
+- **A certificate the agent can't verify fails the POST.** Go checks the certificate against
+  the host's trust store, so a self-signed or internal-CA certificate must be trusted on each
+  monitored server; otherwise every send fails and the server goes Offline.
 - **Server never appears?** You didn't Approve it. **Pending panel missing?** You're
   `it_staff`, not `admin`.
 - **InfluxDB retention is a manual, one-time config action** on the InfluxDB server —
