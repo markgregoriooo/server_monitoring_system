@@ -4,20 +4,17 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-
         <!-- ============ TITLE ============ -->
-        <mxCell id="t1" value="Level 0 (Context) Data Flow Diagram &#8212; Server Infrastructure Monitoring System" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="t1" value="Level 0 (Context) Data Flow Diagram — Server Infrastructure Monitoring System" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=16;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="80" y="28" width="1000" height="26" as="geometry" />
         </mxCell>
-        <mxCell id="t2" value="CSPC &#8212; ICTU. Gane&#8211;Sarson notation. Each data flow has its own connection point and its own straight line: no two flows share a segment." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="t2" value="CSPC — ICTU. Gane–Sarson notation. Each data flow has its own connection point and its own straight line: no two flows share a segment." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="80" y="54" width="1100" height="20" as="geometry" />
         </mxCell>
-
         <!-- ============ CENTRAL PROCESS ============ -->
         <mxCell id="p0" value="0&lt;br&gt;&lt;br&gt;Server Infrastructure&lt;br&gt;Monitoring System" style="rounded=1;whiteSpace=wrap;html=1;arcSize=16;fillColor=#FFFFFF;strokeColor=#333333;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="620" y="100" width="320" height="620" as="geometry" />
         </mxCell>
-
         <!-- ============ LEFT EXTERNAL ENTITIES ============ -->
         <mxCell id="eAdmin" value="Admin" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="80" y="102" width="210" height="112" as="geometry" />
@@ -31,7 +28,6 @@
         <mxCell id="eSrv" value="Monitored Server" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="80" y="510" width="210" height="80" as="geometry" />
         </mxCell>
-
         <!-- ============ RIGHT EXTERNAL ENTITIES ============ -->
         <mxCell id="eRtr" value="Router / MikroTik" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="1270" y="110" width="230" height="80" as="geometry" />
@@ -45,26 +41,23 @@
         <mxCell id="eGoog" value="Google Workspace" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="1270" y="510" width="230" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="eMail" value="Email Recipient" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="1270" y="650" width="230" height="70" as="geometry" />
+        <mxCell id="eApp" value="Applicant" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1270" y="640" width="230" height="80" as="geometry" />
         </mxCell>
-
         <!-- ============ FLOWS: ADMIN ============ -->
-        <mxCell id="f01" value="sign-in, user approvals, alert-rule configuration,&lt;br&gt;gas-sensor setup &amp;amp; enrollment keys" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.0484;entryDx=0;entryDy=0;" edge="1" parent="1" source="eAdmin" target="p0">
+        <mxCell id="f01" value="sign-in, user approvals, device registration,&lt;br&gt;alert-rule configuration, gas-sensor setup,&lt;br&gt;recommendations &amp;amp; enrollment keys" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.0484;entryDx=0;entryDy=0;" edge="1" parent="1" source="eAdmin" target="p0">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="f02" value="session &amp;amp; role" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.1387;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eAdmin">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
         <!-- ============ FLOWS: IT STAFF ============ -->
-        <mxCell id="f03" value="sign-in, acknowledgements,&lt;br&gt;AC control &amp;amp; report requests" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.2903;entryDx=0;entryDy=0;" edge="1" parent="1" source="eStaff" target="p0">
+        <mxCell id="f03" value="sign-in, acknowledgements,&lt;br&gt;AC control, report &amp;amp; history requests" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.2903;entryDx=0;entryDy=0;" edge="1" parent="1" source="eStaff" target="p0">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="f04" value="session, live dashboards,&lt;br&gt;alerts, reports &amp;amp; forecasts" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.3806;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eStaff">
+        <mxCell id="f04" value="session, live dashboards, alerts, reports,&lt;br&gt;forecasts, activity history &amp;amp; e-mail notifications" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.3806;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eStaff">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
         <!-- ============ FLOWS: SERVER ROOM / SERVER ============ -->
         <mxCell id="f05" value="temperature, humidity, gas&lt;br&gt;&amp;amp; gas-sensor pin map" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.5113;entryDx=0;entryDy=0;" edge="1" parent="1" source="eRoom" target="p0">
           <mxGeometry relative="1" as="geometry" />
@@ -75,19 +68,16 @@
         <mxCell id="f07" value="agent token" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.7581;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eSrv">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
         <mxCell id="f16" value="gas-sensor configuration" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5694;exitDx=0;exitDy=0;entryX=1;entryY=0.7;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eRoom">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
         <!-- ============ FLOWS: ROUTER ============ -->
-        <mxCell id="f08" value="traffic &amp;amp; link state" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.0484;entryDx=0;entryDy=0;" edge="1" parent="1" source="eRtr" target="p0">
+        <mxCell id="f08" value="traffic, link state,&lt;br&gt;latency &amp;amp; packet loss" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.0484;entryDx=0;entryDy=0;" edge="1" parent="1" source="eRtr" target="p0">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="f09" value="SNMP / RouterOS query" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.1129;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eRtr">
+        <mxCell id="f09" value="SNMP / RouterOS / ICMP query" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.1129;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eRtr">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
         <!-- ============ FLOWS: UPS ============ -->
         <mxCell id="f10" value="battery, load &amp;amp; runtime" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.2742;entryDx=0;entryDy=0;" edge="1" parent="1" source="eUps" target="p0">
           <mxGeometry relative="1" as="geometry" />
@@ -95,12 +85,10 @@
         <mxCell id="f11" value="SNMP query" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.3387;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eUps">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
         <!-- ============ FLOWS: AIRCON ============ -->
         <mxCell id="f12" value="IR command" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5242;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eAc">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
         <!-- ============ FLOWS: GOOGLE ============ -->
         <mxCell id="f13" value="authorisation code" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.6935;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eGoog">
           <mxGeometry relative="1" as="geometry" />
@@ -108,12 +96,13 @@
         <mxCell id="f14" value="verified identity" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.7581;entryDx=0;entryDy=0;" edge="1" parent="1" source="eGoog" target="p0">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
         <!-- ============ FLOWS: EMAIL ============ -->
-        <mxCell id="f15" value="alert &amp;amp; report e-mail" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.9435;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eMail">
+        <mxCell id="f15" value="account status e-mail" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.9677;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="p0" target="eApp">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
+        <mxCell id="f17" edge="1" parent="1" source="eApp" target="p0" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;jumpStyle=arc;fontSize=10;strokeColor=#333333;endArrow=block;endFill=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.9032;entryDx=0;entryDy=0;" value="registration sign-in">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
         <!-- ============ LEGEND ============ -->
         <mxCell id="lgTitle" value="Legend" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=12;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="80" y="790" width="200" height="20" as="geometry" />
@@ -130,13 +119,13 @@
             <mxPoint x="620" y="845" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="lgNote1" value="Reading it: every arrow is data crossing the system boundary. Note the two &lt;i&gt;pull&lt;/i&gt; relationships &#8212; the system asks the router and the UPS for their state, rather than being told &#8212; while the server room and the servers &lt;i&gt;push&lt;/i&gt;." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="lgNote1" value="Reading it: every arrow is data crossing the system boundary. Note the two &lt;i&gt;pull&lt;/i&gt; relationships — the system asks the router and the UPS for their state, rather than being told — while the server room and the servers &lt;i&gt;push&lt;/i&gt;." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="80" y="905" width="1400" height="20" as="geometry" />
         </mxCell>
-        <mxCell id="lgNote2" value="&lt;b&gt;Balanced with the Level 1 DFD.&lt;/b&gt; The 16 flows above are composites: the 29 flows that cross the system boundary in Level 1 each roll up into exactly one of them, and every flow above has at least one Level 1 counterpart." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="lgNote2" value="&lt;b&gt;Balanced with the Level 1 DFD.&lt;/b&gt; The 17 flows above are composites: the 35 flows that cross the system boundary in Level 1 each roll up into exactly one of them, and every flow above has at least one Level 1 counterpart." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="80" y="931" width="1400" height="20" as="geometry" />
         </mxCell>
-        <mxCell id="lgNote3" value="Admin holds every IT Staff flow in addition to the four admin-exclusive flows drawn at both levels (registration approvals, enrollment keys, threshold rule edits and gas-sensor setup), so the two diagrams stay consistent." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="lgNote3" value="Admin holds every IT Staff flow in addition to the six admin-exclusive flows drawn at both levels (registration approvals, enrollment keys, device registration, threshold rule edits, gas-sensor setup and applying recommendations), so the two diagrams stay consistent. Alert and report e-mail are part of IT Staff's notifications: both go only to staff accounts. Applicant is someone registering who has not been approved yet." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="80" y="957" width="1400" height="20" as="geometry" />
         </mxCell>
       </root>
