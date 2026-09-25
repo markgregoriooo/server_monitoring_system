@@ -136,6 +136,11 @@ short.
 # Memory into the critical band, on purpose, knowing the risk
 ./mem-stress.sh -p 96 -y -d 2m
 
+# Same on a SMALL VM (~2 GB). The default reserve is at least 256 MB free — 13% of a
+# 2 GB VM — which caps memory near 87%, so 95% critical can never be reached. -r shrinks it.
+# Expect a brief CPU spike first: touching every allocated page is CPU-bound on one core.
+./mem-stress.sh -p 96 -y -r 64 -d 2m
+
 # Fill the disk to 92% and hold it
 ./disk-stress.sh -p 92 -y -d 3m
 

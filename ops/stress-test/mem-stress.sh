@@ -15,6 +15,7 @@
 #  Usage:
 #    ./mem-stress.sh                 # ~85% used for 3 minutes → warning
 #    ./mem-stress.sh -p 96 -y -d 2m  # cross the critical rule, deliberately
+#    ./mem-stress.sh -p 96 -y -r 64  # same on a SMALL VM (~2 GB): shrink the reserve
 #    ./mem-stress.sh -m 1024         # allocate exactly 1 GB
 # ============================================================================
 set -uo pipefail
@@ -26,6 +27,7 @@ DURATION="3m"
 TARGET_PCT=85
 ABS_MB=""
 ASSUME_YES=0
+RESERVE_ARG=""
 
 usage() {
   cat <<EOF
@@ -35,18 +37,22 @@ Memory stress — drives mem_percent up so the mem alert rules fire.
   -p PERCENT    fill until TOTAL memory used reaches this  (default: 85)
   -m MB         allocate exactly this many MB (overrides -p)
   -y            don't ask for confirmation (required above 90%)
+  -r MB         memory to leave free (default: 5% of RAM, at least 256 MB).
+                On a ~2 GB VM the default reserve is 13% of RAM, which makes the
+                95% critical rule unreachable — pass -r 64 to get there.
   -h            this help
 
 Safety: always leaves a reserve free so the OOM killer stays out of it.
 EOF
 }
 
-while getopts ":d:p:m:yh" opt; do
+while getopts ":d:p:m:r:yh" opt; do
   case "$opt" in
     d) DURATION="$OPTARG" ;;
     p) TARGET_PCT="$OPTARG" ;;
     m) ABS_MB="$OPTARG" ;;
     y) ASSUME_YES=1 ;;
+    r) RESERVE_ARG="$OPTARG" ;;
     h) usage; exit 0 ;;
     \?) die "Unknown option -$OPTARG (try -h)" ;;
     :)  die "-$OPTARG needs a value" ;;
@@ -76,6 +82,14 @@ USED_PCT=$(( USED_MB * 100 / TOTAL_MB ))
 # for sshd to accept a login and the agent to keep POSTing while the test runs.
 RESERVE_MB=$(( TOTAL_MB / 20 ))
 [ "$RESERVE_MB" -lt 256 ] && RESERVE_MB=256
+# -r overrides it — the only way to reach the 95% critical rule on a small VM, where
+# the 256 MB floor alone is a double-digit share of RAM. 32 MB is a hard minimum:
+# below that the agent itself can be starved and you get "server offline" instead.
+if [ -n "$RESERVE_ARG" ]; then
+  case "$RESERVE_ARG" in ''|*[!0-9]*) die "-r needs a whole number of MB." ;; esac
+  [ "$RESERVE_ARG" -ge 32 ] || die "-r must be at least 32 MB."
+  RESERVE_MB="$RESERVE_ARG"
+fi
 
 if [ -n "$ABS_MB" ]; then
   case "$ABS_MB" in ''|*[!0-9]*) die "-m needs a whole number of MB." ;; esac
@@ -113,6 +127,12 @@ elif [ "$PROJECTED_PCT" -ge 80 ]; then say "  expected alert : ${YEL}mem WARNING
 else say "  expected alert : ${DIM}none — below the 80% warning rule${OFF}"
 fi
 [ "$CLAMPED" -eq 1 ] && warn "Asked for ${WANT_MB} MB, clamped to ${ALLOC_MB} MB to keep ${RESERVE_MB} MB free."
+# Say it outright when the reserve makes the requested alert impossible — otherwise a
+# "-p 96" run on a small VM quietly tops out in the warning band and looks like a bug.
+if [ -z "$ABS_MB" ] && [ "$TARGET_PCT" -ge 95 ] && [ "$PROJECTED_PCT" -lt 95 ]; then
+  warn "The ${RESERVE_MB} MB reserve caps this VM at ~${PROJECTED_PCT}% — the 95% CRITICAL rule is out of reach."
+  warn "Re-run with a smaller reserve, e.g.:  ./mem-stress.sh -p ${TARGET_PCT} -y -r 64"
+fi
 sample_note "$SECS"
 rule
 
