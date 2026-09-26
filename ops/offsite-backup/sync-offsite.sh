@@ -35,6 +35,17 @@ getenv() {
 # actually writing to. Hardcoding it here meant the cron line and the .env could drift
 # apart, and the failure is silent: rclone happily uploads an empty/absent folder and
 # still exits 0, which stamps the success marker and clears the staleness alert.
+#
+# Under docker compose, backend/.env's BACKUP_DIR is not this host's folder at all
+# (compose pins the backend to /app/backups inside its container). The host side
+# of that mount is BACKUP_HOST_DIR in the compose file's own .env, so that wins
+# when it is set — same switch as ops/db-backup/dump-mysql.sh.
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+COMPOSE_ENV="${COMPOSE_ENV:-$ROOT_DIR/.env}"
+BACKUP_HOST_DIR="$(ENV_FILE="$COMPOSE_ENV" getenv BACKUP_HOST_DIR)"
+if [ -n "$BACKUP_HOST_DIR" ] && [ -f "$ROOT_DIR/docker-compose.yml" ]; then
+  BACKUP_DIR="${BACKUP_DIR:-$BACKUP_HOST_DIR}"
+fi
 BACKUP_DIR="${BACKUP_DIR:-$(getenv BACKUP_DIR)}"; : "${BACKUP_DIR:=/mnt/backup/backups}"
 : "${RCLONE_REMOTE:=b2crypt:cspc-monitoring-backup/offsite}"  # crypt remote:bucket[/path]
 : "${RCLONE_CONFIG:=/etc/rclone/rclone.conf}"             # where the (secret) rclone.conf lives

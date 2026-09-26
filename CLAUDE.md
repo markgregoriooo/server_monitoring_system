@@ -61,7 +61,14 @@ columns were verified on MariaDB), `influxdb` (2.7), `backend` (:3000), `fronten
 `v13_cspc-ictu-monitoring-system.sql` is mounted into `docker-entrypoint-initdb.d`, so it
 loads **once**, on an empty volume, and never again. Compose overrides `DB_*`/`INFLUX_*` in
 `backend/.env` with the container addresses. MySQL is deliberately not published to the host.
-The backend's `backups/`, `reports/` and `branding/` are named volumes. `VITE_*` values are
+The backend's `backups/`, `reports/` and `branding/` are named volumes — except that
+`BACKUP_HOST_DIR` in the root `.env` turns `backups/` into a bind mount of a host folder
+(the USB drive), which production should use: `ops/db-backup/dump-mysql.sh` and
+`ops/offsite-backup/sync-offsite.sh` switch to Docker mode when it is set (the dump runs
+`mariadb-dump` inside `db` with the container's own root password; the upload reads that
+host folder). Compose pins `BACKUP_DIR`/`BACKUP_OFFSITE_MARKER` to `/app/backups` over
+`backend/.env`, because a host path left there would write into the container's writable
+layer and vanish on rebuild. See `ops/backup-setup-linux.md` "Running under Docker?". `VITE_*` values are
 **build args**, so changing one means `--build`. cloudflared runs on the HOST, not in
 compose (`cloudflare-tunnel-setup.md`, `deployment-guide.md` §5).
 
@@ -138,7 +145,8 @@ BACKUP_FLUSH_MS=       # buffered-write flush interval; blank = 5000. Larger = k
 BACKUP_RETENTION_DAYS= # dated backup files older than this are purged daily; blank = 30
 BACKUP_OFFSITE_ENABLED=      # true turns on the offsite-staleness check (reads a local marker only, no cloud dependency); blank = off
 BACKUP_OFFSITE_MARKER=       # path the rclone job stamps on each successful upload; blank = <BACKUP_DIR>/.last_offsite_sync
-BACKUP_OFFSITE_MAX_AGE_HOURS= # warn if no successful offsite sync within this many hours; blank = 26
+BACKUP_OFFSITE_MAX_AGE_HOURS= # warn if no successful offsite sync within this many hours; blank = 26. A WARNING — bell/toast only, no email (one missed night is usually a campus internet blip the next night's `rclone copy` catches up on)
+BACKUP_OFFSITE_CRITICAL_HOURS= # escalate the same condition to CRITICAL after this many hours — which is what reaches EMAIL (NOTIFY_EMAIL_MIN_SEVERITY); blank = 72 (three missed nights), 0 = never escalate. A MISSING marker is critical at once (the job has never succeeded). Re-announced at most daily, not on every 6h check. Rule in services/offsiteStaleness.js, tested in tests/offsiteStaleness.test.js
 RATE_LIMIT_MAX=        # global request cap, **per USER** where the request carries a valid JWT and per IP otherwise
                        # (`userOrIpKey` in src/server.js); blank = 3000. Keying on IP alone was a self-inflicted DoS:
                        # every ICTU staffer sits behind the same campus NAT, so one person hard-refreshing would lock

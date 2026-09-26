@@ -272,6 +272,12 @@ backups and the reports.** Never run it on the production server.
 Data lives in named volumes (`db-data`, `influx-data`, `backend-backups`, `backend-reports`,
 `backend-branding`), so it survives `down`, rebuilds and upgrades.
 
+**Backups:** set `BACKUP_HOST_DIR=/mnt/backup/backups` in the root `.env` so the on-site
+backup lands on the USB/SD drive rather than in `backend-backups` on the main disk. That is
+also what lets the nightly database dump and the Backblaze upload find it — both scripts
+switch to their Docker mode when it is set. Full steps:
+[`ops/backup-setup-linux.md`](ops/backup-setup-linux.md), section *"Running under Docker?"*.
+
 ---
 
 ## 1. Prerequisites
@@ -846,6 +852,7 @@ BACKUP_RETENTION_DAYS=30                 # purge dated backup files older than t
 BACKUP_OFFSITE_ENABLED=                  # true turns on the offsite-staleness check (§11.2)
 BACKUP_OFFSITE_MARKER=                   # path the rclone job stamps on each success
 BACKUP_OFFSITE_MAX_AGE_HOURS=26          # warn if no successful offsite sync within this
+BACKUP_OFFSITE_CRITICAL_HOURS=72         # escalate to critical (= email) after this; 0 = never
 ```
 
 #### Generating the secrets
@@ -1722,10 +1729,12 @@ client-side** (data *and* filenames) before it leaves campus. It uses `rclone co
 ```dotenv
 BACKUP_OFFSITE_ENABLED=true
 BACKUP_OFFSITE_MAX_AGE_HOURS=26    # warn if no successful sync within this window
+BACKUP_OFFSITE_CRITICAL_HOURS=72   # escalate to critical (= email) after this; 0 = never
 ```
 
-If the sync stalls, the backend raises a `backup_offsite` warning on the normal bell/email
-pipeline and auto-resolves it once a fresh sync lands. Leave `BACKUP_OFFSITE_ENABLED` unset
+If the sync stalls, the backend raises a `backup_offsite` **warning** (bell only) after 26 h,
+escalates it to **critical** — which emails — after 72 h, and auto-resolves both once a
+fresh sync lands. Leave `BACKUP_OFFSITE_ENABLED` unset
 until the sync is actually running, so it never false-alerts.
 
 > ⚠️ **Keep offline + safe** (they are **not** in any backup): the rclone **encryption

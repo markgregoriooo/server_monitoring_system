@@ -5,6 +5,7 @@ import crypto from "crypto";
 import notificationService from "./notificationService.js";
 import alertsService from "./alertsService.js";
 import { describeError } from "../utils/httpError.js";
+import { resolveThresholds, offsiteSeverity } from "./offsiteStaleness.js";
 import { BACKEND_ROOT } from "../config/env.js";
 
 // ─── On-site backup writer ────────────────────────────────────────────────────
@@ -50,7 +51,16 @@ const DATED_FILE_RE = /-(\d{4}-\d{2}-\d{2})\.(?:ndjson|sql\.gz)$/;
 // Offsite (cloud) sync health — a SEPARATE rclone job (ops/offsite-backup) stamps a marker
 // on each successful upload; the backend only READS that local marker (no cloud dependency).
 const OFFSITE_ENABLED = (process.env.BACKUP_OFFSITE_ENABLED ?? "false").toLowerCase() === "true";
-const OFFSITE_MAX_AGE_HOURS = Number(process.env.BACKUP_OFFSITE_MAX_AGE_HOURS) || 26;
+// Warning after OFFSITE_MAX_AGE_HOURS (bell only), CRITICAL — i.e. email — after
+// OFFSITE_CRITICAL_HOURS (0 = never escalate). See offsiteStaleness.js for why two.
+const { warnHours: OFFSITE_MAX_AGE_HOURS, critHours: OFFSITE_CRITICAL_HOURS } = resolveThresholds(
+  process.env.BACKUP_OFFSITE_MAX_AGE_HOURS,
+  process.env.BACKUP_OFFSITE_CRITICAL_HOURS,
+);
+// Re-announce a still-stale backup at most once a day. The check runs every 6h and the
+// global 30-min NOTIFY_COOLDOWN_MIN would otherwise post a fresh alert (and, once
+// critical, a fresh EMAIL) on every one of them for a condition that moves in days.
+const OFFSITE_COOLDOWN_MIN = 24 * 60;
 const OFFSITE_MARKER =
   (process.env.BACKUP_OFFSITE_MARKER ?? "").trim() || path.join(BACKUP_DIR, ".last_offsite_sync");
 const OFFSITE_CHECK_MS = 6 * 60 * 60 * 1000; // re-check offsite freshness every 6h
@@ -297,7 +307,8 @@ async function dailyMaintenance() {
 
 // Offsite-sync health. The standalone rclone job (ops/offsite-backup) writes OFFSITE_MARKER
 // with an ISO timestamp on each successful cloud upload. If that stamp is missing or older
-// than OFFSITE_MAX_AGE_HOURS, the "1 offsite" copy of 3-2-1 has stalled → warn. Opt-in
+// than OFFSITE_MAX_AGE_HOURS, the "1 offsite" copy of 3-2-1 has stalled → warn; older
+// than OFFSITE_CRITICAL_HOURS → critical, which is what reaches email. Opt-in
 // (BACKUP_OFFSITE_ENABLED) so it never false-fires before cloud sync is configured. Reads
 // ONLY a local file, so the backend keeps zero runtime dependency on the cloud.
 async function checkOffsite() {
@@ -309,16 +320,31 @@ async function checkOffsite() {
   } catch (err) {
     if (err.code !== "ENOENT") console.error("[BACKUP] offsite marker read error:", describeError(err));
   }
-  const stale = stampMs == null || Date.now() - stampMs > OFFSITE_MAX_AGE_HOURS * 60 * 60 * 1000;
-  if (stale) {
-    const when = stampMs == null ? "never" : new Date(stampMs).toISOString();
+  const severity = offsiteSeverity(stampMs, Date.now(), {
+    warnHours: OFFSITE_MAX_AGE_HOURS,
+    critHours: OFFSITE_CRITICAL_HOURS,
+  });
+  if (severity !== "ok") {
+    // The log's folder is named, not BACKUP_DIR: under Docker that is /app/backups, a
+    // path that exists only inside the container and would send someone looking on the
+    // host for a directory that is not there.
+    const message =
+      stampMs == null
+        ? "No successful offsite (cloud) backup has ever been recorded — the rclone sync job " +
+          "is not running or has never succeeded. Check offsite-sync.log in the backup folder."
+        : `No successful offsite (cloud) backup for over ` +
+          `${severity === "critical" ? OFFSITE_CRITICAL_HOURS : OFFSITE_MAX_AGE_HOURS}h ` +
+          `(last: ${new Date(stampMs).toISOString()}). Check offsite-sync.log in the backup folder.`;
+    // Escalation raises a SECOND alert alongside any open warning, as every other
+    // threshold trigger does; both close together when a fresh sync lands (below).
     notificationService
       .raiseAlert({
         deviceId: null,
         type: "backup_offsite",
-        severity: "warning",
-        title: "Offsite backup stale",
-        message: `No successful offsite (cloud) backup within ${OFFSITE_MAX_AGE_HOURS}h (last: ${when}). Check the rclone sync job.`,
+        severity,
+        title: severity === "critical" ? "Offsite backup failing" : "Offsite backup stale",
+        message,
+        cooldownMin: OFFSITE_COOLDOWN_MIN,
       })
       .catch(() => {});
   } else {

@@ -191,9 +191,11 @@ So your dashboard warns you if a nightly upload ever fails, add these to `backen
 ```
 BACKUP_OFFSITE_ENABLED=true
 BACKUP_OFFSITE_MAX_AGE_HOURS=26
+BACKUP_OFFSITE_CRITICAL_HOURS=72
 ```
 Restart the backend. Now, if no successful upload happens within ~26 hours, you get a
-**backup warning** on the bell/email — and it clears itself once a fresh upload lands.
+**backup warning** on the bell; after ~72 hours it becomes **critical** and is emailed too.
+Either clears itself once a fresh upload lands.
 
 > Leave `BACKUP_OFFSITE_ENABLED` unset (or `false`) until the nightly upload is actually
 > running, so it doesn't warn you before there's anything to warn about.

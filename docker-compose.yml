@@ -119,6 +119,14 @@ services:
       INFLUX_ORG: ${INFLUX_ORG:-cspc-ictu}
       INFLUX_BUCKET: ${INFLUX_BUCKET:-monitoring}
       TZ: ${TZ:-Asia/Manila}
+      # Pinned to the mount point below, overriding backend/.env. A host path
+      # left in backend/.env (BACKUP_DIR=/mnt/backup/backups, the non-Docker
+      # instructions) would otherwise make the backend write into the
+      # container's own writable layer: no error, backups "working", and all of
+      # it gone with the next rebuild. Where the files land on the HOST is
+      # BACKUP_HOST_DIR in the root .env, not this.
+      BACKUP_DIR: /app/backups
+      BACKUP_OFFSITE_MARKER: /app/backups/.last_offsite_sync
     ports:
       # Published on ALL interfaces on purpose. The ESP32 opens its socket to
       # this port and the Go agents POST to it, both over the campus LAN — they
@@ -128,7 +136,15 @@ services:
       # Named volumes, so the data outlives `docker compose down` and any
       # rebuild of the image. backups is the on-site copy that is meant to
       # survive the database itself — see backup-storage.md.
-      - backend-backups:/app/backups
+      #
+      # backups can be a HOST FOLDER instead: set BACKUP_HOST_DIR in the root
+      # .env (e.g. /mnt/backup/backups, the USB drive). Production should — a
+      # named volume lives on the same disk as db-data, so it does not survive
+      # that disk, and the nightly dump + Backblaze upload
+      # (ops/backup-setup-linux.md) run on the host and need a real path to
+      # read. Unset, this stays the named volume. The folder must be writable
+      # by uid 1000 (the image's `node` user).
+      - ${BACKUP_HOST_DIR:-backend-backups}:/app/backups
       - backend-reports:/app/reports
       - backend-branding:/app/branding
     depends_on:

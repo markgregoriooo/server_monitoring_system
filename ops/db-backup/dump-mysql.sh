@@ -12,6 +12,10 @@
 #
 #  Reads DB creds from backend/.env (override via env). Schedule from cron a few
 #  minutes BEFORE the offsite sync so the fresh dump ships the same night.
+#
+#  Docker deployment: when the root .env sets BACKUP_HOST_DIR, the dump runs
+#  inside the `db` container instead and lands in that folder — no MySQL client
+#  tools needed on the host. See ops/backup-setup-linux.md "Docker".
 # ============================================================================
 set -euo pipefail
 
@@ -35,6 +39,52 @@ getenv() {
           -e "s/^'\(.*\)'$/\1/"
 }
 
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# ── Docker deployment ───────────────────────────────────────────────────────
+# Under docker compose, MariaDB is the `db` container — deliberately NOT published
+# to the host (docker-compose.yml), so a host mysqldump has nothing to connect to —
+# and backend/.env's DB_* describe how the BACKEND reaches it, not this script. So
+# the dump runs INSIDE the container, and the folder comes from the compose file's
+# own .env. The switch is BACKUP_HOST_DIR there: it is what puts the backup folder
+# on a host path at all, and without it there is no folder here to write into.
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+COMPOSE_ENV="${COMPOSE_ENV:-$ROOT_DIR/.env}"
+BACKUP_HOST_DIR="$(ENV_FILE="$COMPOSE_ENV" getenv BACKUP_HOST_DIR)"
+
+if [ -n "$BACKUP_HOST_DIR" ] && [ -f "$ROOT_DIR/docker-compose.yml" ]; then
+  BACKUP_DIR="${BACKUP_DIR:-$BACKUP_HOST_DIR}"
+  LOG="${DB_BACKUP_LOG:-$BACKUP_DIR/db-backup.log}"
+  OUT="$BACKUP_DIR/mysql-$(date -u +%Y-%m-%d).sql.gz"
+  mkdir -p "$BACKUP_DIR"
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[$(ts)] ERROR: docker not found on PATH (cron: add /usr/bin to the PATH= line)" >> "$LOG"
+    exit 1
+  fi
+  echo "[$(ts)] mariadb-dump (docker service 'db') → $OUT" >> "$LOG"
+
+  # The credentials never touch this host's command line or environment: the
+  # container already holds MARIADB_ROOT_PASSWORD, so the password is read there,
+  # by the shell inside it. Root rather than the app user because --routines and
+  # --events need privileges a database-scoped user may not have. The single
+  # quotes are deliberate — the $VARs must expand in the CONTAINER, not here.
+  rc=0
+  { docker compose --project-directory "$ROOT_DIR" exec -T db sh -c \
+      'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -u root \
+         --single-transaction --quick --routines --triggers --events \
+         --default-character-set=utf8mb4 "$MARIADB_DATABASE"' \
+      | gzip -c > "$OUT"; } 2>> "$LOG" || rc=$?
+
+  if [ "$rc" -eq 0 ] && [ -s "$OUT" ]; then
+    echo "[$(ts)] OK ($(du -h "$OUT" | cut -f1))" >> "$LOG"
+    exit 0
+  fi
+  echo "[$(ts)] FAILED (exit $rc) — removing partial dump" >> "$LOG"
+  rm -f "$OUT"
+  exit 1
+fi
+
+# ── Plain install (backend + MySQL directly on the host) ────────────────────
 DB_HOST="${DB_HOST:-$(getenv DB_HOST)}";         DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-$(getenv DB_PORT)}";         DB_PORT="${DB_PORT:-3306}"
 DB_USER="${DB_USER:-$(getenv DB_USER)}";         DB_USER="${DB_USER:-root}"
@@ -52,7 +102,6 @@ LOG="${DB_BACKUP_LOG:-$BACKUP_DIR/db-backup.log}"
 # it is not — a cron job does not inherit an interactive shell's PATH either.
 MYSQLDUMP="${MYSQLDUMP:-$(getenv MYSQLDUMP)}"; : "${MYSQLDUMP:=mysqldump}"
 
-ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 OUT="$BACKUP_DIR/mysql-$(date -u +%Y-%m-%d).sql.gz"
 
 if [ -z "${DB_NAME:-}" ]; then

@@ -92,11 +92,13 @@ Each successful sync stamps `BACKUP_DIR/.last_offsite_sync`. Tell the backend to
 by setting in `backend/.env`:
 ```
 BACKUP_OFFSITE_ENABLED=true
-BACKUP_OFFSITE_MAX_AGE_HOURS=26   # alert if no successful sync within this window
+BACKUP_OFFSITE_MAX_AGE_HOURS=26   # warning (bell only) if no successful sync within this window
+BACKUP_OFFSITE_CRITICAL_HOURS=72  # critical (= email) if still none after this; 0 = never
 ```
-Restart the backend. If the offsite sync stalls (marker missing or older than the window),
-the backend raises a **`backup_offsite`** warning on the normal bell/email pipeline, and
-auto-resolves it once a fresh sync lands. Leave `BACKUP_OFFSITE_ENABLED` unset until sync is
+Restart the backend. If the offsite sync stalls, the backend raises a **`backup_offsite`**
+warning on the bell after 26 h, escalates it to **critical** — the severity that emails —
+after 72 h (or at once if the marker has never existed), and auto-resolves both once a
+fresh sync lands. Leave `BACKUP_OFFSITE_ENABLED` unset until sync is
 running, so it never false-alerts.
 
 ---

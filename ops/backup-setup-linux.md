@@ -46,6 +46,66 @@ Three copies — the classic **3-2-1 rule**:
 
 ---
 
+## Running under Docker? (the ICTU deployment) — read this first
+
+With `docker compose`, three things are different, and the plain steps below would
+quietly back up nothing:
+
+- the backend writes its backups **inside its container** (`/app/backups`), by default
+  into a Docker volume on the main disk, where the host scripts cannot find it;
+- MariaDB is the `db` container and is **not published to the host**, so a host
+  `mysqldump` has nothing to connect to;
+- `BACKUP_DIR` in `backend/.env` is **ignored** — compose pins it to `/app/backups`.
+
+The scripts already handle all three. They switch to Docker mode on their own when the
+**root** `.env` (the one next to `docker-compose.yml`) sets `BACKUP_HOST_DIR`. Follow the
+numbered steps with these substitutions:
+
+| Step | Under Docker, do this instead |
+|---|---|
+| 1, 2 | Same. For **Step 2's `chown`** use uid 1000, the container's user: `sudo chown -R 1000:1000 /mnt/backup/backups`. (A FAT32/exFAT stick has no owners — mount it with `uid=1000,gid=1000` in `/etc/fstab` instead.) |
+| 3 | See **Step 3 (Docker)** below. |
+| 4 | **Skip.** The dump runs `mariadb-dump` inside the `db` container. No client tools are needed on the host. |
+| 5 | Same commands, run with `sudo` (the script calls `docker`). |
+| 6–9 | Same. |
+| 10 | Use **root's** crontab (`sudo crontab -e`): the jobs need `docker`, and `/etc/rclone/rclone.conf` is root-only. `/usr/bin` must be on the `PATH=` line — that is where `docker` lives. |
+| 11 | Edit `backend/.env` as shown, then `docker compose up -d backend` — **not** `restart` (see `docker-compose.yml`). |
+| Restoring | See **Restoring (Docker)** at the end. |
+
+### Step 3 (Docker) — point the backend at the drive
+
+In the **root** `.env`, not `backend/.env`:
+
+```bash
+cd /opt/cspc
+nano .env
+```
+
+```ini
+BACKUP_HOST_DIR=/mnt/backup/backups
+```
+
+Recreate the backend so it picks up the new mount:
+
+```bash
+docker compose up -d backend
+docker compose logs backend | grep BACKUP
+# expect: [BACKUP] on-site backup → /app/backups (...)   ← the path INSIDE the container
+ls -lh /mnt/backup/backups/                               # files appear here within ~10 s
+```
+
+If the log says `NOT RUNNING — cannot write to /app/backups`, the folder is not owned by
+uid 1000. Fix the `chown` from Step 2 and run `up -d backend` again.
+
+> **Already running on the Docker volume?** Moving to the drive does not bring the old
+> files with it. Copy them over once, **before** the `up -d` above:
+> ```bash
+> docker run --rm -v cspc_backend-backups:/from -v /mnt/backup/backups:/to alpine cp -a /from/. /to/
+> ```
+> (`docker volume ls` shows the real volume name — it is prefixed with the project folder's name.)
+
+---
+
 ## Step 1 — Check the server's clock
 
 Do this first. Backups are named by date, cron fires on local time, and the ESP32's
@@ -301,13 +361,18 @@ Only now that uploads actually work. In `backend/.env`:
 ```ini
 BACKUP_OFFSITE_ENABLED=true
 BACKUP_OFFSITE_MAX_AGE_HOURS=26
+BACKUP_OFFSITE_CRITICAL_HOURS=72
 ```
 
 Restart the backend.
 
-If no successful upload lands within ~26 hours, the dashboard raises a **backup warning**
-on the bell — and clears it by itself once a fresh upload arrives. 26 hours = one missed
-nightly run plus a couple of hours of slack.
+| No successful upload for | What happens |
+|---|---|
+| 26 hours (one missed night) | **Warning** on the bell. Usually an internet blip — the next night catches up. |
+| 72 hours (three missed nights) | **Critical** — also **emailed** to everyone with alert email on. Something is broken. |
+
+Both clear by themselves once a fresh upload arrives. Set `BACKUP_OFFSITE_CRITICAL_HOURS=0`
+to keep it bell-only.
 
 > Turning this on **before** uploads work gives you a permanent false alarm, which is why
 > it is the last step.
@@ -370,6 +435,18 @@ gunzip -c /tmp/restore/mysql-2026-08-21.sql.gz \
 head -3 /tmp/restore/env-2026-08-21.ndjson
 ```
 
+### Restoring (Docker)
+
+The pull from Backblaze is the same. Loading the database goes **into the `db`
+container**, using the root password from the root `.env`:
+
+```bash
+cd /opt/cspc
+gunzip -c /tmp/restore/mysql-2026-08-21.sql.gz \
+  | docker compose exec -T db sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -u root "$MARIADB_DATABASE"'
+docker compose up -d --force-recreate backend    # reload its in-memory caches (alert rules, gas sensors, …)
+```
+
 ---
 
 ## ⚠️ Not in the cloud backup — keep these yourself
@@ -378,6 +455,7 @@ Encrypted and offline. Without them the cloud copy is not enough:
 
 - **`backend/.env`** — DB password, `JWT_SECRET`, Google keys, `DEVICE_SECRET`,
   `MIKROTIK_ENC_KEY`
+- **The root `.env`** (Docker) — the MariaDB root/user passwords and `INFLUX_TOKEN`
 - **`/etc/rclone/rclone.conf`** — Backblaze keys + obscured passphrase
 - **The encryption passphrase itself** — lose it and the cloud copy is permanently unreadable
 
@@ -391,7 +469,8 @@ Encrypted and offline. Without them the cloud copy is not enough:
 - [ ] Timezone is `Asia/Manila`
 - [ ] Drive mounted, in `/etc/fstab` with `nofail`, and `df -h` names the USB device
 - [ ] `BACKUP_DIR` set in `backend/.env`, backend restarted, files appearing
-- [ ] `mysqldump --version` works
+      — **Docker:** `BACKUP_HOST_DIR` in the root `.env`, folder owned by uid 1000, `docker compose up -d backend`
+- [ ] `mysqldump --version` works (**Docker:** skip)
 - [ ] `dump-mysql.sh` run by hand → `.sql.gz` created
 - [ ] rclone installed; noted whether it is in `/usr/bin` or `/usr/local/bin`
 - [ ] Backblaze bucket + application key created (key saved)
