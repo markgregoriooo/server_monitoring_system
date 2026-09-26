@@ -184,8 +184,14 @@ VITE_GOOGLE_CLIENT_ID=<same as GOOGLE_CLIENT_ID in backend/.env>
 TZ=Asia/Manila
 ```
 
-**2. `backend/.env`** — the application's own settings and secrets. Start from the full
-reference in [§3.1](#31-backendenv). In Docker, **leave `DB_*` and `INFLUX_*` as they are** —
+**2. `backend/.env`** — the application's own settings and secrets. Like the root `.env` it
+is gitignored, so a fresh clone does not have one — copy its template:
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+The full reference for every line is [§3.1](#31-backendenv). In Docker, **leave `DB_*` and `INFLUX_*` as they are** —
 compose overrides them with the container addresses (`db`, `influxdb`), so the values in this
 file are never used. The lines that are specific to this deployment:
 
