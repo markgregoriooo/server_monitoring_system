@@ -263,7 +263,7 @@ async function checkRouter(io, device, sample) {
   //
   // Both come from icmpPing via the poller, on SNMP and ping devices alike.
   //
-  // ⚠️ ONLY WHILE THE DEVICE IS ANSWERING. icmpPing reports `packetLossPct: 100` for an
+  //  ONLY WHILE THE DEVICE IS ANSWERING. icmpPing reports `packetLossPct: 100` for an
   // unreachable host, which is a correct MEASUREMENT and a useless ALERT: every outage
   // raised two criticals, and the louder of the two named the wrong problem. Nobody paged
   // for "Packet loss 100%" learns anything "Router offline" had not already said, and the

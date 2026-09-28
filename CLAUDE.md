@@ -107,9 +107,7 @@ INFLUX_URL=
 INFLUX_TOKEN=
 INFLUX_ORG=
 INFLUX_BUCKET=
-AGENT_INSTALL_KEY= # ⚠️ DEPRECATED bootstrap fallback. (The agent reads a key from the CSPC_INSTALL_KEY
-                   # ENV VAR now, not `-install-key` — a flag is visible in `ps`, in shell history and in
-                   # 4688/execve auditing. The flag still works and warns; the env var wins if both are set.) Enrollment keys are now MANAGED DATA (`agent_install_keys`,
+AGENT_INSTALL_KEY= # ⚠️ DEPRECATED bootstrap fallback. Enrollment keys are now MANAGED DATA (`agent_install_keys`,
                    # minted/revoked by an admin on Server Metrics → Agent install keys). This is still accepted
                    # at POST /api/agents/register, but only AFTER the table misses, and every use logs a warning.
                    # It exists because a fresh database has no keys AND no admin to mint one (the schema seeds

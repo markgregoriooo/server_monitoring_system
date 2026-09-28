@@ -1,23 +1,15 @@
 // Command agent is the CSPC-ICTU server monitoring agent.
 //
-//	cspc-agent --register -api-url URL                        # enroll, wait for approval,
+//	cspc-agent --register -api-url URL -install-key KEY       # enroll, wait for approval,
 //	                                                          # then START sending metrics
 //	cspc-agent -conf agent.conf                               # already enrolled: just run
-//	cspc-agent --register-only -api-url URL                   # enroll and exit (installers)
+//	cspc-agent --register-only -api-url URL -install-key KEY  # enroll and exit (installers)
 //	cspc-agent --notify-shutdown [-reason shutdown]           # tell the backend we are going
 //	                                                          # down, then exit (Windows task)
 //
-// The install key is read from the CSPC_INSTALL_KEY environment variable. The
-// -install-key FLAG still works and is still documented by `-h`, but it is the
-// discouraged path: an argument is visible in `ps`/`ps aux` to every user on the box
-// for as long as enrollment runs, is recorded in the shell history of whoever ran it,
-// and is captured by process-creation auditing (Windows 4688, Linux execve auditd).
-// An environment variable is visible to the process owner and root only. The flag is
-// kept because removing it would break an installer already written down somewhere,
-// and because a one-shot enrollment key is revocable — but prefer the variable:
+// The install key is passed with the -install-key flag:
 //
-//	CSPC_INSTALL_KEY=AIK-... cspc-agent --register -api-url URL      (Linux/macOS)
-//	$env:CSPC_INSTALL_KEY='AIK-...'; cspc-agent --register -api-url URL   (PowerShell)
+//	cspc-agent --register -api-url URL -install-key AIK-...
 //
 // With --register the agent enrolls (if not already), blocks until an admin
 // approves it, writes agent.conf, and then continues straight into the metric
@@ -68,7 +60,7 @@ func main() {
 	register := flag.Bool("register", false, "enroll if not already enrolled, then start the metric loop")
 	registerOnly := flag.Bool("register-only", false, "enroll and exit without sending metrics (used by installers)")
 	apiURL := flag.String("api-url", "", "backend base URL, e.g. http://<backend-server-ip>:3000 (enroll mode)")
-	installKey := flag.String("install-key", "", "shared install key (enroll mode) — DEPRECATED, prefer CSPC_INSTALL_KEY; a flag is visible in the process list")
+	installKey := flag.String("install-key", "", "install key from the dashboard, AIK-... (enroll mode)")
 	confPath := flag.String("conf", defaultConfPath(), "path to agent.conf")
 	interval := flag.Int("interval", 10, "metric send interval in seconds (written to conf on enroll)")
 	notifyShutdown := flag.Bool("notify-shutdown", false, "tell the backend this server is shutting down, then exit")
@@ -94,27 +86,13 @@ func main() {
 		return
 	}
 
-	// The environment wins over the flag. Anything that sets CSPC_INSTALL_KEY has
-	// chosen the private path deliberately, so a stale -install-key left in an old
-	// installer script must not silently override it. Unset the variable immediately
-	// after reading: the agent runs for months, and a child process (the metric
-	// collector shells out to PowerShell on Windows) would otherwise inherit an
-	// enrollment credential it has no use for.
-	key := os.Getenv("CSPC_INSTALL_KEY")
-	if key != "" {
-		_ = os.Unsetenv("CSPC_INSTALL_KEY")
-	} else if *installKey != "" {
-		key = *installKey
-		logger.Infof("install key was passed as a command-line flag; it is visible in the " +
-			"process list and in shell history. Prefer CSPC_INSTALL_KEY=... for future installs.")
-	}
+	key := *installKey
 
 	// Enroll when there's no usable conf yet and enrollment was requested.
 	// registration.Run blocks until an admin approves, then writes agent.conf.
 	if err != nil && (*register || *registerOnly) {
 		if *apiURL == "" || key == "" {
-			logger.Errorf("enrollment requires -api-url and an install key " +
-				"(set CSPC_INSTALL_KEY=AIK-..., or pass the deprecated -install-key flag)")
+			logger.Errorf("enrollment requires -api-url and -install-key")
 			os.Exit(1)
 		}
 		if rerr := registration.Run(*apiURL, key, *confPath, agentVersion, *interval); rerr != nil {
@@ -130,14 +108,14 @@ func main() {
 	}
 
 	if err != nil {
-		logger.Errorf("%v — run with CSPC_INSTALL_KEY=AIK-... --register -api-url ... first", err)
+		logger.Errorf("%v — run with --register -api-url ... -install-key AIK-... first", err)
 		os.Exit(1)
 	}
 
 	logger.Infof("agent v%s started; posting to %s every %ds (device_id=%d)",
 		agentVersion, cfg.APIURL, cfg.IntervalSeconds, cfg.DeviceID)
 
-	s := sender.New(cfg.APIURL, cfg.DeviceToken)
+	s := sender.New(cfg.APIURL, cfg.DeviceToken) //object responsible for communicating with backend.
 	go runHeartbeat(s)
 	go notifyOnSignal(s)
 

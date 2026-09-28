@@ -14,18 +14,12 @@ import {
   inShutdownHold,
   shutdownReason,
 } from "./serverMetricUtils.js";
-// Was a byte-identical private copy here. snmpUtils is pure and import-free, so
-// taking it from there costs nothing and keeps device_network.network_segment
-// written the same way whether the row came from an agent or the SNMP poller —
-// which is what the comment on the other copy already claimed was true.
+// Shared with the SNMP poller so both write network_segment the same way.
 import { networkSegment } from "./snmpUtils.js";
 import { logDevice, getDeviceLogs } from "./deviceLogs.js";
-// The SAME hash the install keys use. Deliberately imported rather than re-implemented:
-// two hashing schemes for two credential tables in one codebase is how one of them ends
-// up wrong. See migrations/2026-08-25_agent_token_hash.sql for why SHA-256 and not bcrypt.
+// Same hash as the install keys (SHA-256; see migrations/2026-08-25_agent_token_hash.sql).
 import { hashKey } from "./installKeyUtils.js";
-// AES-256-GCM, keyed by SECRET_ENC_KEY (falling back to MIKROTIK_ENC_KEY). Used ONLY for
-// the copy that has to be readable again — see approve()/getStatusByPendingToken below.
+// AES-256-GCM, only for the token copy that must be readable again (see approve()).
 import secretCrypto from "./secretCrypto.js";
 import { describeError, unavailable } from "../utils/httpError.js";
 
@@ -40,51 +34,32 @@ const STATUS_LABEL = {
 };
 const label = (s) => STATUS_LABEL[s] ?? s;
 
-// A server counts as offline when no metric POST has refreshed its last_seen
-// within its own window — three missed posts at that agent's reported cadence,
-// floored by SERVER_OFFLINE_AFTER_SEC (default 30s). Sizing this per device is
-// what stops an agent installed with `-interval 60` from flapping forever.
-// See services/serverMetricUtils.js.
+// Offline = no metric POST within 3 of the agent's intervals, floored by
+// SERVER_OFFLINE_AFTER_SEC.
 const OFFLINE_SQL_WINDOW = `GREATEST(${OFFLINE_FLOOR_SEC}, COALESCE(s.metric_interval_sec, ${DEFAULT_INTERVAL_SEC}) * 3)`;
 
-// In-memory cache of each server's latest live metrics (cpu/mem/disk %, uptime),
-// so GET /api/servers can render real numbers immediately after a browser refresh
-// instead of waiting up to one agent interval (10s) for the next socket push.
-// Resets on backend restart, then repopulates on the next metric POST.
+// Latest live metrics per server, so GET /api/servers shows numbers right after a
+// refresh. Lost on restart, refilled by the next metric POST.
 const latestMetrics = new Map(); // device_id (number) -> { cpu, memory, diskUsed, uptime, volumes }
 
 function cacheLatest(deviceId, live) {
   latestMetrics.set(Number(deviceId), live);
 }
 
-// True when a server's last heartbeat is older than ITS offline window (or never).
-// intervalSec is that agent's reported cadence; null/unknown falls back to the
-// default, which reproduces the old flat 30s.
+// True when the last heartbeat is older than this agent's offline window (or never).
 function isStale(lastSeen, intervalSec) {
   if (!lastSeen) return true;
   return Date.now() - new Date(lastSeen).getTime() > offlineWindowSec(intervalSec) * 1000;
 }
 
-// Overlay cached live metrics + label the status for a server DB row. A server
-// whose last_seen has gone stale reads as Offline with zeroed live metrics even
-// if devices.status still says 'online' (the sweep may not have run yet) — so a
-// GET right after a backend restart is already correct, not falsely Online.
-//
-// Maintenance is operator-owned and outranks staleness: a server parked for a
-// planned reboot must NOT flip to Offline just because it stopped posting —
-// that's the whole point of the window.
+// Add cached live metrics and a status label to a server row. A stale server reads
+// as Offline even before the sweep runs. Maintenance outranks staleness.
 function withLive(r) {
   const maintenance = r.status === "maintenance";
   const offline = !maintenance && (r.status === "offline" || isStale(r.lastSeen, r.metricIntervalSec));
   const live = offline ? undefined : latestMetrics.get(r.id);
-  // A server that has NEVER posted a metric is not the same thing as one that went
-  // down, and until this flag existed both rendered as a bare "Offline". They need
-  // opposite actions: an Offline server means go and look at a machine that was
-  // working, while this means the agent has not reached the backend even once — wrong
-  // -server URL, a firewall, or a service that was installed and never started. The
-  // approval itself deliberately leaves the row 'offline' (see approve()), so there is
-  // no status to read it off; `last_seen` is NULL until the first POST and is the only
-  // durable evidence that the machine has ever spoken to us.
+  // Never reported since approval (last_seen NULL): likely a wrong URL, a firewall, or
+  // a service that never started. Not the same as a server that went down.
   const awaitingFirstReport = !maintenance && r.lastSeen == null;
   return {
     ...r,
@@ -94,31 +69,18 @@ function withLive(r) {
     memory: live?.memory ?? 0,
     diskUsed: live?.diskUsed ?? 0,
     processCount: live?.processCount ?? null,
-    // Every fixed volume from the last sample. Empty until the next metric post
-    // after a backend restart (same lifetime as the other cached live values).
+    // Every fixed volume from the last sample; empty until the next post after a restart.
     volumes: live?.volumes ?? [],
-    // A down server has no current uptime — don't surface the last-known value,
-    // it reads as if the box were still up. Live rows use the cached label.
+    // A down server has no current uptime.
     uptime: offline ? null : (live?.uptime ?? r.uptime ?? null),
   };
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────────
 
-// Find a prior enrollment for a RETURNING machine. MAC first (most specific, when the
-// NIC is stable), else hostname. The hostname match is scoped to server devices with a
-// token row so it can't collide with manually-added devices.
-//
-// 'revoked' is included alongside pending/approved: a machine whose install key was
-// revoked must be able to come back onto the SAME device_id when it re-enrols with a
-// new key. Excluding it would spawn a duplicate device and fork the server's InfluxDB
-// history, which is tagged by device_id. ('rejected' is NOT included — agentService.
-// reject deletes the device outright, so no such row survives to match.)
-//
+// Find a returning machine's enrollment: by MAC first, then by hostname.
+// 'revoked' is included so a re-enrolled machine keeps its device_id and history.
 // Returns { deviceId, status, tokenId, installKeyId } or null.
-// Deliberately does NOT return a pending token: it is stored only as a hash now, and
-// register() mints a fresh one for every caller anyway. See
-// migrations/2026-08-25b_agent_pending_token_hash.sql.
 async function findExistingEnrollment(mac, hostname) {
   const LIVE = "('pending', 'approved', 'revoked')";
   if (mac) {
@@ -151,22 +113,15 @@ async function findExistingEnrollment(mac, hostname) {
   return null;
 }
 
-// First-run enrollment. Creates devices + server_specs + device_network +
-// agent_tokens rows in one transaction. Idempotent per MACHINE: a host that
-// re-registers reuses its existing enrollment (so an agent restart — or a NIC/MAC
-// change — before approval does not spawn duplicate pending devices).
+// First-run enrollment: creates the device rows in one transaction. A returning
+// machine reuses its enrollment instead of creating a duplicate.
 async function register(host, installKeyId = null) {
-  // Recognize a returning machine so it REUSES its enrollment instead of spawning a
-  // duplicate device. Match by MAC first, then fall back to hostname: the agent's
-  // "primary NIC" — and thus its MAC — can change between runs (Wi-Fi randomized MAC, a
-  // different up interface, VPN/WSL/Hyper-V adapters), which would otherwise fragment one
-  // server into many ghost device rows. Hostname is the stable identity the agent always
-  // reports. refreshHostInfo() re-stamps the current MAC, so the next run matches on MAC.
+  // MAC can change between runs (Wi-Fi randomization, VPN adapters), so hostname is
+  // the fallback.
   const existing = await findExistingEnrollment(host.mac_address || null, host.hostname || null);
 
-  // A machine coming back after its install key was revoked. Re-arm the SAME token row
-  // — new pending token, new owning key, approval required again — so the device keeps
-  // its id, its logs and its InfluxDB history instead of forking into a second server.
+  // Revoked machine coming back: re-arm the same row (new pending token, needs
+  // approval again) so it keeps its id, logs and history.
   if (existing && existing.status === "revoked") {
     const pendingToken = crypto.randomBytes(24).toString("hex");
     await db.query(
@@ -182,30 +137,12 @@ async function register(host, installKeyId = null) {
   }
 
   if (existing) {
-    // Re-registering machine: refresh specs + network info (IP/gateway/DNS/MAC may have
-    // changed) without disturbing the token or approval state.
+    // Returning machine: refresh host info, keep the approval state.
     await refreshHostInfo(existing.deviceId, host);
 
-    // ADOPT: re-attribute the enrollment to whichever key just re-registered it. This is
-    // the only way an already-approved server can be moved onto a managed key — and
-    // without it, every host enrolled before install keys existed (install_key_id NULL,
-    // i.e. via the legacy .env key) would be permanently unreachable by any key revoke,
-    // since register() short-circuits here and never touches the row again.
-    //
-    // It is also how a server MOVES between keys — hand it to another branch's key by
-    // re-running the installer with that key. Presenting a valid install key is already
-    // the authority to enrol a machine, so it is the right authority to re-file one; and
-    // this grants no data access on its own, because metrics still need the AGT- token.
-    // A FRESH pending token every time, rather than handing back the stored one.
-    //
-    // This is what makes hashing the column possible at all — you cannot return a hash.
-    // Nothing depended on the token being stable: the agent holds it only in memory for
-    // the duration of registration.Run and never writes it to agent.conf, so a returning
-    // machine simply uses whichever token it was just given.
-    //
-    // Reaching this line already required presenting a valid AIK- install key, which is
-    // the real authorisation to re-collect a credential. The pending token is just the
-    // ticket for that one exchange.
+    // Move the server onto the key it just re-registered with, so revoking that key
+    // covers it. Issue a fresh pending token each time: only its hash is stored, so the
+    // old one can't be handed back.
     const pendingToken = crypto.randomBytes(24).toString("hex");
     await db.query(
       `UPDATE agent_tokens SET pending_token_hash = ?, install_key_id = COALESCE(?, install_key_id) WHERE id = ?`,
@@ -265,8 +202,7 @@ async function register(host, installKeyId = null) {
   }
 }
 
-// Re-register from a known NIC: refresh specs + network info (IP, gateway, DNS,
-// cores, etc.) in case they changed. Leaves the token and approval untouched.
+// Refresh specs + network info. Leaves the token and approval untouched.
 async function refreshHostInfo(deviceId, host) {
   await db.query(`UPDATE devices SET ip_address = ?, updated_at = NOW() WHERE device_id = ?`, [
     host.ip_address || null,
@@ -298,8 +234,7 @@ async function refreshHostInfo(deviceId, host) {
 
 // Agent polls this with its pending token until status flips to approved.
 async function getStatusByPendingToken(token) {
-  // Looked up by HASH — the column holds no readable token. One indexed comparison,
-  // the same shape the plaintext compare had.
+  // Looked up by hash; no readable token is stored.
   const [[row]] = await db.query(
     `SELECT status, approved_token_cipher, device_id
        FROM agent_tokens WHERE pending_token_hash = ? LIMIT 1`,
@@ -308,11 +243,8 @@ async function getStatusByPendingToken(token) {
   if (!row) return null;
   return {
     status: row.status,
-    // THE re-delivery point — what a machine that lost its agent.conf comes back for, and
-    // what the ADOPT workflow rides on. A decrypt failure is deliberately NOT fatal: it
-    // means the encryption key changed since this token was stored, and the right answer
-    // is an empty string (the agent keeps polling, an operator re-enrolls it) rather than
-    // a 500 on an endpoint every pending agent hits every 10 seconds.
+    // A decrypt failure returns "" instead of a 500: the agent keeps polling and an
+    // operator re-enrolls it.
     approved_token: readApprovedToken(row),
     device_id: row.device_id,
   };
@@ -356,18 +288,9 @@ async function listPending() {
 async function approve(deviceId) {
   const approvedToken = "AGT-" + crypto.randomBytes(24).toString("hex");
 
-  // Two columns, two jobs — a hash cannot do both.
-  //   approved_token_hash   the LOOKUP value, checked on every metric POST.
-  //   approved_token_cipher a recoverable copy, because the token must be DELIVERABLE more
-  //                         than once: the agent is asleep polling /api/agents/status when
-  //                         this runs, and a machine that later loses agent.conf collects
-  //                         it the same way (that path also carries the ADOPT workflow).
-  //
-  // Encryption is REQUIRED, not a fallback. There is deliberately no "store it readable if
-  // no key is configured" branch: that branch is how the plaintext column existed in the
-  // first place, and a silent downgrade to readable storage is exactly what this change is
-  // undoing. Failing loudly at approval — one admin action, with a message naming the fix —
-  // is far cheaper than a credential quietly landing in the nightly offsite dump.
+  // Store a hash for lookup and an encrypted copy so the token can be delivered again
+  // (e.g. a machine that lost agent.conf). Refuse to approve without an encryption key
+  // rather than store it readable.
   if (!secretCrypto.isConfigured()) {
     throw unavailable(
       "Cannot approve: no encryption key is configured. Set SECRET_ENC_KEY (or " +
@@ -383,20 +306,15 @@ async function approve(deviceId) {
   );
   if (result.affectedRows === 0) return null;
 
-  // Leave the device 'offline' until its agent actually reports. The first metric
-  // POST then transitions offline→online (recordHeartbeat → cameOnline), which fires
-  // the "Server online" alert — so a brand-new connect is announced just like a
-  // reconnect. The offline sweep only touches status='online' rows, so a not-yet-
-  // reporting approved server is never falsely alerted as "offline".
+  // Stay 'offline' until the first metric POST, which flips it online and raises
+  // "Server online".
   await db.query(`UPDATE devices SET status = 'offline' WHERE device_id = ?`, [deviceId]);
   const [[dev]] = await db.query(`SELECT device_name FROM devices WHERE device_id = ?`, [deviceId]);
   return { approvedToken, deviceName: dev?.device_name };
 }
 
-// Reject a still-pending enrollment by deleting the device entirely (its
-// server_specs / device_network / agent_tokens cascade away). This removes it
-// from the pending list and lets that machine re-enroll cleanly later. Only
-// acts on pending enrollments — never on an already-approved server.
+// Reject a pending enrollment by deleting the device (related rows cascade).
+// Never touches an approved server.
 async function reject(deviceId) {
   const [[tok]] = await db.query(
     `SELECT id FROM agent_tokens WHERE device_id = ? AND status = 'pending' LIMIT 1`,
@@ -414,11 +332,7 @@ async function reject(deviceId) {
 // Used by agentAuthMiddleware. Returns the device identity for a valid,
 // approved token, or null. Best-effort bumps last_used_at without blocking.
 async function validateToken(token) {
-  // Lookup is by HASH — one unique-indexed comparison, the same shape the plaintext
-  // compare had, so the hottest query in the system (every agent, every 10 s) costs what
-  // it always did. `migrations/2026-08-25_agent_token_hash.sql` must be applied before
-  // this code runs; there is deliberately no plaintext fallback, because the column it
-  // would fall back to no longer exists.
+  // Lookup by hash. Needs migrations/2026-08-25_agent_token_hash.sql applied.
   const [[row]] = await db.query(
     `SELECT t.device_id, d.device_name, d.display_name, d.ip_address, d.location, s.os
        FROM agent_tokens t
@@ -430,8 +344,7 @@ async function validateToken(token) {
   );
   if (!row) return null;
 
-  // Best-effort, never awaited — a failed counter must not fail an ingest that already
-  // authenticated.
+  // Best-effort; a failed counter must not fail the request.
   db.query(`UPDATE agent_tokens SET last_used_at = NOW() WHERE approved_token_hash = ?`, [
     hashKey(token),
   ]).catch(() => {});
@@ -444,13 +357,9 @@ async function validateToken(token) {
 async function recordHeartbeat(deviceId, uptimeLabel, intervalSec = null) {
   const [[row]] = await db.query(`SELECT status FROM devices WHERE device_id = ? LIMIT 1`, [deviceId]);
   const maintenance = row?.status === "maintenance";
-  // Just announced a shutdown: a post still in flight (or the Windows agent that keeps
-  // running until the OS kills it) must not flip it back Online and auto-resolve the
-  // alert that was raised a moment ago. The sample is still stored; only status waits.
+  // Just sent a shutdown notice: late posts must not flip it back Online.
   const held = isHeld(Number(deviceId));
-  // A parked server keeps ingesting metrics, but its status is operator-owned:
-  // a heartbeat must not drag it back to 'online', which would silently end the
-  // window and re-arm alerting mid-reboot.
+  // In maintenance the status is operator-owned; a heartbeat must not change it.
   const cameOnline = Boolean(row) && !maintenance && !held && row.status !== "online";
 
   if (!maintenance && !held) {
@@ -458,10 +367,8 @@ async function recordHeartbeat(deviceId, uptimeLabel, intervalSec = null) {
       deviceId,
     ]);
   }
-  // last_seen is refreshed even in maintenance, so leaving the window can tell a
-  // live host from one that never came back. metric_interval_sec is only written
-  // when the agent reported one — COALESCE keeps the stored value otherwise, so
-  // an older agent never wipes a known cadence.
+  // last_seen updates even in maintenance. COALESCE keeps the stored interval when
+  // an older agent doesn't report one.
   await db.query(
     `UPDATE server_specs
         SET last_seen = NOW(), uptime = ?, metric_interval_sec = COALESCE(?, metric_interval_sec)
@@ -469,9 +376,7 @@ async function recordHeartbeat(deviceId, uptimeLabel, intervalSec = null) {
     [uptimeLabel, intervalSec, deviceId],
   );
 
-  // Recovery: the agent is reporting again → close the open offline alert, the
-  // same way deviceAlerts.checkReachability does for routers/UPS. Without this
-  // every reboot left a permanently open alert inflating the sidebar badge.
+  // Back online: close the open offline alert.
   if (cameOnline) {
     await alertsService.autoResolveMetric(deviceId, "offline").catch((err) =>
       console.error("[agent] offline auto-resolve failed:", describeError(err)),
@@ -480,11 +385,8 @@ async function recordHeartbeat(deviceId, uptimeLabel, intervalSec = null) {
   return { cameOnline, maintenance, held };
 }
 
-// Park a server for planned downtime, or bring it back. While parked the offline
-// sweep skips it, threshold alerting is suppressed, and a heartbeat won't flip
-// the status — so a reboot doesn't page anyone. Leaving the window re-derives the
-// real status from the last heartbeat rather than assuming Online.
-// Returns null when there is no such server.
+// Park a server for planned downtime (no offline sweep, no alerts), or bring it
+// back with its real status. Returns null when there is no such server.
 async function setMaintenance(deviceId, enabled) {
   const id = Number(deviceId);
   const [[row]] = await db.query(
@@ -505,8 +407,7 @@ async function setMaintenance(deviceId, enabled) {
       : "online";
   await db.query(`UPDATE devices SET status = ?, updated_at = NOW() WHERE device_id = ?`, [status, id]);
 
-  // Re-arm the detectors on BOTH transitions so the first breach after the window
-  // alerts, instead of being swallowed as "same band as before maintenance".
+  // Reset bands so the first breach after the window alerts.
   alertBandState.resetDevice(id);
   // Alerts still open keep their band, so they can still auto-resolve afterwards.
   await alertsService.seedBands(id).catch((err) =>
@@ -514,10 +415,7 @@ async function setMaintenance(deviceId, enabled) {
   );
   if (!enabled) latestMetrics.delete(id); // stale numbers until the next real post
 
-  // Close any open offline alert. An operator toggling this has explicitly taken
-  // ownership of the server's state, and neither transition would otherwise clear
-  // it: entering the window suppresses the heartbeat's cameOnline auto-resolve,
-  // and a server that recovers WHILE parked never produces that transition at all.
+  // Close any open offline alert; the operator now owns this server's state.
   await alertsService.autoResolveMetric(id, "offline").catch((err) =>
     console.error("[agent] offline auto-resolve failed:", describeError(err)),
   );
@@ -525,12 +423,9 @@ async function setMaintenance(deviceId, enabled) {
   return { id, name: row.name, status: label(status) };
 }
 
-// Device logging moved to ./deviceLogs.js — it needs only the database, so the
-// pollers and handlers that write log lines no longer pull in all of agentService.
-// Re-exported below so existing agentService.logDevice(...) callers keep working.
+// logDevice lives in ./deviceLogs.js; re-exported below for existing callers.
 
-// hysteresis so a value flapping at a boundary doesn't churn device_logs. With no
-// matching rule the band is "normal" (rules-only → silent). See alertRulesService.js.
+// No matching rule = band "normal" (silent). See alertRulesService.js.
 const SEV_RANK = alertRulesService.SEV_RANK;
 const METRIC_LABEL = { cpu: "CPU", mem: "Memory", disk: "Disk" };
 
@@ -539,10 +434,7 @@ async function checkThresholds(deviceId, metrics) {
   const id = Number(deviceId);
   const events = [];
 
-  // Disk is evaluated against the WORST volume, not just the root. A data volume
-  // filling up while C:\ looks healthy is the common real incident and used to be
-  // invisible here. The band is still tracked under the single "disk" metric (one
-  // rule, one open alert per server) — the message names the offending mount.
+  // Disk uses the fullest volume, not just the root.
   const volumes = Array.isArray(metrics.volumes) ? metrics.volumes : [];
   const worstVolume = volumes.reduce(
     (worst, v) => (worst === null || v.percent > worst.percent ? v : worst),
@@ -551,8 +443,7 @@ async function checkThresholds(deviceId, metrics) {
 
   for (const key of ["cpu", "mem", "disk"]) {
     let v = metrics[key];
-    // Name the mount only on multi-volume hosts — on a single-volume box
-    // "Disk high: 91% (/)" is just noise.
+    // Name the mount only when there is more than one volume.
     let where = "";
     if (key === "disk" && worstVolume) {
       v = worstVolume.percent;
@@ -561,25 +452,18 @@ async function checkThresholds(deviceId, metrics) {
     if (typeof v !== "number" || Number.isNaN(v)) continue;
     const label = METRIC_LABEL[key];
 
-    // Current band lives in the shared alertBandState so the lifecycle (resolve /
-    // auto-resolve) can re-arm it — a still-breaching metric re-alerts after a resolve.
+    // Shared band state, so a resolve can re-arm it.
     const prevBand = alertBandState.getBand(id, key);
     const rules = await alertRulesService.getEffectiveRules(id, key);
     const { band, rule } = alertRulesService.nextBand(rules, v, prevBand);
 
-    // Any move DOWN the ladder needs CONFIRMATION — one sample can be a dip in a
-    // metric oscillating around its threshold. Held until N consecutive readings
-    // (ALERT_RECOVERY_SAMPLES), so a server flapping across 90% raises ONE alert
-    // instead of an alert/auto-resolve storm. A confirmed drop closes the alerts it has
-    // made untrue — critical → warning closes the CRITICAL one. Escalation is instant.
+    // Escalation is instant; a drop needs ALERT_RECOVERY_SAMPLES confirmations and
+    // closes the alerts it made untrue.
     const { effective: effectiveBand, downgraded, dropped } =
       await alertsService.settleBand(id, key, prevBand, band);
     const pct = Math.round(v);
 
-    // A confirmed drop is LOGGED as well as acted on. The event log used to record
-    // only the onset of a worse band, so its newest memory entry stayed "Memory
-    // critical: 96%" long after the reading fell — a start with no end, which reads as
-    // a problem still happening. Every PROBLEM now gets its RESOLVED.
+    // Log a confirmed drop too, so every problem gets a matching recovery entry.
     if (dropped && !downgraded) {
       events.push(await logDevice(id, dropped === "normal" ? "info" : dropped,
         dropped === "normal"
@@ -588,9 +472,7 @@ async function checkThresholds(deviceId, metrics) {
       continue;
     }
 
-    // Otherwise only LOG + alert the ONSET of a worse band — not steady state — to keep
-    // device_logs lean and the bell quiet. The one exception is a confirmed drop into a
-    // band with no open alert (see alertsService.settleBand).
+    // Otherwise log + alert only the onset of a worse band.
     if (!downgraded && SEV_RANK[effectiveBand] <= SEV_RANK[prevBand]) continue;
 
     const word = band === "critical" ? "critical" : band === "warning" ? "high" : band;
@@ -609,11 +491,8 @@ async function checkThresholds(deviceId, metrics) {
 
 // ─── Offline sweep ────────────────────────────────────────────────────────────
 
-// Agents POST every ~10s and refresh last_seen; nothing else flips a dead agent's
-// server to 'offline'. This finds approved servers still marked 'online' whose
-// last_seen has gone stale, marks them offline, and returns only the rows that
-// JUST transitioned — so the caller can push a live status update + a device log.
-// Idempotent: rows already 'offline' are skipped, so it logs the event once.
+// Mark approved servers offline when last_seen has gone stale. Returns only the
+// rows that just changed, so each outage is logged once.
 async function sweepOffline() {
   const [stale] = await db.query(
     `SELECT d.device_id AS id, COALESCE(NULLIF(d.display_name, ''), d.device_name) AS name
@@ -637,18 +516,13 @@ async function sweepOffline() {
   return flipOffline(stale, "Server went offline — no metrics received");
 }
 
-// The transition itself, shared by the heartbeat sweep above and the fast ICMP sweep
-// (services/reachabilitySweep.js). Both must produce the SAME offline — same cache
-// eviction, same band reset, same device log — or an outage caught in 5 seconds would
-// read differently from the identical outage caught in 45.
+// Shared by the heartbeat sweep and the ICMP sweep so both produce the same offline.
 async function flipOffline(rows, reason) {
   const out = [];
   for (const r of rows) {
     latestMetrics.delete(Number(r.id));
     alertBandState.resetDevice(r.id); // re-arm threshold logging for when it returns…
-    // …but keep the bands of alerts still OPEN. Wiped, a Memory critical alert that was
-    // open when the server dropped off could never auto-resolve once it came back: its
-    // first normal reading would look like normal → normal, i.e. no recovery at all.
+    // …but keep the bands of open alerts so they can still auto-resolve.
     await alertsService.seedBands(r.id).catch((err) =>
       console.error("[agent] band re-seed failed:", describeError(err)),
     );
@@ -658,19 +532,9 @@ async function flipOffline(rows, reason) {
   return out;
 }
 
-// Mark specific servers offline NOW. Re-checks `status = 'online'` in the UPDATE's own
-// WHERE so two sweeps racing on the same server cannot both claim the transition and
-// log it twice — and only the rows the UPDATE actually changed are logged/announced.
-//
-// `requireMissedReport` is for the ICMP sweep. A failed ping is only acted on once the
-// agent has ALSO missed a report: for a server, an agent POST is the stronger evidence.
-// The agent pushes to the backend, so it works through NAT, from another subnet, from
-// behind a host firewall that drops echo (Windows' default), and when the IP the agent
-// reported is a WSL/Hyper-V/VirtualBox adapter the backend cannot route to. Without this
-// guard such a server flapped every agent interval — the sweep flipped it offline, the
-// next POST flipped it back online — raising an offline alert each time. 1.5 intervals
-// = one report missed, with jitter room. The heartbeat and shutdown paths pass false:
-// both come FROM the agent, so there is nothing stronger to wait for.
+// Mark servers offline now; only rows still 'online' change, so a race logs once.
+// requireMissedReport (ICMP sweep): also require a missed agent report, since many
+// servers block ping but still post fine.
 async function markOfflineByIds(ids, { reason, requireMissedReport = true } = {}) {
   const list = (Array.isArray(ids) ? ids : [ids]).map(Number).filter(Number.isInteger);
   if (list.length === 0) return [];
@@ -702,10 +566,8 @@ async function markOfflineByIds(ids, { reason, requireMissedReport = true } = {}
   );
 }
 
-// Tell everyone. Split out of src/server.js so every path that takes a server offline
-// raises the identical alert rather than a second, subtly different one. `alert`
-// overrides the wording/severity for the shutdown notice; type stays "offline" either
-// way, so the next report auto-resolves it exactly like any other outage.
+// Push the status change and raise the offline alert. `alert` overrides the wording
+// for a shutdown notice.
 async function announceOffline(io, rows, alert = null) {
   for (const o of rows ?? []) {
     io?.emit("serverStatus", { id: o.id, status: "Offline" });
@@ -714,25 +576,20 @@ async function announceOffline(io, rows, alert = null) {
       deviceId: o.id,
       type: "offline",
       title: alert?.title ?? "Server offline",
-      // The device-log reason names the server generically ("Server went offline —
-      // no heartbeat for 6s"); the alert names it, so the bell says WHICH one and WHY.
+      // Put the server's name in the message.
       message: alert
         ? `${o.name || `Server ${o.id}`} ${alert.verb}`
         : o.reason && o.name
           ? o.reason.replace(/^Server/, o.name)
           : o.log?.message || `Server ${o.id} stopped reporting`,
-      // Critical, like a router going down: ICTU asked for server outages to be
-      // urgent, and `critical` is the default NOTIFY_EMAIL_MIN_SEVERITY — at `warning`
-      // an offline server only bumped the bell and never reached anyone's inbox.
+      // Critical so it reaches email (the default NOTIFY_EMAIL_MIN_SEVERITY).
       severity: alert?.severity ?? "critical",
     });
   }
 }
 
 // ─── Heartbeat + shutdown notice ──────────────────────────────────────────────
-// In memory on purpose: a heartbeat every 2s per server is not worth a MySQL write, and
-// a restart losing the map is harmless — the next beat (≤2s) repopulates it, and until
-// then the metric-window sweep still covers every server.
+// In memory: after a restart the next beat (≤2s) refills it.
 const lastBeat = new Map(); // device_id -> ms of the last heartbeat
 const shutdownAt = new Map(); // device_id -> ms of the last shutdown notice
 
@@ -744,9 +601,8 @@ function isHeld(id) {
   return false;
 }
 
-// POST /api/servers/heartbeat. Records liveness only — no status change. Recovery stays
-// with the metric POST (recordHeartbeat), which the agent sends immediately on start, so
-// a heartbeat can never mark a server Online that has not actually reported.
+// POST /api/servers/heartbeat. Records liveness only; only a metric POST marks a
+// server Online.
 function noteHeartbeat(deviceId) {
   const id = Number(deviceId);
   if (isHeld(id)) return;
@@ -764,9 +620,8 @@ async function sweepHeartbeats() {
   });
 }
 
-// POST /api/servers/shutdown. The agent announces it is going away. Returns the rows
-// that actually transitioned (empty when the server was already offline or is parked
-// in maintenance — a planned shutdown during a maintenance window pages nobody).
+// POST /api/servers/shutdown. Returns the rows that went offline (none if already
+// offline or in maintenance).
 async function recordShutdown(deviceId, rawReason) {
   const id = Number(deviceId);
   const reason = shutdownReason(rawReason);
@@ -784,9 +639,7 @@ async function recordShutdown(deviceId, rawReason) {
 
 // ─── Dashboard reads ──────────────────────────────────────────────────────────
 
-// Only servers with an APPROVED agent token belong in the dashboard list. The
-// INNER JOIN on agent_tokens excludes pending (awaiting approval) and rejected
-// enrollments, regardless of the device's online/offline status.
+// Only servers with an APPROVED token appear on the dashboard.
 const SERVER_SELECT = `
   SELECT d.device_id AS id,
          COALESCE(NULLIF(d.display_name, ''), d.device_name) AS name,
@@ -819,10 +672,8 @@ async function getServerById(id) {
   return withLive(row);
 }
 
-// Decommission a server: delete the devices row. server_specs, device_network
-// and agent_tokens cascade-delete via their FKs, which also revokes the token
-// (a still-running agent's next POST then fails agentAuth). Influx history is
-// left intact. Returns false if no such server.
+// Delete a server; related rows cascade, which also revokes its token. InfluxDB
+// history is kept. Returns false if no such server.
 async function removeServer(id) {
   const [result] = await db.query(
     `DELETE FROM devices WHERE device_id = ? AND device_type = 'server'`,
@@ -837,13 +688,8 @@ async function removeServer(id) {
   return result.affectedRows > 0;
 }
 
-// Set (or clear) a server's admin display name. An empty/blank value clears it
-// (display_name → NULL) so the UI falls back to the real hostname. Never touches
-// device_name (the hostname), so it survives agent re-registration. Returns the
-// fresh { name (effective), hostname, displayName } for the live emit, or null if
-// there is no such server. Existence is checked separately so renaming a server to
-// its CURRENT label (MySQL UPDATE affectedRows = 0 on an unchanged value) is not
-// mistaken for "not found".
+// Set or clear (blank) a server's display name; the hostname is never changed.
+// Returns { name, hostname, displayName }, or null if there is no such server.
 async function renameServer(id, displayName) {
   const [[exists]] = await db.query(
     `SELECT device_id FROM devices WHERE device_id = ? AND device_type = 'server' LIMIT 1`,

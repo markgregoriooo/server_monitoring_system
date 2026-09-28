@@ -101,10 +101,6 @@ TROUBLESHOOTING
                                      key it enrolled with. Get a current key and
                                      re-run INSTALL step 3 from this folder, then
                                      an admin approves it again (step 4).
-  Key ignored / "Invalid install
-   key" with a key you know works -> an old CSPC_INSTALL_KEY variable is set in
-                                     this window and wins over -InstallKey. Clear
-                                     it:  Remove-Item Env:\CSPC_INSTALL_KEY
   Offline alerts take 30 seconds
    or more                        -> an agent built before the heartbeat was added
                                      (September 2026). Upgrade it

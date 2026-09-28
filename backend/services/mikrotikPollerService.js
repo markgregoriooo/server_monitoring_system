@@ -198,7 +198,7 @@ async function pollDevice(io, d) {
   try {
     sample = await collect(d, labels); // throws if unreachable
   } catch (err) {
-    // ⚠️ Every `return` below is a FAILED poll that this function deliberately does not
+    //  Every `return` below is a FAILED poll that this function deliberately does not
     // rethrow (pollAll's catch would reset the cache and wipe the ICMP figures). That
     // made "did not throw" mean nothing, and pollDeviceNow — which reports the result of
     // a registration back to the admin — read it as success. A MikroTik added with a
@@ -367,7 +367,7 @@ export async function pollDeviceNow(io, deviceId) {
     const d = (await loadDevices()).find((x) => Number(x.id) === id);
     if (!d) return { ok: false, reason: "device not found" };
     try {
-      // ⚠️ `pollDevice` resolves on the failure path too — see the note in its catch.
+      //  `pollDevice` resolves on the failure path too — see the note in its catch.
       // Reading "it did not throw" as success is what made a MikroTik added with a wrong
       // password toast "logged in over the RouterOS API — now polling".
       const r = await pollDevice(io, d);

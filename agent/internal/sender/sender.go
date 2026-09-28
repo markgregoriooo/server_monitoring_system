@@ -136,7 +136,11 @@ func (s *Sender) flushSpool() error {
 //
 // A sample that fails to send is spooled and replayed once the backend is back,
 // so an outage leaves a gap in the dashboard's LIVE view but not in the stored
-// history. Backfill happens before the fresh sample so history stays ordered.
+// history. The fresh sample goes FIRST and the backlog drains after it: that POST
+// is what proves the link is back, and it drives the live status/alerts, so it
+// must not wait behind up to four backfill batches. Arrival order doesn't affect
+// history — each buffered sample carries its own collected_at, and InfluxDB
+// orders points by timestamp, not by when they were written.
 func (s *Sender) Send(p collector.Payload) error {
 	body, err := json.Marshal(p)
 	if err != nil {
