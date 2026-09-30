@@ -1,13 +1,11 @@
-// ─── Pure helpers for the server-metric path ──────────────────────────────────
-// Deliberately free of imports (no DB, no InfluxDB, no env-dependent clients) so
-// the test suite can exercise the contract and the offline-window maths without a
-// running MySQL/InfluxDB. Both handlers/serverMetricsHandler.js and
-// services/agentService.js import from here.
+// ─── Helpers for the server-metric path ──────────────────────────────────
+// No imports, so the tests can check the metric contract and the offline-window math
+// without MySQL or InfluxDB. Used by handlers/serverMetricsHandler.js and
+// services/agentService.js.
 
-// Float fields every metric POST must carry. process_count is validated
-// separately as an integer. Keep this list in sync with the Go agent's
-// ServerMetrics struct (agent/internal/collector/metrics.go) — tests/contract.test.js
-// parses that file and fails if the two drift.
+// Float fields every metric POST must have (process_count is checked separately as
+// an integer). Must match the Go agent's ServerMetrics struct
+// (agent/internal/collector/metrics.go); tests/contract.test.js fails if they differ.
 export const NUMERIC_FIELDS = [
   "cpu_percent",
   "mem_used_mb",
@@ -21,9 +19,8 @@ export const NUMERIC_FIELDS = [
   "uptime_seconds",
 ];
 
-// Upper bound on volumes accepted per post. The agent already caps at 16; this
-// is the server-side guard so a malformed/hostile body can't fan out into
-// hundreds of Influx points per 10s post.
+// Maximum volumes accepted per post. The agent already caps at 16; this is the
+// server-side limit so a bad request cannot create hundreds of points.
 export const MAX_VOLUMES = 32;
 export const MAX_MOUNT_LEN = 120; // mount is an Influx TAG — keep cardinality sane
 
@@ -38,12 +35,9 @@ export const OFFLINE_FLOOR_SEC = Number(process.env.SERVER_OFFLINE_AFTER_SEC) ||
 // can't effectively disable offline detection.
 export const OFFLINE_CEILING_SEC = 3600;
 
-// How long a server may go silent before it counts as offline. Three missed posts
-// is the tolerance (one dropped POST must not raise a false alarm), floored so
-// fast agents don't get a hair trigger.
-//
-// This used to be a flat 30s while the agent's interval was a settable flag, so
-// installing with `-interval 60` flapped the server Offline/Online forever.
+// How long a server may be silent before it counts as offline: three missed posts
+// (one lost POST is not an outage), with a minimum. Sized per agent, so a
+// `-interval 60` agent does not flap.
 export function offlineWindowSec(intervalSec) {
   const n = Number(intervalSec);
   const interval = Number.isFinite(n) && n > 0 ? n : DEFAULT_INTERVAL_SEC;
@@ -58,10 +52,9 @@ export function sanitizeInterval(raw) {
   return Math.round(n);
 }
 
-// Normalize the optional `volumes` array. Deliberately lenient: a single bad
-// entry is dropped rather than 400-ing the whole post, matching the agent's own
-// "a volume that fails to probe is skipped" behaviour. The core metric fields
-// stay strict — those indicate real contract drift.
+// Normalise the optional `volumes` array. A bad entry is dropped instead of
+// rejecting the whole post (the agent also skips volumes it cannot read). The core
+// metric fields stay strict.
 export function sanitizeVolumes(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -97,9 +90,8 @@ export function formatUptime(seconds) {
   return `${m}m`;
 }
 
-// Validate one metric sample's required fields. Returns an error string, or null
-// when the sample is well-formed. Shared by the live POST and the backfill batch
-// so a buffered sample can never enter by a laxer door than a live one.
+// Check one sample's required fields. Returns an error string, or null when valid.
+// Used by both the live POST and the backfill batch.
 export function validateSample(data) {
   for (const f of NUMERIC_FIELDS) {
     if (typeof data?.[f] !== "number" || !Number.isFinite(data[f])) {
@@ -112,9 +104,8 @@ export function validateSample(data) {
   return null;
 }
 
-// Oldest backfill we'll accept. A buffered sample carries the agent's own clock
-// (the only path where we trust it), so it must be clamped: a host with a wildly
-// wrong RTC could otherwise write points years into the past or the future.
+// Oldest backfill accepted. Buffered samples use the agent's clock, so they are
+// limited in case a host's clock is far off.
 export const MAX_BACKFILL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Resolve a buffered sample's timestamp. Returns null when it's unusable, so the
@@ -129,27 +120,22 @@ export function backfillTimestamp(collectedAt, now = Date.now()) {
 }
 
 // ─── Heartbeat + shutdown notice ──────────────────────────────────────────────
-// The metric POST is expensive to send (a full collection) and expensive to store,
-// so it cannot be sent fast enough to double as a liveness signal: at 10s, three
-// missed posts is 30s before anyone hears a server died. Agents now send a
-// separate, empty HEARTBEAT every couple of seconds purely so absence is noticed
-// quickly, plus a SHUTDOWN NOTICE on the way down so a clean shutdown/restart is
-// known the moment it starts rather than inferred afterwards from silence.
+// Metric posts are too heavy to send every couple of seconds, so agents also send an
+// empty heartbeat every 2s so a dead server is noticed quickly, and a shutdown notice
+// when stopping, so a clean shutdown is known right away.
 
 // Silence after which a heartbeating agent's server counts as offline. Three missed
 // beats at the agent's 2s cadence — one lost beat on a flaky link is not an outage.
 export const HEARTBEAT_TIMEOUT_SEC = Math.max(3, Number(process.env.SERVER_HEARTBEAT_TIMEOUT_SEC) || 6);
 
-// After a shutdown notice, ignore liveness from that server for this long. The notice
-// and the agent's last few posts race each other: on Windows the notice is sent by a
-// separate process (the shutdown-event task) while the main agent keeps posting until
-// Windows kills it, and an in-flight metric POST landing after the notice would flip the
-// server straight back Online and auto-resolve the critical alert that was just raised.
+// After a shutdown notice, ignore liveness from that server for this long. On Windows
+// the notice comes from a separate task while the agent may still post, and a late
+// post would mark the server Online again and resolve the alert just raised.
 export const SHUTDOWN_HOLD_SEC = Math.max(5, Number(process.env.SERVER_SHUTDOWN_HOLD_SEC) || 30);
 
 // Ids whose last heartbeat is older than the timeout. `beats` is Map<id, lastBeatMs>.
-// Only servers that HAVE heartbeated appear in the map, so an older agent that never
-// sends one is left to the metric-window sweep instead of being declared dead.
+// Only servers that have sent a heartbeat are in the map; older agents are left to
+// the metric-window sweep.
 export function staleBeats(beats, nowMs, timeoutMs = HEARTBEAT_TIMEOUT_SEC * 1000) {
   const out = [];
   for (const [id, at] of beats) if (nowMs - at > timeoutMs) out.push(id);

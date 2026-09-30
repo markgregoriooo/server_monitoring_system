@@ -4,36 +4,23 @@ import { GF as gf, STATUS } from "../../theme/gf";
 
 const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
-// ─── "Test connection", shared by Add router and Add UPS ──────────────────────
-//
-// The gap this closes: registering a router or a UPS with a wrong IP, a wrong community
-// or a blocked UDP 161 produced NO indication at all. The device was created, its first
-// poll failed into the server console, and the card showed "Offline" — which is also
-// exactly what a healthy device that has not been polled yet looks like. So the admin
-// waited for something that was never going to arrive.
-//
-// One component for both forms rather than a copy each, for the same reason
-// theme/gf.ts exists: two copies of a diagnostic drift, and the day they disagree is
-// the day somebody is using them to decide whether the network or the form is at fault.
-// The MikroTik page had its own Test button before this and keeps it — its probe is a
-// RouterOS API login, not SNMP, so it answers a different question with different
-// fields. What is shared there is the contract, not the code.
+// ─── "Test connection" for Add router and Add UPS ──────────────────────
+// Without it, a wrong IP, community or blocked UDP 161 only showed as "Offline",
+// the same as a healthy device not polled yet. One component for both forms so they
+// always agree. The MikroTik page keeps its own test, since that is a RouterOS API
+// login, not SNMP.
 
 export type ProbeState =
   | { phase: "idle" }
-  // Split from a plain boolean: an INPUT rejection ("not a valid IPv4 address") and a
-  // probe that ran and came back negative are different events, and conflating them
-  // sends someone to check a cable over a typo.
+  // An input rejection ("not a valid IPv4 address") and a test that ran and failed are
+  // different, so they are kept apart.
   | { phase: "testing" }
   | { phase: "error"; message: string }
   | { phase: "done"; result: ProbeResult };
 
 /**
- * Holds one form's probe state.
- *
- * `reset` matters more than it looks: a PASS left sitting beside fields the admin has
- * since edited is worse than no result at all, because it is a green tick vouching for
- * a value that was never tested. Every field that feeds the probe clears it on change.
+ * Holds one form's test state. `reset` clears the result whenever a tested field
+ * changes, so a green tick never refers to values that were not tested.
  */
 export function useProbe() {
   const [state, setState] = useState<ProbeState>({ phase: "idle" });
@@ -76,12 +63,9 @@ function Line({ label, children }: { label: string; children: React.ReactNode })
 }
 
 /**
- * The result panel. Renders nothing while idle, so the form is unchanged until asked.
- *
- * It shows the MEASUREMENTS as well as the verdict on purpose. The verdict says what to
- * do; the measurements are what an admin needs when they disagree with it — "it replies
- * to ping in 2 ms and ignores SNMP" is a sentence somebody can take to the network team,
- * where "test failed" is not.
+ * The result panel; nothing while idle. Shows the measurements as well as the verdict,
+ * so an admin can tell the network team something concrete ("answers ping in 2 ms,
+ * ignores SNMP").
  */
 export function ProbeResultPanel({ state }: { state: ProbeState }) {
   if (state.phase === "idle") return null;

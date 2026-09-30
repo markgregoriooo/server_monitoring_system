@@ -15,22 +15,14 @@ import {
 } from "./reportTemplate.js";
 import { badRequest } from "../utils/httpError.js";
 
-// ─── Report branding & template defaults — the I/O half ──────────────────────
-//
-// The rules live in reportTemplate.js (pure, tested). This is the part that touches
-// MySQL `settings` and the filesystem.
-//
-// ICTU asked for the letterhead logo to be THEIRS to change — "what if they change
-// logo" — so the mark can no longer be a file only a developer with repo access can
-// replace. An admin uploads one from the dashboard and every report generated after
-// that carries it.
+// ─── Report branding and template defaults ──────────────────────
+// The rules are in reportTemplate.js (tested). This part reads and writes the MySQL
+// `settings` table and the logo files. ICTU wanted to change their own logos, so an
+// admin uploads them from the dashboard and later reports use them.
 
-// Uploaded marks are RUNTIME DATA and live apart from assets/branding/, which is
-// source material committed to git (a fresh clone must be able to render a report
-// before anyone has uploaded anything). Keeping them separate means:
-//   - an upload never dirties the working tree, so it cannot be lost to a `git checkout`
-//   - the bundled default is always intact to fall back to
-//   - `git status` after a deployment is still meaningful
+// Uploaded logos are runtime data, kept apart from assets/branding/ (the bundled
+// defaults in git). An upload never changes the working tree, and the bundled
+// default is always there to fall back to.
 const BRANDING_DIR = path.resolve(BACKEND_ROOT, "branding");
 const BUNDLED_DIR = path.resolve(BACKEND_ROOT, "assets/branding");
 
@@ -41,30 +33,21 @@ const BUNDLED = { cspc: "cspc-logo.png", ictu: "ictu-logo.jpg" };
 fs.mkdirSync(BRANDING_DIR, { recursive: true });
 
 // ─── Settings ────────────────────────────────────────────────────────────────
-// `settings` is a key/value table that shipped in v13 and had never held a row.
-//
-// Cached in memory and reloaded on every mutation, the same shape alertRulesService
-// uses: this is read on EVERY report build and changes a few times a year, so a query
-// per build would be pure overhead on a pool of ten shared connections.
+// Key/value `settings` table. Cached in memory and reloaded after each change, since
+// it is read on every report build and changes rarely.
 const KEYS = {
   paperSize: "report.paper_size",
   unitName: "report.unit_name",
   signatories: "report.signatories",
   logo: (slot) => `report.logo_${slot}`,
-  // The name the admin actually uploaded, kept alongside the fixed stored filename.
-  // Display only — the panel showed "cspc-logo.png", a name nobody chose, which made
-  // "the seal we sent in March" and "the new one" look identical.
+  // The original name of the uploaded file, for display only (stored under a fixed name).
   logoName: (slot) => `report.logo_${slot}_name`,
 };
 
 /**
- * The unit line on the letterhead — the large bold line where CSPC's own stationery
- * reads "COLLEGE of COMPUTER STUDIES".
- *
- * Configurable rather than hardcoded because the sample ICTU supplied carries a
- * different unit to the one filing these reports, and whoever files them next may be a
- * third. The renderer auto-fits the type size, so a longer or shorter name both sit
- * correctly without anyone touching the layout.
+ * The unit line on the letterhead (the large bold line, e.g. "COLLEGE of COMPUTER
+ * STUDIES"). Configurable because the unit filing reports may change. The renderer
+ * fits the font size to the text.
  */
 export const DEFAULT_UNIT_NAME = "INFORMATION AND COMMUNICATIONS TECHNOLOGY UNIT";
 
@@ -85,23 +68,14 @@ async function settings() {
   return cache ?? (await load());
 }
 
-/**
- * Force a reload on the next read.
- *
- * Exported because the settings row can also change from outside this process — a DBA
- * fixing a bad value by hand is the documented way several other things in this codebase
- * get repaired.
- */
+/** Force a reload on the next read, e.g. after the row was fixed directly in SQL. */
 export function invalidate() {
   cache = null;
 }
 
 /**
- * The admin-chosen default paper size.
- *
- * Never throws and never returns something pdfkit cannot use: normalizePaperSize folds
- * an unreadable or hand-edited value back to Folio. A report must still generate when
- * the settings row is wrong.
+ * The default paper size. Never throws: normalizePaperSize turns a bad value back
+ * into Folio, so reports still generate.
  */
 export async function defaultPaperSize() {
   try {
@@ -149,14 +123,10 @@ export async function setUnitName(value, userId) {
 }
 
 /**
- * The configured signature block — how many lines, their labels, and any fixed names.
- *
- * ICTU confirmed Prepared by / Noted by / Approved by and then asked for it to be
- * configurable: different documents go up different chains, and a fixed three is wrong
- * for both a one-signature internal note and a four-signature accreditation submission.
- *
- * Never throws. normalizeSignatories folds an unreadable row back to the default, so a
- * hand-edited settings value cannot stop reports generating.
+ * The signature block: how many lines, their labels and any fixed names. The default
+ * is Prepared by / Noted by / Approved by (confirmed by ICTU), configurable because
+ * different documents need different signers. Never throws; a bad value falls back
+ * to the default.
  */
 export async function signatories() {
   try {
@@ -193,14 +163,9 @@ async function upsert(key, value, userId) {
 // ─── Logos ───────────────────────────────────────────────────────────────────
 
 /**
- * Absolute path to the mark the renderer should draw for a slot, or null if there
- * isn't one.
- *
- * Resolution order is uploaded → bundled → nothing. The `existsSync` on the uploaded
- * file is not paranoia: the settings row and the file are two pieces of state that can
- * drift (a restore from a DB dump that did not carry BRANDING_DIR is the obvious way),
- * and falling back to the committed mark is far better than a letterhead that silently
- * loses its logo.
+ * Absolute path to the logo for a slot, or null. Order: uploaded → bundled → none.
+ * Checks the uploaded file exists, since a database restore without BRANDING_DIR
+ * would point at a missing file.
  *
  * @param {"cspc"|"ictu"} slot
  * @returns {Promise<string|null>}
@@ -224,11 +189,11 @@ export async function logoPath(slot) {
 }
 
 /**
- * Store an uploaded mark and make it the active one for its slot.
+ * Save an uploaded logo and make it the active one for its slot.
  *
  * @param {"cspc"|"ictu"} slot
  * @param {Buffer} buffer raw image bytes
- * @param {number} userId who uploaded it (audit trail on the settings row)
+ * @param {number} userId who uploaded it (recorded on the settings row)
  * @returns {Promise<{slot: string, file: string, kind: string, bytes: number}>}
  */
 export async function saveLogo(slot, buffer, userId, originalName = "") {
@@ -245,9 +210,8 @@ export async function saveLogo(slot, buffer, userId, originalName = "") {
   const file = logoFileName(slot, kind);
   const abs = path.join(BRANDING_DIR, file);
 
-  // Written before the settings row is updated. The other order would point the column
-  // at a file that does not exist yet, and a build landing in that window would fall
-  // back to the bundled mark with nothing to say why.
+  // Write the file before updating the settings row, so the row never points at a
+  // file that does not exist yet.
   fs.writeFileSync(abs, buffer);
 
   // Uploading a PNG over a previous JPEG leaves the old file orphaned — the filename
@@ -272,13 +236,7 @@ export async function saveLogo(slot, buffer, userId, originalName = "") {
   return { slot, file, kind, bytes: buffer.length, originalName: original };
 }
 
-/**
- * Revert a slot to the bundled mark.
- *
- * The uploaded FILE is deleted too. Keeping it would leave an image on disk that
- * nothing references and no screen shows — and a logo an institution has retired is
- * exactly the thing they expect to be gone when they say "remove it".
- */
+/** Go back to the bundled logo for a slot, and delete the uploaded file. */
 export async function clearLogo(slot, userId) {
   if (!LOGO_SLOTS.includes(slot)) throw badRequest("Unknown logo slot.");
   const s = await settings();

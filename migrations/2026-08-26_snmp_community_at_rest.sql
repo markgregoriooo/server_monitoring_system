@@ -1,44 +1,22 @@
 -- Stop storing SNMP community strings in readable form.
 --
--- `device_network.snmp_community` held its value verbatim. An SNMPv2c community IS the
--- credential — no user, no challenge, no transport security — so whoever holds the
--- string can read the full MIB of the router or UPS it belongs to, over UDP, from
--- anywhere that can reach the device.
+-- A v2c community is the credential for reading a router or UPS, and the nightly
+-- database dump is copied offsite (ops/db-backup, ops/offsite-backup). Encrypted, like
+-- mikrotik_devices.api_password; not hashed, because the poller has to send the value to
+-- the device (services/secretCrypto.js).
 --
--- WHY THIS IS NOT A THEORETICAL "if someone reads the database".
--- `ops/db-backup/dump-mysql.sh` writes a full mysqldump of this schema into BACKUP_DIR,
--- and `ops/offsite-backup/sync-offsite.sh` rclone-copies that folder to Backblaze. Every
--- community string on the campus network was therefore leaving the building nightly, in
--- a file on third-party storage. That is word for word the argument
--- 2026-08-25_agent_token_hash.sql makes for agent tokens and
--- 2026-08-15b_install_key_reveal.sql makes for install keys — this column was simply
--- never revisited, while `mikrotik_devices.api_password` one table over has been
--- AES-256-GCM since the day it was added.
---
--- ── WHY ENCRYPTION AND NOT A HASH ──────────────────────────────────────────────
--- Every other credential in this schema is hashed, and should be: the server only ever
--- has to answer "is this the same value?". This one is different in kind — the poller
--- must PRESENT the community to the device on every cycle, so the original has to come
--- back. Reversible storage is the requirement, not a shortcut. Same reasoning, same
--- machinery (services/secretCrypto.js) as the MikroTik API password.
---
--- ── NO DATA CHANGE IN THIS FILE, ON PURPOSE ────────────────────────────────────
--- The value is AES-256-GCM under a key that lives in backend/.env, which MySQL cannot
--- read and must never be handed. The conversion is therefore done by Node:
+-- ── No data change in this file ────────────────────────────────────
+-- The key is in backend/.env, which MySQL does not have, so Node does the conversion:
 --
 --     cd backend && npm run rekey -- --encrypt-plaintext
 --
--- It is idempotent (an already-encrypted row is skipped) and safe to run repeatedly.
--- Until it is run, nothing breaks: services/communityCrypto.js reads a value without
--- the `gcm1:` prefix as plaintext, deliberately and permanently — the dev simulator's
--- seed (dev-snmpsim/seed-dev-devices.sql) inserts plaintext directly, and a row
--- hand-fixed during an incident must not take the poller down.
+-- Safe to run repeatedly. Until then nothing breaks: services/communityCrypto.js reads a
+-- value without the `gcm1:` prefix as plaintext (the dev simulator seed inserts plaintext).
 --
--- ── COLUMN WIDTH ───────────────────────────────────────────────────────────────
--- Stored form is "gcm1:" + base64([iv(12) | tag(16) | ciphertext]) — 5 + ~4/3·(28+n)
--- characters, so a 64-character community lands near 130. VARCHAR(255) already fits it
--- with room to spare; this statement is here only to make the width an explicit
--- decision rather than an inherited one, and is a no-op on an unchanged schema.
+-- ── Column width ───────────────────────────────────────────────────────────────
+-- Stored as "gcm1:" + base64([iv(12) | tag(16) | ciphertext]), about 130 characters for
+-- a 64-character community. VARCHAR(255) fits; this statement just makes the width
+-- explicit and changes nothing on an unchanged schema.
 
 ALTER TABLE `device_network`
   MODIFY COLUMN `snmp_community` VARCHAR(255) DEFAULT NULL

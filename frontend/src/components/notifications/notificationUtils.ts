@@ -8,15 +8,9 @@ export const SEVERITY_COLOR: Record<Severity, string> = {
   info: "#5794F2",
 };
 
-// How a device is named in every notification surface — the bell, the toast, the
-// critical modal and the OS popup. One helper because those four drifted: the bell
-// showed a name the OS popup did not carry at all, so the same alert read
-// differently depending on where you saw it.
-//
-// A server has two names and both matter. `deviceName` is the label an admin gave
-// it, which is what every page shows; `deviceHostname` is what the agent reports and
-// what you would type into a terminal. The backend only sends the hostname when it
-// DIFFERS from the label, so this never prints "web-01 (web-01)".
+// How a device is named in the bell, toast, critical modal and OS popup, so all four
+// match. A server's display name and hostname are both shown; the backend only sends
+// the hostname when it differs, so this never shows "web-01 (web-01)".
 export function deviceLabel(n: Pick<AppNotification, "deviceName" | "deviceHostname">): string | null {
   if (!n.deviceName) return null;
   return n.deviceHostname ? `${n.deviceName} (${n.deviceHostname})` : n.deviceName;
@@ -31,17 +25,10 @@ const PAGE_FOR_DEVICE_TYPE: Record<string, string> = {
   ups: "/ups",
 };
 
-// Where clicking a notification takes you.
-//
-// DEVICE TYPE decides it, not the alert type. `deviceAlerts.checkRouter` is shared by
-// the SNMP and MikroTik pollers, so a MikroTik CPU alert and an SNMP router's are both
-// `router_cpu`; and routers, UPS and MikroTiks all raise the same `device_offline`.
-// Routing on `n.type` alone would therefore send half of these to the wrong page —
-// hence `deviceType`, added to the notification payload for exactly this.
-//
-// The alert type is still the fallback, for triggers with no devices row to key off:
-// the ESP32's room-level environment alerts, and anything raised before deviceType
-// was carried.
+// Where clicking a notification goes. Decided by the device type, not the alert type:
+// MikroTik and SNMP routers share `router_*` alerts, and routers, UPS and MikroTiks
+// all raise `device_offline`. The alert type is the fallback when there is no device
+// (ESP32 room alerts, older alerts).
 export function routeFor(n: AppNotification): string {
   const page = n.deviceType ? PAGE_FOR_DEVICE_TYPE[n.deviceType] : undefined;
   if (page) return n.deviceId ? `${page}?device=${n.deviceId}` : page;
@@ -62,10 +49,9 @@ export function routeFor(n: AppNotification): string {
       return "/environment";
   }
 
-  // Last resort when device_type is missing: infer the page from the type prefix.
-  // `link_util:ether3` and friends carry a per-interface suffix, hence startsWith.
-  // A MikroTik can't be told from an SNMP router here — it lands on /network, which
-  // is a degradation rather than a dead end.
+  // Fallback when device_type is missing: guess the page from the type prefix
+  // (`link_util:ether3` has a port suffix, hence startsWith). A MikroTik lands on
+  // /network here.
   if (n.type.startsWith("ups_")) return "/ups";
   if (n.type.startsWith("router_") || n.type.startsWith("link_")) return "/network";
   return "/";

@@ -1,50 +1,45 @@
 /*
  * ============================================================
  *  ESP32 Environment & Smoke Monitoring System v2
- *  Components: 2x MQ-2, DHT22, Piezo Buzzer, WS2812B RGB LED,
+ *  Components: up to 4x MQ-2, DHT22, Piezo Buzzer, WS2812B RGB LED,
  *              RTC (DS3231), micro SD (SPI), 2x IR Transmitter
- *  
+ *
  *  ─── PIN ASSIGNMENTS ────────────────────────────────────────
  *  MQ-2 #1 AOUT  : GPIO 34  (ADC, via 10kΩ/20kΩ divider)
  *  MQ-2 #2 AOUT  : GPIO 35  (ADC, via 10kΩ/20kΩ divider)
  *  DHT22         : GPIO  4
  *  Buzzer        : GPIO 26
- *  WS2812B DIN   : GPIO 27  ← NEW (1-wire, direct 3.3V signal OK)
- *  IR TX #1      : GPIO 25  ← NEW (AC unit 1)
- *  IR TX #2      : GPIO 33  ← NEW (AC unit 2)
+ *  WS2812B DIN   : GPIO 27  (1-wire, direct 3.3V signal OK)
+ *  IR TX #1      : GPIO 25  (AC unit 1)
+ *  IR TX #2      : GPIO 33  (AC unit 2)
  *  RTC DS3231    : SDA=21, SCL=22  (I2C, shared bus OK)
  *  micro SD      : SCK=18, MISO=19, MOSI=23, CS=5  (VSPI default)
  *  Setup button  : GPIO 13 → button → GND  (INPUT_PULLUP, no resistor)
  *                  Hold 3 s at any time to reboot into the WiFi setup
- *                  portal. Optional — BOOT still works. See PORTAL_BUTTON_PIN2.
+ *                  portal. Optional; BOOT still works. See PORTAL_BUTTON_PIN2.
  *
  *  --- SD CARD OFFLINE BUFFER ---
- *  The card is a SAFETY NET for the minutes the backend cannot be
- *  reached, not a second copy of everything: while the socket is up the
- *  backend stores and backs up each reading itself, so the card is only
- *  written when the reading has nowhere else to go.
+ *  Only used while the backend cannot be reached; while the socket is
+ *  up the backend stores and backs up each reading itself.
  *
  *    socket DOWN  -> append the reading to /log.csv
  *    socket BACK  -> replay the file to the server as "offlineData"
  *                    events, a few rows per loop tick, then delete it
  *
- *  WARNING: the RTC's coin cell is what makes this worth having.
- *  "offlineData" is stored under the TIMESTAMP THE DEVICE SENDS -- unlike
- *  live data, which the backend stamps itself -- and a DS3231 with no
- *  battery comes back from a power cut with no idea what time it is. A row
- *  the device cannot date is refused rather than buffered (sdAppendRow), so
- *  an unbatteried RTC does not corrupt history; it just means an outage
- *  records nothing. Fit the cell.
+ *  Fit the RTC coin cell. "offlineData" is stored under the timestamp the
+ *  device sends (live data is stamped by the backend), and a DS3231 without
+ *  a battery loses the time on a power cut. Rows that cannot be dated are
+ *  not buffered (sdAppendRow), so without the cell an outage records nothing.
  *
  *  ─── IR TRANSMITTER LOGIC ────────────────────────────────────
- *  Both transmitters send identical signals simultaneously.
- *  Temperature zone → AC action (mock NEC raw data):
+ *  Both transmitters send the same signal at the same time.
+ *  Temperature zone → AC setting (captured raw IR codes):
  *   < 22°C  TOO_COLD  → Cool 28°C, Auto fan
  *   22–24°C NORMAL    → Cool 26°C, Auto fan
  *   25–27°C ACCEPTABLE→ Cool 24°C, Auto fan
  *   28–29°C NEAR_CRIT → Cool 22°C, High fan
  *   > 29°C  CRITICAL  → Cool 20°C, High fan
- *  IR is resent only when zone CHANGES (not every loop tick).
+ *  IR is only sent when the zone changes.
  *
  *  ─── RGB LED STATUS ──────────────────────────────────────────
  *  Green  = NORMAL
@@ -53,18 +48,17 @@
  *  Orange = CRITICAL by humidity alone
  *  Red    = CRITICAL (Temp or Smoke)
  *
- *  ─── CALIBRATION (self-calibrating since 2026-07-31) ─────────
- *  The MQ-2 clean-air baseline (Ro) is measured on the FIRST boot in a
- *  location and saved to NVS flash, then reused on every boot after.
- *  Moving the box to a new room no longer needs a code edit + reflash —
- *  send the "calibrateGas" socket event from the dashboard instead.
- *  Ro is NOT re-measured on every boot on purpose: a reboot during a gas
- *  event would otherwise record polluted air as "clean" and permanently
- *  under-report smoke.
+ *  ─── CALIBRATION ─────────
+ *  The MQ-2 clean-air baseline (Ro) is measured on the first boot in a
+ *  location, saved to NVS flash and reused after that. After moving the
+ *  box, send the "calibrateGas" socket event from the dashboard. Ro is not
+ *  measured on every boot: a reboot during a gas event would save smoky
+ *  air as "clean" and under-report smoke from then on.
  * ============================================================
  */
 
-/* ── Required Libraries ──────────────────────────────────────
+/*
+ * ── Required Libraries ──────────────────────────────────────
  *  Install via Arduino Library Manager or PlatformIO:
  *  - DHT sensor library       (Adafruit)
  *  - Adafruit Unified Sensor  (Adafruit)
@@ -74,15 +68,14 @@
  *  - SD                       (built-in ESP32 core) - only when SD_ENABLED
  *  - Adafruit NeoPixel        (Adafruit)
  *  - IRremoteESP8266          (crankyoldgit) — IRsend
- *  - WiFiManager              (tzapu) — captive-portal WiFi provisioning
+ *  - WiFiManager              (tzapu) — captive-portal WiFi setup
  *
- *  ⚠️ Tools ▸ Partition Scheme ▸ "Huge APP (3MB No OTA/1MB SPIFFS)" is REQUIRED.
- *  It is a per-machine Arduino IDE setting and is NOT stored in the sketch, so anyone
- *  building this on another PC must set it too. On the default scheme the sketch was
- *  already at ~94% before WiFiManager and will not fit — which presents as a flashing
- *  failure and reads like a code fault. This sketch uses neither OTA nor SPIFFS, so
- *  the scheme costs nothing.
- * ─────────────────────────────────────────────────────────── */
+ *  Tools ▸ Partition Scheme ▸ "Huge APP (3MB No OTA/1MB SPIFFS)" is required.
+ *  It is an Arduino IDE setting, not saved in the sketch, so set it on every PC
+ *  that builds this. On the default scheme the sketch does not fit (it shows as
+ *  an upload failure). The sketch uses neither OTA nor SPIFFS.
+ * ───────────────────────────────────────────────────────────
+ */
 
 #include <DHT.h>
 #include <WiFi.h>
@@ -99,24 +92,22 @@
 #include "secrets.h"       // WiFi + backend + DEVICE_SECRET — gitignored, see secrets.h.example
 
 /* =================== PINS =================== */
-/* ---- MQ-2 GAS SENSOR POOL -----------------------------------------------------
- * The POOL of ADC pins this board can read, not the number of sensors fitted — the
- * same arrangement as IR_CHANNEL_PINS, and for the same reason: adding a sensor
- * should be soldering one on and ticking a box, not a reflash by us.
+/*
+ * ---- MQ-2 GAS SENSOR POOL -----------------------------------------------------
+ * The ADC pins this board can read, not the number of sensors fitted (like
+ * IR_CHANNEL_PINS), so adding a sensor is soldering it on and enabling it.
  *
- * ⚠️ FOUR IS THE HARDWARE CEILING, and it is ADC2's fault. ADC2 cannot be read at all
- * while WiFi is on — the WiFi driver owns it — which rules out GPIO 0/2/4/12/13/14/
- * 15/25/26/27 outright. That leaves ADC1: GPIO 32/33/34/35/36/39, and 32/33 are
- * already spoken for by IR channels 3 and 4. So: 34, 35, 36, 39.
+ * Four is the hardware limit: ADC2 cannot be read while WiFi is on, which rules out
+ * GPIO 0/2/4/12/13/14/15/25/26/27. That leaves ADC1 (32/33/34/35/36/39), and 32/33 are
+ * reserved for IR channels 3 and 4. So: 34, 35, 36, 39.
  *
- * ⚠️ GPIO 36 and 39 are INPUT-ONLY (VP/VN). Fine for an analog sensor, useless for
- * anything that has to drive a line — do not repurpose them for IR.
+ * GPIO 36 and 39 are input-only (VP/VN): fine for a sensor, not usable for IR.
  *
- * gasEnabled[] is set at runtime by the "gasConfig" socket event. A channel with
- * nothing soldered to it starts FALSE and stays dark, because an unconnected ADC pin
- * does not read zero — it FLOATS, and floating noise pushed through the MQ-2's
- * exponential curve is a believable ppm that can trip the smoke alarm.
- * -------------------------------------------------------------------------------- */
+ * gasEnabled[] is set at runtime by the "gasConfig" socket event. Unwired channels
+ * start false, because an unconnected ADC pin floats and its noise can look like a real
+ * ppm and trigger the smoke alarm.
+ * --------------------------------------------------------------------------------
+ */
 #define MAX_MQ2_SENSORS 4
 const uint8_t MQ2_PINS[MAX_MQ2_SENSORS] = { 34, 35, 36, 39 };
 bool gasEnabled[MAX_MQ2_SENSORS] = { true, true, false, false };
@@ -129,39 +120,34 @@ bool gasEnabled[MAX_MQ2_SENSORS] = { true, true, false, false };
 #define RGB_PIN    27    // WS2812B data
 #define SD_CS_PIN   5    // micro SD chip select (SPI: SCK 18 / MISO 19 / MOSI 23)
 
-/* =========== IR CHANNEL ARRAY ===============
+/*
+ * =========== IR CHANNEL ARRAY ===============
  * Each index = ir_channel value stored in DB (0-based here).
  *
- * This is the POOL of pins this board can drive, not the number of AC
- * units. Two transmitters are wired today (GPIO 25, 33); GPIO 32 and 15
- * are declared and ready so a third or fourth can be added by SOLDERING
- * ONLY — no reflash, no code. sendChannelMap() reports the whole pool to
- * the backend, which sizes its own limit from it, and enabledChannels[]
- * keeps an unwired pin dark until a unit is registered against it.
+ * The pins this board can drive, not the number of AC units. Two transmitters are
+ * wired (GPIO 25, 33); GPIO 32 and 15 are ready, so a third or fourth only needs
+ * soldering, no code change. sendChannelMap() reports all of them to the backend, and
+ * enabledChannels[] keeps a pin off until a unit is registered on it.
  *
- * Growing the pool beyond four is the only case that still needs an edit
- * here: add the pin, bump MAX_IR_CHANNELS, add an IRsend entry below.
- * enabledChannels[] is updated at runtime via the "irConfig" socket event.
- * ============================================ */
+ * More than four needs an edit here: add the pin, raise MAX_IR_CHANNELS, and add an
+ * IRsend entry below. enabledChannels[] is updated by the "irConfig" socket event.
+ * ============================================
+ */
 #define MAX_IR_CHANNELS 4
 const uint8_t IR_CHANNEL_PINS[MAX_IR_CHANNELS] = { 25, 33, 32, 15 };
-// Channels with no transmitter soldered start DISABLED, so an unwired pin cannot be
-// driven by a stale irConfig. The backend enables a channel only once a unit is
-// registered against it, so wiring GPIO 32 and registering AC Unit 3 is all it takes.
+// Channels without a transmitter start disabled. The backend enables a channel once a
+// unit is registered on it, so wiring GPIO 32 and registering AC Unit 3 is all it takes.
 bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
 
 /* =================== DHT ==================== */
 #define DHTTYPE DHT22
 
 /* =================== RGB LED ================ */
-#define NUM_PIXELS 140
+#define NUM_PIXELS 11
 
-/* "Nothing is reaching the dashboard" blink. A short blue pulse interrupting the steady green,
-   never a colour of its own: the LED's job is the ROOM, and a fifth steady colour next to the
-   existing yellow/orange/red is one more thing to misread in the second somebody glances at it.
-
-   ⚠️ It is suppressed the moment the room has anything to say — see paintStatusLED(). An alarm
-   colour is never interrupted, because a fire is not a good moment to be told about the WiFi. */
+/* "Nothing is reaching the dashboard" blink: a short blue pulse in the steady green,
+   not a colour of its own. Suppressed whenever the room has a warning or alarm (see
+   paintStatusLED()). */
 #define OFFLINE_BLINK_PERIOD_MS 5000UL
 #define OFFLINE_BLINK_ON_MS      120UL
 
@@ -186,19 +172,15 @@ bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
 #define FAST_PULSE_OFF 100
 
 /* =================== WiFi =================== */
-/* The SSID, the password and the backend address are PROVISIONED, not compiled in.
-   They live in NVS flash (namespace "netcfg") and are set from a phone through the
-   captive portal on first boot — see setupNetwork(). ICTU staff have no Arduino IDE,
-   so before this an SSID change or a backend IP change meant a reflash by us.
+/* The SSID, password and backend address are set up from a phone through the captive
+   portal on first boot and stored in NVS flash (namespace "netcfg"), see setupNetwork().
+   So ICTU staff can change them without the Arduino IDE.
 
-   secrets.h now supplies FALLBACK defaults only, used while NVS is empty. That is what
-   keeps a box flashed BEFORE this change working after it: nothing is provisioned, so
-   it comes up on the compiled-in network exactly as it used to. Define them and a dev
-   box still joins its own WiFi with no portal; leave them out — which is what
-   secrets.h.example now ships — and a blank box opens the portal instead.
+   secrets.h only provides fallback defaults for when NVS is empty; a box flashed before
+   this keeps using them. Leave them out (as secrets.h.example does) and a blank box
+   opens the portal.
 
-   DEVICE_SECRET is the one value that stays compiled in: it must match backend/.env
-   exactly, it is not the installer's to choose, and a wrong one fails silently. */
+   DEVICE_SECRET stays compiled in: it must match backend/.env exactly. */
 #ifndef WIFI_SSID
 #define WIFI_SSID ""
 #endif
@@ -212,32 +194,29 @@ bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
 #define BACKEND_PORT 3000
 #endif
 
-/* The live configuration. Seeded from the secrets.h fallbacks above, overwritten by
-   loadNetConfig() when NVS holds a provisioned one. Strings rather than const char*
-   because they are now read out of flash at runtime. */
+/* The live configuration: starts from the secrets.h fallbacks and is replaced by
+   loadNetConfig() when NVS has a saved one. Strings, since they are read from flash at
+   runtime. */
 String   netSsid = WIFI_SSID;
 String   netPass = WIFI_PASSWORD;
 String   netHost = BACKEND_HOST;
 uint16_t netPort = BACKEND_PORT;
 
 /* ---- Captive portal ----------------------------------------------------------
-   AP_PASSWORD "" leaves the setup AP OPEN, which is the easy thing for staff and the
-   reason the window is kept short — it closes the moment credentials are saved. Put a
-   WPA2 password here (>= 8 chars) and print it on the enclosure if a passer-by being
-   able to reconfigure the box during that window is not acceptable.
+   AP_PASSWORD "" leaves the setup access point open, which is why it closes as soon as
+   settings are saved. Set a WPA2 password (>= 8 chars) and print it on the enclosure if
+   that is not acceptable.
 
-   AP_SSID_UNIQUE appends the last two bytes of the MAC (CSPC-ICTU-Sensor-A4C1) so two
-   boxes being commissioned on the same bench are told apart. 0 gives the plain name. */
+   AP_SSID_UNIQUE adds the last two MAC bytes (CSPC-ICTU-Sensor-A4C1) so two boxes set up
+   side by side can be told apart. 0 gives the plain name. */
 #define AP_SSID_PREFIX  "CSPC-ICTU-Sensor"
 #define AP_SSID_UNIQUE  1
 #define AP_PASSWORD     ""
 
-/* After the portal saves, the box TESTS the backend address it was just given and, if
-   nothing answers, re-opens the portal with the failure named on the form. A mistyped
-   backend IP is otherwise indistinguishable from a working install until somebody checks
-   the dashboard — the box joins WiFi, the LED goes green, and the readings go nowhere.
-   Bounded, because "the server is down right now" is a legitimate answer too: after this
-   many extra rounds the box carries on, buffering to the SD card. */
+/* After the portal saves, the box tests the backend address it was given and, if nothing
+   answers, reopens the portal with the error shown. Otherwise a mistyped backend IP looks
+   like a working install. Limited to this many extra rounds, because the server may just
+   be down; after that the box carries on and buffers to the SD card. */
 #define PORTAL_BACKEND_ROUNDS  2
 #define BACKEND_PROBE_MS       3000
 
@@ -245,74 +224,56 @@ uint16_t netPort = BACKEND_PORT;
    so one powered up in an empty server room does not sit as an AP forever. */
 #define PORTAL_TIMEOUT_S 180
 
-/* Seconds one join attempt made from inside the portal is given before it is called a
-   failure. ⚠️ The /wifisave countdown in PORTAL_HEAD_SCRIPT is this + 1 — change both. */
+/* Seconds a join attempt from the portal gets before it counts as failed. The /wifisave
+   countdown in PORTAL_HEAD_SCRIPT is this + 1; change both. */
 #define PORTAL_CONNECT_TIMEOUT_S 10
 
-/* How long the setup page is kept alive AFTER a successful join, so the phone can read the
-   result before the access point goes away. Must outlast the countdown above with margin —
-   the join can succeed in 2 s while the page is still counting to 11 — and it ends early
-   the moment the phone actually fetches the verdict. See holdPortalForResult(). */
+/* How long the setup page stays up after a successful join, so the phone can read the
+   result before the access point closes. Must be longer than the countdown above; ends
+   early once the phone fetches the result. See holdPortalForResult(). */
 #define PORTAL_CONFIRM_MS 15000
 
-/* And how long it is held when the join worked but the BACKEND did not answer — long enough
-   to tap back, retype the address and save again without the access point ever going away.
-   Only ever reached when somebody has actually loaded the page, so a box commissioned and
-   walked away from still closes on PORTAL_CONFIRM_MS. See holdPortalForResult(). */
+/* How long it stays up when WiFi worked but the backend did not answer, so the address
+   can be corrected without the access point going away. Only used when someone has
+   opened the page. See holdPortalForResult(). */
 #define PORTAL_FIX_MS 90000
 
-/* ⚠️ Press BOOT *after* power-up, inside the window below — NOT while powering up.
-   GPIO 0 is a strapping pin: held low at reset, the ROM enters serial download mode and
-   this sketch never runs at all. The window is announced on the RGB LED (magenta) and on
-   serial, so there is a moment to press *at* rather than a gesture to time blind.
-
-   This is now the FALLBACK gesture, kept for boxes with no external button fitted and as
-   the one route that still works if the sketch ever hangs before loop() runs. The button
-   below is the normal one. */
+/* Press BOOT after power-up, during the window below, not while powering up: GPIO 0 is a
+   strapping pin, and held low at reset the chip enters download mode and this sketch
+   never runs. The window is shown on the LED (magenta) and on serial. This is the
+   fallback for boxes without the external button below. */
 #define PORTAL_BUTTON_PIN       0
 #define PORTAL_BUTTON_WINDOW_MS 4000
 
-/* The external re-provisioning button: a plain momentary switch, one leg to this pin and
-   the other to GND, read with INPUT_PULLUP (idle HIGH, pressed LOW — the ~45 kΩ pull-up is
-   inside the chip, so there is no resistor to fit).
+/* The external setup button: a momentary switch from this pin to GND, read with
+   INPUT_PULLUP (the pull-up is inside the chip, no resistor). Held for PORTAL_HOLD_MS at
+   any time, it reboots into the setup portal; simpler than the BOOT window above.
 
-   It exists because the BOOT gesture above is TWO acts — press EN, then catch a 4-second
-   window — and the second one is invisible unless you are already watching the LED. Held
-   for PORTAL_HOLD_MS at any time, this one asks for the portal on its own.
+   Why GPIO 13: GPIO 12 is a strapping pin that must be LOW at reset, GPIO 2 is a strapping
+   pin with the onboard LED, and 16/17 are PSRAM lines on WROVER modules. 13 and 14 are
+   free (unused JTAG). It is read digitally, so the ADC2/WiFi limit does not apply.
 
-   ⚠️ GPIO 13 is deliberate, not "a free pin". Of what this board has left (2, 12, 13, 14,
-   16, 17): GPIO 12 is MTDI, a strapping pin that must read LOW at reset — a button to GND
-   with a pull-up holds it HIGH and the chip boots expecting 1.8 V flash; GPIO 2 is
-   strapping too and carries the onboard LED; GPIO 16/17 are free on a WROOM-32 but are the
-   PSRAM lines on a WROVER, so a module swap would silently break this. 13 and 14 are plain
-   (unused JTAG); 13 is the pick. It is read digitally, so the ADC2-with-WiFi rule that
-   constrains MQ2_PINS does not apply here.
-
-   The hold is its own debounce: it needs PORTAL_HOLD_MS of CONTINUOUS low, so a bouncing
-   contact just restarts the count. No capacitor, no library. */
+   The hold works as debounce: it needs PORTAL_HOLD_MS of continuous LOW, so a bouncing
+   contact just restarts the count. */
 #define PORTAL_BUTTON_PIN2 13
 #define PORTAL_HOLD_MS     3000
 
-/* Set while a finger is on that button and the count is running, so paintStatusLED() can
-   hand the LED over instead of repainting the room colour on the same tick and erasing the
-   only feedback that the hold is being counted. See checkPortalButton(). */
+/* Set while the button is held and counting, so paintStatusLED() does not repaint the
+   room colour over the hold feedback. See checkPortalButton(). */
 bool portalHoldActive = false;
 
 /* How long the boot-time join is given before the box carries on into offline mode.
    Same budget as the old 20 x 500 ms wait it replaces. */
 #define WIFI_JOIN_TIMEOUT_MS 10000
 
-/* How often to re-attempt the join while the radio is down. WiFi.begin() is
-   non-blocking, so this costs the loop nothing — it only stops retries from
-   stacking up faster than an association can complete. */
+/* How often to retry joining while WiFi is down. WiFi.begin() does not block; this just
+   spaces the attempts out. */
 #define WIFI_RETRY_MS 15000
 bool wifiWasUp = false;   // last known link state, for edge detection in loop()
 
 /* ================= SD CARD OFFLINE BUFFER ==================
-   0 removes the feature outright - includes, globals and all - which is worth
-   knowing because this sketch compiles at ~94% of program storage on the default
-   partition scheme. If it no longer fits, set Tools > Partition Scheme to
-   "Huge APP (3MB No OTA/1MB SPIFFS)" rather than dropping the buffer.        */
+   0 removes the feature entirely. If the sketch no longer fits, set Tools > Partition
+   Scheme to "Huge APP (3MB No OTA/1MB SPIFFS)" rather than dropping the buffer. */
 #define SD_ENABLED 1
 
 #if SD_ENABLED
@@ -321,26 +282,19 @@ bool wifiWasUp = false;   // last known link state, for edge detection in loop()
 
 #define LOG_FILE "/env_backup.csv"
 
-/* A long outage must not fill the card, and a box that never reconnects must not
-   write until it dies. 8 MB is weeks of buffering at the cadence below; past it the
-   sketch stops appending and says so, rather than silently wrapping. */
+/* Maximum buffer size, so a long outage cannot fill the card. 8 MB is weeks of rows at
+   the rate below; past it the sketch stops appending and logs it. */
 #define SD_MAX_LOG_BYTES (8UL * 1024UL * 1024UL)
 
-/* Replay pacing. The OLD implementation of this feature streamed the whole file in
-   one while-loop with a delay(30) per row - an hour of buffer meant a 36-SECOND
-   blocking stall with no sensor read, no buzzer update and no IR in it. During a
-   fire. So the replay is a state machine that hands control back to loop() after a
-   few rows and resumes on the next tick. */
+/* Replay pace. The replay is a state machine that sends a few rows per loop tick, so
+   sensor reads, the buzzer and IR keep running. (An earlier version sent everything in
+   one loop with delay(30) per row and blocked for 36 seconds per hour of buffer.) */
 #define SD_FLUSH_BATCH 5
 #define SD_FLUSH_GAP_MS 40
 
-/* Report-by-exception, mirroring backend services/envPersistPolicy.js - the same
-   gates, the same numbers. Buffering all 20 readings a minute would replay ten
-   times what a CONNECTED device would have stored, so the chart would gain
-   resolution across the outage: the gap would come back as the best-sampled
-   stretch of the day. Matching the backend's policy keeps buffered history and
-   live history the same shape, and cuts card wear and replay time by the same 10x.
-   Change one of these and change the other side with it.                      */
+/* Only store readings that matter, using the same rules and numbers as backend
+   services/envPersistPolicy.js, so buffered history looks like live history (and the
+   card wears less). Change both sides together. */
 #define SD_HEARTBEAT_MS 30000UL
 #define SD_DEADBAND_GAS 15.0
 #define SD_DEADBAND_TEMP 0.5
@@ -351,31 +305,27 @@ bool wifiWasUp = false;   // last known link state, for edge detection in loop()
 // The address is netHost / netPort above — provisioned in NVS, not compiled in.
 // Must match DEVICE_SECRET in backend/.env
 const char* deviceSecret = DEVICE_SECRET;
-// False until socketIO.begin() has been given a real address. A box can now boot with no
-// backend configured at all, which was impossible when the address was a compile-time
-// constant, and every socket call has to tolerate that.
+// False until socketIO.begin() has a real address. A box can boot with no backend
+// configured, so every socket call must allow for that.
 bool socketConfigured = false;
 
 /* ================= MQ-2 CONFIG ============== */
 #define RL_VALUE 10.0
 
-/* ---- Clean-air baseline (Ro) — SELF-CALIBRATING, stored in flash -------------
- * Ro is what the sensor reads in CLEAN air. It differs per sensor AND per location
- * (temperature, humidity, altitude, sensor age), which is why it used to need a manual
- * edit + reflash every time the box moved.
+/*
+ * ---- Clean-air baseline (Ro), stored in flash -------------
+ * Ro is what the sensor reads in clean air; it differs per sensor and per location.
+ * These values are only fallbacks until a baseline is loaded or measured:
+ *   • boot           → loadRo() restores the saved baseline from NVS
+ *   • none saved     → calibrateRo() measures one after a settle period and saves it
+ *   • moved location → send the "calibrateGas" socket event; no reflash needed
  *
- * These are now MUTABLE fallbacks, used only until a baseline is loaded or measured:
- *   • boot  → loadRo() restores the stored baseline from NVS flash
- *   • none stored → calibrateRo() measures one after a settle period, and SAVES it
- *   • moved location → trigger the "calibrateGas" socket event; no reflash needed
- *
- * Deliberately NOT recalibrated on every boot. Ro means "clean air" — if the ESP32
- * rebooted during a gas event (brownout, power blip) it would record polluted air as
- * the baseline and then under-report smoke permanently. Stored once, reused after that.
- * ---------------------------------------------------------------------------- */
-/* One baseline PER SENSOR. Ro is a property of the individual sensor AND of the air it
-   sits in, so four sensors spread around a room have four genuinely different values —
-   sharing one would mis-scale three of them. Stored under NVS keys ro1..ro4. */
+ * Not recalibrated on every boot: a reboot during a gas event would save smoky air as
+ * the baseline and under-report smoke from then on.
+ * ----------------------------------------------------------------------------
+ */
+/* One baseline per sensor, since each sensor and spot differs. Stored under NVS keys
+   ro1..ro4. */
 float roClean[MAX_MQ2_SENSORS] = { 9.15, 7.28, 9.15, 9.15 };   // fallbacks until calibrated
 
 // The latest ppm per sensor, refreshed every loop tick. Index = channel-1.
@@ -391,10 +341,9 @@ float gasPpm[MAX_MQ2_SENSORS] = { 0, 0, 0, 0 };
 #define RO_MIN_VALID 1.0
 #define RO_MAX_VALID 50.0
 
-// The heater must settle before Ro means anything. 20s (WARMUP_DURATION) is fine for
-// readings against a KNOWN baseline, but not for establishing one.
-// NOTE: a brand-new MQ-2 also wants a 24–48 h burn-in per the datasheet. That is a
-// one-off per sensor and no amount of firmware delay substitutes for it.
+// The heater must settle before Ro means anything. 20s (WARMUP_DURATION) is enough for
+// readings against a known baseline, not for measuring one.
+// A brand-new MQ-2 also needs a 24–48 h burn-in (datasheet); no firmware delay replaces it.
 #define CAL_SETTLE_MS 180000UL   // 3 min settle before measuring a first baseline
 
 #define ADC_MAX 4095.0
@@ -405,19 +354,12 @@ float gasPpm[MAX_MQ2_SENSORS] = { 0, 0, 0, 0 };
 #define SMOKE_B -2.95
 
 /* ================= THRESHOLDS =============== */
-// Runtime-configurable from the dashboard's Alert Rules page — the backend pushes
-// these live via the "envConfig" socket event (room-level alert_rules), so an admin
-// can retune the LED/buzzer/status bands WITHOUT reflashing. The values below are
-// only the fallback defaults used until the first envConfig arrives. The status
-// calculators, RGB LED and buzzer all derive from these, so the device's alarms stay
-// in sync with the dashboard's alerts.
-//   NOTE: one WARNING + one CRITICAL bound per metric, matching alert_rules exactly —
-//   every threshold here is set from the rule of the same name (gasWarn/gasCrit/…), so
-//   the name says which rule fills it. There used to be a third, middle "DANGER" band;
-//   it was neutralised at runtime (TEMP_DANGER = TEMP_CRITICAL) rather than removed,
-//   which left the device reporting a band the dashboard had no severity for.
-//   TEMP_COLD has no alert_rules equivalent, so it keeps this default (LED "too cold").
-//   IR/AC comfort zones (getIRZone) are a separate concept and are NOT driven here.
+// Alarm thresholds, set live from the dashboard's Alert Rules via the "envConfig" socket
+// event (room-level alert_rules), so the LED, buzzer and status follow the dashboard
+// without reflashing. These values are only defaults until the first envConfig arrives.
+//   One WARNING and one CRITICAL bound per metric, each set from the rule of the same
+//   name (gasWarn/gasCrit/…). TEMP_COLD has no rule and keeps this default (LED "too
+//   cold"). The IR/AC zones (getIRZone) are separate and not set here.
 float WARNING_PPM   = 150.0;
 float CRITICAL_PPM  = 300.0;
 float TEMP_COLD     = 22.0;
@@ -435,10 +377,9 @@ float HUM_CRITICAL  = 80.0;   // ASHRAE Class A1 allowable ceiling
 #define IR_ZONE_NEAR_CRIT 3   // 28–29°C → 22°C High
 #define IR_ZONE_CRITICAL 4    // > 29°C  → 20°C High
 
-// Auto-cooling zone BOUNDARIES (°C) — mutable so the dashboard's Aircon threshold config
-// can retune WHEN IR fires, pushed via the "acConfig" socket event (no reflash). The
-// target temp per zone is fixed (tied to the captured IR codes below); only these
-// boundaries change. Must stay ascending. Defaults match the original hardcoded zones.
+// Auto-cooling zone boundaries (°C), set from the dashboard's Aircon thresholds via the
+// "acConfig" socket event (no reflash). The target per zone is fixed (the captured IR
+// codes below). Must stay ascending. Defaults are the original values.
 float IR_TEMP_COLD_BELOW   = 22.0;  // <  this → TOO_COLD   (28°C Auto)
 float IR_TEMP_NORMAL_MAX   = 24.0;  // <= this → NORMAL     (26°C Auto)
 float IR_TEMP_ACCEPT_MAX   = 27.0;  // <= this → ACCEPTABLE (24°C Auto)
@@ -488,9 +429,8 @@ File sdFlushFile;
 unsigned long sdFlushSent = 0;
 unsigned long sdLastFlushStep = 0;
 
-/* The last row actually WRITTEN to the card - the deadband baseline. Kept separately
-   from anything the live path uses: what matters here is how far the room has moved
-   since the last row that made it onto the card, not since the last reading. */
+/* The last row written to the card: the baseline for deciding if the next reading has
+   changed enough to be stored. */
 bool sdHaveLast = false;
 unsigned long sdLastAt = 0;
 float sdLastTemp = 0, sdLastHum = 0;
@@ -498,32 +438,30 @@ float sdLastPpm[MAX_MQ2_SENSORS] = { 0, 0, 0, 0 };
 String sdLastSmoke = "", sdLastTempSt = "", sdLastEnvSt = "";
 #endif
 
-/* MQ-2 clean-air baseline persistence + deferred calibration. Scheduling rather than
- * calibrating inline keeps loop() non-blocking — a 3-minute settle must not stall
- * sensor reads, the socket, or the IR loop. */
+/*
+ * MQ-2 baseline storage and scheduled calibration. Scheduled rather than run inline so a
+ * 3-minute settle does not block sensor reads, the socket or IR.
+ */
 Preferences prefs;
 #define NVS_NAMESPACE "mq2cal"
 
-/* The network configuration gets its OWN namespace. A WiFi reset has to be able to clear
-   the credentials without touching the MQ-2 clean-air baseline: Ro is measured once per
-   location over three minutes of genuinely clean air, and losing it because somebody
-   retyped a WiFi password would silently blind the smoke detector until the next
-   calibration. Separate namespaces make that impossible rather than unlikely. */
+/* Network settings have their own NVS namespace, so resetting WiFi can never erase the
+   MQ-2 baseline (which takes three minutes of clean air to measure). */
 #define NVS_NET_NAMESPACE "netcfg"
 bool pendingCalibration = false;
 unsigned long calibrationDueAt = 0;
 
-/* ─────────────────────────────────────────────────────────────
+/*
+ * ─────────────────────────────────────────────────────────────
  *  CAPTURED RAW IR DATA  (Carrier remote, 38 kHz)
- *  Captured 2026-07-31 with IRLearner.ino. Protocol decodes as
- *  UNKNOWN, so these are replayed verbatim with sendRaw() — there
- *  is no library encoder for this remote.
+ *  Captured 2026-07-31 with IRLearner.ino. The protocol decodes as
+ *  UNKNOWN, so these are sent as-is with sendRaw().
  *
  *  Each array is 131 values: leader pair + 64 bit-pairs + stop mark.
- *  If you ever recapture, verify the length is EXACTLY 131 before
- *  pasting — a different count means the capture was corrupted by
- *  ambient IR, and the frame will not decode to 64 bits.
- * ─────────────────────────────────────────────────────────────*/
+ *  If you recapture, check the length is exactly 131; any other count
+ *  means ambient IR corrupted the capture.
+ * ─────────────────────────────────────────────────────────────
+ */
 // 28°C Cool Auto fan  (Too Cold zone)
 const uint16_t IR_28C_AUTO[] = {
   9000, 4500, 550, 600, 550, 550, 550, 1750,
@@ -609,30 +547,17 @@ const uint16_t IR_22C_HIGH[] = {
 };
 
 // 20°C Cool High fan  (Critical zone)  (captured 2026-08-01, third attempt)
-// Replaces the mock NEC data that stood here through two failed captures, both killed by
-// ambient light rather than the remote or the sketch:
-//   2026-07-31 — 133 values / 65 bits. Ambient-IR glitches inserted extra edges.
-//   2026-08-01 — 223 values, every one 7000-9500us, alternating ~7700/~9000. That pair
-//                sums to ~16.7ms = 60Hz, i.e. mains frequency: an LED/fluorescent lamp
-//                was saturating the receiver and the remote's frame never got through.
-// Kept here because it is the failure mode any RE-capture will hit: lights OFF, away from
-// sunlight and screens, remote 3-10cm and pointed at the receiver. If IRLearner prints
-// anything while you are NOT pressing a button, the environment is still too noisy.
+// Two earlier captures failed because of room lighting: extra edges from ambient IR, and
+// then a 60Hz lamp flooding the receiver. For any recapture: lights off, away from
+// sunlight and screens, remote 3-10cm from the receiver. If IRLearner prints anything
+// while no button is pressed, it is still too noisy.
 //
-// This capture verifies clean: exactly 131 values, 8950/4500 leader, decodes to exactly
-// 64 bits, marks 450-550us, and the two space populations are 600-650 (zero) vs
-// 1750-1800 (one) — an 1100us gap, so no bit is a judgement call. Header bits 0-9 and the
-// all-zero bits 16-39 match the other four temperature frames, and it obeys the
-// structural invariant every verified frame obeys (bits 61-63 are the exact complement of
-// bits 53-55). Nothing here looks like contamination.
+// This capture is clean: 131 values, 8950/4500 leader, exactly 64 bits, and matches the
+// structure of the other frames (bits 61-63 are the complement of bits 53-55).
 //
-// What the data CANNOT confirm is that this is the right BUTTON. Bits 53-55 differ
-// between this frame (010) and 22C_HIGH (000); if that field were purely fan speed the
-// two High-fan frames would agree. It may not be fan (POWER ON/OFF carry 001 there and
-// have no fan meaning, and no checksum scheme fits all six frames), but the only
-// conclusive test is the unit itself: drive the CRITICAL zone and confirm the AC's own
-// display reads 20°C with the fan on High. If it shows a different fan speed, recapture
-// with the remote set to Cool / 20°C / fan HIGH and check bits 53-55 move to 000.
+// Still to confirm on the unit: bits 53-55 differ from 22C_HIGH (010 vs 000), so check
+// the AC shows 20°C with the fan on High when the CRITICAL zone fires. If not, recapture
+// with the remote on Cool / 20°C / fan High.
 #define IR_20C_HIGH_CAPTURED 1
 const uint16_t IR_20C_HIGH[] = {
   8950, 4500, 500, 650, 500, 600, 550, 1750,
@@ -735,24 +660,16 @@ void setStatusColor(const String& envStatus, const String& tempStatus, const Str
 }
 
 /* ---- ADC → Rs (kΩ) ---- */
-/* One place decides what the LED shows once the box is sensing, so the precedence is visible
-   rather than spread across call sites: the ROOM always wins, and the offline blink only gets
-   the gaps.
-
-   `reporting` is deliberately "the socket is up", not "WiFi is up" — the question the blink
-   answers is whether readings are actually reaching the dashboard, and a box associated to an
-   access point that cannot route to the backend is just as blind as one with no WiFi at all.
-
-   Stateless on purpose: setStatusColor() already runs on every loop tick, so the tick after the
-   pulse window repaints the real colour by itself. Nothing to restore, nothing to get stuck on
-   if a reading is ever missed. (millis() rollover at 49 days costs one mistimed pulse.) */
+/* One place decides what the LED shows once sensing has started: the room always wins,
+   and the offline blink only fills the gaps. `reporting` means the socket is up (readings
+   reach the dashboard), not just WiFi. No stored state: the next tick repaints the real
+   colour after the pulse. */
 void paintStatusLED(unsigned long now_ms, bool reporting,
                     const String& envStatus, const String& tempStatus, const String& smokeStatus) {
   bool quiet = envStatus == "NORMAL" && tempStatus != "CRITICAL" && smokeStatus != "CRITICAL";
-  /* The re-provisioning hold outranks the offline blink — somebody is standing there with a
-     finger on the button and needs to see the count is running — but NOT the room. `quiet`
-     is the same gate the blink uses, so an alarm still owns the LED while the button is
-     held; the confirming green blip fires either way, immediately before the restart. */
+  /* The setup-button hold outranks the offline blink (someone is holding it and needs to
+     see the count), but not the room: an alarm still owns the LED. The confirming green
+     blip fires either way, right before the restart. */
   if (portalHoldActive && quiet) {
     setRGB(60, 0, 60);  // magenta — keep holding to re-run WiFi setup
     return;
@@ -795,15 +712,11 @@ float calcHeatIndex(float t, float h) {
 }
 
 /* ---- Status calculators ---- */
-// All three report the SAME three-band vocabulary as alert_rules: NORMAL / WARNING /
-// CRITICAL. temp adds TOO_COLD, which is not a severity but a separate axis (there is no
-// alert_rules equivalent — see TEMP_COLD).
-/* The highest reading across the sensors that are actually fitted.
-   MAX, never a mean: two sensors are only worth having if they are in DIFFERENT places,
-   and the question is then "does any of them see smoke", not "how smoky is the room on
-   average". Averaging four would let one sit in a fire while the other three dilute it
-   below the threshold. Disabled channels are excluded, so an unwired floating pin cannot
-   decide the room's status. */
+// All three use the same bands as alert_rules: NORMAL / WARNING / CRITICAL. temp also has
+// TOO_COLD, which has no rule (see TEMP_COLD).
+/* The highest reading across the fitted sensors. The maximum, not the average, so one
+   sensor near smoke is not averaged away. Disabled channels are left out, so a floating
+   pin cannot set the room status. */
 float worstGasPpm() {
   float worst = 0;
   for (int i = 0; i < MAX_MQ2_SENSORS; i++) {
@@ -826,9 +739,7 @@ String calcTempStatus(float t) {
   return "NORMAL";
 }
 
-// The worst band any one metric is in. A metric at its CRITICAL rule makes the room
-// critical, whichever metric it is — previously temperature returned CRITICAL while gas
-// and humidity returned DANGER, which ranked a smoke event BELOW a hot room.
+// The worst band of any metric: any metric at CRITICAL makes the room critical.
 String calcEnvironmentStatus(float t, float h) {
   float ppmMax = worstGasPpm();
   if (t >= TEMP_CRITICAL || ppmMax >= CRITICAL_PPM || h >= HUM_CRITICAL) return "CRITICAL";
@@ -837,10 +748,12 @@ String calcEnvironmentStatus(float t, float h) {
   return "NORMAL";
 }
 
-/* ─────────────────────────────────────────────
+/*
+ * ─────────────────────────────────────────────
  *  IR ZONE HELPER
- *  Returns zone ID based on temperature.
- * ─────────────────────────────────────────────*/
+ *  Returns the zone for a temperature.
+ * ─────────────────────────────────────────────
+ */
 int getIRZone(float t) {
   if (t <  IR_TEMP_COLD_BELOW)   return IR_ZONE_TOO_COLD;
   if (t <= IR_TEMP_NORMAL_MAX)   return IR_ZONE_NORMAL;
@@ -849,13 +762,17 @@ int getIRZone(float t) {
   return IR_ZONE_CRITICAL;
 }
 
-/* ─────────────────────────────────────────────
+/*
+ * ─────────────────────────────────────────────
  *  SEND IR TO BOTH AC UNITS
- *  Only fires when zone changes.
- * ─────────────────────────────────────────────*/
-/* Map an IR zone → its captured raw code. Shared by handleIR (auto, all enabled
- * channels) and the "irCommand" on-handler (re-sync one unit that was switched back
- * on). Returns false when the zone has no code (IR_ZONE_NONE). */
+ *  Only when the zone changes.
+ * ─────────────────────────────────────────────
+ */
+/*
+ * Zone → its captured raw code. Used by handleIR (auto, all enabled channels) and the
+ * "irCommand" on-handler (re-sync one unit switched back on). Returns false when the
+ * zone has no code (IR_ZONE_NONE).
+ */
 bool zoneIRData(int zone, const uint16_t** irData, uint16_t* irLen, String* irLabel) {
   switch (zone) {
     case IR_ZONE_TOO_COLD:
@@ -885,9 +802,8 @@ bool zoneIRData(int zone, const uint16_t** irData, uint16_t* irLen, String* irLa
       *irLabel = "20C_HIGH";
       return true;
 #else
-      // Still mock data — firing it would transmit a meaningless waveform. Refuse, so
-      // the unit holds the NEAR_CRIT setting (22°C High) instead. Flip
-      // IR_20C_HIGH_CAPTURED to 1 once a clean 131-value capture is pasted above.
+      // Only compiled when IR_20C_HIGH_CAPTURED is 0 (no capture pasted): refuse to send, so
+      // the unit stays on the NEAR_CRIT setting (22°C High).
       Serial.println("[IR] CRITICAL zone skipped — 20C_HIGH not captured yet");
       return false;
 #endif
@@ -931,9 +847,11 @@ void handleIR(float temperature) {
   }
 }
 
-/* ─────────────────────────────────────────────
- *  RTC — get timestamp string
- * ─────────────────────────────────────────────*/
+/*
+ * ─────────────────────────────────────────────
+ *  RTC: get timestamp string
+ * ─────────────────────────────────────────────
+ */
 String getTimestamp() {
   // Priority 1: hardware RTC
   if (rtcAvailable) {
@@ -960,19 +878,19 @@ String getTimestamp() {
   return String(buf);
 }
 
-/* =============================================
+/*
+ * =============================================
  *  SD CARD - offline buffer
  *
- *  Only ever touched while the socket is DOWN (append) or has just come
- *  back (replay), so it never competes with the live send path.
- * =============================================*/
+ *  Only used while the socket is down (append) or has just come back
+ *  (replay), so it never competes with live sending.
+ * =============================================
+ */
 #if SD_ENABLED
 
-/* getTimestamp() falls back to "UP HH:MM:SS" when neither the RTC nor NTP can say
-   what time it is. That string is not a date, and the backend refuses it - so a row
-   carrying one could never be backfilled and would only wear the card out. Buffering
-   is therefore gated on having a REAL clock, which during an outage means the DS3231
-   and its coin cell: WiFi is down, so there is no NTP to fall back to. */
+/* getTimestamp() falls back to "UP HH:MM:SS" when neither the RTC nor NTP has the time;
+   the backend refuses that, so such rows are not buffered. During an outage there is no
+   NTP, so buffering depends on the DS3231 and its coin cell. */
 bool sdClockIsReal(const String& ts) {
   return ts.length() >= 19 && ts.charAt(4) == '-' && ts.charAt(7) == '-';
 }
@@ -1001,9 +919,8 @@ void sdInit() {
     return;
   }
 
-  /* A log left over from before a reboot is still worth sending: the rows in it ARE
-     the outage. Marking it dirty here is what makes the buffer survive a power cut,
-     which is the failure this whole feature exists for. */
+  /* A log left from before a reboot is still sent: its rows are the outage. This is what
+     lets the buffer survive a power cut. */
   if (SD.exists(LOG_FILE)) {
     File f = SD.open(LOG_FILE, FILE_READ);
     unsigned long bytes = f ? f.size() : 0;
@@ -1064,11 +981,8 @@ void sdAppendRow(const String& ts, float temp, float hum,
     }
     return;
   }
-  // ⚠️ ppm3/ppm4 are APPENDED AFTER heat_index, not inserted next to ppm1/ppm2. A card can
-  // hold rows written by the previous firmware, and a mid-row insertion would silently
-  // re-interpret every one of them — smoke_status read as a number, heat index read as a
-  // status. Extra trailing columns are simply absent in an old row, which the replay parser
-  // treats as "not reported" rather than as a parse failure.
+  // ppm3/ppm4 are added after heat_index, not next to ppm1/ppm2, so rows written by the
+  // older firmware still parse correctly. Missing trailing columns are read as "not reported".
   if (f.size() == 0) {
     f.println("timestamp,temperature,humidity,ppm1,ppm2,"
               "smoke_status,temp_status,env_status,heat_index,ppm3,ppm4");
@@ -1093,9 +1007,8 @@ void sdAppendRow(const String& ts, float temp, float hum,
 /* One buffered CSV row -> one "offlineData" event. Field order must match the header
    written above. */
 bool sdSendRow(const String& line) {
-  // 9 fields is a row from the two-sensor firmware; 11 adds ppm3/ppm4 on the end. Both are
-  // accepted for as long as a card can still be holding the older shape — which is until
-  // every box has been reflashed AND replayed, not until this code ships.
+  // 9 fields = a row from the two-sensor firmware; 11 adds ppm3/ppm4. Both are accepted
+  // while cards may still hold older rows.
   const int MAX_FIELDS = 11;
   String fields[MAX_FIELDS];
   int fi = 0, start = 0;
@@ -1153,10 +1066,10 @@ void sdBeginFlush() {
 void sdFlushStep(unsigned long now_ms) {
   if (!sdFlushing) return;
 
-  /* The link went away again mid-replay. KEEP the file: the tail has not been sent.
-     Re-sending the head on the next attempt is harmless - InfluxDB overwrites a point
-     with the same measurement, tag set and timestamp, so a replayed row is idempotent.
-     That property is also why no read offset is persisted across reboots. */
+  /* The link dropped again during replay: keep the file, since the rest was not sent.
+     Sending the start again is harmless: InfluxDB overwrites a point with the same
+     measurement, tags and timestamp. That is also why no read position is saved across
+     reboots. */
   if (!socketIO.isConnected()) {
     sdFlushFile.close();
     sdFlushing = false;
@@ -1196,14 +1109,15 @@ inline void sdBeginFlush() {}
 inline void sdFlushStep(unsigned long) {}
 #endif  // SD_ENABLED
 
-/* ─────────────────────────────────────────────
- *  BUZZER PATTERN HANDLER (unchanged logic)
- * ─────────────────────────────────────────────*/
+/*
+ * ─────────────────────────────────────────────
+ *  BUZZER PATTERN HANDLER
+ * ─────────────────────────────────────────────
+ */
 void handleBuzzer(const String& smokeStatus, const String& tempStatus,
                   const String& envStatus, unsigned long now_ms) {
-  // Ladder order is load-bearing: envStatus is CRITICAL whenever gas or temperature is,
-  // so the two specific conditions must be tested before the aggregate or every critical
-  // reading would collapse to priority 3.
+  // Order matters: envStatus is CRITICAL whenever gas or temperature is, so those are
+  // checked first or every critical reading would become priority 3.
   int priority = 0;
   if (smokeStatus == "CRITICAL") priority = 5;
   else if (tempStatus == "CRITICAL") priority = 4;
@@ -1317,14 +1231,15 @@ void handleBuzzer(const String& smokeStatus, const String& tempStatus,
   buzzerOff();
 }
 
-/* ─────────────────────────────────────────────
- *  MQ-2 clean-air baseline (Ro) — persisted in NVS
- * ─────────────────────────────────────────────*/
+/*
+ * ─────────────────────────────────────────────
+ *  MQ-2 clean-air baseline (Ro), stored in NVS
+ * ─────────────────────────────────────────────
+ */
 
-// Restore a previously measured baseline. Returns false when nothing valid is stored,
-// which is the signal to measure one (first boot, or first boot in a new location).
-// Key per sensor: "ro1".."ro4". Adding a fifth would be a new key, not a migration —
-// the old ones keep their meaning, which is why this is indexed rather than packed.
+// Restore a saved baseline. Returns false when nothing valid is stored, which means one
+// must be measured (first boot, or first boot in a new location). One key per sensor:
+// "ro1".."ro4".
 static void roKey(int i, char* out, size_t n) { snprintf(out, n, "ro%d", i + 1); }
 
 bool loadRo() {
@@ -1337,10 +1252,8 @@ bool loadRo() {
   }
   prefs.end();
 
-  // Only the sensors that are FITTED have to have a stored baseline. A channel nobody has
-  // wired yet has no clean-air reading to have taken, and demanding one would make every
-  // box with a spare slot look permanently uncalibrated — and re-run a 3-minute
-  // calibration on every boot.
+  // Only fitted sensors need a saved baseline; an unwired channel has nothing to measure,
+  // and requiring one would re-run calibration on every boot.
   bool ok = true, any = false;
   for (int i = 0; i < MAX_MQ2_SENSORS; i++) {
     if (!gasEnabled[i]) continue;
@@ -1377,9 +1290,8 @@ void saveRo() {
   Serial.println();
 }
 
-// Measure the clean-air baseline and STORE it. Only meaningful when the air is actually
-// clean — a bad result is rejected rather than written, so one dubious calibration can't
-// silently blind the smoke detector.
+// Measure the clean-air baseline and save it. Only valid in clean air; an out-of-range
+// result is rejected instead of saved.
 bool calibrateRo() {
   const int samples = 50;
   float rsSum[MAX_MQ2_SENSORS] = { 0, 0, 0, 0 };
@@ -1390,11 +1302,8 @@ bool calibrateRo() {
     delay(50);
   }
 
-  // ⚠️ ALL-OR-NOTHING across the fitted sensors. Storing the ones that passed and leaving
-  // the rest on a fallback would give a box a silently mixed baseline — some sensors
-  // scaled to this room, some to a factory guess — and there would be nothing on screen
-  // to say which. A rejection is loud and keeps every previous value; a partial success
-  // is quiet and keeps neither.
+  // All or nothing across the fitted sensors: either every sensor gets its new baseline or
+  // none does, so a box never ends up with a mix of old and new values.
   float cand[MAX_MQ2_SENSORS];
   bool  allOk = true, any = false;
   for (int i = 0; i < MAX_MQ2_SENSORS; i++) {
@@ -1438,9 +1347,10 @@ void scheduleCalibration(unsigned long settleMs) {
                 settleMs / 1000);
 }
 
-/* Report the outcome back to the dashboard. Without this the Recalibrate button would be
- * fire-and-forget — you'd have no way to know whether the new baseline was accepted, or
- * silently rejected for being out of range. Payload: ["gasCalibrated", {ok, ro1, ro2}] */
+/*
+ * Report the result to the dashboard, so the Recalibrate button shows whether the new
+ * baseline was accepted. Payload: ["gasCalibrated", {ok, ro1, ro2}]
+ */
 void sendCalibrationResult(bool ok) {
   if (!socketIO.isConnected()) return;
   StaticJsonDocument<192> doc;
@@ -1458,9 +1368,11 @@ void sendCalibrationResult(bool ok) {
   Serial.printf("[IO] gasCalibrated sent → ok=%d ro1=%.2f ro2=%.2f\n", ok, roClean1, roClean2);
 }
 
-/* ─────────────────────────────────────────────
+/*
+ * ─────────────────────────────────────────────
  *  SEND irFired EVENT
- * ─────────────────────────────────────────────*/
+ * ─────────────────────────────────────────────
+ */
 void sendIRFiredEvent(int zone, const String& label, int channels) {
   StaticJsonDocument<256> doc;
   JsonArray arr   = doc.to<JsonArray>();
@@ -1475,17 +1387,16 @@ void sendIRFiredEvent(int zone, const String& label, int channels) {
   Serial.printf("[IO] irFired sent → zone=%d label=%s\n", zone, label.c_str());
 }
 
-/* ─────────────────────────────────────────────
+/*
+ * ─────────────────────────────────────────────
  *  SEND CHANNEL MAP TO SERVER
- *  Fires on every socket connect so the server
- *  always knows which GPIO each channel uses.
+ *  Sent on every socket connect so the server
+ *  knows which GPIO each channel uses.
  *  Payload: ["irChannelMap", {channels:[{channel,gpio}, ...]}]
- * ─────────────────────────────────────────────*/
-/* Which ADC pin each gas channel is on. The DEVICE is the only thing that knows this, so it
-   reports it rather than the dashboard keeping a second copy that can go stale the moment
-   MQ2_PINS[] changes. Exactly what sendChannelMap() does for the IR pool, and it exists for
-   the same reason: a staff member wiring sensor 3 needs to be told WHICH PIN, on screen,
-   without opening the sketch. */
+ * ─────────────────────────────────────────────
+ */
+/* Which ADC pin each gas channel uses. Only the device knows, so it reports it (like
+   sendChannelMap() for IR), and the dashboard can show staff which pin to wire. */
 void sendGasSensorMap() {
   DynamicJsonDocument doc(256);
   JsonArray arr  = doc.to<JsonArray>();
@@ -1568,11 +1479,9 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
                           action, channel + 1, IR_CHANNEL_PINS[channel]);
           }
 
-          // Re-sync a unit that was just switched back ON. Auto IR fires only on a
-          // ZONE CHANGE, and a unit that was off at that moment is skipped entirely
-          // (its channel is disabled) — so without this it keeps whatever setting it
-          // had before, possibly for hours, until the room crosses into another zone.
-          // Power-on only carries IR_POWER_ON, so follow it with the current zone's code.
+          // Re-sync a unit that was just switched back on. Auto IR only fires on a zone change and
+          // skips units that are off, so without this it would keep its old setting until the next
+          // zone change. Power-on only sends IR_POWER_ON, so send the current zone's code after it.
           if (strcmp(action, "on") == 0 && lastIRZone != IR_ZONE_NONE) {
             const uint16_t* zoneData = nullptr;
             uint16_t zoneLen = 0;
@@ -1588,14 +1497,10 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
         break;
       }
 
-      /* Which ADC pins actually have a sensor on them. Mirrors "irConfig" deliberately —
-         one boolean per channel, 1-based in the DB, 0-based here — so this is the same
-         parse the firmware already does rather than a second shape to keep in step.
-
-         ⚠️ Disabling a channel ZEROES it immediately. Leaving the last reading in gasPpm[]
-         would let a stale number keep feeding worstGasPpm() forever, so a sensor that was
-         reading 400 ppm when it was unplugged would hold the room in alarm with nothing
-         attached. */
+      /* Which ADC pins have a sensor. Same format as "irConfig" (one boolean per channel,
+         1-based in the DB, 0-based here), so it uses the same parsing.
+         Disabling a channel zeroes its reading right away, so an old value cannot keep the room
+         in alarm. */
       if (strcmp(eventName, "gasConfig") == 0) {
         JsonArray en = doc[1]["enabled"];
         int i = 0;
@@ -1629,9 +1534,8 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
         }
       }
 
-      // Configurable alarm thresholds from the dashboard (Alert Rules → room-level
-      // rules). Only present fields are applied, so unset metrics keep their default.
-      // One rule → one threshold, no derived bands.
+      // Alarm thresholds from the dashboard (Alert Rules → room-level rules). Only fields that
+      // are present are applied; the others keep their default. One rule → one threshold.
       if (strcmp(eventName, "envConfig") == 0) {
         JsonObject cfg = doc[1];
         if (cfg.containsKey("tempWarn")) TEMP_WARNING = cfg["tempWarn"].as<float>();
@@ -1644,12 +1548,10 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
                       TEMP_WARNING, TEMP_CRITICAL, WARNING_PPM, CRITICAL_PPM, HUM_WARNING, HUM_CRITICAL);
       }
 
-      // Auto-cooling IR zone boundaries from the dashboard (Aircon thresholds). Target
-      // temps per zone stay fixed (captured IR codes); only the boundaries change here.
-      // Re-measure the MQ-2 clean-air baseline on demand — this is what replaces
-      // editing RO_CLEAN_AIR_* and reflashing when the box moves to a new room.
-      // A short settle is enough here: the heater has been running since boot.
-      // The air MUST be clean when this is triggered.
+      // Auto-cooling zone boundaries from the dashboard (Aircon thresholds). The target per zone
+      // is fixed (captured IR codes); only the boundaries change here.
+      // Re-measure the MQ-2 clean-air baseline on request (for example after moving the box).
+      // A short settle is enough, since the heater has been on since boot. The air must be clean.
       if (strcmp(eventName, "calibrateGas") == 0) {
         Serial.println("[CAL] Recalibration requested from the dashboard.");
         scheduleCalibration(warmupDone ? 5000UL : CAL_SETTLE_MS);
@@ -1670,26 +1572,23 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
   }
 }
 
-/* ─────────────────────────────────────────────
- *  Network provisioning — WiFi + backend address, stored in NVS
+/*
+ * ─────────────────────────────────────────────
+ *  Network setup: WiFi + backend address, stored in NVS
  *
- *  Everything here runs in setup() and NOWHERE ELSE. The portal blocks, and blocking is
- *  only ever acceptable at boot: there is nothing to monitor yet and no backend to reach.
- *  A WiFi drop at RUNTIME is handled by the non-blocking retry at the top of loop() — see
- *  the note there for why it has to stay that way.
- * ─────────────────────────────────────────────*/
+ *  Runs in setup() only. The portal blocks, which is only acceptable at boot. A WiFi
+ *  drop at runtime is handled by the non-blocking retry in loop().
+ * ─────────────────────────────────────────────
+ */
 
-// A value nobody ever set. Covers both an absent secrets.h define (the #ifndef "" fallbacks)
-// and the placeholders secrets.h.example used to ship, which are the real trap: they LOOK
-// configured, so a fresh box would spend every boot failing to join a network called
-// YOUR_WIFI_SSID instead of asking somebody what the network is.
+// A value nobody set: a missing secrets.h define, or one of the placeholders
+// secrets.h.example used to ship (like YOUR_WIFI_SSID), which look configured but are not.
 bool netUnset(const String& v) {
   return v.length() == 0 || v.startsWith("YOUR_");
 }
 
-// Restore a provisioned configuration. Returns false when nothing usable is stored, which
-// is the signal to fall back to the secrets.h defaults — and, if those are empty too, to
-// open the portal.
+// Restore a saved configuration. Returns false when nothing usable is stored; then the
+// secrets.h defaults are used, and if those are empty too, the portal opens.
 bool loadNetConfig() {
   prefs.begin(NVS_NET_NAMESPACE, true);   // read-only
   String ssid = prefs.getString("ssid", "");
@@ -1725,8 +1624,7 @@ void saveNetConfig() {
 }
 
 /* Does anything answer at the backend address? A plain TCP connect, not a Socket.IO
-   handshake: the question here is "did somebody type the right IP", and a refused or timed
-   out connection is the only part of that a phone in a server room can act on. */
+   handshake: the question is whether the right IP was typed. */
 bool backendReachable() {
   if (netUnset(netHost) || WiFi.status() != WL_CONNECTED) return false;
   WiFiClient probe;
@@ -1735,12 +1633,10 @@ bool backendReachable() {
   return ok;
 }
 
-/* The status block the portal shows — the client asked for one, and it is the only way to
-   tell a mistyped backend IP from a working install without a laptop. Rendered as a custom
-   WiFiManagerParameter so it sits at the top of the form the installer is already on,
-   rather than behind another tap. ⚠️ WiFiManagerParameter STORES THE POINTER it is given,
-   so this buffer is a global and must outlive the portal — building it in a local String
-   would hand the form a dangling pointer. */
+/* The status block shown in the portal, so a wrong backend IP can be spotted without a
+   laptop. A custom WiFiManagerParameter so it sits at the top of the form.
+   WiFiManagerParameter keeps the pointer it is given, so this buffer must be a global
+   that outlives the portal. */
 String netStatusBanner;
 
 void buildStatusBanner(bool probed, bool backendOk) {
@@ -1768,15 +1664,10 @@ void buildStatusBanner(bool probed, bool backendOk) {
   netStatusBanner += F("</div>");
 }
 
-/* Did the last run ask for the portal? checkPortalButton() records the request in NVS and
-   restarts, because the portal BLOCKS for up to PORTAL_TIMEOUT_S and blocking is only ever
-   acceptable at boot — running it from loop() would mean three minutes with no MQ-2 read, no
-   buzzer and no IR, which is the failure mode that matters during a fire. A restart costs a
-   second and re-enters this path, which is already the tested one.
-
-   ⚠️ Cleared BEFORE the portal opens, not after it closes. A brownout or a watchdog reset
-   inside the portal would otherwise leave the flag set and the box would reopen the portal
-   on every boot forever — an unmonitored room, and no gesture that undoes it. */
+/* Did the last run ask for the portal? checkPortalButton() saves the request in NVS and
+   restarts, since the portal blocks and running it from loop() would stop sensing, the
+   buzzer and IR for minutes. The flag is cleared before the portal opens, so a reset
+   inside the portal cannot make it reopen on every boot. */
 bool takePortalRequest() {
   prefs.begin(NVS_NET_NAMESPACE, false);
   bool requested = prefs.getBool("portal", false);
@@ -1785,22 +1676,14 @@ bool takePortalRequest() {
   return requested;
 }
 
-/* Watch the buttons for a few seconds so an installed box can be re-provisioned with no
-   laptop and no Arduino IDE. Deliberately a WINDOW AFTER boot rather than a level at reset:
-   GPIO 0 is a strapping pin, so "hold BOOT while powering on" — the obvious gesture, and
-   the one the plan originally called for — puts the ROM into serial download mode and this
-   sketch never runs at all. The LED turning magenta is the cue to press.
-
-   Both pins are read, so one gesture covers every box: the external button on boxes that
-   have one, BOOT on those that do not. */
+/* Watch the buttons for a few seconds after boot so an installed box can be set up again
+   without a laptop. A window after boot, not "hold BOOT while powering on" (that puts the
+   chip in download mode). The LED turns magenta as the cue. Both pins are read, so the
+   same gesture works with or without the external button. */
 bool portalButtonPressed() {
-  /* ⚠️ Both pins are configured BEFORE the early return below, not after it. This runs once,
-     in setup(), and is the only place either pin is claimed — leave it until after the
-     return and a box that got here by the restart path would reach loop() with GPIO 13
-     still in its reset state: an input with NO pull, floating, reading LOW on stray coupling
-     whenever nothing is pressed. checkPortalButton() would then see a button being held
-     down, request the portal, restart, and arrive here again. A boot loop with a cause
-     nobody can see, on the one path that is supposed to be the easy one. */
+  /* Both pins are set up before the early return below. This is the only place they are
+     configured; otherwise, after the restart path, GPIO 13 would float, read as pressed,
+     and cause a restart loop. */
   pinMode(PORTAL_BUTTON_PIN, INPUT_PULLUP);
   pinMode(PORTAL_BUTTON_PIN2, INPUT_PULLUP);
 
@@ -1824,12 +1707,9 @@ bool portalButtonPressed() {
   }
   Serial.println(pressed ? " — PRESSED." : " — no.");
   if (pressed) {
-    /* Confirm the press, then HOLD magenta all the way into the portal. Dropping back to the
-       boot blue here meant "pressed" and "not pressed" looked identical for the ten seconds the
-       box then spends joining the saved network — and the only way to find out which had
-       happened was to wait and see whether an access point appeared. Somebody standing at a
-       rack with a phone will press it again in that gap, which reboots the box and starts the
-       whole thing over. */
+    /* Confirm the press, then keep the LED magenta until the portal opens, so it is clear the
+       press worked during the ~10 seconds spent joining WiFi (and nobody presses again and
+       restarts it). */
     setRGB(0, 255, 0);   // green blip — the button registered
     delay(250);
     setRGB(60, 0, 60);   // and stay magenta until the setup page is up
@@ -1839,17 +1719,11 @@ bool portalButtonPressed() {
   return pressed;
 }
 
-/* The runtime half of the same gesture: hold the external button for PORTAL_HOLD_MS at any
-   time and the box reboots into the setup portal. This is what removes the EN press — the
-   boot window above needs a reset first, and a reset on an installed box means reaching
-   behind a rack for the plug.
-
-   Non-blocking, and called BEFORE the warmup early-return in loop(), so it answers from the
-   first tick rather than only once the MQ-2 heaters have settled. It does not open the
-   portal itself — see takePortalRequest() for why that would be the wrong place.
-
-   The release latch matters: without it the same hold would be counted again the moment the
-   box came back up, on a finger that has not moved. */
+/* Runtime version of the gesture: hold the external button for PORTAL_HOLD_MS at any time
+   and the box reboots into the setup portal, with no reset needed. Non-blocking and
+   called before the warmup early return in loop(). It does not open the portal itself
+   (see takePortalRequest()). The release latch stops the same hold being counted again
+   after the reboot. */
 void checkPortalButton() {
   static unsigned long downAt  = 0;
   static bool          latched = false;
@@ -1910,22 +1784,12 @@ String portalApName() {
 #endif
 }
 
-/* WiFiManager answers /wifisave with a FIXED string — "Saving Credentials. Trying to connect
-   ESP to network. If it fails reconnect to AP to try again" — and only THEN attempts the join,
-   back in the portal loop. So the page the installer is left looking at cannot contain the
-   result: it was written before the result existed. The verdict does get rendered, by
-   reportStatus(), but only on /, /wifi, /param and /info, and on every one of those it is
-   appended LAST — off the bottom of a phone screen, on a page you have to navigate back to.
-
-   Net effect: typing the WiFi password wrong looks exactly like typing it right. For a feature
-   whose entire purpose is that a staff member can set this up alone, that is the failure.
-
-   So: a script in the page head (setCustomHeadElement) notices it is on /wifisave, counts the
-   connect attempt down, and then sends the browser to /sensorstate — a page of ours, served off
-   WiFiManager's own web server, that says in full what happened and what to do about it. The
-   div it adds also CONTAINS a link to /sensorstate, so a browser that ignores the timer still
-   leaves a way through; a captive-portal mini-browser is not a browser you get to assume much
-   about. Nothing here modifies the library. */
+/* WiFiManager answers /wifisave with a fixed "Saving Credentials…" page before it even
+   tries to join, so that page cannot show the result, and wrong and right passwords
+   looked the same. So a script in the page head (setCustomHeadElement) notices it is on
+   /wifisave, counts down the join attempt, then shows /sensorstate: our page, served by
+   WiFiManager's web server, saying what happened and what to do. It also contains a link
+   to /sensorstate for browsers that ignore the timer. The library itself is not changed. */
 const char PORTAL_HEAD_SCRIPT[] PROGMEM =
   "<script>(function(){"
   "var W=location.pathname.indexOf('wifisave')>=0;"
@@ -1941,36 +1805,25 @@ const char PORTAL_HEAD_SCRIPT[] PROGMEM =
   "function t(){s('Checking the connection… '+n+'s<br><a href=\"/sensorstate\">See the result now</a>');"
   "if(--n<0){s('Checking…');p();return;}setTimeout(t,1000);}"
   "window.addEventListener('load',function(){"
-  /* Not the save page: the only job here is the SSID box. WiFiManager fills its placeholder
-     with WiFi_SSID() — the network the box is CURRENTLY on — so the setup form was showing a
-     staff member the name of whatever WiFi it was last joined to. Nobody asked for that to be
-     published on an open access point, and on a form whose whole purpose is to pick a
-     DIFFERENT network it is misleading as well. Rewritten here rather than in the library so a
-     Library Manager update cannot quietly bring it back. */
+  /* Only for the SSID box: WiFiManager fills its placeholder with the network the box is
+     currently on, which should not be shown on an open access point. Rewritten here instead
+     of in the library so a library update cannot bring it back. */
   "if(!W){var e=document.getElementById('s');if(e)e.placeholder='SSID name';return;}"
   "d=document.createElement('div');"
   "d.id='cspcw';document.body.appendChild(d);t();});"
   "})();</script>";
 
-/* Set by the /sensorstate handler once it has served a FINISHED verdict to the page. It is
-   what lets the confirmation window below close as soon as the phone has actually read the
-   result, instead of always burning the full timeout. */
+/* Set when /sensorstate has served a finished result, so the confirmation window can
+   close as soon as the phone has read it. */
 bool portalResultSeen = false;
-/* Distinct from the above: somebody has fetched the verdict at all, whatever it said. It is
-   what separates "the installer is standing here reading a problem" from "this box was
-   powered on in an empty room", and only the first earns the long window. */
+/* Set when anyone has fetched the result at all. Separates "someone is here reading a
+   problem" (long window) from "powered on in an empty room". */
 bool portalClientSeen = false;
 
-/* What actually happened, in words.
-
-   Two shapes from one builder. `fragment` returns just the panel, for the script above to drop
-   into the /wifisave page the installer is already looking at — asked for explicitly, because
-   even an automatic redirect is a page change, and a page that changes under you while you are
-   reading it is its own kind of confusing. The full page is what /sensorstate serves on its own,
-   which is the recovery path when the phone loses the AP mid-attempt and the script cannot.
-
-   A fragment is prefixed with one character, P (pending) or D (done), so the script knows
-   whether to poll again without parsing anything. */
+/* The result, in words. `fragment` returns only the panel, for the script to insert into
+   the /wifisave page; the full page is what /sensorstate serves when the phone lost the
+   access point. A fragment starts with P (pending) or D (done) so the script knows
+   whether to poll again. */
 String sensorStatePage(WiFiManager& wm, bool fragment) {
   uint8_t res       = wm.getLastConxResult();
   bool    connected = (WiFi.status() == WL_CONNECTED);
@@ -2004,9 +1857,8 @@ String sensorStatePage(WiFiManager& wm, bool fragment) {
   } else {
     colour = "#E02F44";
     title  = "Not connected";
-    // 7 is WiFiManager's own WL_STATION_WRONG_PASSWORD kludge. The value is repeated rather
-    // than referenced because the member is protected — and the ESP32 SDK has no
-    // wrong-password status of its own, which is why the library invents one.
+    // 7 is WiFiManager's own WL_STATION_WRONG_PASSWORD value; repeated here because the member
+    // is protected (the ESP32 SDK has no wrong-password status).
     if (res == 7) {
       detail = "<b>The WiFi password is wrong.</b> Nothing was saved — go back and type it again.";
     } else if (res == WL_NO_SSID_AVAIL) {
@@ -2018,15 +1870,10 @@ String sensorStatePage(WiFiManager& wm, bool fragment) {
     }
   }
 
-  /* The LED follows the verdict, in the same colours as the panel above. It is set HERE, in
-     what is otherwise a page builder, because this is the only code of ours that runs while
-     WiFiManager's portal has the CPU — a failed join never returns control to runPortalRound(),
-     it just loops inside the library. Without this the box shows portal-magenta whether the
-     password was right or wrong.
-
-     Safe to own the LED at this point and only at this point: sensing has not started, so
-     nothing here can paint over a smoke or heat alarm. Once warmupDone is set, setStatusColor()
-     is the only thing that touches it — see the note in loop(). */
+  /* The LED follows the result, in the same colours as the panel. Set here because this is
+     the only code of ours that runs while WiFiManager's portal has control. Safe only here:
+     sensing has not started, so this cannot hide an alarm. After warmupDone only
+     setStatusColor() touches the LED. */
   if (pending)          setRGB(60, 0, 60);    // magenta — still trying, as during the portal
   else if (!connected)  setRGB(255, 0, 0);    // red     — wrong password / network not found
   else if (backendBad)  setRGB(255, 60, 0);   // orange  — on WiFi, but the backend is silent
@@ -2067,10 +1914,9 @@ String sensorStatePage(WiFiManager& wm, bool fragment) {
   return p;
 }
 
-/* Take the backend address out of the portal form. Called from the save callback — BEFORE the
-   result page is built — because otherwise the success panel would report the address the box
-   had when it booted rather than the one just typed into the form above it. Also called again
-   after the portal returns; it is idempotent. */
+/* Read the backend address from the portal form. Called from the save callback, before
+   the result page is built, so the page shows the address just typed. Called again
+   after the portal returns; safe to repeat. */
 void applyPortalParams(WiFiManagerParameter& pHost, WiFiManagerParameter& pPort) {
   String host = String(pHost.getValue());
   host.trim();
@@ -2080,23 +1926,12 @@ void applyPortalParams(WiFiManagerParameter& pHost, WiFiManagerParameter& pPort)
                                                      // than storing 0 and never connecting
 }
 
-/* ⚠️ THE SUCCESS CASE IS THE ONE THAT NEEDED HELP, not the failure.
-
-   On a FAILED join WiFiManager returns to its portal loop and keeps serving pages, so the
-   result is there to be read. On a SUCCESSFUL one it calls shutdownConfigPortal() the instant
-   the link comes up (`_disableConfigPortal` defaults true) — the soft AP disappears, the phone
-   drops back to its own network or mobile data, and the page reporting success dies with the
-   network it was served from. So the one outcome an installer most wants confirmed was the one
-   they could never see.
-
-   This runs from setSaveConfigCallback, which WiFiManager invokes on the success path BEFORE
-   that shutdown, with WiFi up and the web server still alive. Pumping the server here keeps the
-   page reachable for a few more seconds; returning hands WiFiManager back its normal teardown,
-   so nothing here owns the AP's lifetime or has to take it down by hand.
-
-   Deliberately NOT setDisableConfigPortal(false): that leaves the portal up with no one
-   servicing it once startConfigPortal() returns, and makes tearing down the AP, the web server
-   and the DNS socket this sketch's problem. */
+/* Keeps the success page alive. On a successful join WiFiManager shuts the portal down at
+   once, so the phone lost the page confirming success. This runs from
+   setSaveConfigCallback, which is called before that shutdown, and serves the page for a
+   few more seconds; returning lets WiFiManager tear down as usual. Not
+   setDisableConfigPortal(false), which would leave the portal running with nothing
+   serving it. */
 void holdPortalForResult(WiFiManager& wm) {
   portalResultSeen = false;
   portalClientSeen = false;
@@ -2106,11 +1941,9 @@ void holdPortalForResult(WiFiManager& wm) {
   unsigned long limit = PORTAL_CONFIRM_MS;
   while (millis() - start < limit && !portalResultSeen) {
     wm.server->handleClient();
-    /* Somebody is on the page. If they are reading a good result they will have released the
-       loop already, so reaching here means they are looking at a problem — give them room to
-       fix it in place. Correcting a backend IP after the AP has gone means rejoining the AP
-       from a phone that has already fallen back to its own network, which is the difference
-       between a 10-second fix and a support call. */
+    /* Someone has the page open. If the result were good they would have released the loop
+       already, so they are looking at a problem: give them time to fix it before the access
+       point closes. */
     if (portalClientSeen) limit = PORTAL_FIX_MS;
     delay(5);
   }
@@ -2121,21 +1954,17 @@ void holdPortalForResult(WiFiManager& wm) {
   else                       Serial.println("[NET] Nobody read the result — closing the setup page.");
 }
 
-/* Three outcomes, not two. "Closed without saving, and the old network is still up" has to
-   be distinguishable from "saved a new one", or an installer who deliberately dismisses the
-   portal gets shown it again on the next round.
-
-   #define rather than an enum on purpose: the Arduino builder auto-generates a prototype
-   for every function and inserts them ABOVE the sketch body, so a return type declared
-   here would not exist yet at the prototype -- "'PortalResult' does not name a type", on a
-   file that is perfectly valid C++. */
+/* Three outcomes: saved a new network, closed without saving (old network still up), or
+   failed. The second must not reopen the portal next round.
+   #define instead of an enum: the Arduino builder puts auto-generated prototypes above
+   the sketch body, where an enum type would not exist yet. */
 #define PORTAL_OFFLINE   0
 #define PORTAL_SAVED     1
 #define PORTAL_UNCHANGED 2
 
-/* ONE round of the portal. Reached only at boot, and only when the box has no usable
-   configuration or somebody asked for it with the BOOT button. WiFiManager is local so the
-   web server and the DNS server it owns are freed the moment the portal closes. */
+/* One round of the portal, only at boot, when there is no usable configuration or the
+   button asked for it. WiFiManager is local so its web and DNS servers are freed when the
+   portal closes. */
 int runPortalRound(bool forceOpen, bool probed, bool backendOk) {
   WiFiManager wm;
 
@@ -2153,30 +1982,26 @@ int runPortalRound(bool forceOpen, bool probed, bool backendOk) {
 
   wm.setTitle("CSPC ICTU Server Room Sensor");
   wm.setDarkMode(true);
-  // Injected into the head of EVERY portal page; the script itself does nothing unless it is
-  // on /wifisave. A string literal has static storage, which matters — setCustomHeadElement
-  // keeps the pointer rather than copying.
+  // Added to the head of every portal page; the script only acts on /wifisave. A string
+  // literal, because setCustomHeadElement keeps the pointer.
   wm.setCustomHeadElement(PORTAL_HEAD_SCRIPT);
-  // Fires after the web server is created and BEFORE the library's own routes go on, so this
-  // adds a path rather than shadowing one. `wm` outlives the server it owns, so capturing it
-  // by reference here is safe for as long as the handler can be called.
+  // Runs after the web server is created and before the library adds its routes, so this
+  // adds a path without replacing one. `wm` outlives its server, so capturing it by
+  // reference is safe.
   wm.setWebServerCallback([&wm, &pHost, &pPort]() {
     wm.server->on("/sensorstate", [&wm, &pHost, &pPort]() {
       // ?raw=1 -> just the panel, for the in-page update on /wifisave. No arg -> the full page,
       // which is what a human typing the address gets.
       bool raw = wm.server->hasArg("raw");
-      /* Re-read the form every time rather than trusting what was parsed at save. During the
-         hold window the installer can correct the Backend IP and save again, and the probe
-         below has to aim at what the form says NOW or the page would keep reporting the old
-         address as unreachable after they had already fixed it. */
+      /* Re-read the form each time: the backend IP may have been corrected and saved again,
+         and the probe must test what the form says now. */
       applyPortalParams(pHost, pPort);
       String body = sensorStatePage(wm, raw);
       wm.server->send(200, raw ? "text/plain" : "text/html", body);
       if (raw && body.length()) {
         portalClientSeen = true;
-        // ONLY an all-clear releases the hold. 'F' is settled too, but it is settled ON A
-        // PROBLEM — letting go there would take the access point away at the exact moment
-        // the installer needs it to fix the address.
+        // Only a success releases the hold; 'F' is finished but on a problem, and the access
+        // point is still needed to fix it.
         if (body[0] == 'D') portalResultSeen = true;
       }
     });
@@ -2187,11 +2012,8 @@ int runPortalRound(bool forceOpen, bool probed, bool backendOk) {
     holdPortalForResult(wm);
   });
   wm.setConfigPortalTimeout(PORTAL_TIMEOUT_S);
-  /* How long one join attempt from inside the portal is given. 10 s is comfortably past a
-     normal association + DHCP (2-5 s) and it is what the /wifisave countdown is sized from —
-     ⚠️ raise one and raise the other, or the result page loads while the attempt is still
-     running and reports "Still trying…" instead of the answer. A wrong password usually fails
-     well before the timeout anyway; this bounds the case where the AP simply never replies. */
+  /* How long one join attempt from the portal gets. 10 s is well past a normal join + DHCP
+     (2-5 s), and the /wifisave countdown is based on it: change both together. */
   wm.setConnectTimeout(PORTAL_CONNECT_TIMEOUT_S);
   wm.setRemoveDuplicateAPs(true);
   // "info" is the built-in page — SSID, IP, signal, MAC, free heap. Together with the
@@ -2201,9 +2023,8 @@ int runPortalRound(bool forceOpen, bool probed, bool backendOk) {
 
   String apName = portalApName();
   const char* apPass = (strlen(AP_PASSWORD) >= 8) ? AP_PASSWORD : NULL;  // NULL = open AP
-  // Two different things happen below, so the log says which. The autoConnect path may join
-  // a stored network and never raise an AP at all, and a line promising a portal that then
-  // does not appear is the kind of thing somebody debugs for an hour.
+  // Log which path is taken: autoConnect may join a saved network without ever showing an
+  // access point.
   if (forceOpen) {
     Serial.printf("[NET] Setup portal opening — join WiFi \"%s\" %s; the page opens itself.\n",
                   apName.c_str(), apPass ? "(password is on the enclosure)" : "(no password)");
@@ -2214,14 +2035,9 @@ int runPortalRound(bool forceOpen, bool probed, bool backendOk) {
   }
   setRGB(60, 0, 60);
 
-  /* forceOpen -> startConfigPortal, which ALWAYS shows the form; autoConnect would try the
-     stored credentials first and, on a box whose WiFi still works, silently connect and
-     never show anybody anything — which is not what pressing BOOT asked for.
-
-     ⚠️ Nothing is erased on the way in. An earlier cut wiped the credentials before opening
-     the forced portal, so an admin who pressed BOOT and then got called away left a box that
-     was offline until the next power cycle: the portal timed out with nothing to fall back
-     to. The old configuration is only ever REPLACED, after a new one is proven to associate. */
+  /* forceOpen uses startConfigPortal, which always shows the form (autoConnect would just
+     join the saved network). Nothing is erased beforehand: the old settings are only
+     replaced once new ones are proven to work, so an abandoned portal leaves the box as it was. */
   bool ok = forceOpen ? wm.startConfigPortal(apName.c_str(), apPass)
                       : wm.autoConnect(apName.c_str(), apPass);
 
@@ -2254,19 +2070,14 @@ int runPortalRound(bool forceOpen, bool probed, bool backendOk) {
   return PORTAL_SAVED;
 }
 
-/* Provision, then CHECK. A portal that only collects an address cannot tell a typo from a
-   working install — both end with the box joined to WiFi and the LED green. So each round
-   is followed by a TCP probe of the address just entered, and a failure re-opens the portal
-   with the reason on the form. Bounded by PORTAL_BACKEND_ROUNDS, because "the server is off
-   right now" is a legitimate answer and must not trap an installer in a loop. */
+/* Set up, then check: each portal round is followed by a TCP probe of the entered
+   address, and a failure reopens the portal with the reason. Limited to
+   PORTAL_BACKEND_ROUNDS, since the server may just be off. */
 bool runProvisioningPortal(bool forced) {
   bool probed = false, backendOk = false;
 
-  /* If the radio is already up — a BOOT-forced portal on a box that still works — probe
-     BEFORE showing the form, so the first thing the admin sees is a verdict on the address
-     already stored rather than a blank panel. Diagnosing a wrong backend IP without a laptop
-     is the whole point of the status page, and it cannot say anything useful about an
-     address it has not tried. */
+  /* If WiFi is already up (portal opened with the button on a working box), probe first so
+     the form opens with a verdict on the saved address. */
   if (WiFi.status() == WL_CONNECTED && !netUnset(netHost)) {
     backendOk = backendReachable();
     probed    = true;
@@ -2280,7 +2091,7 @@ bool runProvisioningPortal(bool forced) {
     int r = runPortalRound(forced || round > 0, probed, backendOk);
     if (r == PORTAL_OFFLINE) return false;
     if (r == PORTAL_UNCHANGED) {
-      // Dismissed on purpose. Re-opening it would be arguing with the person holding the box.
+      // Closed on purpose; do not reopen it.
       Serial.println("[NET] Configuration left as it was.");
       return true;
     }
@@ -2308,19 +2119,17 @@ bool setupNetwork() {
   bool forced     = portalButtonPressed();
   bool configured = stored || !netUnset(netSsid);   // NVS, else the secrets.h fallbacks
 
-  /* The join runs even when BOOT was pressed. It costs up to WIFI_JOIN_TIMEOUT_MS on a
-     gesture somebody is standing there having made, and it buys the portal a status panel
-     that can actually answer "is the backend reachable from here" — see runProvisioningPortal. */
+  /* The join runs even when BOOT was pressed, so the portal can show whether the backend is
+     reachable. See runProvisioningPortal. */
   bool joined = configured && joinWiFi(WIFI_JOIN_TIMEOUT_MS);
 
   if (joined && !forced)      return true;
   if (forced || !configured)  return runProvisioningPortal(forced);
 
-  /* Configured, but that network was not there. NOT a reason to open the portal: this is
-     the same condition as a runtime drop — an AP rebooting, a cable pulled, the box powered
-     up before the switch — and the non-blocking retry in loop() already owns it. A
-     three-minute AP here would mean a server room going unwatched for three minutes every
-     time the WiFi happens to be down at boot. */
+  /* Configured, but that network was not found. Not a reason to open the portal: it is the
+     same as a runtime drop (access point rebooting, cable pulled, box powered up first), and
+     the retry in loop() handles it. Opening the portal here would leave the room unwatched
+     for minutes. */
   Serial.println("[WiFi] Saved network unreachable — offline mode, loop() keeps retrying. "
                  "Press BOOT early in the next boot to change the WiFi.");
   return false;
@@ -2367,13 +2176,12 @@ void setup() {
     rtcAvailable = false;
   }
 
-  /* micro SD - before WiFi on purpose. If the access point is down at boot, the very
-     first readings are already offline ones, and the buffer has to exist to catch them. */
+  /* micro SD, before WiFi, so readings are buffered from the start if the access point is
+     down at boot. */
   sdInit();
 
-  /* WiFi — PROVISIONED, not compiled in: NVS first, secrets.h as the fallback, and the
-     captive portal when there is neither. This is the one place allowed to block, and
-     setupNetwork() is the one place that may ever open the portal. */
+  /* WiFi: from NVS first, secrets.h as fallback, and the captive portal when there is
+     neither. setupNetwork() is the only place that may open the portal. */
   if (setupNetwork()) {
     wifiWasUp = true;
 
@@ -2390,6 +2198,18 @@ void setup() {
       char buf[32];
       strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &ti);
       Serial.printf("\n[NTP] Time: %s\n", buf);
+      /* getTimestamp() uses the DS3231 first, so correct it from NTP when they differ;
+         otherwise an RTC set from the compile time stays wrong, and buffered SD rows are stored
+         under the device's time. Both clocks are local time (UTC+8). */
+      if (rtcAvailable) {
+        DateTime ntpNow(ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+                        ti.tm_hour, ti.tm_min, ti.tm_sec);
+        long drift = (long)rtc.now().unixtime() - (long)ntpNow.unixtime();
+        if (drift > 2 || drift < -2) {
+          rtc.adjust(ntpNow);
+          Serial.printf("[RTC] Corrected from NTP (was off by %lds).\n", drift);
+        }
+      }
     } else {
       Serial.println("\n[NTP] Sync failed — will retry from getTimestamp().");
     }
@@ -2397,22 +2217,16 @@ void setup() {
     Serial.println("[WiFi] Offline mode — readings buffer to the SD card until the link is back.");
   }
 
-  /* Socket.IO — the device key travels in an HTTP HEADER on the WebSocket upgrade,
-     not in the URL. A query string is written verbatim into proxy and web-server
-     access logs, so the shared secret ended up in every log line the handshake
-     touched; a request header is not logged by default.
-     (Socket.IO's `auth` payload would be the usual place, but that arrived in v3 and
-     this client speaks EIO3 — a header is the equivalent here. The backend reads
-     auth → x-device-key → query, in that order; see backend/src/server.js.)
-     `static` because setExtraHeaders keeps the buffer, which must outlive setup(). */
+  /* Socket.IO: the device key is sent as an HTTP header on the WebSocket upgrade, not in
+     the URL, since URLs end up in proxy and access logs. (This client speaks EIO3, which
+     has no `auth` payload.) The backend reads auth → x-device-key → query, in that order;
+     see backend/src/server.js. `static` because setExtraHeaders keeps the buffer. */
   static char deviceKeyHeader[128];
   snprintf(deviceKeyHeader, sizeof(deviceKeyHeader), "X-Device-Key: %s", deviceSecret);
   socketIO.setExtraHeaders(deviceKeyHeader);
-  /* The address comes from NVS. It can legitimately be EMPTY — a blank box whose portal
-     timed out with nobody around — and begin()-ing on an empty host would leave the client
-     retrying a nameless address every 5s forever. Left un-begun instead, which the guard in
-     loop() reads as "no backend configured": the room is still sensed, alarmed and buffered
-     to the SD card, and the next boot's portal is what fixes it. */
+  /* The address comes from NVS and may be empty (a blank box whose portal timed out). Then
+     begin() is not called; loop() treats it as "no backend configured" and the room is still
+     sensed, alarmed and buffered to the SD card until the next boot's portal fixes it. */
   if (netUnset(netHost)) {
     socketConfigured = false;
     Serial.println("[NET] No backend address set — readings buffer to the SD card. "
@@ -2424,8 +2238,7 @@ void setup() {
     socketConfigured = true;
   }
 
-  /* MQ-2 clean-air baseline: reuse the stored one, or schedule a first calibration.
-     Deliberately NOT recalibrated every boot — see the note at RO_MIN_VALID. */
+  /* MQ-2 baseline: reuse the saved one, or schedule a first calibration (see RO_MIN_VALID). */
   if (!loadRo()) {
     Serial.println("[CAL] First run here. Using fallback values until calibration completes.");
     scheduleCalibration(CAL_SETTLE_MS);
@@ -2445,23 +2258,16 @@ void loop() {
   if (socketConfigured) socketIO.loop();
   unsigned long now_ms = millis();
 
-  /* ── Re-provisioning button ──
-     Ahead of everything, including the warmup early-return below: the gesture has to answer
-     from the first tick, and a box whose WiFi is wrong is exactly the one somebody will be
-     standing in front of holding the button while the heaters settle. */
+  /* ── Setup button ──
+     Checked before the warmup early return, so the button works from the first tick. */
   checkPortalButton();
 
   bool wifiNow = (WiFi.status() == WL_CONNECTED);
 
   /* ── WiFi keep-alive ──
-     WiFi.begin() used to run ONCE, in setup(), inside a 10-second window. If the
-     access point was not up yet at boot — a phone hotspot switched on after the
-     ESP32, say — or if it dropped later, the box stayed offline until somebody
-     pressed RESET: every reading logged as offline while Socket.IO kept retrying a
-     network the radio was not even on, which reads as a BACKEND fault when it is a
-     WiFi one. Retry on a slow timer instead. Sits BEFORE the warmup early-return so
-     it runs from the first tick, and is non-blocking, so the sensor / LED / buzzer /
-     IR cadence is unaffected while the radio re-associates. */
+     Retry joining on a slow timer, so a box that booted before the access point was up,
+     or lost it later, reconnects without a reset. Before the warmup early return and
+     non-blocking, so sensing, LED, buzzer and IR keep running. */
   if (wifiNow != wifiWasUp) {
     wifiWasUp = wifiNow;
     if (wifiNow) {
@@ -2475,14 +2281,9 @@ void loop() {
     }
   }
   static unsigned long lastWifiRetry = 0;
-  /* ⚠️ A retry, never the setup portal. WiFiManager's portal BLOCKS, and this is the
-     runtime path: an AP reboot or a pulled cable would stop the sensor reads, the buzzer
-     and the IR for as long as it stayed open. During a fire that is the failure mode that
-     matters, so re-provisioning stays a boot-time act — a held button restarts the box INTO
-     it rather than opening it here (checkPortalButton), which is a deliberate act by a
-     person standing at the rack, not something a flapping access point can cause. The SSID
-     guard covers the blank box whose portal timed out; WiFi.begin("") is not a thing worth
-     doing every 15 seconds. */
+  /* A retry, never the setup portal: the portal blocks, and an access point reboot must not
+     stop sensing, the buzzer and IR. Re-setup is a boot-time act (checkPortalButton
+     restarts into it). The SSID check skips a blank box. */
   if (!wifiNow && !netUnset(netSsid) && (now_ms - lastWifiRetry) >= WIFI_RETRY_MS) {
     lastWifiRetry = now_ms;
     Serial.print("[WiFi] Down — retrying SSID: ");
@@ -2492,9 +2293,8 @@ void loop() {
   }
 
   /* ── SD backfill ──
-     Sits ahead of the warmup early-return: rows buffered before a reboot are already
-     complete and have nothing to do with this boot's MQ-2 heater settling. Both calls
-     are no-ops in the common case (nothing buffered, or not connected). */
+     Before the warmup early return: buffered rows do not depend on this boot's heater
+     warm-up. Both calls do nothing in the common case. */
   if (sdPendingFlush() && wifiNow && socketConfigured && socketIO.isConnected()) sdBeginFlush();
   sdFlushStep(now_ms);
 
@@ -2519,9 +2319,9 @@ void loop() {
     return;
   }
 
-  /* ── Deferred clean-air calibration ──
-     Runs once its settle window elapses, without blocking the loop. Triggered either by
-     a first boot with no stored baseline, or on demand via the "calibrateGas" event. */
+  /* ── Scheduled clean-air calibration ──
+     Runs once its settle time has passed, without blocking. Triggered by a first boot with
+     no saved baseline, or by the "calibrateGas" event. */
   if (pendingCalibration && (long)(now_ms - calibrationDueAt) >= 0) {
     pendingCalibration = false;
     Serial.println("[CAL] Measuring clean-air baseline now...");
@@ -2608,15 +2408,12 @@ void loop() {
         p["timestamp"] = timestamp;
         p["temperature"] = round(temperature * 10) / 10.0;
         p["humidity"] = round(humidity * 10) / 10.0;
-        // The legacy pair is STILL SENT. A backend that has not been updated reads only
-        // these, and a monitoring system must not go blind during its own upgrade — same
-        // reasoning as the deprecated deviceKey query fallback in the handshake. Drop them
-        // once every backend is current.
+        // The legacy pair is still sent for backends that have not been updated. Drop them once
+        // every backend is current.
         p["mq2_1_ppm"] = round(ppm1 * 10) / 10.0;
         p["mq2_2_ppm"] = round(ppm2 * 10) / 10.0;
-        // The canonical form: one entry per channel, index+1 = channel. Sent for EVERY slot
-        // in the pool so index and channel can never drift; the backend drops the ones no
-        // admin has confirmed are wired.
+        // The main form: one entry per channel, index+1 = channel, for every slot; the backend
+        // ignores channels not marked as wired.
         JsonArray gasArr = p.createNestedArray("gas_ppm");
         for (int i = 0; i < MAX_MQ2_SENSORS; i++) {
           if (gasEnabled[i]) gasArr.add(round(gasPpm[i] * 10) / 10.0);

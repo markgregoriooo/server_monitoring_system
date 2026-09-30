@@ -19,14 +19,9 @@ function describeRule(rule) {
 // rules that produce them). Mirrors how user management / approvals are gated.
 router.use(authMiddleware, requireRole("admin"));
 
-// After any change, push the new room-level thresholds to the ESP32 so its
-// LED/buzzer/reported status stay in sync with these rules (no reflash needed).
-//
-// Browsers get the same numbers as `envConfigUpdated`, because the Dashboard and
-// Environment pages colour humidity and gas at these thresholds (see
-// GET /api/environment/thresholds). Without it an open page keeps colouring against the
-// OLD thresholds until someone reloads — and the admin who just retuned them is the least
-// likely person to notice, since they are looking at the Alert Rules page.
+// After any change, push the room thresholds to the ESP32 (envConfig) so its LED,
+// buzzer and status follow the rules. Browsers get them too (`envConfigUpdated`),
+// because the dashboards colour readings by these thresholds.
 async function pushEnvConfig(io) {
   if (!io) return;
   try {

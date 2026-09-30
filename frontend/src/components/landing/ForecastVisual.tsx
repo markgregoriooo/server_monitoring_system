@@ -5,18 +5,10 @@ import { STATUS } from "../../theme/gf";
 const { orange: ORANGE, critical: RED } = STATUS;
 
 /**
- * The forecast: history, then a projection past the last reading to the ceiling
- * it is heading for.
- *
- * This is the one visual on the page that shows something a dashboard alone
- * cannot do, so it gets the clearest telling: the solid line is measured, the
- * dashed line is predicted, the widening wedge is the confidence going soft the
- * further out it reaches, and the marker is the date the regression lands on.
- *
- * The wedge matters. A single confident dashed line to a precise day is the
- * classic way a forecast chart lies; the system itself refuses to publish an ETA
- * at all when the fit is too weak (R² below 0.4 reports "Stable" instead), and
- * the picture should carry the same caution the code does.
+ * The forecast visual: measured history (solid), the projection (dashed), a widening
+ * wedge for growing uncertainty, and a marker at the predicted date. The wedge
+ * reflects that the system gives no ETA at all when the fit is weak (R² below 0.4
+ * shows "Stable").
  */
 
 const ACCENT = "#5794F2";
@@ -113,10 +105,9 @@ export default function ForecastVisual() {
       cleanups.push(() => a.pause());
     }
 
-    // 3. The projection extends past the last real reading.
-    //
-    // Animating strokeDashoffset on a line that is ITSELF dashed would fight
-    // itself, so the dash pattern is applied only once the draw has finished.
+    // 3. The projection extends past the last real reading. The dash pattern is applied
+    // only after the draw finishes, since animating strokeDashoffset on a dashed line
+    // does not work.
     if (projection) {
       const len = projection.getTotalLength();
       projection.style.strokeDasharray = String(len);

@@ -2,15 +2,9 @@ import type { ReactNode } from "react";
 import { useInView, prefersReducedMotion } from "./motion";
 
 /**
- * Scroll-entrance for ordinary content — headings, copy, cards.
- *
- * CSS transitions rather than anime.js: there is nothing to choreograph here, and
- * a transform/opacity pair is composited on the GPU, so a page with forty of them
- * still scrolls at 60fps. anime.js is saved for the data visuals, where the
- * motion carries meaning.
- *
- * `delay` staggers a group (map over children with `delay={i * 70}`). Keep the
- * step small — a stagger you can count is a stagger that is too slow.
+ * Scroll-in animation for ordinary content (headings, text, cards). CSS transitions
+ * on transform/opacity, which stay smooth even with many on a page; anime.js is only
+ * used for the data visuals. `delay` staggers a group (e.g. `delay={i * 70}`); keep it small.
  */
 export default function Reveal({
   children,

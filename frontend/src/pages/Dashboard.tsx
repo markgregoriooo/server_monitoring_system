@@ -42,10 +42,9 @@ interface Server {
 interface SensorData {
   temperature: number;
   humidity: number;
-  // The tile shows the HIGHER of the two MQ-2 readings, not their average. Averaging a
-  // sensor beside a smoking PSU (400ppm) against one across the room (20ppm) reports 210
-  // and makes a real fire look borderline — a dangerous reading anywhere in the room is
-  // dangerous. Same rule sensorHandler and the analytics engine use.
+  // The tile shows the higher of the MQ-2 readings, not the average: 400 ppm near a
+  // smoking PSU averaged with 20 ppm across the room would read as borderline. Same rule
+  // as sensorHandler and the analytics.
   mq2_1_ppm?: number;
   /** Aggregate across every fitted sensor, and the per-sensor breakdown with labels already
    *  resolved. Both added when gas went multi-sensor; absent on a pre-cutover payload. */
@@ -73,10 +72,8 @@ const fmtClock = (t: string | Date) =>
     minute: "2-digit",
   });
 
-// Environment x-axis label. Once this chart follows the shared range it can be asked for
-// 30 days, and "14:00" repeated across a month says nothing about WHEN — so anything
-// past two days carries the date. Same threshold the focus charts use, so the two never
-// disagree about what a long range looks like.
+// Environment x-axis label: ranges over two days include the date, same threshold as
+// the focus charts.
 const MULTI_DAY_SEC = 48 * 3600;
 const fmtEnvLabel = (t: string | Date, spanSec: number) =>
   spanSec >= MULTI_DAY_SEC
@@ -103,9 +100,7 @@ const SEV_COLOR: Record<DashAlert["severity"], string> = {
   info: "#5794F2",
 };
 
-// "just now" / "4m" / "3h" / "2d". An alert's age is most of its meaning — a critical
-// from 30 seconds ago and one from last Tuesday demand very different reactions, and an
-// absolute timestamp makes the reader do that subtraction themselves.
+// "just now" / "4m" / "3h" / "2d". How old an alert is matters as much as what it is.
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
   if (s < 60) return "just now";
@@ -130,9 +125,8 @@ interface NetDevice {
   memPercent?: number | null;
   connectedClients?: number | null;
   interfaces?: NetIface[];
-  // "ping" = registered with no SNMP community (ISP-owned CPE). Passed through to
-  // NetworkFocus, which draws latency/loss instead of throughput for these — a ping
-  // device has no byte counters, so the traffic chart would never have a point.
+  // "ping" = registered with no SNMP community. NetworkFocus shows latency/loss for these
+  // instead of throughput (they have no byte counters).
   mode?: "snmp" | "ping";
   latencyMs?: number | null;
   packetLossPct?: number | null;
@@ -165,45 +159,30 @@ interface Aircon {
 // ─── Grafana design tokens ──────────────────────────────────────────────────────
 
 
-// Environment series palette — deliberately the SAME hexes as pages/Environment.tsx, so a
-// series means the same thing on both pages. Reading one chart should not require
-// re-learning the colours on the other.
+// Environment colours, the same as pages/Environment.tsx so a colour means the same
+// thing on both pages.
 //
-// ENV_TEMP is now only a FALLBACK: the temperature line, its fill, its axis and the Room
-// Temp tile are all coloured by the `temperature` ALERT RULES (utils/envThresholds.ts),
-// and this amber shows only until the first reading arrives.
+// ENV_TEMP is only a fallback until the first reading; after that the temperature line,
+// fill, axis and tile are coloured by the `temperature` alert rules
+// (utils/envThresholds.ts).
 //
-// ENV_HUM is humidity's IDENTITY colour — the humidity line holds it while the room is
-// within the rules and switches to orange/red when it is not (`alertTint`), because it
-// shares this chart with temperature and two green lines would be unreadable. The
-// humidity TILE has no such neighbour and goes full green/orange/red.
-// ENV_HUM is a near neighbour of the TOO COLD blue (#5794F2), so on an over-cooled room
-// the two lines are told apart by the legend labels rather than by hue.
+// ENV_HUM is humidity's own colour: the line keeps it while humidity is within the
+// rules and turns orange/red when not (`alertTint`), since two green lines on one chart
+// would be unreadable. The humidity tile uses full green/orange/red. ENV_HUM is close to
+// the too-cold blue (#5794F2); the legend labels tell them apart.
 const ENV_TEMP = "#F59E0B";
 const ENV_HUM  = "#38BDF8";
 
-// The gas thresholds used to be copied here as `GAS_WARN = 150` / `GAS_CRIT = 300` under a
-// comment asking whoever retuned `alert_rules` to retune them too. They now come from the
-// rules themselves via useRoomThresholds(), so an admin editing Alert Rules moves this
-// tile with them and no one has to remember.
+// Gas thresholds come from the alert rules via useRoomThresholds(), so editing a rule
+// also moves this tile.
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-// `loadColor`, `StatusBadge` and `BLUE` lived here for the fleet table's CPU/Memory
-// cells and its selected-row highlight. The table is gone; the focus panels colour
-// their own values through focusShared.loadColor.
+// The focus panels colour their own values through focusShared.loadColor.
 
-// Body height of EVERY panel in the 2-column stack below the stat tiles — Environment,
-// Active Alerts, Servers, Network, MikroTik, UPS. One number so the page reads as a
-// single grid rather than as rows that each found their own height.
-//
-// It has to be explicit: CSS grid equalises items within a ROW, not across rows, so
-// leaving it to `stretch` would let each row settle wherever its own tallest panel
-// landed — which is exactly how six panels end up in four different sizes.
-//
-// Sized to fit a picker + status line + chart + legend without scrolling. Two panels
-// carry more than that and absorb it internally rather than growing: the Servers TABLE
-// scrolls (never the chart — that is what the panel is for), and the Active Alerts list
-// scrolls past about six incidents.
+// Body height of every panel in the two-column stack below the tiles (Environment,
+// Active Alerts, Servers, Network, MikroTik, UPS), so the page reads as one grid.
+// Explicit because CSS grid only equalises items within a row. Fits a picker, status
+// line, chart and legend; the Active Alerts list scrolls past about six incidents.
 const PANEL_H = 300;
 const PANEL_BODY: React.CSSProperties = {
   height: PANEL_H,
@@ -212,9 +191,7 @@ const PANEL_BODY: React.CSSProperties = {
   flexDirection: "column",
 };
 
-// Device selector for the chart panels. A dropdown rather than a clickable list: once a
-// panel is "chart only" the list was spending most of the panel's height restating names
-// that the chart's own header can hold in one row.
+// Device selector for the chart panels: a dropdown, so the chart gets the panel's height.
 function DevicePicker({
   devices, value, onChange, label,
 }: {
@@ -301,10 +278,8 @@ function Panel({
       style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
     >
       {title !== undefined && (
-        /* `height: 32` fixed + a title and controls that both refuse to shrink meant the
-           TITLE paid for every control on a phone — truncated to a word or two while the
-           buttons kept their full width. minHeight lets it take a second line instead, and
-           `min-w-0` on the title is what actually lets truncate work inside a flex row. */
+        /* minHeight (not a fixed height) so the title can take a second line on a phone
+           instead of being cut to a word; `min-w-0` lets truncate work in a flex row. */
         <div
           className="flex items-center justify-between gap-2 px-3 shrink-0 flex-wrap sm:flex-nowrap py-1.5 sm:py-0"
           style={{ minHeight: 32, borderBottom: `1px solid ${gf.divider}` }}
@@ -322,14 +297,9 @@ function Panel({
       <div
         className="min-h-0"
         style={{
-          // A body with an explicit height must NOT also be `flex: 1 1 0%`. This div
-          // used to carry Tailwind's `flex-1`, and in a COLUMN flex container flex-basis:0
-          // wins over height — so `bodyStyle.height` was silently ignored and the panel
-          // sized to its CONTENT instead. A chart hid it (it fills whatever it is given),
-          // but the Active Alerts list has a real intrinsic height, so a run of incidents
-          // grew the panel without ever scrolling. It then dragged the whole grid ROW with
-          // it, because grid items stretch to the tallest in the row — which is why the
-          // Environment (temp/humidity) panel beside it grew too.
+          // A body with an explicit height must not also be `flex: 1 1 0%`: in a column flex
+          // container flex-basis 0 overrides height, so the Active Alerts list grew the panel
+          // (and its whole grid row) instead of scrolling.
           flex: bodyStyle?.height != null ? "0 0 auto" : "1 1 0%",
           padding: noPad ? 0 : 12,
           ...bodyStyle,
@@ -371,10 +341,9 @@ function Sparkline({
     const x = (i: number) => (i / (pts.length - 1)) * W;
     const y = (v: number) => H - 4 - ((v - min) / span) * (H - 10);
 
-    // A tile's colour may be a CSS custom property — `var(--gf-text-muted)` is the
-    // fallback whenever a metric has no reading — which canvas cannot resolve. See
-    // utils/canvasColor: appending hex to it produced `var(--gf-text-muted)44`, and
-    // addColorStop THREW, unmounting the page from inside this effect.
+    // A tile colour may be a CSS variable (`var(--gf-text-muted)` when there is no reading),
+    // which canvas cannot use; see utils/canvasColor. Otherwise addColorStop throws and the
+    // page crashes.
     const stroke = resolveColor(color);
 
     // area fill
@@ -409,9 +378,6 @@ function Sparkline({
 // ─── StatPanel (Grafana stat with sparkline background) ─────────────────────────
 
 // ── Small helper for the Network / UPS panels ───────────────────────────────
-// StatusDot and MiniStat lived here too, for the per-device rows those panels used to
-// list. Both panels are now a picker plus a chart, so the rows — and the two components
-// that drew them — are gone. They are in git history if a list is ever wanted back.
 function EmptyRow({ children }: { children: React.ReactNode }) {
   return (
     <div className="py-6 text-center text-[12px]" style={{ color: gf.textDim }}>
@@ -441,10 +407,9 @@ function StatPanel({
       style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 104 }}
     >
       <div className="flex items-center justify-between gap-1.5 px-3 pt-2.5 z-10">
-        {/* `tracking-widest` costs roughly a character of width per five letters, which a
-            two-column phone grid (~160px a tile) does not have. Normal tracking on a phone,
-            the wide look back from `sm`. Truncated either way so a long label can never push
-            the status dot off the tile. */}
+        {/* `tracking-widest` is too wide for a two-column phone grid (~160px per tile), so normal
+           tracking on a phone and wide from `sm`. Truncated so a long label never pushes the
+           status dot off the tile. */}
         <span
           className="text-[12px] sm:tracking-widest uppercase truncate min-w-0"
           style={{ color: gf.textMuted }}
@@ -471,12 +436,9 @@ function StatPanel({
           </span>
         )}
         {sub && (
-          /* The line that broke this on a phone. `tracking-widest` at 11px turned
-             "SMOKE / GAS — critical · Above UPS cabinet" into something far wider than the
-             tile, and `textDim` measures ~3:1 on the panel — under the 4.5:1 floor for text
-             this small. Normal tracking, lifted contrast, and capped at two lines so a long
-             subtitle wraps instead of running out of the tile; the full text stays available
-             on hover/long-press. */
+          /* Normal letter-spacing and higher contrast on the subtitle, capped at two lines, so a
+             long one like "SMOKE / GAS — critical · Above UPS cabinet" fits on a phone. The full
+             text is on hover/long-press. */
           <div
             className="text-[11px] mt-1 sm:tracking-widest pb-0.5"
             style={{
@@ -523,26 +485,17 @@ export default function Dashboard() {
   const [servers, setServers] = useState<Server[]>([]);
   const [aircons, setAircons] = useState<Aircon[]>([]);
 
-  // Open incidents (active OR acknowledged) — the shared lifecycle view, the same set the
-  // sidebar badge counts. Until now the Dashboard showed NO alerts at all: after an
-  // incident it read as six green tiles, and the only trace was a number on the sidebar
-  // that could not say what had happened.
+  // Open alerts (active or acknowledged), the same set the sidebar badge counts.
   const [openAlerts, setOpenAlerts] = useState<DashAlert[]>([]);
 
-  // Is the ESP32 actually reporting? Without this the three sensor tiles show the LAST
-  // reading received, labelled "LIVE", with nothing to say how old it is — so a dead
-  // sensor renders exactly like a calm room. That is the specific failure esp32Monitor
-  // exists to prevent, and it was going unshown on the page most likely to be left open.
+  // Is the ESP32 reporting? Without this the sensor tiles would keep showing the last
+  // reading as "LIVE", and a dead sensor would look like a calm room.
   const [sensorOnline, setSensorOnline] = useState<boolean | null>(null);
   const [sensorLastSeen, setSensorLastSeen] = useState<string | null>(null);
-  // Routers + UPS (SNMP poller). The Dashboard summarised servers, environment and
-  // aircon but not these two, so a router or UPS incident was invisible on the page
-  // people actually leave open. Only the counts are needed here — the Network / UPS
-  // pages own the detail.
-  // Both the initial GET and the poller's socket payload carry far more than id+status —
-  // the narrow types here were why the dashboard could only ever count these devices
-  // instead of showing them. Everything below is optional because the SNMP path leaves
-  // CPU/mem/clients null (only MikroTik reports them) and a device may be unreachable.
+  // Routers and UPS (SNMP poller), so their incidents show on the dashboard. The initial
+  // GET and the socket payload carry more than id and status; everything is optional
+  // because SNMP leaves CPU/mem/clients null (only MikroTik reports them) and a device
+  // may be unreachable.
   const [netDevices, setNetDevices] = useState<NetDevice[]>([]);
   const [upsDevices, setUpsDevices] = useState<UpsDevice[]>([]);
   const [liveTemp, setLiveTemp] = useState<number | string>("--");
@@ -555,14 +508,11 @@ export default function Dashboard() {
   const { enabled: gasFitted } = useGasSensors();
   const gasFittedCount = gasFitted.length;
   const [liveGas, setLiveGas] = useState<number | string>("--");
-  // WHERE the worst reading is coming from. The tile is an aggregate across every fitted
-  // sensor, and once those sensors sit in different parts of the room the number alone stops
-  // being actionable: "412 ppm" is a fact, "412 ppm at Above UPS cabinet" is an instruction.
+  // Where the worst reading comes from, e.g. "412 ppm at Above UPS cabinet".
   const [worstGasAt, setWorstGasAt] = useState<string | null>(null);
   const [chartLabels, setChartLabels] = useState<string[]>([]);
-  // The same points' timestamps. The labels are formatted for the axis and cannot be
-  // parsed back into instants ("14:20" has no date), but detecting a gap needs the real
-  // times — so they are kept alongside rather than re-derived.
+  // The points' timestamps, kept alongside the labels (which are formatted for the axis
+  // and cannot be parsed back) for gap detection.
   const [chartTimes, setChartTimes] = useState<number[]>([]);
   const [isDark, setIsDark] = useState(() =>
     document.documentElement.classList.contains("dark"),
@@ -571,9 +521,8 @@ export default function Dashboard() {
   const [clock, setClock] = useState(() => new Date());
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  // Room-level alert thresholds (`alert_rules`) — temperature, humidity and gas all colour
-  // against these, so a reading changes colour at exactly the point the system raises an
-  // alert. Follows an admin's Alert Rules edits live.
+  // Room alert thresholds (`alert_rules`); temperature, humidity and gas are coloured by
+  // these and follow Alert Rules edits live.
   const thresholds = useRoomThresholds();
   // Each series' colour right now, for the places where ONE colour has to stand for the
   // whole line: the area fill, the axis, the legend.
@@ -604,14 +553,9 @@ export default function Dashboard() {
   // Routers + UPS: initial load, then keep the counts live off the poller's
   // broadcasts (same events the Network/UPS pages use, ~60s cadence).
   useEffect(() => {
-    // BOTH sources, because GET /network filters `device_type = 'router'` — the MikroTik
-    // lives behind GET /mikrotik. Fetching only the first meant the MikroTik was missing
-    // from the panel until its poller happened to push a `networkMetrics` frame, up to a
-    // full poll interval (~30s) after the page loaded. It looked like the device was slow
-    // to come up; it was simply never asked for.
-    //
-    // The two payloads share their field names (the MikroTik poller reuses
-    // writeNetworkSample), so they merge without translation.
+    // Both sources: GET /network only returns `device_type = 'router'`, and the MikroTik is
+    // behind GET /mikrotik. Both payloads use the same field names (the MikroTik poller
+    // reuses writeNetworkSample), so they merge directly.
     Promise.all([api.getNetworkDevices(), api.getMikrotikDevices()]).then(([net, mt]) => {
       const rows: NetDevice[] = [
         ...(net.success ? net.data?.devices ?? [] : []),
@@ -759,12 +703,9 @@ export default function Dashboard() {
       );
     };
 
-    // The chart used to start EMPTY on every mount and refill from live pushes at ~3s
-    // intervals, so leaving the dashboard and coming back looked like the system had
-    // just booted. Seed it from stored history instead: the same changeRange →
-    // sensorHistory round-trip the Environment page uses. Live readings then append to
-    // that tail rather than starting from nothing. WHICH range is requested lives in its
-    // own effect below, so changing the picker re-seeds without re-binding every listener.
+    // Seed the chart from stored history (the same changeRange → sensorHistory request as
+    // the Environment page), so coming back to the dashboard does not start from empty.
+    // Live readings append to it. The requested range is in its own effect below.
     const handleHistory = (history: SensorHistoryRow[]) => {
       if (!history?.length) return;
       const rows = history.slice(-300);
@@ -800,13 +741,8 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Which server the focus panel is charting, and over what window. Kept here rather
-  // than inside ServerFocus so the table's selected-row highlight and the panel agree.
-  // Remembered across reloads. Refreshing used to drop the user back onto whichever
-  // device happened to be first in the list, silently discarding the one they had chosen
-  // to watch — on a monitoring wall that reads as the dashboard changing its mind.
-  // usePersistedFocus still falls back to the first device when the remembered one is
-  // gone, so a decommissioned server never leaves an empty panel.
+  // Which server the focus panel shows, and over what window, remembered across reloads.
+  // usePersistedFocus falls back to the first device when the saved one is gone.
   const [focusId, setFocusId] = usePersistedFocus(`${FOCUS_KEY}.server`, servers);
   const [focusRange, setFocusRange] = usePersistedState<RangeValue>(
     `${FOCUS_KEY}.range`,
@@ -816,14 +752,9 @@ export default function Dashboard() {
 
   const focusServer = servers.find((s) => String(s.id) === focusId) ?? null;
 
-  // The network and UPS panels follow the same select-then-chart pattern. One range is
-  // shared by all three: an incident is read ACROSS them — a CPU spike, the traffic that
-  // caused it and the UPS load at the same moment — and separate pickers would silently
-  // let two panels show different hours while looking directly comparable.
-  // The Network panel is split in two because the two device classes are not comparable:
-  // a MikroTik is polled over the RouterOS API and reports CPU, memory and client count,
-  // while an SNMP router reports none of those. One combined picker would silently change
-  // WHICH metrics are available depending on what you happened to select.
+  // The network and UPS panels work the same way, and all three share one range so an
+  // incident can be read across them. Network is split into SNMP routers and MikroTik,
+  // since they report different metrics.
   const routers = netDevices.filter((d) => d.type !== "mikrotik");
   const mikrotiks = netDevices.filter((d) => d.type === "mikrotik");
 
@@ -833,13 +764,9 @@ export default function Dashboard() {
   const [mtFocusId, setMtFocusId] = usePersistedFocus(`${FOCUS_KEY}.mikrotik`, mikrotiks);
   const [upsFocusId, setUpsFocusId] = usePersistedFocus(`${FOCUS_KEY}.ups`, upsDevices);
 
-  // The environment chart follows the shared range too, so the whole page is showing one
-  // period. Previously it was pinned to "-1h" while every other chart moved, which is the
-  // worst of both: the panels look directly comparable and silently are not.
-  //
-  // Requested in its OWN effect rather than by adding focusRange to the big socket effect
-  // below — that one binds seven listeners, and re-binding all of them on every range
-  // click would drop live readings during the swap.
+  // The environment chart follows the shared range too. Requested in its own effect so
+  // changing the range does not re-bind the socket listeners below (which would drop
+  // live readings).
   useEffect(() => {
     const ask = () =>
       socket.emit(
@@ -849,16 +776,14 @@ export default function Dashboard() {
           : focusRange.preset,
       );
     ask();
-    // The reply is a one-shot answer to this emit, so a dropped connection loses it for
-    // good — after a backend restart the chart would sit on whatever it last received,
-    // with the live tail resuming on top of stale history. Re-ask on reconnect.
+    // The reply answers this one request, so ask again after a reconnect (e.g. a backend
+    // restart).
     socket.on("connect", ask);
     return () => { socket.off("connect", ask); };
   }, [focusRange]);
 
-  // The span the labels should be formatted for, read by socket handlers that were bound
-  // once at mount. A ref rather than a dep: those handlers must not be re-created — but
-  // they must not format a 30-day point as a bare clock time either.
+  // The range span for formatting labels, as a ref, since the socket handlers are bound
+  // once at mount.
   const envSpanRef = useRef(rangeSpanSec(DEFAULT_RANGE));
   envSpanRef.current = rangeSpanSec(focusRange);
 
@@ -866,11 +791,9 @@ export default function Dashboard() {
   const focusMt = mikrotiks.find((d) => String(d.id) === mtFocusId) ?? null;
   const focusUps = upsDevices.find((d) => String(d.id) === upsFocusId) ?? null;
 
-  // ESP32 liveness: authoritative state over REST, then live transitions over the socket.
-  // Mirrors pages/Environment.tsx — including the re-pull on reconnect and on regaining
-  // focus, because `esp32Status` only fires on a TRANSITION. A tab that was backgrounded
-  // when the sensor died never receives that event, and would sit showing a stale reading
-  // as "LIVE" indefinitely.
+  // ESP32 liveness: current state over REST, then changes over the socket, like
+  // pages/Environment.tsx. Also re-checked on reconnect and on focus, because
+  // `esp32Status` only fires on a change and a background tab could miss it.
   useEffect(() => {
     let cancelled = false;
     const resync = () => {
@@ -899,10 +822,8 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Open incidents. Refetched rather than patched in place on each event: the panel shows
-  // a short list and the lifecycle has several transitions (raise, acknowledge, resolve,
-  // auto-resolve), so re-reading the authoritative list is both simpler and immune to a
-  // missed event leaving a resolved alert on screen for ever.
+  // Open alerts: reload the list on each event instead of patching it, which is simpler
+  // and cannot leave a resolved alert on screen.
   useEffect(() => {
     let cancelled = false;
     const load = () => {
@@ -925,9 +846,8 @@ export default function Dashboard() {
     };
   }, []);
 
-  // The reading is only "LIVE" while the sensor is actually reporting. `null` means we
-  // have not heard back yet — treated as live, so the tiles don't flash a false offline
-  // warning on every page load.
+  // "LIVE" only while the sensor is reporting. `null` (no answer yet) counts as live, so
+  // the tiles do not flash offline on page load.
   const sensorDead = sensorOnline === false;
   const sensorSub = sensorLastSeen
     ? `SENSOR OFFLINE · last ${fmtClock(sensorLastSeen)}`
@@ -956,9 +876,8 @@ export default function Dashboard() {
   const tickColor = isDark ? "rgba(140,160,200,0.4)" : "rgba(80,100,130,0.5)";
 
   // ── Combined temp + humidity chart ────────────────────────────────────────
-  // Break the line wherever the ESP32 stopped reporting. Smoothing runs FIRST, on the
-  // dense arrays — `smooth()` averages a sliding window and would spread a null across
-  // its neighbours — and the breaks are inserted into the result.
+  // Break the line where the ESP32 stopped reporting. Smoothing runs first on the full
+  // arrays (it would spread a null into its neighbours), then the breaks are inserted.
   const envChart = useMemo(() => {
     const { labels, series } = withGaps(chartTimes, chartLabels, [
       smooth(chartTemps),
@@ -973,18 +892,14 @@ export default function Dashboard() {
       {
         label: "Temperature",
         data: envChart.temps,
-        // Each SEGMENT takes the alert band of the point it ends on, so the line is blue
-        // where the room was too cold and red where it breached critical — the history
-        // keeps its own colours instead of the whole line being repainted by the newest
-        // reading, which would have claimed things about the past that were not true.
-        // `borderColor` below is the fallback Chart.js uses before segments resolve.
+        // Each segment takes the alert band of the point it ends on, so the line keeps its
+        // past colours instead of all being repainted by the latest reading. `borderColor`
+        // below is only the fallback before segments resolve.
         borderColor: ENV_TEMP,
         segment: {
           borderColor: (ctx) => temperatureColor(ctx.p1.parsed.y, thresholds, ENV_TEMP),
         },
-        // The area fill is one region and cannot be split per band, so it follows the
-        // CURRENT reading — it is decorative at this alpha, and tracking the live band
-        // keeps it from fighting the newest part of the line.
+        // The fill cannot be split per band, so it follows the current reading.
         backgroundColor: (ctx: ScriptableContext<"line">) =>
           gradientFill(ctx, withAlpha(liveTempColor, 0.18), withAlpha(liveTempColor, 0.01)),
         borderWidth: 1.5,
@@ -999,9 +914,8 @@ export default function Dashboard() {
       {
         label: "Humidity",
         data: envChart.hums,
-        // Keeps its own blue while the room is within the `humidity` rules, and turns
-        // orange/red per segment where it was not. It shares this chart with temperature,
-        // so it cannot go green when normal without becoming the same line.
+        // Keeps its own blue while humidity is within the rules and turns orange/red where it
+        // was not (it shares the chart with temperature).
         borderColor: ENV_HUM,
         segment: {
           borderColor: (ctx) =>
@@ -1047,10 +961,8 @@ export default function Dashboard() {
               ? ` ${y.toFixed(1)} °C`
               : ` ${y.toFixed(1)} %`;
           },
-          // Chart.js's default swatch reads the dataset's static `borderColor`, which here
-          // is only the pre-first-reading fallback — so the box stayed amber no matter
-          // what the line under the cursor was doing. Resolve it from the HOVERED point
-          // instead, the same way the segment beneath it is coloured.
+          // Chart.js's default tooltip swatch uses the static `borderColor` (the fallback), so
+          // colour it from the hovered point instead, like the segment.
           labelColor: (ctx) => {
             const y = ctx.parsed.y as number | null;
             const color = ctx.datasetIndex === 0
@@ -1078,9 +990,7 @@ export default function Dashboard() {
         grid: { color: gridColor, drawTicks: false },
         border: { display: false },
         ticks: {
-          // Follows the live zone, not a fixed amber: the axis is how you tell which line
-          // belongs to which scale, and a multi-coloured line needs an axis that still
-          // matches some part of it.
+          // The axis follows the live zone colour, so it still matches the line it belongs to.
           color: liveTempColor,
           font: { size: 9, family: "monospace" },
           padding: 6,
@@ -1142,12 +1052,8 @@ export default function Dashboard() {
           </span>
         </div>
 
-        {/* One range for every chart below, and it lives HERE rather than inside a panel
-            for exactly that reason: a control that sits in the Server panel but silently
-            redraws Network and UPS too is a trap. Shared because an incident is read
-            ACROSS the three — a CPU spike, the traffic that caused it and the UPS load at
-            the same moment — and per-panel pickers would let two of them show different
-            hours while looking directly comparable. */}
+        {/* One range for all the charts below, placed here rather than inside one panel, since
+           it changes all of them. Shared so an incident can be compared across panels. */}
         <div className="flex items-center gap-2">
           <span className="text-[11px] tracking-widest uppercase hidden sm:inline" style={{ color: gf.textDim }}>
             Charts
@@ -1158,16 +1064,12 @@ export default function Dashboard() {
 
       {/* ── Row 1: Stat panels ── */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-        {/* Coloured by the `temperature` ALERT RULES: blue below the firmware's cold
-            constant, green while within the rules, orange at the warning rule and red at
-            the critical one — so the tile changes at the same instant the system raises
-            the alert. The band is named below the value; a colour alone cannot say which
-            threshold was crossed. */}
-        {/* When the ESP32 stops reporting, the value is GREYED rather than kept in its
-            alarm colour. A red 35 °C tile asserts the room is hot right now; once the
-            sensor is dead the only honest claim is "this was the last reading". The
-            reading itself stays visible — it is still the best evidence of what the room
-            was doing — and the `esp32_offline` alert appears in Active Alerts beside it. */}
+        {/* Coloured by the `temperature` alert rules: blue below the firmware's cold limit,
+           green within the rules, orange at warning, red at critical. The band name is shown
+           under the value. */}
+        {/* When the ESP32 stops reporting, the value turns grey instead of staying in its alarm
+           colour; it is only the last reading now. The `esp32_offline` alert shows in Active
+           Alerts. */}
         <StatPanel
           label="Room Temp"
           value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : "--"}
@@ -1193,9 +1095,7 @@ export default function Dashboard() {
           sub={`${servers.length - online} offline`}
         />
         <StatPanel
-          // "Network", not "Routers": this now counts the MikroTik alongside the SNMP
-          // routers, and calling that number "routers" would quietly misreport what it
-          // covers.
+          // "Network", not "Routers": this count includes the MikroTik.
           label="Network Online"
           value={netDevices.length ? `${netOnline}/${netDevices.length}` : "--"}
           color={
@@ -1203,20 +1103,14 @@ export default function Dashboard() {
           }
           sub={netDevices.length ? `${netDevices.length - netOnline} unreachable` : "none registered"}
         />
-        {/* Replaces the old "Active Alerts" count, which only repeated the sidebar badge
-            and the bell. Air quality is the one safety-critical reading with nowhere else
-            on this page to appear once gas came off the chart. */}
+        {/* Air quality tile (replaced the old Active Alerts count, which repeated the sidebar badge). */}
         <StatPanel
           label="Air Quality"
           value={typeof liveGas === "number" ? String(Math.round(liveGas)) : "--"}
           unit="ppm"
           color={sensorDead ? gf.textMuted : gasColor(liveGas, thresholds, gf.textMuted)}
-          // The advice, like the colour, is keyed off the live `gas` rules rather than off
-          // numbers repeated here — so retuning a rule cannot leave the tile saying
-          // "clean" in orange. A dead sensor overrides all of it: "clean" is a claim about
-          // the room, and with nothing reporting there is no basis for making it.
-          // Named by LOCATION once one is set, because that is the half somebody can act on.
-          // Falls back to the plain wording while the sensors are unnamed or offline.
+          // The advice and colour follow the live `gas` rules. A dead sensor overrides it (no
+          // "clean" without readings). Named by location once sensors are labelled.
           sub={
             sensorDead ? sensorSub
               : gasLabel(liveGas, thresholds) === "CRITICAL"
@@ -1249,10 +1143,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── Row 2: Environment trend + open incidents ── */}
-      {/* Two columns, matching the device rows below. The Environment chart used to span
-          two of three columns, which made it the one panel on the page at its own width —
-          and a chart that is wider than everything else quietly reads as more important
-          than everything else. */}
+      {/* Two columns, matching the device rows below, so no panel is wider than the rest. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Panel
           title="Environment"
@@ -1278,20 +1169,15 @@ export default function Dashboard() {
               ))}
             </>
           }
-          // Row 2 is a GLANCE row — "is the room OK" and "is anything wrong" — so it is
-          // deliberately shorter than the server panel below it, which is the one you
-          // PANEL_H is shared with every other panel on the page, so changing one alone
-          // cannot leave a ragged row.
+          // Row 2 is a quick-check row: is the room OK, is anything wrong. PANEL_H is shared with
+          // every other panel, so rows stay even.
           bodyStyle={{ height: PANEL_H, padding: "8px 12px 12px" }}
         >
           <Line data={combinedData} options={combinedOpts} />
         </Panel>
 
-        {/* Replaces the Avg CPU / Avg Memory gauges that used to sit here.
-            A mean across servers describes nothing real — two hosts at 10% and 90%
-            average to 50%, which is neither of them — and Row 3 now shows each server's
-            actual load with history. The space buys the thing the Dashboard genuinely
-            lacked: what is currently WRONG. */}
+        {/* Replaces the old Avg CPU / Avg Memory gauges (an average across servers describes no
+           real server). Shows what is currently wrong instead. */}
         <Panel
           title="Active Alerts"
           noPad
@@ -1361,18 +1247,12 @@ export default function Dashboard() {
         </Panel>
       </div>
 
-      {/* ── Rows 3-4: the four monitored device classes, as one 2x2 grid ──
-          Servers | Network        (row 3)
-          MikroTik | UPS Power     (row 4)
-          Every panel is the same shape — pick a device, read its chart — and the same
-          size (PANEL_H), so the block reads as a grid rather than four boxes that
-          happen to sit near each other. */}
+      {/* ── Rows 3-4: the four device types, as one 2x2 grid ──
+         Servers | Network        (row 3)
+         MikroTik | UPS Power     (row 4)
+         All the same shape (pick a device, read its chart) and size (PANEL_H). */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {/* Same shape as the other three: pick a device, read its chart. The fleet TABLE
-            that used to sit here is gone — with a dropdown above it and per-metric values
-            on the legend below, it was presenting the same CPU and memory figures a third
-            time, and it was the only thing forcing this panel to scroll internally. The
-            full fleet view lives on the Server Metrics page. */}
+        {/* Same shape as the other three. The full server list is on the Server Metrics page. */}
         <Panel
           title="Server Metrics"
           noPad
@@ -1400,11 +1280,7 @@ export default function Dashboard() {
           )}
         </Panel>
 
-        {/* SNMP routers only. Separate from MikroTik rather than two halves of one panel:
-            the two are polled by different services and expose different metrics (a
-            MikroTik reports CPU, memory and client count; an SNMP router reports none of
-            them), so one picker spanning both would silently change which numbers exist
-            depending on what you selected. */}
+        {/* SNMP routers only; MikroTik has its own panel since it reports different metrics. */}
         <Panel title="Network" noPad bodyStyle={PANEL_BODY} right={
           <span className="text-[12px]" style={{ color: gf.textMuted }}>
             {routers.length ? `${routers.filter((d) => d.status === "Online").length}/${routers.length} online` : "none registered"}
@@ -1461,9 +1337,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── Row 5: Air conditioner units ──
-          Full width, below the 2x2. They are what ACTS on the room temperature plotted in
-          Row 2, and their cards size themselves to the number of registered units — which
-          is why they don't join the fixed-height grid above. */}
+         Full width, below the grid; their cards size to the number of units. */}
       <div className="grid grid-cols-1 gap-3">
         <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
           {aircons.length === 0 ? (
@@ -1471,13 +1345,8 @@ export default function Dashboard() {
               No AC units registered
             </div>
           ) : (
-            // auto-FIT, not auto-fill, and not a fixed xl:grid-cols-4. The fixed grid always
-            // reserved four tracks, so two registered units sat beside two empty columns of
-            // dead space. auto-fit COLLAPSES the tracks it doesn't need, so two cards share
-            // the row; register two more and it becomes four columns on its own, with no
-            // breakpoint to keep in sync with the unit count.
-            //
-            // (auto-fill would keep the empty tracks — the exact behaviour being fixed.)
+            // auto-fit (not auto-fill or a fixed 4 columns): unused tracks collapse, so two units
+            // share the row and four fill four columns, with no breakpoint to maintain.
             <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
               {aircons.map((ac) => (
                 <div
@@ -1508,11 +1377,8 @@ export default function Dashboard() {
                         {ac.name}
                       </span>
                     </div>
-                    {/* ON / OFF, not ONLINE / OFFLINE: this is the unit's POWER
-                        (aircon_state.is_on), and ONLINE means "reachable" for every other
-                        device on this page. UNKNOWN when the ESP32 is offline — every IR
-                        signal goes through it, so with it gone the value is just the last
-                        thing anyone set, unverifiable and possibly days old. */}
+                    {/* ON / OFF (the unit's power, aircon_state.is_on), not ONLINE / OFFLINE (reachable).
+                       UNKNOWN when the ESP32 is offline, since then it is only the last known setting. */}
                     <span
                       className="text-[11px] font-bold px-2 py-0.5 rounded-[2px] tracking-widest"
                       title={sensorDead
@@ -1537,10 +1403,7 @@ export default function Dashboard() {
                       {!sensorDead && ac.enabled && ac.uptime && ac.uptime !== "offline" ? ` · on for ${ac.uptime}` : ""}
                     </span>
                   </div>
-                  {/* Three columns hold at 260px (the card's own floor), so this stays a
-                      grid rather than stacking — "Mode / Set / Fan" read as a row, and
-                      stacking them would triple the card's height on the one screen with
-                      the least of it. */}
+                  {/* Three columns still fit at the card's 260px minimum, so "Mode / Set / Fan" stay in a row. */}
                   <div className="grid grid-cols-3 gap-px" style={{ background: gf.divider }}>
                     {[
                       ["Mode", ac.mode],

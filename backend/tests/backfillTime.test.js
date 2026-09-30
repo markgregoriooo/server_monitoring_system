@@ -31,8 +31,7 @@ test("a timestamp that already carries a zone is left alone", () => {
 });
 
 test("the uptime fallback is reported as no-clock, not as a bad date", () => {
-  // Distinct from "unparseable" on purpose: this one means the DS3231 had nothing to
-  // say, which points at the coin cell rather than at a corrupt row.
+  // Separate from "unparseable": the RTC had no time, which points at the coin cell.
   const { at, reason } = parseDeviceTime("UP 00:12:33", NOW);
   assert.equal(at, null);
   assert.equal(reason, "no-clock");
@@ -47,9 +46,8 @@ test("garbage is unparseable", () => {
 });
 
 test("a row from the firmware's build date is refused, not written as history", () => {
-  // The dead-coin-cell case: rtc.lostPower() -> rtc.adjust(compile time). A well-formed
-  // date on readings that were never taken then — the one failure that would otherwise
-  // look exactly like real history.
+  // Dead coin cell: the firmware sets the clock to its build date, which gives a valid
+  // date that is wrong.
   const buildDate = new Date(NOW - MAX_AGE_MS - 86_400_000).toISOString();
   const { at, reason } = parseDeviceTime(buildDate, NOW);
   assert.equal(at, null);

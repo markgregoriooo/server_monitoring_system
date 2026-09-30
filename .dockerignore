@@ -1,17 +1,11 @@
-# What NOT to send to the Docker daemon as build context.
-#
-# Two jobs. The first is speed: without this file the context is the whole repo
-# INCLUDING frontend/node_modules and .git — hundreds of megabytes copied before
-# the build even starts. The second is the one that matters: `COPY` can only
-# reach what is in the context, so anything excluded here can never be baked
-# into an image that gets handed to a client.
+# What not to send to Docker as build context. Keeps the build fast (no node_modules
+# or .git), and anything excluded here can never be copied into an image.
 
-# ── Secrets. The reason this file exists. ───────────────────────────────────
-# backend/.env holds JWT_SECRET, the MySQL password, the Google client secret,
-# the SMTP app password, MIKROTIK_ENC_KEY and DEVICE_SECRET. An image layer is
-# readable by anyone who has the image — `docker history` / `docker save` — so a
-# copied .env is a credential handed over with the container, permanently.
-# Configuration is passed at RUN time instead (--env-file / compose env).
+# ── Secrets ───────────────────────────────────
+# backend/.env holds JWT_SECRET, the MySQL password, the Google client secret, the
+# SMTP password, MIKROTIK_ENC_KEY and DEVICE_SECRET. Anyone with an image can read its
+# layers (`docker history` / `docker save`), so .env must never be copied in.
+# Configuration is passed at run time instead (--env-file / compose env).
 **/.env
 **/.env.*
 !**/.env.example
@@ -32,10 +26,8 @@ backend/branding/
 **/logs/
 
 # ── Not runtime input for either image ──────────────────────────────────────
-# Both Dockerfiles build from this same root context, so frontend/ source must
-# stay IN (frontend/Dockerfile compiles it). Its build output goes out: stage 1
-# runs npm run build itself, and copying a stale local dist/ over it is how you
-# deploy last week's dashboard without noticing.
+# Both Dockerfiles use this root context, so frontend/ source stays in (frontend/Dockerfile
+# builds it). The local dist/ is left out: the image runs npm run build itself.
 frontend/dist/
 agent/
 iot/

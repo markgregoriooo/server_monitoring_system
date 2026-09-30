@@ -1,35 +1,18 @@
-// ─── Availability arithmetic — PURE, import-free ─────────────────────────────
+// ─── Availability arithmetic ─────────────────────────────
+// Turns outage records into the Server Availability figures ICTU asked for:
+// uptime, downtime, percentage and incidents. No imports, so it is unit-tested.
 //
-// Turns a list of outage records into the four figures ICTU asked a Server
-// Availability Report to carry: uptime, downtime, percentage, incidents.
-//
-// Import-free on purpose, like serverMetricUtils / historyRange / analyticsMath,
-// so `npm test` exercises it with no MySQL, no InfluxDB and no .env.
-//
-// ⚠️ The source is the `alerts` table, NOT the agent's `uptime_seconds`.
-// `uptime_seconds` is a host counter that resets to zero on every reboot, so it
-// answers "how long has this box been up SINCE it last booted" — a sawtooth. An
-// availability report asks the opposite question: what share of THIS PERIOD was
-// the server reachable, across however many reboots. Only the offline alert
-// record spans reboots, because it is written from the backend's side of the
-// connection. See agentService.recordHeartbeat, which auto-resolves the open
-// `offline` alert on the offline→online transition — that resolution is what
-// closes an outage interval here.
-//
-// Servers parked for planned downtime never enter this at all: `setMaintenance`
-// makes the offline sweep skip them, so no alert is raised and the window is not
-// counted against availability. That is deliberate — planned work is not an
-// outage — and it means the figure below is UNPLANNED availability.
+// The source is the offline alerts, not the agent's uptime_seconds (which resets on
+// every reboot). The alert is resolved on the offline→online transition, which
+// closes the outage. Servers in maintenance raise no offline alert, so this is
+// unplanned availability.
 
 /** One second, in ms. */
 const SEC = 1000;
 
 /**
- * Clamp one outage to the reporting window.
- *
- * Returns null when the outage does not overlap the window at all, so callers can
- * filter in one pass. An outage that began before the window contributes only its
- * overlap: a server down since last month is not a month of this month's downtime.
+ * Clamp one outage to the report window. Returns null when it does not overlap, so
+ * an outage that started last month only counts its part inside this window.
  *
  * @param {number} startMs outage start
  * @param {number} endMs   outage end (already resolved to a number by the caller)
@@ -47,20 +30,9 @@ export function clampInterval(startMs, endMs, winStart, winEnd) {
 }
 
 /**
- * Merge overlapping or touching intervals into distinct outage windows.
- *
- * Two reasons this is not optional:
- *
- *  1. Summing raw intervals DOUBLE-COUNTS any overlap, and enough overlap makes
- *     downtime exceed the period — which yields a negative uptime and an
- *     availability above 100% or below 0%. A report that can print "-3%" is worse
- *     than no report.
- *  2. Two alerts overlapping in time are ONE outage to whoever reads the page.
- *     Incidents are counted off the merged set for exactly that reason, so the
- *     incident count and the downtime figure describe the same object.
- *
- * Overlap is tested with `<=` so intervals that merely touch (one resolves at the
- * instant the next opens) fuse into one window rather than reading as two.
+ * Merge overlapping or touching intervals. Summing overlapping intervals counts
+ * downtime twice (and can even give a negative uptime), and two overlapping alerts
+ * are one outage to a reader. Incidents are counted from the merged list.
  *
  * @param {{start: number, end: number}[]} intervals
  * @returns {{start: number, end: number}[]} sorted, non-overlapping
@@ -77,18 +49,13 @@ export function mergeIntervals(intervals) {
 }
 
 /**
- * Human-readable duration. Compact by design — this lands in a table cell.
+ * Short duration for a table cell. Units are dropped from the left only, so values
+ * line up down a column:
  *
- * The rule is positional rather than "drop every zero", so the same duration always
- * renders the same width and a reader can compare two cells down a column:
- *
- *   under a minute → "45s"   (seconds are the only thing left to say)
+ *   under a minute → "45s"
  *   under an hour  → "12m"
  *   under a day    → "4h 12m"
  *   a day or more  → "29d 4h 12m"
- *
- * Dropping interior zeros instead would render exactly one day as "1d", which reads
- * as a truncation next to a neighbouring "1d 3h 20m".
  *
  * @param {number} seconds
  * @returns {string}
@@ -124,13 +91,8 @@ export function computeAvailability({ periodStart, periodEnd, outages = [], now 
   const winStart = ms(periodStart);
   const nowMs = ms(now);
 
-  // The denominator is the ELAPSED part of the window, not the requested one.
-  //
-  // An open outage can only be counted up to `now` — there is no evidence about a
-  // future it hasn't reached. If the denominator still ran to a periodEnd in the
-  // future, that bounded downtime would be divided by an unbounded period and the
-  // percentage would drift toward 100% purely because the report was run early.
-  // Both sides are therefore capped at the same instant.
+  // Divide by the part of the window that has already passed. An open outage can only
+  // be counted up to now, so running a report early would otherwise drift toward 100%.
   const winEnd = Math.min(ms(periodEnd), nowMs);
 
   const periodMs = winEnd - winStart;
@@ -155,10 +117,8 @@ export function computeAvailability({ periodStart, periodEnd, outages = [], now 
   const uptimeMs = Math.max(0, periodMs - downtimeMs);
 
   let availabilityPct = +((uptimeMs / periodMs) * 100).toFixed(2);
-  // Never let a real outage round away to a clean 100%. A brief blip on a 30-day
-  // window is ~99.998%, which two decimals happily prints as "100" — and "100%"
-  // next to a non-zero downtime column is the kind of contradiction a panel or an
-  // auditor stops on. Floor it just below instead.
+  // Never round a real outage up to 100%: a short blip over 30 days is ~99.998%, and
+  // "100%" next to non-zero downtime looks wrong. Cap it just below.
   if (availabilityPct >= 100 && downtimeMs > 0) availabilityPct = 99.99;
 
   return {

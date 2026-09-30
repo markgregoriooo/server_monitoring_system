@@ -38,10 +38,8 @@ const STATUS_COLOR: Record<string, string> = {
 const sourceLabel = (a: Alert) =>
   a.deviceName ?? (a.deviceId == null ? "Server room" : `Device ${a.deviceId}`);
 
-// Who acted, and when. Rendered twice — under the status pill in the table and on the
-// phone card — so it lives here rather than being written out twice: the fallback chain
-// (resolved time, else acknowledged time, else no time at all) is exactly the kind of
-// detail that drifts between two copies.
+// Who acted and when, shared by the table and the phone card: resolved time, else
+// acknowledged time, else no time.
 const actorLine = (a: Alert): string | null => {
   if (!a.acknowledgedByName || a.status === "active") return null;
   const when =
@@ -64,10 +62,8 @@ function Pill({ color, children }: { color: string; children: React.ReactNode })
   );
 }
 
-// Acknowledge / Resolve, shared by the table row and the phone card so an alert can
-// never offer different actions depending on the width of the screen. `full` stretches
-// the buttons across a card — on a phone a 70px tap target at the end of a row is the
-// one thing you came to press and the hardest thing to hit.
+// Acknowledge / Resolve, shared by the table row and the phone card so both offer the
+// same actions. `full` stretches the buttons across a card for easier tapping.
 function AlertActions({
   a,
   busy,
@@ -133,9 +129,8 @@ export default function Alerts() {
     load(filter);
   }, [filter]);
 
-  // Live: lifecycle changes (alertUpdated) + newly-raised alerts (notification) → reload
-  // the current view + the acknowledged count so other users' actions and auto-resolves
-  // show up immediately.
+  // Live: alert changes (alertUpdated) and new alerts (notification) reload the current
+  // view and the acknowledged count.
   useEffect(() => {
     loadAckCount();
     const refresh = () => {
@@ -177,13 +172,9 @@ export default function Alerts() {
         {/* flex-wrap: four toggles plus the acknowledged badge overrun a 360px phone,
             and an un-wrapped row pushes "resolved" off the edge rather than shrinking. */}
         <div className="flex flex-wrap gap-1">
-          {/* inline-flex + gap so the tab can carry the acknowledged count badge; the
-              12px sizing and the `capitalize` moved onto the inner span both come from
-              main's readability pass.
-              These are TOGGLES, so the two states get opposite depth — unselected sits
-              raised on .gf-btn's face, selected is pushed IN with the inset shadow.
-              Same treatment as the History page's filters, so the two pages' filter
-              rows behave identically. */}
+          {/* inline-flex + gap so the tab can hold the acknowledged count badge. These are
+             toggles: unselected sits raised on .gf-btn, selected is pressed in. Same as the
+             History page filters. */}
           {FILTERS.map((f) => (
             <button
               key={f}
@@ -211,11 +202,9 @@ export default function Alerts() {
         </div>
       </div>
 
-      {/* Incident list — TWO layouts over one data source.
-          A six-column table on a 390px phone is a sideways scroll, and the columns that
-          end up off the right edge are the message and the buttons: the two things the
-          page exists for. Below `md` the same alerts render as cards; from `md` up it is
-          the table, unchanged. Same split UpsMonitoring.tsx already uses for its list. */}
+      {/* Alert list in two layouts from one data source: cards below `md`, the table from
+         `md` up (a six-column table on a phone pushed the message and buttons off screen).
+         Same approach as UpsMonitoring.tsx. */}
       <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
         {/* Phone */}
         <div className="md:hidden">
@@ -246,9 +235,8 @@ export default function Alerts() {
                   </span>
                 </div>
 
-                {/* break-words, not the table's `truncate`: on a phone this text is the
-                    whole reason the row is on screen, and there is no hover tooltip to
-                    recover a cut-off message from. */}
+                {/* break-words instead of truncate: on a phone the message is the main content and
+                   there is no hover tooltip. */}
                 <div>
                   <div className="text-[13px] font-medium break-words">{a.title}</div>
                   <div className="text-[12px] break-words" style={{ color: gf.textMuted }}>

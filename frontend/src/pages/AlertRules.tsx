@@ -3,9 +3,9 @@ import { api } from "../api/api";
 import { GF as gf, STATUS } from "../theme/gf";
 const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
-// Admin-only page for the configurable alert thresholds (alert_rules). A rule with
-// deviceId = null is a GLOBAL default (every server / the room); a deviceId is a
-// per-server override. Resolver + evaluation live in backend/services/alertRulesService.js.
+// Admin-only page for alert thresholds (alert_rules). deviceId = null is a global
+// default (every server / the room); a deviceId is a per-device override. Resolution
+// and evaluation are in backend/services/alertRulesService.js.
 
 interface Rule {
   id: number;
@@ -52,9 +52,8 @@ interface MetricMeta {
   unit: string;
   color: string;
   env?: boolean; // room-level (ESP32) metric — global only, never per-device
-  // Which class of device this metric applies to. Drives the scope dropdown: picking a
-  // router only offers router metrics, picking a UPS only offers UPS metrics. Metrics
-  // used to be server-only here, which forced every router/UPS threshold to be global.
+  // Which type of device this metric applies to. Drives the scope dropdown, so a router
+  // only offers router metrics and a UPS only UPS metrics.
   scope?: DeviceKind;
   lowerIsWorse?: boolean; // smaller value = worse (battery charge / runtime) → default the condition to '<='
 }
@@ -66,23 +65,20 @@ const METRICS: MetricMeta[] = [
   { value: "temperature", label: "Temperature", unit: "°C", color: "#FF6B6B", env: true },
   { value: "gas", label: "Gas / smoke", unit: "ppm", color: "#9AA0A6", env: true },
   { value: "humidity", label: "Humidity", unit: "%", color: "#3CC8E8", env: true },
-  // Router / UPS metrics (SNMP + MikroTik pollers → services/deviceAlerts.js). Global
-  // defaults ship seeded in the base schema (v13_cspc-ictu-monitoring-system.sql); per-device
-  // overrides are now selectable here too.
+  // Router / UPS metrics (SNMP and MikroTik pollers → services/deviceAlerts.js). Global
+  // defaults are seeded in v13_cspc-ictu-monitoring-system.sql; per-device overrides can
+  // be set here.
   { value: "router_cpu", label: "Router CPU", unit: "%", color: "#5794F2", scope: "network" },
   { value: "router_mem", label: "Router memory", unit: "%", color: "#B877D9", scope: "network" },
   { value: "router_clients", label: "Connected clients", unit: "", color: "#73BF69", scope: "network" },
   { value: "link_util", label: "Link utilization", unit: "%", color: "#FF9830", scope: "network" },
-  // Errors ADDED since the previous poll (rx+tx), not the lifetime counter — so the
-  // sensible threshold depends on the poll cadence. See
-  // the seeded `link_errors` rule in the base schema.
+  // Errors added since the previous poll (rx+tx), not the lifetime total, so a sensible
+  // threshold depends on the poll interval. See the seeded `link_errors` rule.
   { value: "link_errors", label: "Link errors", unit: "/poll", color: "#F2495C", scope: "network" },
-  // ICMP link quality — the two things SNMP cannot report (a walk either answers or
-  // times out, so a link dropping a third of its packets reads as healthy). Also the
-  // only numeric metrics a PING-ONLY router has. Seeded in the base schema:
-  // router_loss ACTIVE, router_latency INACTIVE — latency's right value is a property
-  // of the link (a rack switch answers in <1 ms, an ISP CPE in 20-40 ms, both healthy),
-  // so it is put in front of an admin to set per device rather than guessed globally.
+  // ICMP link quality: what SNMP cannot report, and the only numeric metrics a ping-only
+  // router has. Seeded with router_loss active and router_latency inactive; the right
+  // latency depends on the link (<1 ms for a rack switch, 20-40 ms for ISP equipment),
+  // so it is set per device.
   { value: "router_latency", label: "Latency", unit: "ms", color: "#3CC8E8", scope: "network" },
   { value: "router_loss", label: "Packet loss", unit: "%", color: "#F2495C", scope: "network" },
   { value: "ups_charge", label: "UPS battery", unit: "%", color: "#73BF69", scope: "ups", lowerIsWorse: true },
@@ -377,10 +373,10 @@ export default function AlertRules() {
     }
   };
 
-  // ─── Coverage guard ─────────────────────────────────────────────────────────
-  // Alerting is rules-only: with no global rule for a metric, every server WITHOUT
-  // its own override goes silent for it. Warn before an edit/delete removes the last
-  // global rule that's still covering a metric.
+  // ─── Coverage check ─────────────────────────────────────────────────────────
+  // No rule means no alert: without a global rule for a metric, every server without
+  // its own override stops alerting on it. Warn before an edit or delete removes the
+  // last active global rule for a metric.
   const activeGlobalCount = (metric: string, excludeId?: number) =>
     rules.filter(
       (r) => r.deviceId == null && r.isActive && r.metricName === metric && r.id !== excludeId,
@@ -491,9 +487,8 @@ export default function AlertRules() {
 
   const selectCls = "text-[13px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer";
   const liveWarn = formOpen ? coverageLossMessage() : null;
-  // A per-device scope only exposes metrics that apply to THAT kind of device — a router
-  // can't have a disk rule, a UPS can't have a link-utilization rule. Temperature / gas /
-  // humidity are room-level (the ESP32 isn't a `devices` row) so they stay global-only.
+  // A per-device scope only offers metrics for that type of device. Temperature, gas and
+  // humidity are room-level (the ESP32 has no devices row), so they are global only.
   const selectedDevice = form.deviceId === ""
     ? null
     : servers.find((s) => String(s.id) === form.deviceId) ?? null;
@@ -640,9 +635,7 @@ export default function AlertRules() {
                   >
                     {g.rules.length}
                   </span>
-                  {/* Hidden on a phone. It restates the icon immediately to its left, and it
-                      is 90px of a 360px header — spent saying what the globe already said,
-                      while the group NAME beside it gets truncated to pay for it. */}
+                  {/* Hidden on a phone: it repeats the icon beside it and takes space from the group name. */}
                   <span
                     className="hidden sm:inline px-1.5 py-0.5 rounded-[2px] text-[10px] tracking-wider uppercase font-medium shrink-0"
                     style={
@@ -661,11 +654,8 @@ export default function AlertRules() {
                     const meta = metricMeta(r.metricName);
                     const sev = SEV_COLOR[r.severity] ?? gf.textMuted;
                     return (
-                      /* STACKS on a phone. As one row, the severity pill, the Active toggle and
-                         the two icon buttons are all `shrink-0` and take ~200px of a 360px
-                         screen, so the only flexible thing left — the rule itself — was
-                         truncated to a few characters. The controls are decoration; the
-                         sentence "CPU when value > 90%" is the entire content of the page. */
+                      /* Stacks on a phone. In one row the fixed-width controls took ~200px of 360px and cut
+                         the rule text ("CPU when value > 90%") down to a few characters. */
                       <div
                         key={r.id}
                         className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-x-3 gap-y-2 px-3 py-2.5 transition-colors"
@@ -684,10 +674,7 @@ export default function AlertRules() {
                           </span>
                           <div className="min-w-0">
                             <div className="flex items-baseline gap-1.5 min-w-0 flex-wrap">
-                              {/* `sm:truncate`, not `truncate`: on a wide row an over-long name
-                                  should clip rather than reflow the row, but on a phone there is
-                                  no second column to protect — clipping there just hides the
-                                  thing you came to read. */}
+                              {/* `sm:truncate`: clip long names on wide rows only; on a phone, wrap instead. */}
                               <span className="text-[15px] sm:text-[14px] font-semibold sm:font-medium sm:truncate" style={{ color: gf.textPrimary }}>
                                 {meta.label}
                               </span>
@@ -702,9 +689,8 @@ export default function AlertRules() {
                                 </span>
                               )}
                             </div>
-                            {/* The one line on this page that carries the actual setting, so it
-                                is the one that must survive a phone: a size up from the desktop
-                                12px, and the threshold itself at full contrast. */}
+                            {/* The line with the actual setting: one size larger on a phone, threshold at full
+                               contrast. */}
                             <div className="text-[13.5px] sm:text-[12px] mt-0.5 sm:mt-0 sm:truncate" style={{ color: gf.textMuted }}>
                               when value{" "}
                               <span className="font-bold" style={{ color: gf.textPrimary }}>
@@ -712,10 +698,7 @@ export default function AlertRules() {
                                 {meta.unit}
                               </span>
                             </div>
-                            {/* textDim measures ~3:1 against the panel — under the 4.5:1 floor
-                                for text this small, and unreadable on a phone in daylight.
-                                Lifted to textMuted (~4.5:1); it is still clearly the quietest
-                                line of the three. */}
+                            {/* textMuted instead of textDim for enough contrast (~4.5:1) at this size. */}
                             <div className="text-[12px] sm:text-[11px] sm:truncate mt-0.5" style={{ color: gf.textMuted }}>
                               {r.updatedByName ? (
                                 <>
@@ -730,9 +713,8 @@ export default function AlertRules() {
                           </div>
                         </div>
 
-                        {/* Severity, the toggle and the actions travel TOGETHER — on a phone
-                            they form the row's second line, spread edge to edge so the tap
-                            targets are not bunched in one corner. */}
+                        {/* Severity, toggle and actions move together; on a phone they form the second line,
+                           spread across the width. */}
                         <div className="flex items-center gap-2 w-full sm:w-auto sm:contents justify-between pl-[44px] sm:pl-0">
                         {/* severity */}
                         <span
@@ -867,9 +849,8 @@ export default function AlertRules() {
                     onChange={(e) => {
                       const deviceId = e.target.value;
                       setForm((f) => {
-                        // Switching scope: if the current metric doesn't apply to the newly
-                        // selected device's kind (or is room-level), fall back to that
-                        // kind's default metric.
+                        // When the scope changes, if the current metric does not apply to the new device type
+                        // (or is room-level), switch to that type's default metric.
                         const dev = deviceId === "" ? null : servers.find((s) => String(s.id) === deviceId);
                         // Global scope, or a different device: a port from the old
                         // device is meaningless, so drop it.
@@ -905,9 +886,8 @@ export default function AlertRules() {
                 <Field label="Metric">
                   <select name="metricName" value={form.metricName} onChange={(e) => setForm((f) => {
                     const metricName = e.target.value;
-                    // Point the condition the sensible way for the chosen metric: lower-is-worse
-                    // metrics (battery / runtime) want '<='; keep the user's operator if it
-                    // already matches the metric's direction.
+                    // Set the condition for the chosen metric: lower-is-worse metrics (battery, runtime)
+                    // use '<='. Keep the user's operator if it already matches.
                     const isLt = f.comparison.startsWith("<");
                     const lw = metricMeta(metricName).lowerIsWorse;
                     const comparison = lw ? (isLt ? f.comparison : "<=") : (isLt ? ">=" : f.comparison);
@@ -923,10 +903,9 @@ export default function AlertRules() {
                   </select>
                 </Field>
 
-                {/* Per-port scope. link_util / link_errors are measured per interface, so
-                    an ISP uplink that normally sits at 70% and an access port that should
-                    never exceed 5% can each carry their own threshold. Only shown when a
-                    network device is scoped and it reported its ports. */}
+                {/* Per-port scope. link_util / link_errors are measured per interface, so an uplink
+                   that sits at 70% and an access port that should stay under 5% can have different
+                   thresholds. Only shown for a network device that has reported its ports. */}
                 {selectedDevice?.kind === "network"
                   && PER_PORT_METRICS.has(form.metricName)
                   && (selectedDevice.interfaces?.length ?? 0) > 0 && (

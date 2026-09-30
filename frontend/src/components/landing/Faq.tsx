@@ -4,21 +4,9 @@ import Reveal from "./Reveal";
 import { SplitHeading, SectionRail } from "./ScrollFx";
 
 /**
- * The questions someone actually arrives with.
- *
- * Two rules held the content down:
- *
- *   - Every answer is TRUE of the code as it stands, with the real numbers in
- *     it. The retention periods, the domains, the severity default and the
- *     buffering behaviour are all things a reader could check, and a landing
- *     page that overstates them is worse than one that says nothing.
- *   - No question exists to set up a boast. "Can I use it off campus?" has an
- *     awkward answer — mostly no — and it is here precisely because that is the
- *     first thing someone will try.
- *
- * The role breakdown lives here now. It used to sit in the Access section that
- * the sign-in walkthrough replaced, and it was too useful to drop; as a question
- * it is easier to find than it was as two cards at the bottom of a page.
+ * Frequently asked questions. Every answer matches the code, with the real numbers
+ * (retention, domains, severity default, buffering), including the awkward ones like
+ * "Can I use it off campus?". The role breakdown lives here too.
  */
 
 const CHEVRON_SIZE = 12;
@@ -194,12 +182,8 @@ function Item({
           </button>
         </h3>
 
-        {/*
-          Height animates via grid-template-rows 0fr → 1fr, which is the one way
-          to transition to a content height nobody has measured. max-height needs
-          a guessed ceiling: too low clips the longest answer, too high makes
-          every other answer open at a visibly wrong speed.
-        */}
+        {/* Height animates with grid-template-rows 0fr → 1fr, which works for any content
+           height (max-height would need a guessed limit). */}
         <div
           id={panelId}
           role="region"
@@ -210,11 +194,8 @@ function Item({
             transition: "grid-template-rows 280ms cubic-bezier(0.16,1,0.3,1)",
           }}
         >
-          {/* `min-height: 0` is required, not cosmetic: a grid item defaults to
-              min-height:auto, which refuses to shrink below its content and
-              makes the 0fr row clip mid-answer instead of collapsing cleanly.
-              Answers here run several lines on a phone, so this is exactly where
-              it would show. */}
+          {/* `min-height: 0` is needed: a grid item defaults to min-height:auto and would not
+             collapse to the 0fr row. */}
           <div style={{ overflow: "hidden", minHeight: 0 }}>
             <div
               className="px-4 pb-4 text-[13.5px] leading-relaxed"

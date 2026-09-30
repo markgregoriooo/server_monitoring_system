@@ -5,25 +5,20 @@ import { BRAND } from "../../branding";
 import PolicyDocument from "../../pages/legal/PolicyDocument";
 
 /**
- * Blocking acceptance gate. Rendered by AppShell INSTEAD of the dashboard when the
- * signed-in user has not accepted the version currently in force.
+ * Blocking acceptance gate, shown by AppShell instead of the dashboard when the user
+ * has not accepted the current version.
  *
- * Why here and not a checkbox on the login page: before the Google round-trip
- * nobody has identified themselves, so a checkbox there could not be attributed to
- * a person — it would be a client-side flag proving nothing, bypassable by clearing
- * sessionStorage. By this point the JWT exists, so accepting writes a real row
- * naming the user, the version, the time and the IP.
- *
- * It is not dismissable and has no close button on purpose. The only ways out are
- * accepting or signing out, and both are offered.
+ * Shown after sign-in rather than as a checkbox on the login page: only after sign-in
+ * do we know who is accepting, so the acceptance can be recorded with the user,
+ * version, time and IP. It cannot be dismissed; the only ways out are accepting or
+ * signing out.
  */
 export default function PolicyGate() {
   const { user, logout, updateUser } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // Gate the button until the document has actually been scrolled through. Not
-  // security — someone can flick the scrollbar — but it means "I have read this"
-  // is not stamped on a document that never moved off its first paragraph.
+  // Enable the button only after the document has been scrolled to the end. Not a
+  // security measure, just a basic "read it first" step.
   const [read, setRead] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -39,9 +34,8 @@ export default function PolicyGate() {
     setError("");
     const res = await api.acceptPolicy();
     if (res.success && res.data?.policy_version) {
-      // Patch the cached user so AppShell re-renders into the dashboard. The
-      // server is the one that decided the version — echo back what it recorded
-      // rather than assuming what we sent.
+      // Update the cached user so AppShell shows the dashboard, using the version the
+      // server recorded.
       updateUser({
         policy_version: res.data.policy_version,
         policy_current: res.data.policy_current,

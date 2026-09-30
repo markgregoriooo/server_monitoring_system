@@ -24,9 +24,8 @@ import { TILE_CATALOG, DEFAULT_LAYOUT, MAX_TILES, resolveTile, deviceTileId } fr
 import type { TileDef } from "./tiles/catalog";
 import { useLiveSummary } from "./LiveSummaryContext";
 
-// Settings → Customize Widget: drag-and-drop builder for the PiP widget layout. Edits a
-// local `draft`; the live preview + (once supported) the open pop-out render it; Save
-// persists via useWidgetLayout. Build big here, render small in the floating window.
+// Settings → Customize Widget: drag-and-drop builder for the PiP widget. Edits a local
+// `draft` shown in the preview; Save stores it via useWidgetLayout.
 
 const panel: React.CSSProperties = {
   background: "var(--gf-panel)",
@@ -45,10 +44,8 @@ function GripIcon() {
   );
 }
 
-// Pins ONE device as its own tile. A dropdown rather than a "+" per unit: the campus
-// can have a dozen routers, and that many rows would bury the handful of static tiles
-// above them. Resets to the placeholder after each pick so it reads as an action
-// ("add this one") rather than a setting ("the selected one").
+// Pins one device as its own tile. A dropdown rather than a "+" per unit (there can be a
+// dozen routers). Resets after each pick.
 function DevicePicker({
   placeholder,
   emptyLabel,
@@ -151,15 +148,12 @@ export default function WidgetBuilder() {
   const dirty = JSON.stringify(draft) !== JSON.stringify(layout);
   const inDraft = useMemo(() => new Set(draft), [draft]);
 
-  // Live device lists, so a specific unit can be pinned as its own tile. This is why
-  // device picking lives HERE and not in the pop-out: React events don't fire on nodes
-  // portaled into the PiP document (pip-widget.md §9), so a selector inside the widget
-  // could never be clicked. Build big, render small.
+  // Live device lists for pinning a unit. Device picking is here, not in the pop-out,
+  // because React events do not work inside the PiP document (pip-widget.md §9).
   const { servers, upsList, routers } = useLiveSummary();
 
-  // Catalog grouped for the "Available tiles" column. Per-device tiles are NOT listed
-  // here — they go in a dropdown under their group (see DevicePicker), because one "+"
-  // row per unit would swamp the column on a campus with a dozen routers.
+  // The catalog grouped for "Available tiles". Per-device tiles are in a dropdown under
+  // their group instead (see DevicePicker).
   const groups = useMemo(() => {
     const g = new Map<string, TileDef[]>();
     for (const t of TILE_CATALOG) {
@@ -184,9 +178,8 @@ export default function WidgetBuilder() {
     [routers, inDraft],
   );
 
-  // Label for a saved id: static catalog first, then a live device's current name,
-  // falling back to the raw id so a decommissioned device is still identifiable enough
-  // to remove.
+  // Label for a saved id: the catalog first, then a live device's current name, else the
+  // raw id, so a removed device can still be identified and removed.
   const labelFor = (id: string): string => {
     const def = resolveTile(id);
     if (!def) return id;
@@ -201,9 +194,7 @@ export default function WidgetBuilder() {
 
   const add = (id: string) => setDraft((d) => (d.includes(id) || d.length >= MAX_TILES ? d : [...d, id]));
   const removeTile = (id: string) => setDraft((d) => d.filter((x) => x !== id));
-  // The available list toggles: clicking an added tile takes it back off. Previously an
-  // added row was simply disabled, which left dead weight in the column and made the
-  // "Your widget" list the only way to undo a misclick.
+  // Clicking an added tile in the available list removes it again.
   const toggle = (id: string) => (inDraft.has(id) ? removeTile(id) : add(id));
 
   const full = draft.length >= MAX_TILES;
@@ -309,21 +300,14 @@ export default function WidgetBuilder() {
                     </span>
                   )}
                 </div>
-                {/* Two-up on a phone, one-up once the three-column layout kicks in at
-                    lg. On a narrow screen the whole builder stacks, so a single column
-                    of tiles means every button spans the full viewport and the list
-                    runs on for screens; at lg this column is already only a third of
-                    the panel, where one-up is the right fit. Button height is unchanged
-                    either way. */}
+                {/* Two per row on a phone, one per row from lg (where this column is a third of the panel). */}
                 <div className="grid grid-cols-2 lg:grid-cols-1 gap-1">
                 {tiles.map((t) => {
                   const added = inDraft.has(t.id);
                   // At capacity, only REMOVING stays possible — an add that the server
                   // would silently drop must not look available.
                   const blocked = !added && full;
-                  // Description rides in the TOOLTIP rather than a second line: it is
-                  // genuinely useful when choosing, but a two-line button made the
-                  // column roughly twice as tall for information you only need once.
+                  // The description is in the tooltip rather than a second line, to keep the list compact.
                   const hint = blocked
                     ? `Widget is full (${MAX_TILES} tiles) — remove one first`
                     : added
@@ -423,10 +407,8 @@ export default function WidgetBuilder() {
               <span className="text-[10px] tracking-widest uppercase" style={{ color: "var(--gf-text-muted)" }}>Preview</span>
               <span className="text-[9px] tabular-nums" style={{ color: "var(--gf-text-dim)" }}>actual size · 320×300</span>
             </div>
-            {/* --gf-shadow is the FLOATING-panel shadow (the one modals use), not the
-                button one: this box stands for a window that hovers over the desktop,
-                so lifting it off the page is literal rather than decorative.
-                max-w-full stops the fixed 320px from overflowing a narrow phone. */}
+            {/* Uses the floating-panel shadow (--gf-shadow, as for modals), since this box stands for
+               a window over the desktop. max-w-full keeps the 320px box inside a narrow phone. */}
             <div
               className="self-start overflow-hidden max-w-full"
               style={{ width: 320, height: 300, ...panel, boxShadow: "var(--gf-shadow)" }}

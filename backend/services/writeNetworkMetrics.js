@@ -1,24 +1,14 @@
 import { writeClient, Point } from "../config/influx.js";
 import backupService from "./backupService.js";
 
-// ─── Moved out of handlers/ ───────────────────────────────────────────────────
-//
-// This is a SINK, not a request handler. Nothing routes to it: the SNMP and MikroTik
-// pollers call it with a collected sample, and it writes InfluxDB + the on-site backup
-// and broadcasts to dashboards. It lived in handlers/ alongside genuine inbound request
-// handlers (serverHistoryHandler, sensorHandler), which made every poller look like it
-// depended UPWARD on the handler layer — three of the four layering violations in the
-// backend were this one misplacement.
-// See audits/architecture-report-2026-08-25.md — A-02.
+// Moved from handlers/: this is called by the pollers, not a request handler.
+// See audits/architecture-report-2026-08-25.md (A-02).
 
 // ─── Router/switch sample → InfluxDB + Socket.IO ──────────────────────────────
-//
-// Called by snmpPollerService once per reachable router each poll cycle. Mirrors
-// serverMetricsHandler: shape → write Influx → flush → broadcast. Two measurements
-// per device: one `router_metrics` point (per-device) + one `network_traffic`
-// point per interface. The byte/error counters are written CUMULATIVE as uinteger
-// (Counter64 BigInts) — rate is derived at query time (design doc §5). Never
-// throws: an Influx outage logs and still broadcasts so the dashboard stays live.
+// Called by the pollers once per router per cycle. Writes one `router_metrics` point
+// per device and one `network_traffic` point per interface. Byte/error counters are
+// stored cumulative as uinteger; rates are worked out at query time. Never throws: if
+// InfluxDB is down it logs and still broadcasts.
 
 // sample = {
 //   reachable, uptimeSeconds, cpuPercent|null, memPercent|null,
@@ -104,10 +94,8 @@ export async function writeNetworkSample(io, device, sample) {
         ip: device.ip,
         type: device.type ?? "router",
         location: device.location,
-        // Derived, not hardcoded "Online". The ping-only path writes a sample even
-        // when the device is DOWN (100% loss is the measurement), so a fixed
-        // "Online" here would have every dashboard show an unreachable router as up
-        // on the same broadcast that reports it lost every packet.
+        // From the sample, not a fixed "Online": the ping path also sends samples for a down
+        // device.
         status: sample.reachable !== false ? "Online" : "Offline",
         reachable: sample.reachable !== false,
         descr: sample.descr ?? null, // sysDescr — vendor/model
@@ -115,16 +103,11 @@ export async function writeNetworkSample(io, device, sample) {
         uptimeSeconds: sample.uptimeSeconds ?? null,
         cpuPercent: sample.cpuPercent ?? null,
         memPercent: sample.memPercent ?? null,
-        // ICMP — written to Influx since this handler was built, but never sent to
-        // the browser, so the two fields could not be displayed anywhere. They are
-        // the ONLY live numbers a ping-only router has.
+        // ICMP values; the only live numbers a ping-only router has.
         latencyMs: sample.latencyMs ?? null,
         packetLossPct: sample.packetLossPct ?? null,
-        // Which collector produced this. The UI renders a different set of panels per
-        // mode, so a broadcast that omitted it left a dashboard opened mid-session
-        // showing SNMP panels (Ports Up 0/0, Peak Util 0%) for a ping device — the
-        // exact "looks broken" state the mode flag exists to prevent. MikroTik goes
-        // through this handler too and is always a full read, hence the default.
+        // Which collector produced this, so the UI shows the right panels (a ping device has
+        // no ports). MikroTik also uses this and is always a full read, hence the default.
         mode: device.pingOnly ? "ping" : "snmp",
         // Was omitted, so the dashboard's client count never updated live — it only
         // arrived on the initial GET. SNMP leaves it null; MikroTik fills it.
@@ -134,15 +117,8 @@ export async function writeNetworkSample(io, device, sample) {
           locationLabel: i.locationLabel ?? "",
           linkUp: Boolean(i.linkUp),
           utilizationPct: i.utilizationPct ?? null,
-          // Collected by both pollers and written to Influx. Cumulative counters —
-          // the UI shows the per-poll DELTA, since a lifetime total says nothing about
-          // whether a cable is failing now.
-          //
-          // These three (rxErrors/txErrors/speedMbps) were each declared TWICE in
-          // this object literal: once as `?? null` and again below as `?? 0`. A
-          // duplicate key is not an error in JS — the last one silently wins — so the
-          // first set was dead code, and reading the file suggested errors could arrive
-          // as null when they never could.
+          // Error counters and link speed from both pollers. The UI shows the change per poll,
+          // not the lifetime total.
           rxErrors: i.rxErrors ?? 0,
           txErrors: i.txErrors ?? 0,
           speedMbps: i.speedMbps ?? null, // negotiated link speed (ifHighSpeed)

@@ -1,9 +1,7 @@
-// Guards the metric contract that is hand-duplicated between the Go agent and
-// this backend (server-metrics.md §10 flags the drift hazard explicitly).
-//
-// It parses the REAL agent/internal/collector/metrics.go and asserts its json
-// tags still match what the handler validates. Adding a field on one side without
-// the other now fails here instead of silently 400-ing every agent in the field.
+// Checks the metric contract that exists in both the Go agent and this backend
+// (server-metrics.md §10). Reads agent/internal/collector/metrics.go and checks its
+// json tags match what the handler validates, so a field added on one side only
+// fails here instead of every agent getting 400.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -71,9 +69,8 @@ test("the agent sends no unknown required fields", () => {
 });
 
 test("required metric fields are NOT omitempty", () => {
-  // A required field marked omitempty would vanish from the JSON at its zero
-  // value — 0% CPU is legitimate, and the handler would reject the post as
-  // "missing field". This is a real bug shape, so pin it.
+  // A required field with omitempty would disappear at zero (0% CPU is valid) and the
+  // handler would reject the post.
   for (const tag of metricTags) {
     if (!NUMERIC_FIELDS.includes(tag.name) && tag.name !== "process_count") continue;
     assert.equal(tag.omitempty, false, `"${tag.name}" must not be omitempty`);
@@ -88,9 +85,8 @@ test("Volume carries the fields the backend tags and stores", () => {
 });
 
 test("Payload's optional extras stay optional", () => {
-  // These ride along on some posts only; without omitempty every post would
-  // carry an empty host object and a zero interval, and the backend would
-  // treat the zero interval as a real cadence.
+  // These are only on some posts; without omitempty every post would carry an empty
+  // host object and a zero interval.
   const byName = Object.fromEntries(payloadTags.map((t) => [t.name, t]));
   for (const field of ["host", "interval_seconds", "collected_at"]) {
     assert.ok(byName[field], `Payload is missing json tag "${field}"`);

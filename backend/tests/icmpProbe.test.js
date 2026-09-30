@@ -2,15 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ping } from "../services/icmpPing.js";
 
-// ─── "The probe is broken" must never look like "the network is down" ─────────
-//
-// Both used to return packetLossPct: 100. That is the most misleading answer this
-// module can give — every router reads as a total outage, alerts fire on all of them at
-// once, and the fault is investigated on a network that is fine. The cause is mundane
-// (no `ping` binary, or systemd's NoNewPrivileges blocking the setuid/cap_net_raw that
-// ping needs) and the symptom points nowhere near it.
-//
-// These use small counts and short timeouts so the suite stays fast.
+// ─── A broken ping must not look like a network outage ─────────
+// Both used to return 100% loss, so a missing ping binary or systemd's
+// NoNewPrivileges made every router look down at once. Small counts and short
+// timeouts keep these fast.
 
 test("a broken probe reports probeError and NO loss measurement", async () => {
   const realPath = process.env.PATH;

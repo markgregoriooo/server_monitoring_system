@@ -1,35 +1,21 @@
 /**
- * PURE, import-free helpers for the multi-sensor gas path.
+ * Helpers for the multi-sensor gas readings, with no imports so they are unit-tested.
  *
- * Import-free like serverMetricUtils / envPersistPolicy / analyticsMath, so `npm test` can
- * exercise it with no MySQL, no InfluxDB and no .env.
- *
- * ── The compatibility problem this exists to solve ──────────────────────────────────────
- * Gas used to be exactly two fields, `mq2_1_ppm` and `mq2_2_ppm`, hand-written into the
- * firmware payload, the validation, the InfluxDB write, the SD card's CSV, the backup NDJSON
- * and three frontend pages. Going to four sensors cannot mean breaking an ESP32 that has not
- * been reflashed yet — the boxes are in a ceiling, and "reflash everything first" is how a
- * monitoring system goes dark during its own upgrade.
- *
- * So BOTH shapes are accepted, forever-ish:
- *   • new — `gas_ppm: [38.2, 41.0, 36.7, null]`, index+1 = channel
- *   • old — `mq2_1_ppm` / `mq2_2_ppm`
- * and both are WRITTEN, so an old dashboard and an old query keep reading what they expect
- * while the new per-sensor series fills in beside them. Same reasoning as the deprecated
- * `deviceKey` query fallback in the socket handshake: the migration ends when the last device
- * is reflashed, not when the code lands.
+ * Gas used to be two fixed fields, `mq2_1_ppm` and `mq2_2_ppm`. To support four
+ * sensors without breaking an ESP32 that has not been reflashed, both shapes are
+ * accepted:
+ *   • new: `gas_ppm: [38.2, 41.0, 36.7, null]`, index+1 = channel
+ *   • old: `mq2_1_ppm` / `mq2_2_ppm`
+ * and both are written, so existing queries keep working while the per-sensor
+ * series is added alongside.
  */
 
 /**
- * Normalise a reading into per-channel entries.
- *
- * ⚠️ `enabled` is a SAFETY gate, not a view filter. An ADC pin with no sensor attached floats
- * — it does not read zero, it reads noise, and MQ-2 noise pushed through an exponential curve
- * is a plausible-looking ppm. A channel nobody has confirmed is wired must not be able to
- * raise a smoke alarm, so an unknown channel is dropped rather than trusted.
+ * Normalise a reading into per-channel entries. Channels not in `enabled` are
+ * dropped: an unwired ADC pin reads noise that looks like a real ppm.
  *
  * @param {object} data           the socket payload
- * @param {number[]} enabled      channels an admin has confirmed are wired (1-based)
+ * @param {number[]} enabled      channels an admin has marked as wired (1-based)
  * @returns {{channel:number, ppm:number}[]} ascending by channel, non-finite values removed
  */
 export function normalizeGas(data, enabled = []) {
@@ -37,10 +23,8 @@ export function normalizeGas(data, enabled = []) {
   const out = [];
 
   const push = (channel, raw) => {
-    // ⚠️ Rejected BEFORE Number(), because `Number(null)` is 0 and `Number("")` is 0 — both
-    // finite, both wrong. An unpopulated slot would have become a perfectly valid 0 ppm
-    // reading, mirrored into the legacy field, and dragged every mean() over the range down.
-    // A missing reading has to be a GAP, not a floor.
+    // Checked before Number(), since Number(null) and Number("") are both 0. A missing
+    // reading must be a gap, not 0 ppm.
     if (raw === null || raw === undefined || raw === "") return;
     const ppm = Number(raw);
     if (!Number.isFinite(ppm)) return;      // junk from a malformed payload
@@ -61,15 +45,9 @@ export function normalizeGas(data, enabled = []) {
 }
 
 /**
- * The single number the room is judged on.
- *
- * MAX, not mean — coverage logic. Two sensors are only worth having if they are in different
- * places, and then the question is "does ANY of them see smoke", not "what is the room's
- * average smokiness". Averaging four sensors would let one of them sit in a fire while the
- * other three dilute it below the threshold.
- *
- * Returns null when there is nothing to judge, so the caller can skip the metric rather than
- * evaluate 0 ppm and cheerfully resolve a smoke alert on no evidence.
+ * The one number the room is judged on: the max across sensors, not the mean, so
+ * one sensor near smoke is not averaged away by the others. Null when there is
+ * nothing to judge, so the caller skips the metric instead of reading 0 ppm.
  */
 export function worstGas(readings) {
   let worst = null;
@@ -80,9 +58,8 @@ export function worstGas(readings) {
 }
 
 /**
- * Legacy field mirror, so points written from a 4-sensor device stay readable by every query,
- * chart and report that was written against `mq2_1_ppm` / `mq2_2_ppm`. Channels above 2 have
- * nowhere to go here — they live in the per-channel series instead, which is the whole point.
+ * Legacy fields, so points from a 4-sensor device stay readable by everything
+ * built on mq2_1_ppm / mq2_2_ppm. Channels above 2 only exist in the per-channel series.
  */
 export function legacyFields(readings) {
   const fields = {};

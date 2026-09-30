@@ -65,9 +65,8 @@ interface HistoryPoint {
   netRecv: number | null;  // cumulative bytes
 }
 
-// Windows spanning more than a day need the DATE on the axis — bare "14:00" repeats
-// every day and makes a 30d chart unreadable. Driven by the window's actual SPAN
-// rather than a list of preset keys, so a custom 5-day window gets dates too.
+// Windows longer than a day show the date on the axis. Based on the window's span, so a
+// custom 5-day window gets dates too.
 
 // Throughput in MB/s between two cumulative byte counters (clamps counter resets).
 interface DeviceLog {
@@ -87,10 +86,8 @@ interface OpenAlert {
   acknowledgedByName: string | null;
 }
 
-// "What is wrong RIGHT NOW" — the alerts still open for this server. Kept apart from
-// the Recent events log on purpose: the log is history (every problem starting and
-// ending), this is current state. Reading "is it still critical?" off the newest log
-// line is how a closed alert came to look open.
+// The alerts still open for this server (current state), separate from the Recent
+// events log (history).
 function ActiveAlerts({ alerts }: { alerts: OpenAlert[] | null }) {
   if (alerts === null) return null; // still loading — don't flash "no alerts"
   return (
@@ -306,8 +303,7 @@ function InfoCard({ title, rows }: { title: string; rows: [string, string][] }) 
 }
 
 // ─── VolumesCard ──────────────────────────────────────────────────────────────
-// Every fixed volume the agent reported. The disk gauge above is only the ROOT
-// volume, so without this a full data/log drive is invisible on this page.
+// Every volume the agent reported; the disk gauge above only shows the root volume.
 function VolumesCard({ volumes }: { volumes: Volume[] }) {
   return (
     <div className="bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg p-4">
@@ -477,17 +473,10 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   const spanSec  = rangeSpanSec(range);
   const times    = history.map((p) => Date.parse(p.time));
 
-  // Throughput between two CUMULATIVE counters — the rate only exists as a difference.
-  //
-  // Across a gap that difference is not a measurement. The counter kept climbing while
-  // the agent was down, so dividing by the gap's duration yields the AVERAGE rate over
-  // the whole outage — then plots it as a single point at the moment service returned,
-  // where it reads as an instantaneous reading. It is not: it is hours of traffic
-  // collapsed onto one timestamp, and on a busy host it is the tallest thing on the
-  // chart at precisely the moment nothing was being measured.
-  //
-  // So the first sample back is dropped from the network series. `gapPoints` is computed
-  // from the same rule the line breaks on, so the two cannot disagree.
+  // Throughput between two cumulative counters. Across a gap, the difference is the
+  // average over the whole outage, plotted as one point when service returns, which looks
+  // like a spike. So the first sample after a gap is dropped. `gapPoints` uses the same
+  // rule as the line breaks.
   const gapPoints = gapIndices(times);
   const rateAt = (i: number, field: "netRecv" | "netSent") => {
     if (gapPoints.has(i)) return null; // spans an outage — not a rate for this instant
@@ -498,9 +487,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   const rawNetIn  = history.map((_, i) => rateAt(i, "netRecv"));
   const rawNetOut = history.map((_, i) => rateAt(i, "netSent"));
 
-  // Break every series where the agent stopped reporting, so an outage is a hole with a
-  // start and an end instead of a straight line drawn across it. `?? null`, not `?? 0`:
-  // a missing reading is not a zero, and drawing it as one invents a crash to 0% CPU.
+  // Break every series where the agent stopped reporting. `?? null`, not `?? 0`: a
+  // missing reading is not 0% CPU.
   const gapped = withGaps(
     times,
     history.map((p) => fmtTime(p.time, spanSec)),
@@ -518,9 +506,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   const diskData = gapped.series[2]!;
   const netIn    = gapped.series[3]!;
   const netOut   = gapped.series[4]!;
-  // The headline figure and its sparkline read the ORIGINAL arrays — the gapped ones end
-  // in a null whenever the series happens to close on a break, and a sparkline is too
-  // small for a hole to read as anything but a rendering glitch.
+  // The headline figure and sparkline use the original arrays, since a gapped series can
+  // end on a null.
   const netTotal = rawNetIn.map((v, i) => +((v ?? 0) + (rawNetOut[i] ?? 0)).toFixed(2));
   const lastNet  = netTotal.at(-1) ?? 0;
   const diskSpark = history.map((p) => p.disk ?? 0);
@@ -597,9 +584,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
     <div className="p-3 sm:p-4 lg:p-6 flex flex-col gap-4 bg-slate-50 dark:bg-[#0b0e14] min-h-full">
 
       {/* Header */}
-      {/* Had TWO unprefixed border colours (border-white/[0.07] and border-slate-200),
-          so in light mode which one won came down to CSS emission order rather than
-          intent. Light base + dark override, like everything else here. */}
+      {/* Light base border with a dark override, like the rest of the page. */}
       <div className="flex items-center gap-3 pb-3 border-b border-slate-200 dark:border-white/[0.07]">
         <button
           onClick={onBack}
@@ -612,10 +597,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         </button>
         <div className="flex-1" />
         <span className="hidden sm:block truncate max-w-[45%] text-[12px] font-mono text-slate-500 dark:text-slate-400">{s.ip} · {s.region} · {s.role}</span>
-        {/* Light values are the BASE, dark ones are `dark:` overrides — the same shape
-            as the rest of this page (`text-slate-500 dark:text-slate-400`). These were
-            dark-only (bg-green-900/40 with no light variant), so in light mode the badge
-            kept its near-black chip and the pale text on it was barely legible. */}
+        {/* Light values as the base, dark as `dark:` overrides, like the rest of this page. */}
         <span className={`text-xs font-medium px-2.5 py-1 rounded-sm border ${
           s.status === "Online"
             ? "bg-green-100 text-green-700 border-green-300 dark:bg-green-900/40 dark:text-green-400 dark:border-green-700/40"
@@ -680,9 +662,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         />
       </div>
 
-      {/* Range selector — WRAPS on a phone. The label and the six-button group cannot share
-          a 360px line, and `justify-between` stops spreading the moment they fill it, so the
-          two ran straight into each other. The label goes above; the group keeps one line. */}
+      {/* Range selector wraps on a phone: the label goes above and the buttons stay on one line. */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">
           Performance {history.length === 0 ? "· no data for this range" : range.kind === "preset" ? `· last ${presetLabel[range.preset]}` : "· custom range"}

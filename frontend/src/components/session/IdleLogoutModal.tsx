@@ -3,17 +3,10 @@ import { useEffect, useRef } from "react";
 const ACCENT = "#5794F2";
 
 /**
- * Shown when the idle timeout has ended the session, in place of dumping the user on
- * a sign-in screen with no explanation — after stepping away for a few minutes, that
- * reads as a crash rather than a policy.
- *
- * The session is ALREADY gone by the time this renders (see beginIdleLogout in
- * AuthContext): token cleared, socket closed. Nothing here keeps it alive, and the
- * only action available finishes the sign-out.
- *
- * The backdrop is opaque and blurred on purpose. An idle timeout exists to protect an
- * unattended screen, so leaving a readable dashboard behind a transparent overlay
- * would defeat the very thing that triggered it.
+ * Shown when the idle timeout has ended the session, so the user sees why instead
+ * of just landing on the sign-in page. The session is already gone (see
+ * beginIdleLogout in AuthContext); OK finishes the sign-out. The backdrop is opaque
+ * so the unattended screen does not show the dashboard.
  */
 export default function IdleLogoutModal({ onConfirm }: { onConfirm: () => void }) {
   const okRef = useRef<HTMLButtonElement | null>(null);

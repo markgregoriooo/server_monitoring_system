@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-// shutdownReason names why we were asked to stop. systemd sends the same SIGTERM for
-// `systemctl stop cspc-agent` and for a system shutdown, so ask systemd which one this
-// is: while the machine is going down, `systemctl is-system-running` answers
-// "stopping". Anything else — including systemctl not answering in time — is reported
-// as the agent being stopped, which is still raised as an alert.
+// shutdownReason says why we were asked to stop. systemd sends the same SIGTERM for
+// `systemctl stop cspc-agent` and for a system shutdown, so ask systemd: while the
+// machine is going down, `systemctl is-system-running` answers "stopping". Anything
+// else (including no answer in time) is reported as the agent being stopped, which
+// still raises an alert.
 func shutdownReason(sig os.Signal) string {
 	if sig != syscall.SIGTERM {
 		return "stopped"

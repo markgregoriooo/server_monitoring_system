@@ -232,7 +232,7 @@ Common errors:
   for the bootstrap admin confirm the migration `UPDATE` matched its email exactly (lowercase).
 - **Mobile / LAN can't sign in** — Google only allows `localhost` or an **HTTPS** origin, never
   a raw `http://<IP>:5173`. The dashboard has to be served over its HTTPS hostname
-  (`monitoring.cspc.edu.ph`, published by ICTU — `deployment-guide.md` §6.1) and that origin
+  (`datacenter.cspc.edu.ph`, published by ICTU — `deployment-guide.md` §6.1) and that origin
   added to Authorized JavaScript origins.
 
 ---
@@ -269,7 +269,7 @@ Common errors:
 - **The institutional fix** is for ICTU to own the Cloud project under the `cspc.edu.ph` org,
   on a CSPC hostname. Internal then becomes available, the cap disappears, and the branding is
   legitimately CSPC's rather than asserted on a privately-registered domain. Same ask as the
-  `ictusupport@` App Password and the `monitoring.cspc.edu.ph` hostname — send them together.
+  `ictusupport@` App Password and the `datacenter.cspc.edu.ph` hostname — send them together.
 - Serve the dashboard over **HTTPS at a real hostname** and add it to **Authorized JavaScript
   origins** — this is what lets campus PCs and phones sign in at all. ICTU publishes that
   endpoint; see `deployment-guide.md` §6.1.

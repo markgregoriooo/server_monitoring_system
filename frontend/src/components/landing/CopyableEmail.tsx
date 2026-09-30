@@ -1,24 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * An email address that is useful whether or not the visitor has a mail client.
+ * An email address that works whether or not the visitor has a mail client.
  *
- * A bare `mailto:` is a trapdoor. Chrome hands the URL to the OS, and on a
- * machine with no registered mail handler — the default state of a fresh
- * Windows install without Outlook set up — absolutely nothing happens: no
- * composer, no error, no feedback. The one contact route on the page reads as
- * broken to precisely the people who needed it.
- *
- * So the click does BOTH. It copies the address to the clipboard and shows that
- * it did, then lets the `mailto:` proceed normally. Anyone with a mail client
- * gets their composer as before; anyone without gets the address on their
- * clipboard and a visible "Copied" instead of silence.
- *
- * `navigator.clipboard` is a secure-context API and this dashboard is served
- * over plain HTTP on the campus LAN, so it is simply absent in the deployment
- * that matters most. The `execCommand` path is not legacy cruft to be cleaned up
- * later — it is the one that will actually run on site. Same reasoning as the
- * install-keys panel.
+ * A plain `mailto:` does nothing on a machine with no mail app set up. So a click
+ * copies the address and shows "Copied", then lets the `mailto:` open normally.
+ * Uses the `execCommand` fallback because `navigator.clipboard` needs HTTPS and the
+ * campus LAN deployment may be plain HTTP.
  */
 
 async function copyText(text: string): Promise<boolean> {
@@ -72,9 +60,7 @@ export default function CopyableEmail({
   );
 
   const onClick = () => {
-    // Deliberately NOT preventDefault: the mailto still fires for anyone whose
-    // machine can act on it. This only adds a floor under the case where it
-    // cannot.
+    // No preventDefault: the mailto still opens for anyone who has a mail client.
     void copyText(address).then((ok) => {
       setState(ok ? "copied" : "failed");
       if (timer.current) window.clearTimeout(timer.current);

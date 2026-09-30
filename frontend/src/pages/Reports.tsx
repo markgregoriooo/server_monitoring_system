@@ -8,10 +8,10 @@ import { GF as gf, STATUS } from "../theme/gf";
 import { Field } from "../components/ui/primitives";
 const { green: GREEN, red: RED } = STATUS;
 
-// Reports are real now: MySQL `reports` + an on-disk CSV/PDF per report, built on
-// generate from the live stores (InfluxDB sensor_environment / server_metrics /
-// router_metrics + network_traffic / ups_metrics, MySQL alerts / aircon_logs).
-// Backend: services/reportService.js + routes/reports.js.
+// Reports: a row in MySQL `reports` plus a CSV and PDF on disk, built at generate time
+// from InfluxDB (sensor_environment, server_metrics, router_metrics + network_traffic,
+// ups_metrics) and MySQL (alerts, aircon_logs). Backend: services/reportService.js +
+// routes/reports.js.
 
 interface Report {
   id: number;
@@ -38,23 +38,19 @@ interface TypeMeta {
   color: string;
 }
 
-// A device a report can be scoped to. The backend decides which types are scopeable
-// (GET /reports/scope-options) from the same map it validates against, so this page
-// never hardcodes "network means routers".
+// A device a report can be limited to. The backend lists the options
+// (GET /reports/scope-options) from the same map it validates with.
 interface ScopeDevice {
-  // Usually a device_id. The Alert History list also offers the literal "room", which is
-  // the server room itself — environment alerts carry no device_id, so the one scope that
-  // matters most on that report is the one that cannot be a number.
+  // Usually a device_id. The alert history list also offers "room" (the server room),
+  // since environment alerts have no device_id.
   id: number | string;
   name: string;
   type: string;
   location: string | null;
 }
 
-// Device CLASS, shown beside each name in the scope picker. It answers the question the
-// list actually raises — "which of these is the router?" — where a location does not: most
-// devices here share one server room, so the location repeated on every row distinguished
-// nothing while making the names harder to scan.
+// Device type, shown beside each name in the scope picker ("which one is the router?").
+// Location is not shown, since most devices are in the same server room.
 const DEVICE_TYPE_LABEL: Record<string, string> = {
   server: "Server",
   router: "Router",
@@ -138,15 +134,9 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 const daysAgoStr = (n: number) => new Date(Date.now() - n * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
 // ─── Expandable detail row ────────────────────────────────────────────────────
-//
-// Same pattern as the servers table (ServerMetrics.tsx `ServerDrawerRow`): a full-width
-// row under the one that was clicked, animated by max-height so it does not jump.
-//
-// It exists because everything that DECIDED what the PDF looks like was invisible once
-// the report existed. The row shows a title, a period and a status; it could not tell
-// you which page size the file was rendered at, whether it covered one device or the
-// whole campus, or what control number it was filed under — and those are exactly the
-// questions someone asks when they have the printed copy in front of them.
+// Same pattern as ServerMetrics.tsx `ServerDrawerRow`: a full-width row under the
+// clicked one, animated with max-height. Shows what decided how the PDF looks: page
+// size, scope and control number.
 function ReportDrawerRow({ report, isOpen, paperSizes }: {
   report: Report; isOpen: boolean; paperSizes: Record<string, PaperSizeOption>;
 }) {
@@ -159,14 +149,9 @@ function ReportDrawerRow({ report, isOpen, paperSizes }: {
   );
 }
 
-// The drawer's CONTENT, split from the <tr> above so the phone card can open the very
-// same panel: a <tr> cannot live inside a card, and a second copy of these fields would
-// be a second place to edit every time a report gains one.
-//
-// `max` is the collapsed/expanded max-height. It is a prop because the field grid is
-// four columns on a desktop and ONE on a phone, so the same seven fields are roughly
-// twice as tall there — a single constant would either clip the card or leave a gap
-// under the table.
+// The drawer content, separate from the <tr> so the phone card can show the same panel.
+// `max` is the max-height, a prop because the fields are four columns on desktop and
+// one on a phone (about twice as tall).
 function ReportDrawerBody({ report: r, isOpen, paperSizes, max }: {
   report: Report; isOpen: boolean; paperSizes: Record<string, PaperSizeOption>; max: number;
 }) {
@@ -223,9 +208,8 @@ function ReportDrawerBody({ report: r, isOpen, paperSizes, max }: {
             </div>
           ))}
         </div>
-        {/* The template is frozen per report at generate time, so an admin who
-            changes the letterhead later does not silently restate what an already
-            filed document looks like. Worth saying once, here. */}
+        {/* The template is saved with each report when it is generated, so later letterhead
+           changes do not alter filed reports. */}
         <div className="text-[11px] mt-3" style={{ color: gf.textDim }}>
           The letterhead and page size were frozen when this report was built — changing
           the template later does not alter it.
@@ -265,28 +249,22 @@ export default function Reports() {
   const [formError, setFormError] = useState("");
 
   // ── Report template (ICTU branding) ──
-  // `genPaper` starts empty and is seeded from the admin's default once the template
-  // loads, so opening the modal before that request lands does not lock in "a4" as a
-  // deliberate choice. An empty value is sent as omitted, letting the server apply
-  // the same default it just told us about.
+  // `genPaper` starts empty and is set from the admin's default once the template loads.
+  // Empty is sent as omitted, so the server applies its default.
   const [template, setTemplate] = useState<ReportTemplate | null>(null);
   const [paperSizes, setPaperSizes] = useState<Record<string, PaperSizeOption>>({});
   const [genPaper, setGenPaper] = useState<PaperSizeKey | "">("");
-  // Whether the operator has deliberately picked a size for THIS report. Until they
-  // do, the picker follows the admin default live; once they have, it is their choice
-  // and a template change must not silently overwrite it.
-  //
-  // A REF, not state: nothing renders from it, and it is read inside loadTemplate —
-  // a useCallback with no deps, which would capture the state value as false forever.
+  // Whether the user has picked a size for this report. Until then the picker follows the
+  // admin default live; after that a template change must not overwrite it. A ref, since
+  // nothing renders from it and loadTemplate (no deps) would only see the first state value.
   const paperTouched = useRef(false);
   const [templateBusy, setTemplateBusy] = useState("");
   const logoInput = useRef<Record<string, HTMLInputElement | null>>({});
   // Held separately from `template` so typing doesn't fight the loaded value; committed
   // on blur or Enter rather than per keystroke, which would be one PUT per character.
   const [unitDraft, setUnitDraft] = useState("");
-  // Edited as a whole and saved on an explicit press: a signature block is a set of
-  // related lines, and autosaving each keystroke would push half-typed roles into
-  // documents generated in the meantime.
+  // Edited as a whole and saved with a button, so half-typed roles never reach reports
+  // generated in the meantime.
   const [sigDraft, setSigDraft] = useState<Signatory[]>([]);
   const sigDirty =
     !!template && JSON.stringify(sigDraft) !== JSON.stringify(template.signatories);
@@ -314,8 +292,8 @@ export default function Reports() {
   }, []);
 
   // ── Report template ──
-  // Loaded once. The default page size seeds the Generate modal, and the logo state
-  // drives the admin panel below the list.
+  // Loaded once: the default page size seeds the Generate dialog, and the logo state
+  // feeds the admin panel.
   const loadTemplate = useCallback(async () => {
     const res = await api.getReportTemplate();
     if (!res.success || !res.data?.template) return;
@@ -385,9 +363,8 @@ export default function Reports() {
     setTemplateBusy(`logo-${slot}`);
     const res = await api.uploadReportLogo(slot, file);
     setTemplateBusy("");
-    // Re-read rather than patching state locally: the server decides the stored
-    // filename and the timestamp, and it may have rejected the image on content even
-    // though the browser was willing to send it.
+    // Reload instead of updating state locally: the server sets the stored filename and
+    // time, and may reject the image after checking its content.
     if (res.success) {
       await loadTemplate();
       showToast(`${slot.toUpperCase()} logo updated. New reports will use it.`);
@@ -408,13 +385,9 @@ export default function Reports() {
     }
   };
 
-  // Insert-or-replace by id. EVERY path that adds a row must go through this — the
-  // socket handlers below AND the Generate response.
-  //
-  // The two race, and the socket usually wins: the backend emits `reportCreated`
-  // inside create(), then the route awaits an audit-log write before sending its
-  // 202. So by the time the HTTP response resolves the row is normally already in
-  // state, and an unconditional prepend there duplicated it.
+  // Insert or replace by id. Every path that adds a row (the socket handlers below and
+  // the Generate response) goes through this: `reportCreated` usually arrives before the
+  // 202 response, and a plain prepend would add the row twice.
   const upsertReport = useCallback((r: Report) => {
     setReports((prev) => {
       const i = prev.findIndex((x) => x.id === r.id);
@@ -425,10 +398,9 @@ export default function Reports() {
     });
   }, []);
 
-  // Live lifecycle. Reports are a SHARED list — everyone sees every row — so the
-  // backend broadcasts all three events to every dashboard: an admin watching this
-  // page sees a colleague's report appear as `pending`, then flip to generated or
-  // failed, then vanish if it's deleted. No refresh anywhere.
+  // Live updates. Reports are shared, so all three events reach every dashboard: a
+  // colleague's report appears as pending, turns generated or failed, and disappears when
+  // deleted.
   useEffect(() => {
     const onCreated = (r: Report) => upsertReport(r);
 
@@ -447,10 +419,8 @@ export default function Reports() {
       setConfirmId((c) => (c === id ? null : c)); // don't strand an open confirm
     };
 
-    // An admin changed the letterhead, the default page size or the signature block.
-    // Broadcast to every dashboard for the same reason `envConfigUpdated` is: the person
-    // who made the change is standing on the settings tab and is the least likely to
-    // notice that everyone else's Generate dialog still offers the old default.
+    // An admin changed the letterhead, default page size or signature block; update
+    // everyone's Generate dialog.
     const onTemplate = (next: ReportTemplate) => {
       setTemplate(next);
       // The picker follows the new default only while this operator has not chosen a
@@ -542,23 +512,17 @@ export default function Reports() {
       periodStart,
       periodEnd,
       ...(title ? { title } : {}),
-      // NOT Number(): the room scope submits the string "room", and Number("room") is
-      // NaN — which serialises to null and silently generates a campus-wide report
-      // instead of the one that was asked for.
+      // Not Number(): the room scope sends "room", and Number("room") is NaN, which would
+      // become null and give a campus-wide report.
       ...(genDevice ? { deviceId: /^\d+$/.test(genDevice) ? Number(genDevice) : genDevice } : {}),
-      // Omitted rather than guessed when the template hasn't loaded — the server's
-      // default is the authority, and sending a wrong size would print the document
-      // on a page nobody chose.
+      // Left out when the template has not loaded, so the server's default is used.
       ...(genPaper ? { paperSize: genPaper } : {}),
     });
     setGenerating(false);
     if (res.success && res.data?.report) {
-      // 202: the row comes back `pending` and the backend builds it in the
-      // background, flipping to generated (or failed) when `reportUpdated` arrives.
-      //
-      // upsert, NOT a prepend: `reportCreated` has almost certainly delivered this
-      // same row over the socket already (see upsertReport). Still done here so the
-      // row appears even if the socket is down.
+      // 202: the row comes back pending and the backend builds it, then `reportUpdated`
+      // arrives. upsert, not prepend: `reportCreated` has probably already added this row;
+      // this makes it appear even if the socket is down.
       upsertReport(res.data.report as Report);
       setModalOpen(false);
       showToast("Generating report…");
@@ -627,13 +591,8 @@ export default function Reports() {
 
   const selectCls = "text-[13px] px-2 py-1.5 rounded-[2px] outline-none cursor-pointer";
 
-  // Row actions (CSV / PDF / email / delete), defined once and rendered by both the
-  // table cell and the phone card, so a report cannot offer a different set of actions
-  // depending on screen width.
-  //
-  // ⚠️ EVERY control here calls stopPropagation. Both layouts toggle the detail drawer
-  // on click, so without it downloading a report would also open its drawer — and the
-  // delete confirmation would reopen the row it is asking about.
+  // Row actions (CSV / PDF / email / delete), shared by the table cell and the phone card.
+  // Every control calls stopPropagation, because clicking the row toggles the drawer.
   const reportActions = (r: Report) => {
     const ready = r.status === "generated";
     if (confirmId === r.id) {
@@ -649,9 +608,8 @@ export default function Reports() {
       <>
         <DownloadBtn label="CSV" disabled={!ready || !!busy[`${r.id}-csv`]} onClick={(e) => { e.stopPropagation(); download(r, "csv"); }} />
         <DownloadBtn label="PDF" disabled={!ready || !!busy[`${r.id}-pdf`]} onClick={(e) => { e.stopPropagation(); download(r, "pdf"); }} />
-        {/* Mails the PDF to the signed-in user. Disabled until the background build has
-            produced a file. Same raised/recessed rule as the download buttons beside it
-            — a mixed row would read as three unrelated controls. */}
+        {/* Emails the PDF to the signed-in user. Disabled until the file is built. Same
+           raised/recessed style as the download buttons. */}
         <button
           onClick={(e) => { e.stopPropagation(); emailReport(r); }}
           disabled={!ready || !!busy[`mail-${r.id}`]}
@@ -708,9 +666,7 @@ export default function Reports() {
         {canGenerate && (
           <button
             onClick={openModal}
-            /* basis-full below `sm`: the button is ~160px of non-shrinking
-               whitespace-nowrap, which on a 390px screen leaves the heading and its
-               paragraph about 190px to wrap inside. Its own row reads better. */
+            /* basis-full below `sm`, so the button gets its own row on a phone. */
             className="gf-btn inline-flex items-center gap-2 text-[14px] font-medium whitespace-nowrap basis-full justify-center sm:basis-auto sm:justify-start"
             style={{ height: 32, padding: "0 12px", color: "var(--gf-text-primary)" }}
           >
@@ -776,10 +732,8 @@ export default function Reports() {
         <EmptyState filtered={filtersActive} canGenerate={canGenerate} onGenerate={openModal} onClear={() => { setTypeFilter("all"); setSearch(""); }} />
       ) : (
         <div className="rounded-lg overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
-          {/* Phone: seven columns — four of them action buttons — is a sideways scroll,
-              and CSV / PDF / email / delete are exactly what ends up off the right edge.
-              Cards below `md`, the table unchanged from `md` up. The card opens the SAME
-              drawer the row does, via the shared ReportDrawerBody. */}
+          {/* Cards below `md` (seven columns, four of them buttons, do not fit a phone), the table
+             from `md` up. The card opens the same drawer via ReportDrawerBody. */}
           <div className="md:hidden">
             {filtered.map((r, i) => {
               const meta = typeMeta(r.type);
@@ -821,9 +775,8 @@ export default function Reports() {
                         <span className="w-1.5 h-1.5 rounded-full" style={{ background: sc }} />
                         {r.status}
                       </span>
-                      {/* The control number stays on the collapsed card: searching this
-                          page for a number read off a printout has to work on a phone
-                          too, and it is the one field that identifies the filed copy. */}
+                      {/* The control number stays on the collapsed card, so a number from a printout can be
+                         found on a phone too. */}
                       {r.referenceNo && (
                         <span className="text-[11px] tracking-wider" style={{ color: gf.textDim }}>{r.referenceNo}</span>
                       )}
@@ -892,17 +845,14 @@ export default function Reports() {
                         <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[11px] tracking-wider uppercase font-semibold" style={{ color: meta.color, background: `${meta.color}1f` }}>
                           {meta.label}
                         </span>
-                        {/* Scope. A device deleted after the fact leaves deviceId set
-                            but deviceName null (FK ON DELETE SET NULL clears the id) —
-                            either way, absent means campus-wide. */}
+                        {/* Scope. A deleted device leaves deviceName null (the FK sets the id null); either way,
+                           empty means campus-wide. */}
                         {r.deviceName && (
                           <span className="block text-[11px] mt-1 truncate max-w-[150px]" style={{ color: gf.textDim }}>
                             {r.deviceName}
                           </span>
                         )}
-                        {/* Control number. Shown under the title because this is what
-                            ICTU will file and quote the document by — searching this
-                            page for a number somebody read off a printout has to work. */}
+                        {/* Control number, under the title: it is what ICTU files and quotes. */}
                         {r.referenceNo && (
                           <span className="block text-[11px] mt-1 tracking-wider" style={{ color: gf.textDim }}>
                             {r.referenceNo}
@@ -941,21 +891,13 @@ export default function Reports() {
       {/* Generate modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setModalOpen(false)}>
-          {/* Wide and HORIZONTAL. Seven type cards stacked above the options made this
-              taller than a laptop viewport, so the Generate button sat below the fold on
-              the one screen whose whole purpose is pressing it. Side by side, the entire
-              form is visible at once and the footer is pinned. */}
+          {/* Wide and horizontal, so the whole form, including the Generate button, fits on a
+             laptop screen. */}
           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-5xl max-h-[90vh] flex flex-col rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}`, boxShadow: "var(--gf-shadow)" }}>
             <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.header }}>
-              {/* Tabs. The template settings used to be a panel under the report list,
-                  which put configuration that changes a few times a year permanently
-                  below the thing people come here to read. Behind a tab, the page is
-                  what its name says: a list of generated reports. */}
-              {/* min-w-0 + overflow-x-auto, and the close button below is shrink-0: the
-                  two tab labels come to ~265px, which on a 360px phone leaves almost
-                  nothing for the X. Squeezing it out of a modal that also closes on Esc
-                  and on a backdrop tap would still be a dead end on a touch screen,
-                  where neither exists. The tabs scroll instead. */}
+              {/* Tabs: report generation, and the template settings (which rarely change). */}
+              {/* min-w-0 + overflow-x-auto with a shrink-0 close button, so on a phone the tabs scroll
+                 and the X stays visible. */}
               <div className="flex items-center gap-1 min-w-0 overflow-x-auto">
                 {(
                   [
@@ -1028,9 +970,7 @@ export default function Reports() {
 
               {/* ── Right: what it should cover ── */}
               <div>
-              {/* Device scope — only rendered for types the backend says are
-                  scopeable. Environment returns no options (one server room), so the
-                  control disappears rather than offering a meaningless choice. */}
+              {/* Device scope, only for types the backend says can be scoped (environment cannot). */}
               {scopeDevices.length > 0 && (
                 <div className="mb-3">
                   <Field label="Device (optional)">
@@ -1101,9 +1041,7 @@ export default function Reports() {
                 )}
               </div>
 
-              {/* Paper size — per report, because ICTU asked to choose it rather than
-                  have one baked in. Defaults to whatever an admin set (Folio out of
-                  the box), so the common case is still one click. */}
+              {/* Paper size per report (ICTU's request), defaulting to the admin's setting (Folio). */}
               <div className="mt-3">
                 <Field label="Paper size">
                   <select
@@ -1191,10 +1129,8 @@ export default function Reports() {
                       >
                         {info?.uploaded ? (
                           <>
-                            {/* The name the admin uploaded, not the fixed name it is
-                                stored under — "cspc-logo.png" is a name nobody chose,
-                                and made two different seals look identical. Hover for
-                                the stored name and the time. */}
+                            {/* The uploaded file's original name, not the fixed stored name. Hover for the stored
+                               name and time. */}
                             <span style={{ color: GREEN }}>●</span> {info.originalName ?? info.file}
                             <span style={{ color: gf.textDim }}> · {fmtDateTime(info.updatedAt)}</span>
                           </>
@@ -1215,10 +1151,7 @@ export default function Reports() {
                           e.target.value = ""; // re-selecting the same file must still fire
                         }}
                       />
-                      {/* flex-wrap: Replace + Remove + the "PNG / JPEG · 2 MB" hint come
-                          to ~260px, and once the grid collapses to ONE column on a phone
-                          the hint is what gets pushed out — the line that says which
-                          files will be accepted, next to the button that accepts them. */}
+                      {/* flex-wrap so the "PNG / JPEG · 2 MB" hint wraps instead of being pushed out on a phone. */}
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <button
                           type="button"
@@ -1285,14 +1218,8 @@ export default function Reports() {
                     const set = (patch: Partial<Signatory>) =>
                       setSigDraft((d) => d.map((x, j) => (j === i ? { ...x, ...patch } : x)));
                     return (
-                      // ⚠️ flex-wrap + a real min-width on both inputs. This row was two
-                      // `flex-1 min-w-0` fields beside a fixed ~90px of Auto checkbox and
-                      // ✕ button: inside the modal on a 390px phone that left each field
-                      // about 105px, so "Name (blank = sign by hand)" showed as roughly
-                      // "Name (blank…" and the field you type a person's title into could
-                      // not display the title. min-w-[180px] makes them wrap to their own
-                      // lines there while staying on one row from tablet up, where the
-                      // modal is wide enough that nothing changes.
+                      // flex-wrap with a minimum width on both inputs, so on a phone they each get their own
+                      // line instead of shrinking to ~105px.
                       <div key={i} className="flex flex-wrap items-center gap-2">
                         <input
                           value={sig.role}
@@ -1302,10 +1229,8 @@ export default function Reports() {
                           className="text-[13px] px-2 py-1.5 rounded-[2px] outline-none flex-1 min-w-[180px]"
                           style={inputStyle}
                         />
-                        {/* Disabled rather than hidden when auto is on, so the row
-                            keeps its shape — and the placeholder says WHOSE name will
-                            print. Showing the current admin's name here would be wrong:
-                            it is filled per report, from whoever generates that one. */}
+                        {/* Disabled rather than hidden when Auto is on, and the placeholder says whose name will
+                           print (whoever generates each report). */}
                         <input
                           value={sig.auto ? "" : sig.name}
                           onChange={(e) => set({ name: e.target.value })}
@@ -1370,8 +1295,7 @@ export default function Reports() {
                   <button
                     onClick={() => setModalOpen(false)}
                     className="text-[13px] font-medium px-5 py-2.5 rounded-[3px] transition-all active:scale-95"
-                    // Recessed on purpose: the way out, not a peer of the action that does
-                    // the work. Raising both would make the pair ambiguous.
+                    // Recessed: Cancel is the way out, not an action like the main button.
                     style={{
                       color: gf.textMuted,
                       border: `1px solid ${gf.border}`,
@@ -1441,15 +1365,9 @@ function StatCard({ label, value, text, color, sub }: { label: string; value?: n
   );
 }
 
-// Raised while the file exists, recessed while it does not — the same rule the rest of the
-// UI follows: a raised surface means "this will do something". A report still building has
-// nothing to download, and a flat, sunken button says that before the cursor gets there.
-//
-// The hover/press states come from .gf-btn's own CSS (already scoped to :not(:disabled)),
-// which replaces the hand-rolled onMouseEnter/onMouseLeave handlers this had — those also
-// hardcoded the accent, so they fought the theme in light mode.
-// onClick takes the EVENT: the row it sits in is now a click target that toggles the
-// detail drawer, so every action inside it has to be able to stop the propagation.
+// Raised when the file exists, recessed while it is still being built. Hover and press
+// come from .gf-btn's CSS. onClick gets the event so it can stop propagation (the row
+// toggles the drawer).
 function DownloadBtn({ label, disabled, onClick }: {
   label: string;
   disabled?: boolean;

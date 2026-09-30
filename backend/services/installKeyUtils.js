@@ -1,30 +1,20 @@
 import crypto from "node:crypto";
 
-// ─── Agent install-key format + usability rules (PURE) ──────────────────────────
-//
-// Imports nothing but node:crypto — no mysql, no influx, no .env — so backend/tests
-// can exercise every rule with nothing running. Same contract as serverMetricUtils /
-// historyRange / linkAlertPolicy / envPersistPolicy.
-//
-// An install key is the credential a Go agent presents ONCE, at enrollment
-// (POST /api/agents/register). It is NOT the credential it posts metrics with — that is
-// agent_tokens.approved_token, minted at approval. The enrolment records which key let
-// it in (agent_tokens.install_key_id), so revoking a key can optionally de-authorise
-// those servers too; that is a separate, opt-in step rather than an automatic
-// consequence. See installKeyService.revoke and migrations/2026-08-15_agent_install_keys.sql.
+// ─── Agent install-key format and usability rules ──────────────────────────
+// Only imports node:crypto, so backend/tests can run it. An install key is used once,
+// at enrollment (POST /api/agents/register); metrics are sent with the agent token
+// issued at approval. agent_tokens.install_key_id records which key enrolled each
+// server. See installKeyService.revoke and migrations/2026-08-15_agent_install_keys.sql.
 
 // `AIK-` mirrors the `AGT-` prefix on approved agent tokens, so a credential's purpose
 // is readable at a glance in a log line, a shell history or a support screenshot.
 export const KEY_PREFIX = "AIK-";
 
-// 24 random bytes = 192 bits, the same width as the approved agent token
-// (agentService.approve). Far past guessable; the enrollment route is rate-limited
-// anyway, but the entropy is what actually makes brute force irrelevant.
+// 24 random bytes (192 bits), the same size as the agent token. Cannot be guessed.
 export const KEY_BYTES = 24;
 
-// How much of the key the UI keeps in order to name it later. The plaintext is shown
-// once and never again, so without this a list of keys would be a list of blanks.
-// Short enough to leak nothing useful (12 of 52 chars).
+// How much of the key is kept to identify it in the list (12 of 52 characters);
+// the full key is only shown once.
 export const DISPLAY_PREFIX_LEN = 12;
 
 /** A fresh key. Returned to the admin exactly once — only its hash is persisted. */
@@ -33,14 +23,9 @@ export function generateKey() {
 }
 
 /**
- * SHA-256 hex of a key, for storage and for the enrollment lookup.
- *
- * NOT bcrypt/argon2, and that is deliberate. Those are slow ON PURPOSE to make
- * guessing a human-chosen password expensive. This value is 192 bits of CSPRNG output
- * — there is no dictionary to attack and nothing to slow down — while a slow hash
- * would force the enrollment path to read every key row and compare them one at a
- * time, because you cannot index a salted hash. SHA-256 keeps it to a single indexed
- * lookup and loses nothing.
+ * SHA-256 hex of a key, for storage and lookup. Not bcrypt: the key is 192 random
+ * bits, so there is nothing for a slow hash to protect, and a salted hash could not
+ * be looked up with an index.
  */
 export function hashKey(key) {
   return crypto.createHash("sha256").update(String(key ?? ""), "utf8").digest("hex");
@@ -57,13 +42,9 @@ export function looksLikeKey(v) {
 }
 
 /**
- * Why a key cannot be used right now, or null when it can.
- *
- * Returns a REASON rather than a boolean so the enrollment log can say which of the
- * three states applied. "Invalid install key" covering revoked, expired and never-
- * existed alike is exactly the ambiguity that makes a failed rollout undebuggable —
- * the installer's operator sees one message, but the admin reading the server log
- * needs to know whether to un-revoke, extend, or issue a new key.
+ * Why a key cannot be used right now, or null when it can. Returns the reason
+ * (unknown / revoked / expired) so the server log tells the admin whether to
+ * un-revoke, extend or issue a new key.
  */
 export function keyRejection(row, now = new Date()) {
   if (!row) return "unknown";

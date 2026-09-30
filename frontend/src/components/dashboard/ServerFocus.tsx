@@ -11,21 +11,13 @@ import {
   fmtTime, focusLineOptions, lineSeries, loadColor,
 } from "./focusShared";
 
-// ─── One server's important numbers, on the Dashboard ───────────────────────────
-//
-// Deliberately NOT a copy of pages/ServerDetail. That page is the full read: four
-// separate charts, per-volume breakdown, specs, event log. This is the glance version —
-// four numbers and one chart — and anything more belongs behind the click through to the
-// detail page, or the panel stops being a dashboard.
-//
-// CPU, memory and disk share ONE axis because they share a unit (%). Three lines against
-// 0-100 make "which one is climbing" a single glance; three separate small charts, each
-// auto-scaled to its own range, make a 2% wobble and a 40% climb look identical.
-// Throughput is bytes, not percent — it gets a tile, not a fourth line on a % axis.
+// ─── One server's key numbers on the Dashboard ───────────────────────────
+// The quick view; ServerDetail has the full charts, volumes, specs and log. CPU,
+// memory and disk share one 0-100% axis so it is easy to see which is climbing; three
+// auto-scaled charts would make small and large changes look the same. Throughput is
+// in bytes, so it is not on the % axis.
 
-// Series hexes are ServerDetail's, unchanged. A reader who learns "blue is CPU" on one
-// page must not have to re-learn it on the other — the same rule the environment charts
-// already follow between Dashboard and Environment.
+// Same colours as ServerDetail, so "blue is CPU" holds on both pages.
 const CPU_COLOR = "#378ADD";
 const MEM_COLOR = "#7F77DD";
 const DISK_COLOR = "#EF9F27";
@@ -120,10 +112,8 @@ export default function ServerFocus({
 
   const spanSec = rangeSpanSec(range);
 
-  // Breaks inserted wherever the agent stopped reporting, so an outage reads as a hole
-  // rather than as a straight line between the readings on either side of it. `?? null`
-  // rather than `?? 0`: a missing value is not a zero, and drawing it as one invents a
-  // crash to 0% CPU that never happened.
+  // Gaps wherever the agent stopped reporting, so an outage shows as a hole. `?? null`,
+  // not `?? 0`: a missing value is not 0% CPU.
   const { labels, cpuData, memData, diskData } = useMemo(() => {
     const times = history.map((p) => Date.parse(p.time));
     const { labels: l, series } = withGaps(
@@ -160,10 +150,7 @@ export default function ServerFocus({
 
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5">
-      {/* Status line, same shape as the Network and UPS panels. This carries what the
-          fleet table used to: state, uptime and address. The table itself is gone — with
-          a dropdown above and per-metric values on the legend below, it was showing the
-          same numbers a third time. */}
+      {/* Status line (state, uptime, address), same shape as the Network and UPS panels. */}
       <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap text-[11px]" style={{ color: "var(--gf-text-muted)" }}>
         <span className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full shrink-0" style={{ background: statusColor }} />
@@ -184,9 +171,8 @@ export default function ServerFocus({
         </div>
       )}
 
-      {/* Current values ride on the legend, as they do on the other three panels. These
-          come from the Dashboard's live server row rather than from the chart, so they
-          stay correct on a range whose last aggregated point is minutes old. */}
+      {/* Current values on the legend, taken from the live server row so they stay current
+         even when the last chart point is minutes old. */}
       <div className="flex items-center gap-3 flex-wrap">
         <LegendDot
           color={CPU_COLOR} label="CPU"

@@ -1,40 +1,18 @@
-// ─── Socket.IO handshake throttling — PURE, import-free ───────────────────────
+// ─── Socket.IO handshake throttling ───────────────────────
+// Socket.IO answers /socket.io/ itself, so the Express rate limiter never sees
+// handshakes. Without this, the ESP32's DEVICE_SECRET could be guessed without
+// limit, and each handshake with a JWT costs a database query.
 //
-// **The Express rate limiter does not cover the handshake.** `new Server(httpServer)`
-// installs its own `request` listener on the Node HTTP server and answers anything
-// under `/socket.io/` itself; the Express app — and therefore `globalLimiter` in
-// src/server.js — is never called for those requests. So the one endpoint that
-// accepts the ESP32's shared secret (`DEVICE_SECRET`) had **no attempt limit at all**,
-// while every HTTP credential path (sign-in, agent enrollment, metric ingest) has one.
-//
-// Two things that buys an attacker, both unmetered:
-//   - unlimited guesses at DEVICE_SECRET, which is a single static shared secret with
-//     no rotation and no lockout;
-//   - a connection flood where each attempt carrying a well-formed JWT costs one
-//     `fetchSessionRow` query out of a MySQL pool of 10 shared with the pollers, the
-//     agent POSTs and every dashboard request.
-//
-// ── Why it counts FAILURES only ──────────────────────────────────────────────
-// A plain per-IP connection cap would be a self-inflicted outage here, for the same
-// reason CLAUDE.md documents for the global limiter: behind nginx every browser
-// socket arrives from 127.0.0.1, and behind the campus NAT every off-server client
-// shares one address. One shared bucket means the first person to reload locks out
-// the rest. Counting only REJECTED handshakes avoids that completely — a working
-// dashboard, a working agent and a correctly-flashed ESP32 never fail one, and a
-// success CLEARS the counter for that address.
+// Only failed handshakes count, and a success clears the counter. A plain per-IP
+// connection cap would lock everyone out, since behind nginx all browsers come from
+// 127.0.0.1 and behind the campus NAT all clients share one address.
 
 /**
- * Resolve the client address from a Socket.IO handshake, honouring the same
- * `trust proxy` hop count Express uses.
- *
- * Express's numeric `trust proxy` semantics, reproduced exactly: build the address
- * chain as `[socket address, ...X-Forwarded-For reversed]` and take index `hops`,
- * clamped to the end of the chain. With `hops = 2`, `XFF: "a, b, c"` and a peer of
- * `R`, the chain is `[R, c, b, a]` and the answer is `b`.
- *
- * ⚠️ Anything at or beyond index `hops` is attacker-controlled on a deployment where
- * the backend port is reachable directly — see the audit's A-03. Getting the hop
- * count right is what makes this value mean anything.
+ * Client address for a Socket.IO handshake, using the same `trust proxy` hop count
+ * as Express: chain = [peer address, ...X-Forwarded-For reversed], take index `hops`
+ * (clamped). With hops = 2, XFF "a, b, c" and peer R, the chain is [R, c, b, a] and
+ * the answer is b. Entries past `hops` can be forged if port 3000 is reachable
+ * directly (see audit A-03).
  *
  * @param {Record<string, unknown>} headers handshake headers
  * @param {string|undefined} address the direct peer address
@@ -65,9 +43,8 @@ export function createHandshakeLimiter(opts = {}) {
   const windowMs = opts.windowMs ?? 15 * 60 * 1000;
   const maxFailures = opts.maxFailures ?? 50;
   const now = opts.now ?? Date.now;
-  // A cap on tracked keys, because the key is attacker-chosen when X-Forwarded-For is
-  // trusted: without it, a spoofing flood turns this defence into a memory leak.
-  // Expired entries are dropped first; only if that is not enough do we clear.
+  // Cap on tracked keys: with X-Forwarded-For trusted the key can be forged, and a
+  // flood would otherwise grow the map forever. Expired entries go first.
   const maxKeys = opts.maxKeys ?? 10_000;
 
   /** @type {Map<string, { count: number, resetAt: number }>} */

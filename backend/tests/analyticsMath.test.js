@@ -34,9 +34,8 @@ import {
   MIN_POINTS,
 } from "../services/analyticsMath.js";
 
-// Unit tests for the predictive-analytics math. These run with NO MySQL, NO InfluxDB
-// and NO .env — that is the whole reason analyticsMath.js is import-free. See
-// predictive-analytics.md §2–§4 for the math each of these pins down.
+// Tests for the predictive-analytics math. No MySQL, InfluxDB or .env needed. See
+// predictive-analytics.md §2–§4 for the math.
 
 const HOUR = 3_600_000;
 // Build a series of hourly points starting `hoursAgo` back, y = f(i).
@@ -589,12 +588,9 @@ test("clampInt/clampNum coerce junk to the default and bound the range", () => {
   assert.equal(clampNum("abc", 50, 100, 90), 90);
 });
 
-// ─── daily seasonality in the trend projection ────────────────────────────────
-//
-// The regression these exist for: the Trends projection was plain Holt's linear, which
-// draws ONE STRAIGHT LINE. Asked at 11 PM for 12 hours, it picked up the evening's
-// falling limb and ran it through dawn into midday — forecasting the day's coolest
-// figure for the hour the room is hottest, ~8 °C out and in the wrong direction.
+// ─── Daily seasonality in the trend projection ────────────────────────────────
+// A plain straight-line (Holt) projection made at 11 PM for 12 hours ran the evening
+// drop into midday and was about 8 °C off, in the wrong direction.
 
 const HR = 3_600_000;
 
@@ -692,11 +688,9 @@ test("forecastSeasonal declines to guess from too little data", () => {
   assert.equal(forecastSeasonal(roomSeries(7), { horizonMs: HR, stepMs: 0 }), null);
 });
 
-// ─── refusing to forecast from a window that cannot support one ────────────────
-//
-// The real case: a sensor that only ran while someone was testing had NO readings
-// between 01:00 and 10:00 across six days. The projection was still drawn — a confident
-// straight line for hours the system had literally never observed.
+// ─── No forecast from a window that cannot support one ────────────────
+// Real case: a sensor with no readings between 01:00 and 10:00 across six days
+// still got a confident projection for those hours.
 
 /** `days` of history at `stepMs`, keeping only the local hours in `hours`. */
 function partialSeries(days, hours, stepMs = HR) {

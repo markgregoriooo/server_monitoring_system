@@ -21,36 +21,27 @@ import { COVERAGE_VISUALS, type CoverageVisualKey } from "../../components/landi
 import { STATUS } from "../../theme/gf";
 const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
-// ── The fold's cover photograph ───────────────────────────────────────────────
-//
+// ── Cover photo for the first screen ───────────────────────────────────────────────
 // Put the file at:   frontend/public/landing/hero-cover.jpg
 //
-// Served from `public/`, so the path is the URL — no import and no bundler step, and
-// swapping the picture is overwriting one file. Same convention as the hardware photos
-// in components/landing/photos.ts; see public/landing/README.txt.
+// Served from `public/`, so replacing the photo means overwriting that one file (see
+// public/landing/README.txt). Set to "" to remove the cover. A missing file shows
+// nothing rather than a broken image.
 //
-// Set to "" to remove the cover entirely and get the old plain fold back. That is also
-// what an ABSENT file degrades to visually: the layer paints nothing rather than
-// showing a broken image, so a half-finished swap never reaches the public page.
-//
-// Shooting notes: landscape, at least 2400px wide, and composed with its subject
-// RIGHT OF CENTRE — the copy occupies the left half of the fold and the scrim is
-// heaviest there, so anything important on the left is deliberately obscured.
+// Shooting notes: landscape, at least 2400px wide, subject right of centre (the text
+// and the darkest part of the overlay are on the left).
 const HERO_COVER = "/landing/hero-cover.jpg";
 
-// Topbar height. The fold subtracts it so the hero still fills exactly one screen,
-// and the content sections use it as scroll-margin so the sticky bar never covers
-// the heading it just scrolled to.
+// Topbar height. Subtracted from the first screen so it fills exactly one screen, and
+// used as scroll-margin so the bar never covers a heading scrolled to.
 const NAV_H = 60;
 
 // Grafana status colors (match the rest of the dashboard).
 const ACCENT = "#5794F2";
 
-// Blue TEXT uses the --gf-accent-text token (see index.css), which darkens in light
-// mode because #5794F2 only measures 2.76:1 there. The literal below is the same
-// light-mode value, needed only where the colour is string-concatenated into a
-// tint/border rather than set as a CSS colour — a var() cannot be sliced like that.
-// Keep it in step with --gf-accent-text in index.css.
+// Blue text uses the --gf-accent-text token (index.css), darker in light mode for
+// contrast. This literal is the light-mode value, needed where the colour is combined
+// into a tint/border string (a var() cannot be). Keep in step with index.css.
 const ACCENT_TEXT_LIGHT = "#1F62E0";
 
 // Multi-color Google "G" mark for the custom sign-in button.
@@ -79,16 +70,10 @@ function LogoMark({ size }: { size: number }) {
   );
 }
 
-// The strip under the fold. Four figures that are each TRUE and each say something
-// a sentence would take a paragraph to say — "0 passwords stored" is the whole
-// authentication design in two words.
+// The strip under the first screen: four figures, each true.
 const FIGURES: { value: number; suffix?: string; label: string; note: string }[] = [
-  // THREE, matching the section heading below, FlowDiagram's three boxes and CLAUDE.md.
-  // This read 4 with a note naming 5 protocols, which is what happens when a count of
-  // PATHS is given a note listing TRANSPORTS: SNMP, RouterOS and ICMP are three ways the
-  // one pull poller collects, not three paths into the backend (FlowDiagram.tsx: "ICMP is
-  // not a fourth ingest path — it rides the same pull poller"). The note now names the
-  // same three things the diagram draws, so the figure and the picture cannot drift.
+  // Three, matching the section heading, FlowDiagram's three boxes and CLAUDE.md. SNMP,
+  // RouterOS and ICMP are three ways the one poller collects, not three separate paths.
   { value: 3, label: "ingest paths", note: "ESP32 · agents · pollers" },
   { value: 3, suffix: "s", label: "room sampling", note: "every reading evaluated" },
   { value: 2, label: "data stores", note: "InfluxDB + MySQL" },
@@ -147,11 +132,8 @@ const ANALYTICS_POINTS: { title: string; body: string }[] = [
   },
 ];
 
-// Section heading. The title assembles word by word on approach (SplitHeading),
-// which is what keeps a long page feeling like it is responding to the scroll
-// rather than just sliding past — the label and the sub-line still use the plain
-// fade, because three staggered animations stacked on one heading is a lot of
-// motion for one corner of the screen.
+// Section heading. The title appears word by word (SplitHeading); the label and
+// sub-line use a plain fade, to avoid too much motion in one spot.
 function SectionHead({ label, title, sub }: { label: string; title: string; sub: string }) {
   return (
     <div className="mb-8 max-w-2xl">
@@ -240,26 +222,17 @@ export default function Login() {
   // Drives the topbar's two states: transparent and floating over the hero at
   // rest, frosted once content starts passing beneath it.
   const scrolled = useScrolled(24);
-  // NOTE: `narrow`/`useIsNarrow` and `mockWidth` lived here to size the hero's
-  // dashboard mock. The mock is gone and nothing else on this page measured the
-  // viewport in JS — the remaining responsive work is all CSS breakpoints — so both
-  // were removed rather than left as dead state re-rendering on every resize.
-  // Only the info Banner needs this as a literal — it slices the colour to build a
-  // tint and a border. Everything else uses the var(--gf-accent-text) token.
+  // This page's layout is all CSS breakpoints; no viewport measurement in JS.
+  // Only the info Banner needs this as a literal (it builds a tint and border from it);
+  // everything else uses var(--gf-accent-text).
   const accentText = theme === "dark" ? ACCENT : ACCENT_TEXT_LIGHT;
   const [error, setError] = useState<string>("");
   const [info, setInfo] = useState<string>(""); // pending / informational
   const [loading, setLoading] = useState<boolean>(false);
 
-  // Shown once when the user was auto-logged-out. Read the flag here (pure — no side
-  // effect), then clear it in the effect below.
-  //
-  // The flag's VALUE says which of the two endings happened, because they are different
-  // events to the person reading it: "expired" is the credential running out on its own,
-  // "idle" is the system having signed them out on purpose. Telling someone their session
-  // expired when they know full well they only stepped away reads as a fault rather than
-  // as the policy it is. Any other truthy value falls back to the generic wording, so an
-  // older flag left in storage by a previous build still says something sensible.
+  // Shown once after an automatic logout. The flag is read here and cleared later.
+  // Its value says what happened: "expired" (the token ran out) or "idle" (signed out
+  // for inactivity). Any other value gets the generic wording.
   const [notice, setNotice] = useState<string>(() => {
     const why = sessionStorage.getItem("cspc_session_expired");
     if (!why) return "";
@@ -269,29 +242,14 @@ export default function Login() {
   });
 
   useEffect(() => {
-    // ⚠️ `cspc_session_expired` is deliberately NOT cleared here.
-    //
-    // It used to be, and that made the notice above disappear on any remount: the message
-    // is derived in a useState INITIALISER, so a second mount re-reads a flag this effect
-    // has already deleted and comes back with "". The user is then dropped on a bare
-    // sign-in form seconds after being told the session ended — which reads as the page
-    // having refreshed and lost its place, and is exactly what it was reported as.
-    //
-    // Nothing needs it cleared here anyway: AuthContext's loginWithGoogle drops it on a
-    // successful sign-in (`fresh login — drop any expiry notice`), which is the moment the
-    // message stops being true. Until then it SHOULD keep showing — someone who lands back
-    // on this page without signing in has not stopped being signed out.
-    //
-    // The credential wipe below is a different concern and stays: it runs for its own
-    // reason, not to tidy up the notice.
+    // `cspc_session_expired` is not cleared here: the message is read in a useState
+    // initialiser, so clearing it would make the notice vanish on a remount. AuthContext's
+    // loginWithGoogle clears it after a successful sign-in. The credential wipe below is a
+    // separate matter.
 
-    // Reaching the sign-in page means, by definition, that there is no usable
-    // session — so any credentials still sitting in storage are dead by definition
-    // too. Leaving them there is how a dead token gets a second life: the tab is
-    // restored later (Chrome brings sessionStorage back with a restored tab), the
-    // app sees a user object, boots into the dashboard on a token that expired
-    // hours ago, and bounces right back here. Wiping on arrival makes that loop
-    // self-healing rather than something the user has to clear by hand.
+    // Being on the sign-in page means there is no valid session, so clear any stored
+    // credentials. Otherwise a restored tab could boot into the dashboard on an old token
+    // and bounce straight back here.
     sessionStorage.removeItem("cspc_token");
     sessionStorage.removeItem("cspc_token_at");
     sessionStorage.removeItem("cspc_user");
@@ -322,27 +280,23 @@ export default function Login() {
     setLoading(false);
   };
 
-  // Custom button → authorization-code flow → one-time code (lets us label it "CSPC
-  // Mail"; Google's official button only allows its own preset text). The backend
-  // swaps the code with Google and verifies the ID token.
+  // Custom button → authorization-code flow → one-time code (so it can say "CSPC Mail").
+  // The backend exchanges the code with Google and verifies the ID token.
   const startLogin = useGoogleLogin({
     flow: "auth-code", // returns a one-time auth code (not a token) — exchanged server-side
     scope: "openid email profile", // permission to read (openid, email, profile = name + photo)
-    // NOTE: `prompt: "select_account"` does NOT belong here. It is a field of
-    // TokenClientConfig (the implicit flow); the auth-code flow builds a
-    // CodeClientConfig, which has no `prompt` — so TypeScript rejects it and
-    // Google's initCodeClient would ignore it anyway. Google's equivalent lever for
-    // this flow is `select_account: true`, which @react-oauth/google does not yet
-    // declare in its types. Verify it in a browser before adding it.
+    // `prompt: "select_account"` does not belong here: it is for the implicit flow
+    // (TokenClientConfig), and TypeScript rejects it on CodeClientConfig. The auth-code
+    // equivalent is `select_account: true`, which @react-oauth/google does not type yet;
+    // test it in a browser before adding it.
     onSuccess: (resp) => exchangeToken(resp.code),
     onError: () => {
       setLoading(false);
       setError("Google sign-in was cancelled or failed.");
     },
-    // Fired when the popup is closed or blocked BEFORE Google returns anything — this is
-    // NOT an OAuth error, so `onError` never runs. Without resetting here the button stays
-    // stuck on "Signing in…". A plain close (user cancelled) just re-enables the button;
-    // a blocked popup gets a hint.
+    // Runs when the popup is closed or blocked before Google returns (not an OAuth error,
+    // so `onError` does not run). Reset the button so it does not stay on "Signing in…".
+    // A blocked popup gets a hint.
     onNonOAuthError: (err) => {
       setLoading(false);
       if (err.type === "popup_failed_to_open") {
@@ -405,9 +359,7 @@ export default function Login() {
         className="fixed top-0 inset-x-0 z-50 flex items-center justify-between px-4 sm:px-6"
         style={{
           height: NAV_H,
-          // At rest the bar is invisible and the hero runs underneath it. Once
-          // anything is scrolling past, it frosts so the content behind cannot
-          // collide with the brand and the sign-in button.
+          // Transparent at the top of the page; frosted once content scrolls under it.
           background: scrolled ? "var(--gf-glass)" : "transparent",
           backdropFilter: scrolled ? "blur(14px) saturate(150%)" : "none",
           WebkitBackdropFilter: scrolled ? "blur(14px) saturate(150%)" : "none",
@@ -420,9 +372,7 @@ export default function Login() {
         {/* Brand */}
         <div className="flex items-center gap-3 min-w-0">
           <LogoMark size={36} />
-          {/* The wordmark stays at every width — it is what identifies the page. The
-              bar cannot carry both this and the Sign in button on a phone, and the
-              button is the half that gives way (see its own note below). */}
+          {/* The wordmark stays at every width; on a phone the Sign in button is the one hidden. */}
           <div className="leading-tight min-w-0">
             <div className="text-[17px] font-semibold tracking-wide truncate" style={{ color: "var(--gf-text-primary)" }}>
               {BRAND.name}
@@ -434,10 +384,8 @@ export default function Login() {
         </div>
 
         {/* Theme toggle + sign in */}
-        {/* No `gap` here: the sign-in button collapses to zero width at the top of the
-            page, and a gap would survive that collapse and push the theme button 8px
-            off the right edge — visibly out of line with its own scrolled position.
-            The spacing lives on that wrapper's margin instead, and collapses with it. */}
+        {/* No `gap`: the sign-in button collapses to zero width at the top of the page, and a gap
+           would remain and push the theme button off line. Spacing is its margin instead. */}
         <div className="flex items-center shrink-0">
           <button
             type="button"
@@ -445,36 +393,17 @@ export default function Login() {
             title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
             aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
             className="gf-icon-btn flex items-center justify-center overflow-hidden whitespace-nowrap"
-            // Height is overridden to 32px so it matches the Sign in button beside it —
-            // `gf-icon-btn` is 28px, which is right in the dashboard chrome where every
-            // neighbour is another icon button, and 4px short here where the neighbour
-            // is a 32px-tall text button. Local override rather than editing the class:
-            // the sidebar and header use it at 28 and should stay there.
+            // Height is 32px to match the Sign in button next to it (`gf-icon-btn` is 28px, which
+            // stays as is in the dashboard). Width is set inline to `auto`, because `.gf-icon-btn`'s
+            // 28px width would override a Tailwind width class.
             //
-            // WIDTH is the part that moves, and it is CONTENT-DRIVEN (`auto`) rather than
-            // a pair of Tailwind width classes. `.gf-icon-btn` declares `width: 28px` from
-            // inside `@layer utilities` — the SAME layer Tailwind's own `w-8` lands in, and
-            // later in it — so at equal specificity the class wins and `w-8` silently does
-            // nothing. The button then rendered 28 wide by 32 tall: a thin box, not the
-            // square it had always been. An inline width outranks both.
+            // 8px padding on each side makes it square at 32px (14px icon + 16 + 2px border). The
+            // label animates its own width, so the button follows its content; on a phone the label
+            // is hidden and the button is always 32px square. Because nothing overflows,
+            // `justify-center` keeps the icon centred.
             //
-            // 8px either side is what makes it exactly square: 14px icon + 8 + 8 + the 1px
-            // border each side = 32, matching the height. The label's own max-width
-            // animation is what grows and shrinks it; the button just follows its content,
-            // which is also why no `sm:` variant is needed — the label is `display: none`
-            // on a phone, so there the button is always the 32px square.
-            //
-            // ⚠️ The LABEL collapses its own width, which is what keeps this honest: the
-            // content then always FITS the button, at both ends of the animation and
-            // everywhere between. A label left at full width inside a 32px button
-            // overflows it, and `overflow-hidden` then clips whatever `justify-*` decided
-            // to push out — which is how the icon disappeared at the collapsed size.
-            // Because nothing overflows, `justify-center` is safe and the icon is exactly
-            // centred at 32px on every screen, mobile included.
-            //
-            // The inline transition restates the class's own transitions: declaring
-            // `transition` here replaces that declaration outright, and leaving them out
-            // would silently kill the hover and press feedback.
+            // The inline transition repeats the class's transitions; replacing them would remove the
+            // hover and press effects.
             style={{
               width: "auto",
               height: 32,
@@ -486,17 +415,13 @@ export default function Login() {
             }}
           >
             <span className="shrink-0 flex"><ThemeIcon theme={theme} /></span>
-            {/* Names the mode it switches TO, matching the title/aria-label. Desktop only:
-                on a phone the button never widens, so there is nowhere to put it — and
-                `display: none` there means the icon is the only content, centred.
-                The left margin collapses with the width, or a flex gap would survive the
-                collapse and shove the icon off-centre by its own 6px. */}
+            {/* Names the mode it switches to, like the title/aria-label. Desktop only (on a phone the
+               button never widens). The left margin collapses with the width so the icon stays
+               centred. */}
             <span
               className="hidden sm:inline-block overflow-hidden text-[12px] leading-none"
               style={{
-                // A CAP, not a width: the label is shrink-to-fit, so this only has to be
-                // comfortably larger than the longest string ("Light mode") for the label
-                // to take its natural width and never clip on a different font metric.
+                // A maximum, not a width: comfortably larger than the longest label ("Light mode").
                 maxWidth: scrolled ? 0 : 96,
                 marginLeft: scrolled ? 0 : 6,
                 opacity: scrolled ? 0 : 1,
@@ -507,31 +432,14 @@ export default function Login() {
               {theme === "dark" ? "Light mode" : "Dark mode"}
             </span>
           </button>
-          {/* Desktop only. On a phone the bar has room for the wordmark or this, not
-              both, and this is the one with somewhere else to go: the hero carries a
-              full-size Sign in button, and the back-to-top control returns you to it
-              from anywhere on the page. Losing the wordmark instead would leave a bare
-              logo square identifying nothing.
-
-              ⚠️ Hidden at the top of the page too, and for the same reason it is hidden
-              on a phone: at rest the hero's own full-size Sign in button is the one on
-              screen, so this is a second copy of a control the reader is already looking
-              at. It fades in with the frosted bar, on the same `scrolled` flag and the
-              same .28s curve, once that hero button has left the viewport.
-
-              `visibility`, not just `opacity` — a transparent button is still clickable
-              and still in the tab order, so keyboard focus could land on a control
-              nobody can see. Transitioning visibility as well holds it visible for the
-              length of the fade OUT and flips it immediately on the way IN, which is
-              exactly the behaviour wanted, and keeps it out of the accessibility tree
-              while hidden without a separate aria-hidden. */}
+          {/* Desktop only: on a phone the bar fits the wordmark or this button, and the hero already
+             has a large Sign in button. Also hidden at the top of the page, where the hero's own
+             button is visible; it fades in with the frosted bar once that button scrolls away.
+             `visibility` as well as `opacity`, so the hidden button cannot be clicked or focused. */}
           <span
             className="hidden sm:block overflow-hidden"
             style={{
-              // Width, not just opacity: an invisible button that still occupies its box
-              // would leave the theme button expanding into a gap rather than into the
-              // space this one vacates. Collapsing it is what makes the two read as one
-              // exchange instead of two unrelated fades.
+              // Width as well as opacity, so the theme button slides into the space this one frees.
               maxWidth: scrolled ? 200 : 0,
               marginLeft: scrolled ? 8 : 0,
               opacity: scrolled ? 1 : 0,
@@ -547,30 +455,18 @@ export default function Login() {
       </header>
 
       {/* ══ The fold ══ */}
-      {/* The bar is fixed and overlays this section, so the hero fills the screen
-          and pads its own content clear of it — that is what lets the backdrop
-          run edge to edge behind a transparent nav.
-
-          The floor applies on phones too. Dropping it there was an overcorrection:
-          the earlier "empty space underneath" was the content sitting at the TOP
-          with no flex context, which `flex-1 items-center` below fixes on its own.
-          With the centring in place the leftover height splits above and below,
-          which reads as composition rather than as a gap. */}
+      {/* The bar is fixed over this section; the hero fills the screen and pads its content
+         below the bar, so the background runs behind a transparent nav. The minimum height
+         applies on phones too; `flex-1 items-center` centres the content. */}
       <section
         className="hero-fold relative flex flex-col overflow-hidden"
         style={{ paddingTop: NAV_H }}
       >
-        {/* ── 1. Cover photograph ──
-            Drop a file at frontend/public/landing/hero-cover.jpg and it appears here.
-            Until then this layer paints nothing and the fold looks exactly as it did
-            before — a missing background must never leave a blank or broken hero.
-
-            `background-position: center` rather than a fixed crop: the fold is 100vh on
-            a phone and 66vh on a desktop, so the same image is shown at wildly different
-            aspect ratios and any corner-anchored crop loses the subject on one of them.
-
-            NOT `background-attachment: fixed` — it forces a repaint on every scroll
-            frame on most mobile browsers and is simply ignored on iOS Safari. */}
+        {/* ── 1. Cover photo ──
+           Appears when frontend/public/landing/hero-cover.jpg exists; until then this layer is
+           empty. `background-position: center`, since the first screen has very different
+           proportions on a phone and a desktop. Not `background-attachment: fixed` (slow on
+           mobile, ignored on iOS Safari). */}
         {HERO_COVER && (
           <div
             aria-hidden
@@ -584,23 +480,12 @@ export default function Login() {
           />
         )}
 
-        {/* ── 2. Scrim ──
-            ⚠️ Load-bearing, not decoration. The headline, the body copy and the sign-in
-            button all sit on this photograph, and a photo of a server room is mostly
-            mid-tone greys with bright LEDs in it — text lands on both. The scrim is what
-            keeps the copy readable whatever the picture turns out to be, so it stays even
-            if a darker photo seems not to need it.
-
-            ⚠️ THEME-AWARE, via `--gf-bg-rgb` (index.css). The copy is
-            `--gf-text-primary`, which flips from light to dark with the theme, so a scrim
-            fixed dark would put dark text on a dark wash the moment anyone switched to
-            light mode. The token carries R,G,B channels and the alphas live here, because
-            the alpha varies per stop and a colour token cannot.
-
-            Weighted LEFT because the copy is a single left-aligned column: the text side
-            is held near-opaque while the right stays clear enough for the picture to
-            read, and a second pass along the bottom keeps the fold from ending in a hard
-            seam against the section below. */}
+        {/* ── 2. Overlay ──
+           Keeps the headline, text and button readable over any photo, so keep it even if a
+           darker photo seems not to need it. Follows the theme via `--gf-bg-rgb` (index.css),
+           since the text colour flips between themes; the alphas vary per stop so they live
+           here. Heavier on the left, where the text is, with a fade along the bottom into the
+           next section. */}
         {HERO_COVER && (
           <div
             aria-hidden
@@ -613,31 +498,21 @@ export default function Login() {
           />
         )}
 
-        {/* ── 3. Accent glow ──
-            NOTE: a masked 44px Grafana-style grid used to sit here, under the glow.
-            Removed — it was drawn to give a mostly-empty fold some texture, and the
-            fold is no longer mostly empty. Behind type it competed with the copy
-            rather than supporting it. The accent glow and HeroBackdrop's sparklines
-            below still carry the depth it was there for. */}
+        {/* ── 3. Accent glow ── */}
         <div
           className="absolute inset-0 pointer-events-none"
           style={{ backgroundImage: "radial-gradient(ellipse at 18% 0%, rgba(87,148,242,0.13) 0%, transparent 62%)" }}
         />
 
         {/* ── 4. The drifting telemetry lines ──
-            Deliberately ABOVE the photo and its scrim, so the animation still reads
-            over a picture instead of being buried by it. This is the layer that says
-            "there are graphs behind this product", and it is the one thing about the
-            fold that must survive a background change. */}
+           Above the photo and overlay, so the animation stays visible over any picture. */}
         <HeroBackdrop />
 
         {/* The sign-in messages have no form to live in any more, so they sit at the
             top of the fold — directly under the button that produces them. */}
         {(notice || info || error) && (
           <div className="relative z-10 px-4 sm:px-6 pt-6 flex justify-center" aria-live="polite">
-            {/* max-w-2xl, not lg: the longest of these messages is the domain rejection,
-                and at 14px monospace it needs ~550px — it wrapped inside a 512px well on a
-                DESKTOP, which is not a mobile problem at all. */}
+            {/* max-w-2xl: the longest message (the domain rejection) needs about 550px. */}
             <div className="w-full max-w-2xl">
               {notice && <Banner color={ORANGE}>{notice}</Banner>}
               {info && <Banner color={accentText}>{info}</Banner>}
@@ -647,33 +522,15 @@ export default function Login() {
         )}
 
         <div className="relative z-10 flex-1 flex items-center px-4 sm:px-10 lg:px-16 py-14 sm:py-16 lg:py-20">
-          {/* Single column since the illustrative dashboard mock was removed, on the same
-              `max-w-7xl` as the figures strip and every section below — so the hero lines
-              up with the rest of the page instead of sitting in a narrower well of its own.
-              Text stays LEFT-aligned: the institution name wraps, and centred ragged lines
-              that long are markedly harder to read.
-              ⚠️ The heading is allowed the full width, but the BODY copy below is capped
-              (`max-w-3xl`). At this container width an uncapped paragraph runs to ~150
-              characters a line, which is roughly twice the point where the eye starts
-              losing its place on the return sweep. */}
+          {/* One column on the same `max-w-7xl` as the sections below, so everything lines up.
+             Left-aligned, since long centred lines are harder to read. The body text below is
+             capped at `max-w-3xl` (about 75 characters a line). */}
           <div className="max-w-7xl mx-auto w-full">
             <div>
-              {/* NOTE: an eyebrow line sat here above the headline, carrying the
-                  institution name. Removed — with the system name promoted to the h1 it
-                  was the second thing on the fold naming something the fixed top bar
-                  already names (BRAND.name + BRAND.subtitle), and that bar is on screen
-                  before this section is even scrolled to.
-                  The fold's height no longer depends on it: `.hero-fold` is a full
-                  viewport at every width, so removing copy leaves space rather than
-                  shrinking the section. */}
+              {/* The institution name is in the top bar, so it is not repeated here. `.hero-fold` is a
+                 full screen at every width. */}
               <Reveal delay={80}>
-                {/* The SYSTEM is the h1 — it names the thing this page is for, with the
-                    institution that owns it in the eyebrow directly above.
-                    No responsive short form is needed here any more: the tagline is ~39
-                    characters against the institution name's ~82, so it sets on two
-                    comfortable lines on a phone where the old headline ran to six.
-                    Type scale is unchanged, so the headline is exactly the size the
-                    institution name was. */}
+                {/* The system name is the h1, the thing this page is for. It fits on two lines on a phone. */}
                 <h1
                   className="text-[27px] sm:text-[34px] lg:text-[38px] xl:text-[42px] font-semibold leading-[1.15]"
                   style={{ color: "var(--gf-text-primary)" }}
@@ -683,9 +540,7 @@ export default function Login() {
               </Reveal>
 
               <Reveal delay={120}>
-                {/* Demoted from h1 to a supporting line — it is the promise, not the
-                    identity. Kept in the accent colour so it still reads as a statement
-                    rather than as body copy. */}
+                {/* Supporting line under the h1, in the accent colour. */}
                 <p
                   className="text-[16px] sm:text-[19px] font-medium leading-snug mt-4 sm:mt-5"
                   style={{ color: "var(--gf-accent-text)" }}
@@ -695,10 +550,7 @@ export default function Login() {
               </Reveal>
 
               <Reveal delay={150}>
-                {/* Same idea for the body. The full sentence carries three ideas
-                    (what is collected, how it is stored, what it becomes); on a phone
-                    the third is the one worth keeping, since it is the reason the
-                    system exists. The rest is said again further down the page. */}
+                {/* On a phone only the key part of the sentence is shown; the rest appears later on the page. */}
                 <p className="text-[14px] sm:text-[16.5px] leading-relaxed mt-5 sm:mt-6 max-w-3xl" style={{ color: "var(--gf-text-muted)" }}>
                   <span className="sm:hidden">
                     Servers, network, power and the room itself — turned into alerts that reach
@@ -712,14 +564,8 @@ export default function Login() {
               </Reveal>
 
               <Reveal delay={190}>
-                {/* The one thing the sentence above does NOT say, and the only claim on
-                    this page that is about the future rather than the present. Kept to a
-                    single line: it earns its place by being a real capability
-                    (analyticsService — disk, UPS battery and link saturation are each
-                    regressed over weeks of history), not by adding length.
-                    The phone gets a shortened version rather than nothing. Hiding it
-                    outright left the mobile fold visibly empty — the one screen where the
-                    copy is shortest — so the fix is fewer words, not fewer ideas. */}
+                {/* The one forward-looking claim: forecasts of disk, UPS battery and link saturation
+                   from weeks of history (analyticsService). A shorter version on a phone. */}
                 <p
                   className="text-[14px] sm:text-[16.5px] leading-relaxed mt-4 max-w-3xl"
                   style={{ color: "var(--gf-text-muted)" }}
@@ -737,17 +583,10 @@ export default function Login() {
               </Reveal>
 
               <Reveal delay={215}>
-                {/* A compact restatement of scope in the reader's own vocabulary. The
-                    prose above says it in sentence form; this is the version someone
-                    scanning rather than reading will actually take in, and it costs four
-                    words. Each maps to a real ingest path — Go agents, SNMP/RouterOS,
-                    UPS-MIB and the ESP32 — which is what the figures strip below counts. */}
-                {/* Deliberately NOT flex-wrap: broken across lines this stops reading as
-                    one list and turns into four stray labels. It is kept on a single row
-                    at every width by shrinking the type and the tracking on phones —
-                    "SERVERS · NETWORK · POWER · ROOM" is ~31 characters, which at 12px
-                    with 0.14em tracking overruns a 360px screen but fits comfortably at
-                    10px/0.1em. */}
+                {/* A short list of what is monitored. Each maps to a real source: Go agents,
+                   SNMP/RouterOS, UPS-MIB and the ESP32. */}
+                {/* Not flex-wrap: it must stay one line to read as a list. On phones the type and letter
+                   spacing shrink (10px/0.1em) so "SERVERS · NETWORK · POWER · ROOM" fits 360px. */}
                 <div
                   className="flex flex-nowrap items-center gap-x-2 sm:gap-x-3 mt-6 text-[10px] sm:text-[12px] tracking-[0.1em] sm:tracking-[0.14em] uppercase"
                   style={{ color: "var(--gf-text-dim)" }}
@@ -803,10 +642,8 @@ export default function Login() {
       </section>
 
       {/* ══ The walkthrough ══
-          First thing below the fold. It is the strongest asset on the page and
-          it used to sit at section 8 of 10, where most readers never reached it.
-          Everything after this now reads as detail on something already seen
-          rather than as claims to be taken on faith. */}
+         First thing below the first screen, so the rest of the page reads as detail on
+         something already seen. */}
       <LoginTutorial />
 
       {/* ══ What it monitors ══ */}
@@ -864,14 +701,8 @@ export default function Login() {
             sub="Sensors and agents push; routers and UPS units are polled — over SNMP, the RouterOS API, and ICMP for the gear we hold no credentials for. Everything converges on a single Node.js service that writes measurements to InfluxDB, state to MySQL, and a mirrored copy to on-site storage that survives a database wipe."
           />
 
-          {/* Diagram from `md` up, stacked list below it.
-              The switch is about whether the LABELS survive the scale, not about
-              "desktop vs mobile": the SVG is a 940-wide viewBox at `w-full`, and its
-              smallest label is 10.5px. In a 768px tablet column (~720px inside the
-              section padding) that scales to ~8px — small, but sharp on a tablet
-              display. On a 360px phone the same label lands at ~3.6px, which is why
-              the fallback exists at all. This used to be gated at `lg`, which handed
-              every iPad in portrait the phone layout on a screen with ample room. */}
+          {/* Diagram from `md` up, stacked list below. The SVG's smallest label is 10.5px in a
+             940-wide viewBox: about 8px on a tablet (fine) but 3.6px on a phone. */}
           <Reveal delay={100}>
             <div className="hidden md:block">
               <FlowDiagram />
@@ -923,10 +754,7 @@ export default function Login() {
                 </div>
                 <ForecastVisual />
 
-                {/* The ETA repeated as real text. The marker inside the SVG is
-                    the nicer presentation, but an SVG label scales with its
-                    viewBox and lands around 5px on a phone — the one number a
-                    reader must come away with cannot live only in there. */}
+                {/* The ETA repeated as text, since the SVG label shrinks to about 5px on a phone. */}
                 <div
                   className="mt-4 pt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1"
                   style={{ borderTop: "1px solid var(--gf-divider)" }}

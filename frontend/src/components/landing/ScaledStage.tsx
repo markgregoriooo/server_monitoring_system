@@ -2,31 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 /**
- * Renders a mini-UI mock at a fixed design width and scales it to fit whatever
- * space it is given.
+ * Renders a mock UI at a fixed design width and scales it to fit the space given (a
+ * narrower design width on phones, see useIsNarrow). Clips its content so a mock
+ * never spills over the text next to it. Measurement cases handled below:
  *
- * The mocks on this page are miniature interfaces — absolutely-positioned
- * toasts, multi-column tile rows, a phone. Reflowing those at every breakpoint
- * would mean a second layout per scene, so instead they are laid out once at a
- * design width (a narrower one on phones, see useIsNarrow) and scaled.
- *
- * This component CLIPS (`overflow: hidden`). That is deliberate — a mock must
- * never spill over the copy beside it — but it makes every measurement bug look
- * identical from the outside: content simply cut off. Three ways that happened,
- * all guarded below:
- *
- *   1. Measured at zero width. If the host is 0px when the observer first runs
- *      (a parent still laying out, a hidden ancestor), the old code returned
- *      early and left `boxHeight` null forever — so the inner box stayed
- *      unscaled at its full design width, overflowing its column and overlapping
- *      whatever sat next to it. It now retries on the next frame instead.
- *   2. Measured before the webfont landed. JetBrains Mono arrives async and has
- *      different metrics to the fallback, so content height changes after first
- *      paint. ResizeObserver catches most of this; `document.fonts.ready` closes
- *      the gap on browsers that batch it differently.
- *   3. Measured to a fraction. A content height of 216.4px scaled by 0.95 gives
- *      205.58, and a wrapper rounded down to 205 clips the last row by half a
- *      pixel — which reads as a cut-off border. Heights round UP.
+ *   1. Width 0 at first measure (parent still laying out): retry on the next frame
+ *      instead of giving up.
+ *   2. Web font loading later changes the height: ResizeObserver plus
+ *      `document.fonts.ready` re-measure.
+ *   3. Fractional heights: rounded up, so the last row is not clipped by half a pixel.
  */
 export default function ScaledStage({
   children,
@@ -71,9 +55,7 @@ export default function ScaledStage({
       setBoxHeight(Math.ceil(natural * next));
     };
 
-    // Missing ResizeObserver (or a very old browser): measure once and stop. A
-    // mock at the wrong size beats one that is absent, and everything it says is
-    // repeated in the text beside it.
+    // No ResizeObserver: measure once and stop.
     if (typeof ResizeObserver === "undefined") {
       update();
       return () => {
@@ -111,9 +93,8 @@ export default function ScaledStage({
         // Belt and braces against guard 1: even if the height is never resolved,
         // the host itself can never be wider than its column.
         maxWidth: "100%",
-        // `undefined` until the first measurement lands. The inner box is in
-        // normal flow at that point, so the wrapper still sizes itself and there
-        // is no collapsed frame to see.
+        // `undefined` until the first measurement; the inner box is in normal flow until
+        // then, so nothing collapses.
         height: boxHeight ?? undefined,
         overflow: "hidden",
       }}

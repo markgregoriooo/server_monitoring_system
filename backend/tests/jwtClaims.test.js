@@ -8,13 +8,9 @@ import {
   JWT_SIGN_OPTS,
 } from "../middleware/auth.js";
 
-// ─── The JWT stamping/checking contract ───────────────────────────────────────
-//
-// There are five places that sign or verify this app's session token — the auth
-// middleware, the sliding renewal inside it, issueSession, the Socket.IO handshake and
-// the rate limiter's user key. They all read the two frozen option objects exported by
-// middleware/auth.js. If any of them ever grows its own copy, the failure is a mass
-// logout: tokens minted by one site stop verifying at another.
+// ─── JWT sign/verify options ───────────────────────────────────────
+// Five places sign or verify the session token, and all use the two option objects
+// exported by middleware/auth.js. A separate copy anywhere would log everyone out.
 
 const SECRET = "test-secret-not-used-anywhere-real-0123456789abcdef";
 
@@ -69,10 +65,9 @@ test("an unsigned `alg: none` token is rejected", () => {
 });
 
 test("re-signing a decoded token must strip iss/aud, or every renewal 500s", () => {
-  // jwt.sign THROWS when an option duplicates a claim already in the payload. The
-  // renewal path spreads the decoded token, so it has to drop iss/aud along with the
-  // time claims — this pins that, because the symptom would be a 500 on the first
-  // request past a token's half-life rather than anything at deploy time.
+  // jwt.sign throws when an option duplicates a claim in the payload, so the renewal
+  // must drop iss/aud along with the time claims. Otherwise the first request past a
+  // token's half-life would get a 500.
   const decoded = jwt.verify(
     jwt.sign({ id: 1, ist: 123 }, SECRET, { ...JWT_SIGN_OPTS, expiresIn: "1h" }),
     SECRET,

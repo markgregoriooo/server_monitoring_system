@@ -1,19 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// DEV-ONLY: backfill ~30 days of synthetic, TRENDING ups_metrics + network_traffic
-// into InfluxDB, so the predictive-analytics forecasts (UPS battery degradation,
-// link saturation) return meaningful ETAs without real hardware or a running poller.
+// Dev only: writes ~30 days of made-up, trending ups_metrics and network_traffic
+// into InfluxDB so the UPS battery and link saturation forecasts can be tested
+// without hardware (dev-snmpsim only produces flat values).
 //
-// Why: the live SNMP simulator (dev-snmpsim) emits FLAT values; forecasting needs a
-// trend over weeks. This writes past-dated points with deliberate slopes + noise.
-//
-// Run from the backend dir (so .env loads):
+// Run from the backend folder (so .env loads):
 //     cd backend
 //     node scripts/seed-analytics-history.js [days]     # default 30
 //
-// Honesty note (predictive-analytics.md §9): this is TEST data to validate the
-// forecasting pipeline — NOT a real prediction. Uses high device_ids (9001/9002/9101)
-// so it never collides with real devices. Field types match the real UPS/router
-// handlers, so the InfluxDB schema stays consistent.
+// Test data only, not a real prediction (predictive-analytics.md §9). Uses device ids
+// 9001/9002/9101 so it never collides with real devices.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { writeClient, Point } from "../config/influx.js";

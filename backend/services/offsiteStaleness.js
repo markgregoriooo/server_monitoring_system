@@ -1,28 +1,14 @@
-// HOW LOUDLY to complain that the offsite (Backblaze) backup has stopped.
+// How serious it is that the offsite (Backblaze) backup has stopped. The rclone job
+// writes a marker after every successful upload, and this looks at its age:
 //
-// The rclone job stamps a marker on every successful upload; the backend reads its age.
-// Two thresholds, because one missed night and a week of them are different problems:
+//   older than warnHours (26)  → WARNING (bell + toast). Usually one missed night
+//                                due to a campus internet blip; the next run catches up.
+//   older than critHours (72)  → CRITICAL, which is emailed by default. Three missed
+//                                nights means the job is broken.
 //
-//   older than warnHours (26)  → WARNING  — bell + toast. One missed 2:30 AM run, usually
-//                                a campus internet blip, and the next night's `rclone
-//                                copy` uploads whatever was missed. Emailing it would
-//                                teach people to ignore backup mail.
-//   older than critHours (72)  → CRITICAL — which is what reaches EMAIL
-//                                (NOTIFY_EMAIL_MIN_SEVERITY defaults to critical). Three
-//                                missed nights is a broken job, and a broken backup is
-//                                invisible until the day it is needed — the bell alone
-//                                only helps if someone opens the dashboard.
-//
-// critHours = 0 turns the escalation off (warning only, the old behaviour). A critHours
-// at or below warnHours is lifted to warnHours, so the two simply fire together rather
-// than critical firing on a fresher marker than the warning does.
-//
-// A missing / unreadable marker (stampMs null) means "never synced": that is CRITICAL at
-// once only if escalation is on — it is what an enabled check with no working job looks
-// like, and waiting 72 h to say so would hide a job that was never set up.
-//
-// PURE and import-free, like envPersistPolicy / linkAlertPolicy, so backend/tests runs it
-// with no MySQL, InfluxDB or .env.
+// critHours = 0 turns off escalation. A critHours at or below warnHours is raised to
+// warnHours. A missing marker means "never synced" and is critical right away when
+// escalation is on. No imports, so it is unit-tested.
 
 const HOUR_MS = 60 * 60 * 1000;
 

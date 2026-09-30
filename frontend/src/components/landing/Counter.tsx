@@ -3,15 +3,9 @@ import { animate } from "animejs";
 import { useInView, prefersReducedMotion, EASE } from "./motion";
 
 /**
- * A number that counts up once, when it first scrolls into view.
- *
- * Writes textContent through a ref rather than driving React state: a counter at
- * 60fps is sixty re-renders a second for a digit nothing else in the tree depends
- * on, and a strip of four of them would re-render the section continuously.
- *
- * The final value is also the SERVER-rendered value in the markup, so a visitor
- * with JS disabled, or one who arrives before the observer fires, reads the
- * correct figure rather than a zero.
+ * A number that counts up once when it scrolls into view. Writes textContent through
+ * a ref instead of React state, to avoid re-rendering at 60fps. The final value is
+ * already in the markup, so without JavaScript the correct number shows.
  */
 export default function Counter({
   to,

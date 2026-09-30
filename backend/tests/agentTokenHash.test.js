@@ -5,16 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { hashKey } from "../services/installKeyUtils.js";
 
-// ─── The Node ↔ SQL hashing contract ──────────────────────────────────────────
-//
-// The agent-token migration backfills its lookup column with MySQL's SHA2(x, 256) while
-// the backend looks that column up with Node's hashKey(). Two implementations of one
-// value, in two languages, that must agree byte for byte forever — and if they ever stop
-// agreeing, nothing throws: the lookup simply never matches, every agent 403s, and a
-// monitoring system reports that every server died at once.
-//
-// Same guard, and the same reasoning, as contract.test.js parsing the Go collector: when
-// a contract is hand-duplicated across a language boundary, a test has to hold it.
+// ─── Node ↔ SQL hashing contract ──────────────────────────────────────────
+// The migration fills the lookup column with MySQL's SHA2(x, 256), and the backend
+// looks it up with Node's hashKey(). If the two ever differ, no lookup matches and
+// every agent gets 403. Same idea as contract.test.js checking the Go collector.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATION = path.join(__dirname, "..", "..", "migrations", "2026-08-25_agent_token_hash.sql");
@@ -61,9 +55,8 @@ test("the hash column is uniquely indexed — it is the credential lookup path",
 });
 
 test("a recoverable cipher column exists — a hash alone cannot re-deliver a token", () => {
-  // The lost-agent.conf recovery path (and the ADOPT workflow that shares it) needs the
-  // ORIGINAL token again. If this column is ever removed, that path breaks silently:
-  // the agent loops on `approved but token missing; retrying` rather than failing.
+  // Re-delivering the token (lost agent.conf, adopt) needs the original value. Without
+  // this column the agent just loops on "approved but token missing; retrying".
   assert.match(statements, /`approved_token_cipher`\s+varchar\(255\)/i);
 });
 
@@ -72,10 +65,8 @@ test("the plaintext column is dropped — the whole point of the change", () => 
 });
 
 test("the hash is backfilled BEFORE the plaintext is dropped", () => {
-  // Order is the entire safety argument for already-approved agents: hash first and they
-  // keep authenticating untouched, because each one already holds its token in agent.conf.
-  // Drop first and every one of them 403s at the next POST, which on a monitoring system
-  // reads as the whole fleet dying at once.
+  // Order matters for agents already approved: hash first and they keep working (they
+  // already have their token); drop first and they all get 403.
   const backfill = statements.search(/SET\s+`?approved_token_hash`?\s*=\s*SHA2/i);
   const drop = statements.search(/DROP\s+COLUMN\s+`?approved_token`?/i);
   assert.ok(backfill > -1 && drop > -1, "both statements must be present");

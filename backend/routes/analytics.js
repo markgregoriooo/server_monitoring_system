@@ -107,8 +107,8 @@ router.get(
 );
 
 // GET /api/analytics/accuracy?metric=&deviceId=&days=30&horizon=7&folds=5
-// Rolling-origin backtest: how far off the forecasts actually were, measured on real
-// history rather than on how well the line fits it. See predictive-analytics.md §17.
+// Rolling-origin backtest: how far off past forecasts were on real history.
+// See predictive-analytics.md §17.
 router.get(
   "/accuracy",
   asyncHandler(async (req, res) => {

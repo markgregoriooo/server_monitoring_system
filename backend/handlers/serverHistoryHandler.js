@@ -5,24 +5,18 @@ import { describeError } from "../utils/httpError.js";
 // GET /api/servers/:id/history?range=-1h  (JWT, via authMiddleware)
 //   ...or an absolute window: ?start=<ISO>&stop=<ISO>
 //
-// Returns the server's real metric history from InfluxDB (measurement
-// `server_metrics`) for the chosen range, aggregated into time windows.
-//
-// Range presets (-1h … -30d) and the custom-window rules live in
-// services/historyRange.js, shared so every history endpoint offers the same
-// choices. That module also owns the Flux-injection guarantee: presets are a fixed
-// whitelist and custom bounds are re-serialised from Date, so no user text ever
-// reaches the query string built below.
+// A server's metric history from InfluxDB (`server_metrics`), aggregated into
+// windows. Ranges come from services/historyRange.js, which also keeps user input
+// out of the Flux query.
 export function serverHistoryHandler(req, res) {
   const parsed = resolveHistoryRequest(req, res, "server");
   if (!parsed) return;
   const { deviceId, resolved } = parsed;
   const { rangeExpr, every } = resolved;
 
-  // Gauges (cpu/mem/disk %) average cleanly over a window. The network fields are
-  // cumulative byte counters, so averaging them smears the value — aggregate those
-  // with `last` instead, giving the exact counter at each window edge so the
-  // frontend's consecutive-diff yields the true average throughput for the window.
+  // CPU/mem/disk % are averaged per window. The network fields are cumulative byte
+  // counters, so they use `last`; the frontend diffs consecutive values to get the
+  // average throughput.
   const flux = `
     base = from(bucket: "${bucket}")
       |> range(${rangeExpr})
@@ -65,9 +59,8 @@ export function serverHistoryHandler(req, res) {
       if (!res.headersSent) res.status(500).json({ error: "History query failed." });
     },
     complete() {
-      // Echo what was actually served — including the resolved custom bounds, the
-      // span, and the window that was chosen — so the client can label the axis
-      // (a multi-day window needs DATES on it) without re-deriving any of it.
+      // Return the range, span and window actually used, so the client can label the
+      // axis (dates for multi-day ranges).
       if (!res.headersSent) {
         res.json(historyEnvelope(resolved, { history }));
       }

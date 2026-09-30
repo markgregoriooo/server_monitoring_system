@@ -6,9 +6,9 @@ import { SEVERITY_COLOR } from "../../components/notifications/notificationUtils
 import { STATUS } from "../../theme/gf";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
-// ── The tile catalog: every tile a user can put on the widget. Each is a tiny FC
-// that reads the shared live hooks. The saved layout is just an ordered list of these
-// ids (PipWidget / WidgetBuilder), so adding a tile later = one entry here. ──
+// ── Tile catalog: every tile that can go on the widget. Each is a small component
+// reading the shared live hooks. A saved layout is an ordered list of these ids, so
+// adding a tile is one entry here. ──
 
 // Grafana status colors (CLAUDE.md). Thresholds mirror Dashboard's helpers — which
 // aren't exported — kept here so the PiP bundle doesn't import the whole Dashboard.
@@ -18,34 +18,29 @@ const T_DIM = "var(--gf-text-dim)";
 const tempColor = (t: number) => (t < 22 ? BLUE : t <= 27 ? GREEN : t <= 29 ? ORANGE : RED);
 const humColor = (h: number) => (h < 30 || h > 70 ? ORANGE : GREEN);
 const loadColor = (v: number) => (v >= 85 ? RED : v >= 65 ? ORANGE : GREEN);
-// `smoke` is normalised upstream in LiveSummaryContext, so CRITICAL is the top band. The
-// fallthrough here is GREEN, which is why that normalisation is not cosmetic: an
-// unrecognised status would paint a smoke event as clean air.
+// `smoke` is normalised in LiveSummaryContext, so CRITICAL is the top band. Anything
+// unrecognised falls through to green, which is why that normalisation matters.
 const gasColor = (smoke: string) => (smoke === "CRITICAL" ? RED : smoke === "WARNING" ? ORANGE : GREEN);
 
 export interface TileDef {
   id: string;
   label: string;
-  // One line on what the tile actually shows. Surfaced in the builder — a label alone
-  // doesn't distinguish "Network ports" from "Router list", and picking blind means
-  // adding a tile, popping out, and coming back to change it.
+  // One line on what the tile shows, shown in the builder (a label alone does not tell
+  // "Network ports" from "Router list").
   description?: string;
   group: "Environment" | "Servers" | "Network" | "UPS" | "Alerts" | "Aircon" | "General";
   span?: 1 | 2;
   Render: FC;
 }
 
-// Widget capacity. MUST match MAX_TILES in backend/services/widgetPrefsService.js — the
-// server truncates a longer layout on save, so without this the builder would let you
-// add a 17th tile and silently lose it.
+// Maximum tiles. Must match MAX_TILES in backend/services/widgetPrefsService.js; the
+// server cuts off anything longer when saving.
 export const MAX_TILES = 16;
 
-// ── shared tile chrome ──
-// `stale` = this tile's data source has gone quiet (see LiveSummaryContext). It dims
-// the reading and flags the label rather than hiding the value: the last known number
-// is still useful, it just must not be mistaken for a current one. ORANGE, not red —
-// "don't trust this" is a warning, not a failure, and red is already spoken for by
-// genuine critical states inside the tiles.
+// ── Shared tile frame ──
+// `stale` = this tile's data source has gone quiet (see LiveSummaryContext). The value
+// is dimmed and the label flagged in orange, since the last number is still useful but
+// must not look current.
 function Shell({ label, children, stale = false }: { label: string; children: ReactNode; stale?: boolean }) {
   return (
     <div
@@ -55,17 +50,9 @@ function Shell({ label, children, stale = false }: { label: string; children: Re
         background: "var(--gf-panel)",
         border: "1px solid var(--gf-panel-border)",
         borderRadius: 2,
-        // Each reading reads as a raised chip rather than a flat rectangle. The drop
-        // shadow separates neighbours in a dense two-column grid, and the inset top
-        // highlight (both come from --gf-btn-shadow) gives the surface a lit edge.
-        //
-        // Static, NOT .gf-raise: tiles aren't pressable, and eight of them each
-        // brightening on hover would be noise in a 320px window. The token is only 2px
-        // of blur, which is what keeps a grid of small chips from turning muddy.
-        //
-        // Resolves inside the pop-out too — the PiP document gets our stylesheets
-        // cloned into it (pip-widget.md §6.1), so the --gf-* custom properties exist
-        // there and follow the theme.
+        // Each reading is a raised chip (--gf-btn-shadow), so neighbours stand apart in the
+        // dense grid. Not .gf-raise: tiles are not clickable. Works in the pop-out too, since
+        // the stylesheets are copied into it (pip-widget.md §6.1).
         boxShadow: "var(--gf-btn-shadow)",
       }}
     >
@@ -149,11 +136,8 @@ const ServersTile: FC = () => {
   );
 };
 
-// Per-server list — ONE line per server so it stays glanceable and bounded (no
-// scrolling at realistic counts): status dot + name + exact cpu·mem + a single LOAD
-// bar = the worst of the two (the signal that matters at a glance; full breakdown is
-// one click away on the Dashboard). Problem-first sort (offline, then busiest) surfaces
-// trouble at the top. Divider between rows; names follow the admin display label.
+// Per-server list, one line each: status dot, name, CPU·mem and one load bar (the worse
+// of the two). Problems first (offline, then busiest). Names use the display label.
 const worstLoad = (s: { cpu: number; memory: number }) => Math.max(s.cpu, s.memory);
 
 const ServerListTile: FC = () => {
@@ -195,9 +179,7 @@ const ServerListTile: FC = () => {
                 {offline ? (
                   <span className="text-[10px]" style={{ color: RED }}>offline</span>
                 ) : (
-                  // The numbers ARE the measurement, so they lead the row — they were
-                  // 8px, smaller than the server name beside them. w-14 (not w-11) so
-                  // a double-digit pair like "100·100" still fits on one line at 11px.
+                  // The numbers lead the row. w-14 so "100·100" fits on one line at 11px.
                   <>
                     <span className="w-14 text-right text-[11px] tabular-nums whitespace-nowrap">
                       <b style={{ color: loadColor(s.cpu) }}>{s.cpu}</b>
@@ -249,14 +231,9 @@ const LatestAlertTile: FC = () => {
 };
 
 // ── UPS ──
-// The one metric on this widget with a DEADLINE attached. An alert can tell you mains
-// dropped; only this tells you how long you have left, which is the whole reason to
-// have it on a glance surface. So "on battery" is the headline and everything else is
-// subordinate to it: while discharging, runtime leads and is always red.
-//
-// Fleet-worst rather than per-unit — one UPS on battery is the story regardless of how
-// many others are fine, and the widget has no room for a per-unit list at realistic
-// counts. Drill into /ups for the breakdown.
+// The one metric with a deadline: how long the battery lasts. "On battery" is the
+// headline, and while discharging the runtime comes first, in red. Shows the worst UPS
+// in the fleet (one on battery is the story); the full list is on /ups.
 const chargeColor = (pct: number) => (pct < 40 ? RED : pct < 70 ? ORANGE : GREEN);
 
 const UpsTile: FC = () => {
@@ -300,9 +277,8 @@ const UpsTile: FC = () => {
   );
 };
 
-// ── Network (SNMP routers + MikroTik — both arrive on the shared networkMetrics) ──
-// Counts PORTS, not devices: a router that answers SNMP while three buildings' links
-// are down is "online" by device count and broken by any measure that matters.
+// ── Network (SNMP routers + MikroTik, both on networkMetrics) ──
+// Counts ports, not devices: a router can answer while three buildings' links are down.
 const NetworkTile: FC = () => {
   const { routers, routersOnline, routersTotal, portsUp, portsTotal, pingOnlyRouters, stale } = useLiveSummary();
   if (routersTotal === 0) {
@@ -313,9 +289,8 @@ const NetworkTile: FC = () => {
     );
   }
   const routerDown = routersTotal - routersOnline;
-  // Every router is ping-only: there are no ports anywhere, so "0/0 ports up" would be
-  // the headline and would read as a total outage. Lead with the worst packet loss
-  // instead — the number that actually says whether these links are healthy.
+  // All routers are ping-only, so there are no ports and "0/0 ports up" would look like an
+  // outage. Show the worst packet loss instead.
   const allPing = pingOnlyRouters === routersTotal;
   const worstLoss = routers
     .filter((r) => r.packetLossPct != null)
@@ -362,12 +337,8 @@ const NetworkTile: FC = () => {
 };
 
 // ── UPS / Network: every unit, named ──
-// Same one-line-per-row shape as ServerListTile, and the same reason: bounded and
-// glanceable at realistic counts without scrolling. Problem-first sort so trouble is
-// always the top row — for UPS that ordering is on-battery, then lowest runtime, since
-// a discharging unit outranks a merely low one that is still on mains.
-// Type scale matches ServerListTile's rows on purpose — these sit in the same widget,
-// and a UPS reading has no reason to be smaller than a server's.
+// One line per unit, like ServerListTile, problems first: for UPS that is on battery,
+// then lowest runtime. Same text size as the server rows.
 function Row({ color, name, right }: { color: string; name: string; right: ReactNode }) {
   return (
     <div className="flex items-center gap-1.5 py-1" style={{ borderTop: "1px solid var(--gf-divider)" }}>
@@ -469,14 +440,10 @@ const NetworkListTile: FC = () => {
   );
 };
 
-// ── Per-device tiles (parameterised ids: "ups.device:7" / "network.device:3") ──
-// The one place tile ids stop being a fixed vocabulary. A saved layout may name a
-// device that has since been decommissioned, so both renderers must handle "not in
-// the live list" — they show a dim Unavailable rather than vanishing, because a tile
-// silently disappearing looks like a bug, while this points at the fix (remove it in
-// the builder).
-// Not marked stale: "this device is gone from the list" is a different condition from
-// "its stream went quiet", and flagging both at once would just muddy the signal.
+// ── Per-device tiles ("ups.device:7" / "network.device:3") ──
+// A saved layout may name a device that has been removed, so the tile shows a dim
+// "Unavailable" rather than disappearing (remove it in the builder). Not marked stale,
+// since "gone from the list" is a different condition.
 function Unavailable({ label }: { label: string }) {
   return (
     <Shell label={label}>
@@ -498,15 +465,11 @@ const ServerDeviceTile: FC<{ deviceId: number }> = ({ deviceId }) => {
       </Shell>
     );
   }
-  // Maintenance is a deliberate park, not a fault — the agent keeps reporting and the
-  // numbers stay real, so they are shown as usual. It is called out because this tile
-  // is the whole reason someone pinned this box: knowing its alerts are suppressed is
-  // the difference between "quiet" and "muted".
+  // Maintenance is shown, since it means the device's alerts are paused ("muted", not
+  // "quiet"). The numbers are still real.
   const maint = s.status === "Maintenance";
-  // CPU leads and memory rides the sub-line, rather than both at one size. A pinned
-  // tile is a glance surface — one number has to be the headline, and CPU is what
-  // moves. Both keep the load colouring the Servers list uses, so the same number is
-  // the same colour in both places.
+  // CPU is the headline and memory is on the sub-line. Both use the same load colours as
+  // the Servers list.
   return (
     <Shell label={s.name} stale={stale.servers}>
       <div className="flex items-baseline gap-1">
@@ -661,16 +624,11 @@ export const TILE_CATALOG: TileDef[] = [
 
 export const TILE_BY_ID = new Map(TILE_CATALOG.map((t) => [t.id, t]));
 
-// ── Parameterised tile ids ────────────────────────────────────────────────────
-// Everything above is a fixed vocabulary. These two are not: they pin ONE device,
-// so the id carries which — "ups.device:7", "network.device:3".
-//
-// Why an id suffix rather than, say, a per-tile settings object: the saved layout is
-// deliberately just an ordered array of strings (§3.2), and keeping it that way means
-// persistence, validation, dedupe and the MAX_TILES cap all keep working untouched.
-// The backend validates these by PATTERN and never needs to know which device ids
-// exist — a decommissioned device's tile simply renders "Unavailable", which is the
-// same forward-compatible behaviour unknown ids already had.
+// ── Per-device tile ids ────────────────────────────────────────────────────
+// These pin one device, so the id carries which: "ups.device:7", "network.device:3". A
+// suffix keeps the saved layout a plain list of strings (§3.2), so saving, validation,
+// de-duplication and MAX_TILES all work unchanged. The backend checks the pattern only;
+// a removed device's tile shows "Unavailable".
 export const DEVICE_TILE_PREFIXES = ["ups.device", "network.device", "server.device"] as const;
 export type DeviceTilePrefix = (typeof DEVICE_TILE_PREFIXES)[number];
 
@@ -678,9 +636,8 @@ export type DeviceTilePrefix = (typeof DEVICE_TILE_PREFIXES)[number];
 // parser and the id builder cannot drift apart when a fourth is added.
 export type DeviceTileKind = "ups" | "network" | "server";
 
-// `[1-9]\d*` — no leading zeros, so "ups.device:07" is rejected rather than accepted as
-// a SECOND distinct string for device 7, which would slip past the layout's dedupe and
-// render the same unit twice.
+// `[1-9]\d*` rules out leading zeros, so "ups.device:07" cannot appear as a second
+// copy of device 7.
 const DEVICE_TILE_RE = /^(ups|network|server)\.device:([1-9]\d{0,9})$/;
 
 export function parseDeviceTileId(id: string): { kind: DeviceTileKind; deviceId: number } | null {
@@ -702,9 +659,8 @@ export function resolveTile(id: string): TileDef | undefined {
   const parsed = parseDeviceTileId(id);
   if (!parsed) return undefined;
   const { kind, deviceId } = parsed;
-  // Keyed rather than chained ternaries: three families already made the old
-  // `kind === "ups" ? … : …` form read as "UPS or not-UPS", which is how a fourth
-  // gets silently filed under Network.
+  // A lookup by kind instead of chained ternaries, so a new kind is not silently treated
+  // as Network.
   const META = {
     ups: { label: `UPS #${deviceId}`, description: "One pinned UPS", group: "UPS" },
     network: { label: `Router #${deviceId}`, description: "One pinned router", group: "Network" },
@@ -722,17 +678,10 @@ export function resolveTile(id: string): TileDef | undefined {
 export const DEFAULT_LAYOUT = ["env.temp", "env.humidity", "env.gas", "alerts.count", "servers.list", "alerts.latest"];
 
 // ─── Window sizing ────────────────────────────────────────────────────────────
-// The pop-out used to open at a fixed 340x300 whatever the layout was, so a widget
-// with ten tiles had to be scrolled — which defeats a glance surface, and contradicts
-// the whole reason servers.list is one line per server.
-//
-// requestWindow only takes an INITIAL size, so this is computed at open time rather
-// than reactively. It is deliberately an ESTIMATE: list tiles grow with how many
-// devices exist, and the true height depends on text wrapping we can't measure before
-// paint. Being wrong is safe in both directions — the tile grid is overflow-y-auto, so
-// an under-estimate scrolls (the old behaviour) and an over-estimate leaves a little
-// empty space. Numbers below are derived from the actual Tailwind classes on Shell and
-// PipWidget; if those paddings change, these drift.
+// Estimates the pop-out size from the layout so a widget with many tiles does not need
+// scrolling. requestWindow only takes an initial size, so this runs at open. An estimate:
+// too small scrolls, too big leaves a little space. The numbers come from the Tailwind
+// classes on Shell and PipWidget; update them if those change.
 export const WIDGET_WIDTH = 340; // fixed: the grid is always 2 columns
 
 const HEADER_H = 28; // PipWidget header strip (h-7)

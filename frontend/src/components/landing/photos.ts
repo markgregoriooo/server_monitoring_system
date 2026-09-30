@@ -1,32 +1,23 @@
 /**
- * ── THE PHOTO SLOTS ─────────────────────────────────────────────────────────
+ * ── Photo slots ─────────────────────────────────────────────────────────
+ * Photos of the actual hardware in the ICTU server room.
  *
- * Everything else on the landing page is drawn in code. These are the four things
- * code cannot fake: photographs of the hardware actually running in the ICTU
- * server room. They are what stops the page reading as a template.
+ * To replace a photo with a better shot of the same thing: overwrite the file in
+ * frontend/public/landing/, keeping its name.
  *
- * TO SWAP A PHOTO for a better shot of the SAME thing: overwrite the file in
- * frontend/public/landing/ keeping its filename. No change here at all.
+ * To fill an empty slot:
+ *   1. Put the image in  frontend/public/landing/
+ *   2. Set `src` below, e.g.  src: "/landing/esp32-installed.jpg"
  *
- * TO FILL AN EMPTY SLOT — two steps, no other file changes:
- *   1. Drop the image in  frontend/public/landing/
- *   2. Fill in `src` below, e.g.  src: "/landing/esp32-installed.jpg"
+ * If the new photo shows something different, update `alt`, `caption`, `title`,
+ * `detail` and `meta` too. See public/landing/README.txt.
  *
- * ⚠️ If the new photo shows something DIFFERENT, the words have to follow it:
- * `alt`, `caption`, `title`, `detail` and `meta` all describe the subject, and
- * `detail` makes factual claims about the hardware that a swap can invalidate.
- * See public/landing/README.txt.
+ * Until `src` is set:
+ *   - `npm run dev`  shows a labelled placeholder with the shot brief.
+ *   - `npm run build` leaves the slot out, and hides the gallery if all are empty.
  *
- * Until `src` is filled in:
- *   - `npm run dev`  shows a labelled placeholder with the shot brief, so the
- *     slot is impossible to forget.
- *   - `npm run build` omits the slot entirely, and the gallery hides itself if
- *     every slot is empty. A half-built photo strip must never reach the public
- *     page — an empty frame reads as a broken image, which is worse than no
- *     section at all.
- *
- * Shooting notes: landscape, minimum 2400px wide, room lights ON, no phone
- * flash (it blows out rack LEDs and flattens the enclosure). JPG is fine.
+ * Shooting notes: landscape, at least 2400px wide, room lights on, no phone flash.
+ * JPG is fine.
  */
 export interface LandingPhoto {
   id: string;
@@ -38,9 +29,7 @@ export interface LandingPhoto {
   caption: string;
   /** Headline inside the lightbox — names the thing rather than describing the shot. */
   title: string;
-  /** Body copy inside the lightbox. Two or three sentences, and they have to be TRUE:
-   *  this is the only place on the page where a photograph is annotated with claims
-   *  about what it is doing, so a stale number here is a lie with a picture attached. */
+  /** Text shown in the lightbox. Two or three sentences, and they must be accurate. */
   detail: string;
   /** Short spec line under the detail — the same shape as COVERAGE's `meta`. */
   meta: string;

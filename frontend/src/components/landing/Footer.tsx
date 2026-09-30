@@ -3,23 +3,9 @@ import { BRAND } from "../../branding";
 import CopyableEmail from "./CopyableEmail";
 
 /**
- * The footer.
- *
- * It was a copyright line and three words, which on an institutional system is a
- * missed obligation as much as a missed design opportunity: this is the page
- * someone lands on when they cannot get in, and the one place they look for a
- * human to ask.
- *
- * The Support link used to be the word "Support" wrapped in a `mailto:`. That
- * silently does NOTHING on a machine with no registered mail handler — the
- * normal state of a fresh Windows install without Outlook configured — so the
- * one contact route on the page appeared broken to exactly the people who
- * needed it. It is now a CopyableEmail: the address is visible, clicking copies
- * it and says so, and the mailto still fires for anyone who can act on it.
- *
- * Every contact field is optional (see branding.ts) and omitted when blank,
- * because a placeholder phone number reaching a live page is worse than no
- * phone number.
+ * The footer: where someone who cannot get in looks for a person to contact. The
+ * Support address is a CopyableEmail (a plain mailto does nothing without a mail
+ * app). Every contact field is optional (see branding.ts) and left out when blank.
  */
 
 function ColHead({ children }: { children: React.ReactNode }) {

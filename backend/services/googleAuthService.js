@@ -6,21 +6,15 @@ import { AuthRejection, ServiceUnavailable, isTransportError } from "../utils/ht
 import { parseAllowedDomains, isAllowedDomain } from "./googleDomain.js";
 import { describeError } from "../utils/httpError.js";
 
-// ─── Google "Sign in with Google" (OAuth 2.0 / OpenID Connect) ────────────────
-// The frontend (custom "CSPC Mail" button) runs the OAuth 2.0 AUTHORIZATION CODE
-// flow (popup) and sends us a one-time AUTH CODE. We exchange that code with
-// Google for tokens — server-to-server, authenticated with the client secret —
-// and verify the returned ID token's signature locally (verifyIdToken, no extra
-// network call). verifyIdToken also enforces the audience, so a token minted for
-// another client can't be replayed here. Then we enforce the CSPC email domains
-// and either log the user in (existing + active) or create a pending registration
-// for an admin to approve. Only login path; no password.
+// ─── Google sign-in (OAuth 2.0 / OpenID Connect) ────────────────
+// The "CSPC Mail" button runs the authorization-code flow in a popup and sends us
+// a one-time code. We exchange it with Google using the client secret, verify the
+// returned ID token locally (verifyIdToken also checks the audience), check the
+// CSPC domain, then sign the user in or create a pending registration. This is the
+// only login; there are no passwords.
 //
-// Why auth-code (not implicit): the implicit flow is deprecated (OAuth 2.1 /
-// RFC 9700). Auth-code keeps the token out of the browser, and the ID token it
-// returns already carries email + name + picture — so no separate tokeninfo /
-// userinfo round trips. The custom button is still required only for the
-// "CSPC Mail" label (Google's official button is fixed-text).
+// Auth-code rather than the deprecated implicit flow: the token never reaches the
+// browser, and the ID token already has the email, name and picture.
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -29,11 +23,9 @@ const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 // import-free so backend/tests/ can cover it (see tests/googleDomain.test.js).
 const ALLOWED_DOMAINS = parseAllowedDomains(process.env.GOOGLE_ALLOWED_DOMAINS);
 
-// "postmessage" is the special redirect_uri Google uses for the popup auth-code
-// flow (@react-oauth/google's default ux_mode: 'popup'). It must match the value
-// the library used to obtain the code, and needs NO entry in the Cloud Console's
-// "Authorized redirect URIs" — only the JavaScript origins matter.
-// 'client' object is server's identity as an app to Google
+// "postmessage" is the redirect_uri Google uses for the popup auth-code flow. It
+// must match what the library used, and needs no entry under "Authorized redirect
+// URIs"; only the JavaScript origins matter.
 const client = new OAuth2Client({
   clientId: CLIENT_ID,
   clientSecret: CLIENT_SECRET,
@@ -50,15 +42,14 @@ async function recordDenial(reason, { email = null, userId = null, ip = null, us
   }
 }
 
-// Exchange the Google auth code, verify the ID token, enforce CSPC domain, and
-// resolve the user to one of: ok (session issued) | pending_created | pending |
-// rejected | disabled.
+// Exchange the code, verify the ID token, check the CSPC domain, and resolve the
+// user to one of: ok (session issued) | pending_created | pending | rejected |
+// disabled.
 //
-// Throws AuthRejection (4xx, message shown to the user) ONLY for things the user
-// can act on: a missing/invalid code, wrong audience, unverified email, non-CSPC
-// domain. Everything else — Google unreachable, missing credentials, a database
-// failure from the calls below — throws ServiceUnavailable or propagates unmarked,
-// so the route answers 503 instead of blaming the user's account. See utils/httpError.js.
+// Throws AuthRejection (4xx, shown to the user) only for things the user can fix:
+// missing/invalid code, wrong audience, unverified email, non-CSPC domain.
+// Everything else (Google unreachable, missing credentials, a database error) is a
+// 503, not the user's fault. See utils/httpError.js.
 async function authenticate(code, { ip = null, userAgent = null } = {}) {
   if (!CLIENT_ID || !CLIENT_SECRET) {
     // A deployment mistake, not a sign-in problem. 401 here used to send admins
@@ -71,9 +62,9 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
 
   let payload;
   try {
-    // 1. Swap the one-time code for tokens (authenticated with the client secret).
-    // 2. Verify the ID token's signature locally and confirm it was issued for
-    //    THIS client (audience) — verifyIdToken throws on any mismatch.
+    // 1. Exchange the code for tokens (with the client secret).
+    // 2. Verify the ID token locally and check it was issued for this client
+    //    (audience); verifyIdToken throws on any mismatch.
     const { tokens } = await client.getToken(code);
     const ticket = await client.verifyIdToken({
       idToken: tokens.id_token, //OIDC identity JWT
@@ -81,25 +72,18 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
     });
     payload = ticket.getPayload();
   } catch (err) {
-    // Both outcomes throw, but they mean opposite things: if we never reached
-    // Google (DNS, no route, timeout) that is OUR outage — telling the user their
-    // sign-in couldn't be verified would be a lie that hides a network problem.
+    // Not reaching Google at all (DNS, no route, timeout) is our outage, not a failed
+    // sign-in.
     if (isTransportError(err)) {
       console.error("[AUTH] cannot reach Google to verify sign-in:", describeError(err));
       throw new ServiceUnavailable(
         "Could not reach Google to verify your sign-in. Check the server's internet connection.",
       );
     }
-    // Log the REAL cause. Everything that lands here — wrong client secret, a secret
-    // belonging to a different client, an already-used or expired code, audience
-    // mismatch, clock skew — collapses into one opaque user-facing message, so
-    // without this line a misconfigured deployment is undiagnosable server-side.
-    // describeError, NOT the raw error. Dumping `err` here wrote ~9.5 KB per failed
-    // sign-in and included the one-time AUTH CODE (verified: the client secret is not in
-    // it, but the code is). The code is short-lived and already spent by the time we are
-    // in this catch — but it is still a credential, this path is reachable 30 times per
-    // IP per window, and the transport branch two lines above already does it properly.
-    // `err.code`/`err.status` carry what actually diagnoses this (invalid_grant, 400).
+    // Log the real cause (wrong or mismatched client secret, reused or expired code,
+    // audience mismatch, clock skew); the user only sees a generic message. Uses
+    // describeError, not the raw error, which would log the one-time auth code.
+    // `err.code`/`err.status` show the cause (e.g. invalid_grant, 400).
     console.error(
       `[GOOGLE_AUTH] code exchange / ID-token verification failed: ${describeError(err)}` +
         (err?.status ? ` (http ${err.status})` : ""),
@@ -119,9 +103,8 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
     await recordDenial("domain_not_allowed", { email, ip, userAgent });
     // 403, not 401: we know who they are, they're just not allowed in.
     throw new AuthRejection(
-      // Short on purpose: this renders in the login banner, and the old wording ran to
-      // 65 characters — two lines on a phone and, inside its own well, two on a desktop.
-      // The accepted domains are already named on the sign-in page itself.
+      // Short so it fits the login banner on a phone; the allowed domains are already
+      // shown on the sign-in page.
       "Only CSPC accounts can sign in.",
       403,
     );
@@ -133,12 +116,10 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
     picture: payload.picture ?? null,
   };
 
-  // Match on google_sub FIRST — it is the stable Google account id. Email is a
-  // mutable alias: when ICTU renames a CSPC address, an email-only lookup misses
-  // the existing row, creates a duplicate 'pending' registration, orphans the
-  // original user_id (and its logs/alerts), then collides on the UNIQUE
-  // google_sub index. Falling back to email is what lets accounts predating
-  // Google login — the bootstrapped admin above all — sign in the first time.
+  // Match by google_sub first (the permanent Google account id), then by email. Email
+  // alone would create a duplicate pending account if ICTU renames an address. The
+  // email fallback lets accounts created without a google_sub (such as the seeded
+  // first admin) sign in the first time.
   let existing = await userService.findByGoogleSub(sub);
   const matchedBySub = existing !== null;
   if (!existing) existing = await userService.findByEmail(email);
@@ -159,9 +140,8 @@ async function authenticate(code, { ip = null, userAgent = null } = {}) {
     await userService.linkGoogleSub(existing.user_id, sub);
   }
 
-  // Google owns the name/photo — re-sync every login so they don't freeze at
-  // registration. The email only moves when we matched by sub AND Google's
-  // address changed, i.e. a real rename of this same account.
+  // Google owns the name and photo, so re-sync them on every sign-in. The email only
+  // changes when we matched by sub and Google's address changed (a real rename).
   const renamed = matchedBySub && existing.email !== email;
   const synced = await userService.syncGoogleProfile(existing.user_id, {
     ...profile,

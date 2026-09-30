@@ -3,23 +3,20 @@
 #  Disk stress  →  moves `disk_percent` and the per-volume series
 # ----------------------------------------------------------------------------
 #  Seeded global rules this crosses:  disk >= 80 warning,  disk >= 90 critical
-#  Alerting uses the WORST volume, not just the root one (agentService.checkThresholds).
+#  Alerts use the worst volume, not just the root (agentService.checkThresholds).
 #
-#  ⚠  WHAT THIS MEASURES IS USAGE, NOT THROUGHPUT. The agent reports disk_used_gb /
-#  disk_percent and a per-volume array — it does not collect IOPS or MB/s. So a pure
-#  read/write benchmark would show up nowhere on the dashboard. `--io` exists to make
-#  the fill do real writes (visible as CPU iowait), but the metric that moves, and the
-#  one the alert rules read, is percent used.
+#  This fills disk space; it does not measure throughput. The agent reports usage
+#  (disk_used_gb, disk_percent, per volume), not IOPS or MB/s. `--io` makes the fill
+#  do real writes (seen as CPU iowait), but the metric that moves is percent used.
 #
-#  ⚠  THE DANGEROUS ONE. A full root filesystem breaks logging, apt, journald and
-#  sometimes sshd, and it is not always obvious afterwards which service died of it.
-#  Guardrails: always leaves free space, refuses tmpfs, refuses >90% without -y, and
-#  deletes the ballast on any exit including Ctrl+C.
+#  Be careful: a full root filesystem can break logging, apt, journald and even
+#  sshd. So this always leaves free space, refuses tmpfs, refuses >90% without -y,
+#  and deletes the ballast file on any exit, including Ctrl+C.
 #
 #  Usage:
 #    ./disk-stress.sh                      # fill to 85% for 3 minutes, then clean up
-#    ./disk-stress.sh -p 92 -y             # cross the critical rule, deliberately
-#    ./disk-stress.sh --ramp 30m -p 88     # grow slowly → gives Analytics a trend to fit
+#    ./disk-stress.sh -p 92 -y             # cross the critical rule
+#    ./disk-stress.sh --ramp 30m -p 88     # grow slowly, giving Analytics a trend to fit
 #    ./disk-stress.sh --clean              # remove ballast left by a kill -9
 # ============================================================================
 set -uo pipefail
@@ -74,8 +71,8 @@ done
 BALLAST="${TARGET_DIR}/ballast.bin"
 
 # ─── --clean ─────────────────────────────────────────────────────────────────
-# Exists because the trap cannot run on kill -9 or a hard power-off, and a stale
-# ballast file is a volume that stays 85% full with no process to blame for it.
+# The cleanup trap cannot run after kill -9 or a power-off; this removes the leftover
+# ballast file.
 if [ "$DO_CLEAN" = "1" ]; then
   if [ -f "$BALLAST" ]; then
     SZ="$(du -m "$BALLAST" 2>/dev/null | cut -f1)"
@@ -100,10 +97,8 @@ mkdir -p "$TARGET_DIR" 2>/dev/null || die "Cannot create ${TARGET_DIR} — check
 [ -w "$TARGET_DIR" ] || die "${TARGET_DIR} is not writable."
 
 # ─── Refuse a memory-backed filesystem ───────────────────────────────────────
-# Writing to /tmp, /dev/shm or /run on most distributions fills RAM, not the disk.
-# The agent EXCLUDES tmpfs from its volume list on purpose (collector.pseudoFS), so
-# a "disk" test there moves the memory metric and leaves the disk chart flat — the
-# result looks like broken disk monitoring, which is the opposite of the point.
+# /tmp, /dev/shm and /run are often tmpfs, which fills RAM, not disk. The agent skips
+# tmpfs volumes (collector.pseudoFS), so the disk chart would not move.
 FSTYPE="$(stat -f -c %T "$TARGET_DIR" 2>/dev/null || echo unknown)"
 case "$FSTYPE" in
   tmpfs|ramfs)
@@ -179,11 +174,9 @@ trap 'cleanup; exit 130' INT TERM
 trap 'cleanup' EXIT
 
 # ─── Grow the ballast to N MB ────────────────────────────────────────────────
-# fallocate reserves blocks without writing them: instant, no I/O, and df sees it
-# immediately — which is all the usage metric needs. dd actually writes, which is
-# slower but produces the iowait an --io run is asking for. Not every filesystem
-# supports fallocate (some overlayfs and network mounts refuse it), so a failure
-# falls back to dd rather than aborting the test.
+# fallocate reserves space instantly without writing, which is all the usage metric
+# needs. dd really writes (slower, but gives the iowait --io asks for). If fallocate is
+# not supported (some overlayfs or network mounts), fall back to dd.
 grow_to() {
   local mb="$1"
   if [ "$USE_IO" = "0" ] && have fallocate; then
@@ -202,9 +195,7 @@ say "Watch: Server Metrics → your VM → the disk tile, or Analytics → disk 
 rule
 
 if [ "$RAMP_SECS" -gt 0 ]; then
-  # One step every 30s. Frequent enough that several agent samples land on the way
-  # up (which is what the regression needs), coarse enough that the ballast is not
-  # being rewritten constantly.
+  # One step every 30s, so several agent samples land on the way up for the regression.
   STEP_EVERY=30
   STEPS=$(( RAMP_SECS / STEP_EVERY ))
   [ "$STEPS" -lt 2 ] && STEPS=2

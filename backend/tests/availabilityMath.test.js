@@ -110,9 +110,8 @@ test("an unresolved outage runs to now, not to the end of time", () => {
 });
 
 test("the denominator stops at now, so running a report early cannot inflate uptime", () => {
-  // Half a day elapsed, all of it down. A denominator that still ran to the
-  // requested end would divide bounded downtime by an unbounded period and
-  // report ~98% for a server that has been dark the entire time.
+  // Half a day elapsed, all of it down. Dividing by the full requested period would
+  // report ~98% for a server that was down the whole time.
   const r = computeAvailability({
     periodStart: at("2026-08-01T00:00:00Z"),
     periodEnd: at("2026-08-31T00:00:00Z"),

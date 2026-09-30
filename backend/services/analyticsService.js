@@ -12,28 +12,18 @@ import {
   actionFor,
 } from "./analyticsMath.js";
 
-// Predictive analytics engine. The STATISTICS live in `analyticsMath.js` (import-free,
-// unit-tested under backend/tests/); this file is the I/O half — InfluxDB reads, MySQL
-// reads, and the shaping of results for the API. See predictive-analytics.md for the
-// math (§2–§4) and the roadmap (§8).
-//
-// Re-exported so the public surface is unchanged for anything importing from here.
+// Predictive analytics: InfluxDB and MySQL reads and result shaping. The statistics
+// are in analyticsMath.js (no imports, unit-tested). See predictive-analytics.md
+// §2–§4 for the math and §8 for the roadmap. Re-exported so existing imports work.
 export {
   linearRegression, score, splitTrainTest, percentile, ewma, holtLinear,
 } from "./analyticsMath.js";
 
 // ─── Device identity ──────────────────────────────────────────────────────────
-// MySQL is the ONLY authority on what a device is called. The InfluxDB `device_name`
-// tag is stamped at write time and never rewritten, so history spans every name a
-// device has ever had — and since we group by device_id and read the name off the
-// first row, an un-resolved forecast would show the OLDEST label. A server renamed
-// from the dashboard (devices.display_name) would keep reporting its raw hostname
-// here while every other page shows the friendly name.
-//
-// display_name lives on the shared `devices` table, so the same COALESCE resolves
-// servers, routers, MikroTik and UPS identically — matching agentService's
-// effective-name rule. Devices absent from MySQL (the 9001/9002/9101 dev-seed ids,
-// or a decommissioned row whose Influx history outlives it) keep the tag name.
+// Device names come from MySQL, not the InfluxDB `device_name` tag, which is set
+// at write time and never updated. Otherwise a renamed device would show its old
+// name here. Same COALESCE(display_name, device_name) rule as agentService. Devices
+// missing from MySQL keep the tag name.
 const DEVICE_TYPE_LABEL = {
   server: "Server",
   router: "Router",
@@ -85,24 +75,15 @@ function identify(entry, identities) {
   };
 }
 
-// ─── Which series belong on an "all devices" list ─────────────────────────────
-// A device whose newest sample is older than this is offline / decommissioned, so it is
-// excluded from the all-devices forecasts (you can't forecast something that stopped
-// reporting). An explicit single-device request is always shown regardless.
+// ─── Which series go on an "all devices" list ─────────────────────────────
+// Devices whose newest sample is older than this are offline or removed, so they
+// are left out of the all-devices forecasts. A single-device request always shows.
 const ACTIVE_WITHIN_MS = 24 * 60 * 60 * 1000;
 
-// InfluxDB history OUTLIVES the MySQL device row. Removing a device from the dashboard
-// deletes its `devices` row but not its measurements, and re-adding the same hardware
-// mints a NEW device_id — so a router that has been removed and re-added a few times
-// leaves one orphaned series per retired id. Grouping is by device_id, so each of those
-// ghosts renders as its own row: the same five interfaces repeated once per past
-// registration, with no MySQL row to name or classify them.
-//
-// A device_id with no `devices` row is therefore not a device any more, and is dropped
-// from list views. This also excludes the dev-seed ids (9001/9002/9101) written by
-// scripts/seed-analytics-history.js unless they are registered in MySQL — real data has
-// superseded them. A single-device request (`deviceId` given) still renders whatever it
-// finds, so an explicit lookup can never come back mysteriously empty.
+// InfluxDB history outlives the devices row, and re-adding a device gives it a new
+// id, so a device removed and re-added leaves old series behind. A device_id with
+// no devices row is dropped from list views (this also hides the dev-seed ids
+// 9001/9002/9101). A single-device request still shows whatever it finds.
 function isCurrentDevice(entry, identities, cutoff) {
   if (!identities.has(Number(entry.deviceId))) return false; // retired / never registered
   const newest = entry.raw.reduce((m, p) => (p.t > m ? p.t : m), 0);
@@ -111,9 +92,8 @@ function isCurrentDevice(entry, identities, cutoff) {
 
 // ─── Disk-full ETA forecast ───────────────────────────────────────────────────
 
-// Pull hourly-averaged disk_percent per server. Window + device id are whitelisted
-// (clamped int / Number) before they touch Flux — no injection surface, mirroring
-// serverHistoryHandler.js.
+// Hourly average disk_percent per server. The window and device id are clamped
+// numbers before they reach Flux (same as serverHistoryHandler.js).
 async function fetchDiskSeries(lookbackDays, deviceId) {
   const days = clampInt(lookbackDays, 1, 365, 30);
   const every = bucketForDays(days);
@@ -148,14 +128,10 @@ async function fetchDiskSeries(lookbackDays, deviceId) {
   return byDevice;
 }
 
-// Disk-full ETA for every server with data (or one, if deviceId given). Soonest
-// ETA first; "no ETA" (stable/falling/insufficient) sinks to the bottom.
-//
-// Forecasts EVERY fixed volume (`server_volumes`, one series per mount) and headlines the
-// soonest to fill, because that is what disk alerting does: main moved checkThresholds to
-// the worst volume, so regressing root-only `disk_percent` meant a server filling its data
-// volume raised a Disk alert while the forecast beside it read "Stable". Servers with no
-// per-volume history — pre-`server_volumes` data — still fall back to the root series.
+// Disk-full ETA for every server with data (or one, if deviceId is given), soonest
+// first; servers with no ETA sink to the bottom. Forecasts every volume
+// (`server_volumes`) and shows the one filling first, matching disk alerts, which
+// use the worst volume. Servers with only older root-only data use `disk_percent`.
 async function forecastDiskFull({ deviceId = null, lookbackDays = 30, full = 100 } = {}) {
   const fullPct = clampNum(full, 50, 100, 100);
   const [byDevice, volGrouped] = await Promise.all([
@@ -253,9 +229,8 @@ async function alertSummary(days = 30) {
     `SELECT DATE(created_at) AS day, COUNT(*) AS c
        FROM alerts WHERE ${since} GROUP BY DATE(created_at) ORDER BY day`,
   );
-  // Same effective-name rule as everywhere else (§14): the admin's display_name wins,
-  // so a renamed server is named here exactly as it is on the Servers page. A NULL
-  // device_id is a room-level environment alert, which has no device row by design.
+  // Display name first, like the Servers page (§14). A NULL device_id is a room-level
+  // environment alert, which has no device row.
   const [topDevices] = await db.query(
     `SELECT a.device_id AS deviceId,
             COALESCE(NULLIF(d.display_name, ''), d.device_name, 'Room / environment') AS name,
@@ -292,11 +267,10 @@ async function alertSummary(days = 30) {
   };
 }
 
-// ─── Metric registry (shared by Phases 2–4) ───────────────────────────────────
-// One vocabulary, same as alert_rules.metric_name, mapped to its InfluxDB source so
-// server + environment metrics flow through one code path. `gas` = the worse of the two
-// MQ-2 sensors, matching sensorHandler.js (max(mq2_1_ppm, mq2_2_ppm)). `bounded` caps a
-// percentage metric at 100 for threshold suggestions; absent = unbounded (°C / ppm).
+// ─── Metric registry ───────────────────────────────────
+// Same names as alert_rules.metric_name, mapped to their InfluxDB source. `gas` =
+// the worse of the MQ-2 sensors, as in sensorHandler.js. `bounded` caps a
+// percentage at 100 for threshold suggestions; absent = unbounded (°C / ppm).
 const METRICS = {
   cpu:  { source: "server", field: "cpu_percent",  unit: "%",   label: "CPU",         bounded: 100 },
   mem:  { source: "server", field: "mem_percent",  unit: "%",   label: "Memory",      bounded: 100 },
@@ -304,28 +278,19 @@ const METRICS = {
   temperature: { source: "env", field: "temperature", unit: "°C", label: "Temperature" },
   humidity:    { source: "env", field: "humidity",    unit: "%",  label: "Humidity"   },
   gas:         { source: "env", field: "__gas__",     unit: "ppm", label: "Gas"       },
-  // Router/MikroTik device-level (router_metrics — MikroTik fills CPU/mem/clients the SNMP
-  // path leaves null). recommend:false keeps them out of the server/env threshold
-  // recommendations, but they still get Trend + Anomaly via the generic endpoints.
+  // Router/MikroTik metrics (router_metrics; MikroTik fills CPU/mem/clients).
+  // recommend:false leaves them out of threshold recommendations; they still get
+  // trends and anomalies.
   router_cpu:     { source: "router", field: "cpu_percent",       unit: "%", label: "MikroTik CPU",     bounded: 100, recommend: false },
   router_mem:     { source: "router", field: "mem_percent",       unit: "%", label: "MikroTik Memory",  bounded: 100, recommend: false },
   router_clients: { source: "router", field: "connected_clients", unit: "",  label: "MikroTik Clients", recommend: false },
-  // ICMP link quality. Present on EVERY router — the SNMP ones (ping runs alongside the
-  // walk) and the ping-only ones, for which these two are the only numeric metrics that
-  // exist at all. Without them a ping-only router had nothing to trend, nothing to check
-  // for anomalies, and no way to be told what its own thresholds should be.
-  //
-  // `recommend: "scoped"` on latency: it is the one metric here whose right value is a
-  // property of the individual link, so a fleet-wide percentile would mix a rack switch
-  // answering in under 1 ms with an ISP CPE answering in 30 ms and recommend a number
-  // that fits neither. Per device it is exactly the right tool — and it closes the loop
-  // on router_latency shipping INACTIVE (migration 2026-08-22): instead of "watch it for
-  // a few days and pick 2-3x", the p95/p99 of what this link actually does is computed
-  // and an admin applies it in one click.
+  // ICMP link quality, available on every router, and the only numeric metrics a
+  // ping-only router has. Latency is `recommend: "scoped"`: the right value depends
+  // on the link (<1 ms for a rack switch, ~30 ms for ISP equipment), so it is
+  // recommended per device, from that link's own p95/p99.
   router_latency: { source: "router", field: "latency_ms", unit: "ms", label: "Latency", recommend: "scoped" },
-  // Loss is NOT site-specific — 0% is healthy on every link everywhere — so the seeded
-  // 5/20 global rule is already right and a percentile recommendation would only ever
-  // talk you into a worse one. Trend + anomaly still apply.
+  // Loss needs no recommendation: 0% is healthy on every link, and the seeded 5/20
+  // rule already fits. Trend and anomaly still apply.
   router_loss: { source: "router", field: "packet_loss_pct", unit: "%", label: "Packet Loss", bounded: 100, recommend: false },
 };
 export function metricMeta(metric) {
@@ -333,9 +298,8 @@ export function metricMeta(metric) {
 }
 
 // ─── Generic series fetch ─────────────────────────────────────────────────────
-// Returns sorted [{ t: epochMs, y }]. rangeExpr ("-48h"/"-14d") and every ("15m"/"1h")
-// are built internally from clamped numbers by callers — never raw user input — so the
-// Flux stays injection-safe (same posture as serverHistoryHandler.js).
+// Returns sorted [{ t: epochMs, y }]. rangeExpr ("-48h"/"-14d") and every
+// ("15m"/"1h") are built from clamped numbers, never raw user input.
 async function fetchMetricSeries(metric, { deviceId = null, rangeExpr = "-14d", every = "1h" } = {}) {
   const meta = METRICS[metric];
   if (!meta) return [];
@@ -397,19 +361,11 @@ async function fetchMetricSeries(metric, { deviceId = null, rangeExpr = "-14d", 
     .sort((a, b) => a.t - b.t);
 }
 
-// Trend + projection for one metric (Phase 2). EWMA smooths the history for DISPLAY;
-// the projection is Holt's method on the DESEASONALISED series, with the daily shape put
-// back on afterwards (analyticsMath.forecastSeasonal).
-//
-// It used to be plain Holt's linear on the EWMA — a straight line — and over a 12 h
-// horizon on room temperature that was not a small error. A projection made at 11 PM
-// picked up the evening's falling limb and ran it through dawn into midday, predicting
-// the day's coolest figure for the hour the room is hottest: ~8 °C out, in the wrong
-// direction. Fitting the smoothed series compounded it, opening the projection ~2 °C
-// away from the reading shown beside it on the same page.
-//
-// The lookback is also wider by default now: a daily shape cannot be estimated from a
-// window that does not contain several days of it.
+// Trend and projection for one metric. EWMA smooths the history for display; the
+// projection is Holt's method with the daily shape removed and added back
+// (analyticsMath.forecastSeasonal). A straight-line projection was badly wrong for
+// room temperature over 12h because it ignored the day/night cycle. The default
+// lookback is several days so the daily shape can be estimated.
 async function forecastTrend({ metric, deviceId = null, lookbackHours = 168, horizonHours = 12 } = {}) {
   const meta = METRICS[metric];
   if (!meta) return null;
@@ -439,15 +395,9 @@ async function forecastTrend({ metric, deviceId = null, lookbackHours = 168, hor
 
   const stepMs = parseEveryMs(every);
 
-  // REFUSE to project from a window that cannot support one. The history is still
-  // returned — it is real and worth looking at — but `projection` stays empty and
-  // `dataQuality` says exactly what is missing.
-  //
-  // The alternative, which this replaces, was to quietly fall back to a straight line.
-  // That is the worse failure: the page looked identical, the numbers looked confident,
-  // and nothing on screen distinguished "here is the daily cycle" from "the sensor has
-  // never seen a morning, so here is a guess". A forecast that admits it does not know
-  // is more useful than one that does not.
+  // Do not project from a window that cannot support it. The history is still
+  // returned, but `projection` is empty and `dataQuality` says what is missing,
+  // rather than silently showing a straight-line guess.
   const quality = assessSeries(series, { stepMs });
   if (!quality.ok) {
     return { ...base, series: points, dataQuality: quality, status: "insufficient_history" };
@@ -469,9 +419,8 @@ async function forecastTrend({ metric, deviceId = null, lookbackHours = 168, hor
     base.profileCycles = fc.profile.cycles;
   }
 
-  // Predictive advice: does the projection cross an alert threshold within the horizon?
-  // Grounded in the metric's effective alert_rules (high-side ">" rules — all our metrics
-  // alarm on high), so the recommendation tracks the admin's own thresholds.
+  // Does the projection cross an alert threshold within the horizon? Uses the
+  // metric's effective alert_rules (">" rules; all these metrics alarm on high).
   const advice = await trendAdvice(metric, deviceId, values, projection, series[series.length - 1].t);
 
   return { ...base, series: points, projection, trendPerHour, advice, dataQuality: quality, status: "ok" };
@@ -503,13 +452,12 @@ async function trendAdvice(metric, deviceId, values, projection, lastT) {
   return cross("critical") ?? cross("warning"); // worst applicable first
 }
 
-// ─── Phase 3: anomaly detection (per-hour-of-day z-score + global IQR) ─────────
-// Flags readings abnormal FOR THEIR HOUR — a 2 AM CPU spike that's still under a static
-// threshold is caught here. Baseline = mean/σ per local hour bucket; |z| > zThresh ⇒
-// anomaly. Global IQR fences are returned alongside for context. Statistics, not ML.
-// Need this many samples in a bucket before its baseline is trusted. At the 14-day
-// default and 15m sampling that is ~40 weekday and ~16 weekend samples per hour bucket,
-// comfortably clear of it even after the day-type split.
+// ─── Anomaly detection (per-hour-of-day z-score + global IQR) ─────────
+// Flags readings that are unusual for their hour, e.g. a 2 AM CPU spike still under
+// the static threshold. Baseline = mean/σ per local hour bucket; |z| > zThresh is an
+// anomaly. Global IQR fences are returned for context.
+// A bucket needs this many samples before its baseline is used (at 14 days and 15m
+// sampling there are about 40 weekday and 16 weekend samples per bucket).
 const ANOM_MIN_BUCKET = 5;
 
 async function detectAnomalies({ metric, deviceId = null, lookbackDays = 14, z = 3 } = {}) {
@@ -526,10 +474,8 @@ async function detectAnomalies({ metric, deviceId = null, lookbackDays = 14, z =
   };
   if (series.length < MIN_POINTS * 2) return base;
 
-  // Baseline per (day-type, hour): 48 buckets, weekday 0-23 then weekend 24-47. Pooling
-  // all seven days made a campus weekend drag the mean down and widen the deviation,
-  // which blinded the detector on weekdays and could flag a normal Sunday. See
-  // analyticsMath.baselineBucket.
+  // Baseline per (day type, hour): 48 buckets, weekday 0-23 then weekend 24-47.
+  // See analyticsMath.baselineBucket.
   const buckets = Array.from({ length: BASELINE_BUCKETS }, () => []);
   for (const p of series) buckets[baselineBucket(p.t)].push(p.y);
   const stats = buckets.map((vals, idx) => {
@@ -577,10 +523,10 @@ async function detectAnomalies({ metric, deviceId = null, lookbackDays = 14, z =
   };
 }
 
-// ─── Phase 4: threshold recommendations (percentiles vs current rules) ─────────
-// Suggests warn = p95, crit = p99 from the historical distribution, compared to the
-// current GLOBAL alert_rules (device_id NULL) so an admin can tune away false alarms.
-// Server metrics pool all servers (the global rule's scope). Closes the analytics loop.
+// ─── Threshold recommendations (percentiles vs current rules) ─────────
+// Suggests warning = p95 and critical = p99 of the history, compared with the
+// current global alert_rules, so an admin can tune out false alarms. Server
+// metrics pool all servers.
 function roundForUnit(v, meta) {
   if (v == null) return null;
   if (meta.unit === "%") return Math.min(meta.bounded ?? 100, Math.round(v));
@@ -588,23 +534,15 @@ function roundForUnit(v, meta) {
   return Math.round(v); // ppm
 }
 
-// `deviceId` narrows the suggestion to ONE server. Pooling every server (the default,
-// matching the global rule's scope) is right for a global default, but it is exactly wrong
-// for a fleet that isn't uniform: a busy database server and an idle file server share a
-// p95 that suits neither, so the global rule either cries wolf on the quiet box or stays
-// silent on the loud one. A per-device suggestion is compared against that device's
-// EFFECTIVE rules — its own override if it has one, else the global — so "in sync" means
-// what it says.
+// `deviceId` limits the suggestion to one device, compared with that device's
+// effective rules (its own override, else the global). Useful when servers are not
+// alike: a busy and an idle server share a p95 that suits neither.
 async function recommendThresholds({ lookbackDays = 14, deviceId = null } = {}) {
   const days = clampInt(lookbackDays, 1, 90, 14);
   const scoped = deviceId != null;
 
-  // When scoped, the device's CLASS decides which metrics are even askable. Looked up
-  // here rather than taken as a caller-supplied hint: one indexed read, and a caller
-  // cannot get it wrong. Without it, scoping to a router still evaluated cpu/mem/disk
-  // against a router id — three guaranteed-empty Flux queries per request, surfacing as
-  // three "insufficient data" rows that look like a broken collector rather than like a
-  // question that was never sensible to ask.
+  // When scoped, the device's type decides which metrics apply, so a router is not
+  // asked for cpu/mem/disk and does not show "insufficient data" rows.
   let scopedSource = "server";
   if (scoped) {
     const [[row]] = await db.query(
@@ -616,15 +554,11 @@ async function recommendThresholds({ lookbackDays = 14, deviceId = null } = {}) 
   const out = [];
   for (const [metric, meta] of Object.entries(METRICS)) {
     if (meta.recommend === false) continue; // device-class metrics opt out of threshold recs
-    // `recommend: "scoped"` means the metric is only meaningful PER DEVICE — offering it
-    // fleet-wide would average across populations that have no business being compared
-    // (see router_latency in METRICS).
+    // `recommend: "scoped"` metrics only make sense per device (see router_latency).
     const scopedOnly = meta.recommend === "scoped";
     if (scopedOnly && !scoped) continue;
-    // Environment metrics are room-level: there is no per-device version of "the server
-    // room is too hot", so a scoped request always skips them. Otherwise the metric must
-    // belong to the class of device that was scoped to — asking a router for disk usage
-    // is not a missing reading, it is a category error.
+    // Environment metrics are room-level, so a scoped request skips them. Otherwise the
+    // metric must belong to the scoped device's type.
     if (scoped && meta.source === "env") continue;
     if (scoped && meta.source !== scopedSource) continue;
     const series = await fetchMetricSeries(metric, {
@@ -668,13 +602,8 @@ async function recommendThresholds({ lookbackDays = 14, deviceId = null } = {}) 
 }
 
 // ─── Forecast accuracy (rolling-origin backtest) ──────────────────────────────
-// Answers "were our forecasts right?" from the history already on disk, instead of
-// recording live predictions and waiting weeks to grade them. See analyticsMath
-// .backtestSeries for the method and why it scores VALUE error rather than ETA error.
-//
-// Reported per device so one badly-behaved server can't hide behind an average, and with
-// the fold count visible — an accuracy figure from two folds is not the same claim as one
-// from eight, and pretending otherwise would be the dishonest version of this feature.
+// Measures how right past forecasts were using existing history. See
+// analyticsMath.backtestSeries. Reported per device, with the number of folds shown.
 async function forecastAccuracy({ metric = "disk", deviceId = null, lookbackDays = 30, horizonDays = 7, folds = 5 } = {}) {
   const meta = METRICS[metric];
   if (!meta) return null;
@@ -685,11 +614,8 @@ async function forecastAccuracy({ metric = "disk", deviceId = null, lookbackDays
 
   const results = [];
   if (metric === "disk") {
-    // Grade the SAME SERIES the disk forecast headlines. forecastDiskFull regresses every
-    // volume and headlines the fastest-filling one, so backtesting root `disk_percent`
-    // would silently score C: while the forecast above it projected D: — two different
-    // series presented as though one explained the other. The headline volume is chosen
-    // by the same worstVolumeForecast() call, so the graded series IS the projected one.
+    // Grade the same series the disk forecast shows (the fastest-filling volume, via
+    // worstVolumeForecast), not root `disk_percent`.
     const [byDevice, volGrouped] = await Promise.all([
       fetchDiskSeries(days, deviceId),
       fetchSeriesGrouped("server_volumes", "percent", { deviceId, days, keys: ["mount"] }),
@@ -770,11 +696,10 @@ async function forecastAccuracy({ metric = "disk", deviceId = null, lookbackDays
   };
 }
 
-// ─── Phase 2b/3b: UPS battery degradation + link saturation ───────────────────
-// The router/UPS data this engine forecasts on (ups_metrics / network_traffic). Same
-// regression core as disk-full ETA, but projected DOWN to a runtime floor (battery
-// aging) or UP to a utilization ceiling (link saturation). See predictive-analytics.md
-// §8. Additive — no change to the server/environment paths above.
+// ─── UPS battery degradation + link saturation ───────────────────
+// Same regression as the disk ETA, projected down to a runtime floor (battery
+// ageing) or up to a utilization ceiling (link saturation). See
+// predictive-analytics.md §8.
 
 // Hourly-averaged field grouped by device (+ optional extra tag, e.g. interface_name).
 async function fetchSeriesGrouped(measurement, field, { deviceId = null, days = 30, keys = [] } = {}) {
@@ -805,13 +730,10 @@ async function fetchSeriesGrouped(measurement, field, { deviceId = null, days = 
   return map;
 }
 
-// UPS battery degradation: regress runtime_remaining_min down to a critical floor →
-// "replace battery in ~N days" (the UPS analogue of disk-full ETA). Runtime depends on
-// load, so this is most reliable when load is steady; the R² gate guards the rest.
-// RFC 1628 upsBatteryStatus. The UPS's OWN verdict on its battery, which is worth more
-// than a regression when it disagrees: a manufacturer saying "low" is a measurement, while
-// our runtime trend is an inference from data that also moves with load. Stored by
-// writeUpsMetrics precisely because it is the signal that reveals itself over months.
+// UPS battery degradation: regress runtime_remaining_min down to a floor, giving
+// "replace battery in ~N days". Runtime also depends on load, so the R² gate filters
+// noisy results. upsBatteryStatus (RFC 1628) is the UPS's own verdict and is stored
+// by writeUpsMetrics.
 const BATTERY_STATUS = { 1: "unknown", 2: "normal", 3: "low", 4: "depleted" };
 
 async function fetchBatteryStatus(deviceId, days) {
@@ -850,9 +772,7 @@ async function forecastUpsBattery({ deviceId = null, lookbackDays = 180, floorMi
     const p = projectToBound(e.raw, { bound: floor, direction: "down" });
     const eta = p.etaDays;
     const status = batteryStatus.get(e.deviceId) ?? null;
-    // The UPS's own verdict OVERRIDES the regression when it is worse. "depleted"/"low"
-    // is a measurement from the device; our ETA is an inference from runtime that also
-    // moves with load, so a quiet trend must never talk over the hardware.
+    // The UPS's own "low"/"depleted" status overrides the regression when it is worse.
     const declared =
       status && status.worstCode >= 4
         ? { level: "critical", message: `${name}: the UPS reports its battery as DEPLETED — replace it now, regardless of the runtime trend.` }
@@ -881,11 +801,9 @@ async function forecastUpsBattery({ deviceId = null, lookbackDays = 180, floorMi
   return results;
 }
 
-// Current per-interface labels from MySQL. Same authority argument as device names:
-// `network_interfaces.location_label` is what an admin edits (and what the MikroTik
-// poller re-syncs), while the Influx `location_label` tag is frozen at write time.
-// Resolving here also keeps grouping keyed on interface_name alone — grouping on the
-// label instead would split one port's history in two the moment someone relabels it.
+// Current port labels from MySQL (network_interfaces.location_label), not the Influx
+// tag, which is fixed at write time. Grouping stays on interface_name so a relabel
+// does not split a port's history.
 async function fetchInterfaceLabels(deviceIds) {
   const clean = [...new Set(deviceIds.map(Number).filter(Number.isInteger))];
   if (!clean.length) return new Map();
@@ -902,12 +820,9 @@ async function fetchInterfaceLabels(deviceIds) {
   );
 }
 
-// Link saturation: regress per-interface utilization_pct UP to a ceiling →
-// "uplink hits 90% in ~N days". Network capacity planning.
-//
-// On the campus MikroTik an interface IS a building, so the location label is the name
-// an operator actually recognises — "ether1" alone is unidentifiable when every router
-// has one. We return both and let the UI lead with the label.
+// Link saturation: regress utilization_pct up to a ceiling, giving "uplink hits
+// 90% in ~N days". On the MikroTik each port is a building, so both the label and
+// the port name are returned.
 async function forecastLinkSaturation({ deviceId = null, lookbackDays = 90, ceiling = 90 } = {}) {
   const cap = clampNum(ceiling, 50, 100, 90);
   const grouped = await fetchSeriesGrouped("network_traffic", "utilization_pct", { deviceId, days: lookbackDays, keys: ["interface_name"] });

@@ -4,22 +4,13 @@ import Reveal from "./Reveal";
 import PhotoLightbox from "./PhotoLightbox";
 
 /**
- * The hardware strip — the only part of this page that is a photograph.
+ * The hardware photos, the only photographs on the page (the rest is drawn in code).
  *
- * Everything else is drawn in code, which is right for dashboards (it animates,
- * it follows the theme, it leaks no hostnames) and wrong for hardware: a drawn
- * ESP32 is a diagram, and a diagram proves nothing about a box that is actually
- * mounted on a wall in the ICTU server room. This section is where the system
- * stops being a description of itself.
+ * While photos are missing:
+ *   dev   → labelled placeholders with the shot brief
+ *   build → empty slots are dropped, and the section is hidden if none are filled
  *
- * Behaviour while the photos are still being taken:
- *   dev   → labelled placeholders with the shot brief, so a missing photo is
- *           visible to whoever is building rather than silently absent
- *   build → the slot is dropped, and the whole section disappears if nothing has
- *           been supplied yet. An empty frame on a public page reads as a broken
- *           image, which is worse than the section simply not being there.
- *
- * Add photos in ./photos.ts — no changes needed here.
+ * Add photos in ./photos.ts; nothing to change here.
  */
 
 function Placeholder({ photo, index }: { photo: LandingPhoto; index: number }) {
@@ -77,10 +68,8 @@ export default function PhotoGallery() {
   if (supplied.length === 0 && !showPlaceholders) return null;
 
   const items = showPlaceholders ? LANDING_PHOTOS : supplied;
-  // The lightbox pages left and right, so it must only ever hold photos that HAVE an
-  // image. In dev `items` can also carry unsupplied slots rendered as placeholders, and
-  // paging onto one would show an empty frame with real prose under it — the exact
-  // "broken image on a public page" this file is otherwise careful to avoid.
+  // The lightbox pages through photos, so it only gets the ones that have an image
+  // (not dev placeholders).
   const openable = items.filter((p) => p.src.trim() !== "");
 
   return (
@@ -111,10 +100,8 @@ export default function PhotoGallery() {
           {items.map((photo, i) => (
             <Reveal key={photo.id} delay={i * 70} className="h-full">
               {photo.src ? (
-                // A real <button>, not a click handler on the figure. It has to be
-                // reachable by keyboard and announced as activatable, and wrapping the
-                // whole card means the caption is part of the target rather than a dead
-                // strip under a live image.
+                // A real <button> around the card, so it works from the keyboard and the caption is
+                // clickable too.
                 <button
                   type="button"
                   onClick={() => setOpenIndex(openable.findIndex((x) => x.id === photo.id))}
@@ -161,10 +148,8 @@ export default function PhotoGallery() {
                     style={{
                       fontSize: 12.5,
                       lineHeight: 1.4,
-                      // Two lines' worth, reserved whether the caption needs them or
-                      // not: "DHT22, two MQ-2 sensors, IR transmitters" wraps at this
-                      // column width and the other three do not, so without a floor that
-                      // one panel stands 18px taller than its neighbours.
+                      // Space for two lines whether needed or not, so one wrapping caption does not make
+                      // its card taller than the others.
                       minHeight: 55,
                       color: "var(--gf-text-muted)",
                       borderTop: "1px solid var(--gf-divider)",

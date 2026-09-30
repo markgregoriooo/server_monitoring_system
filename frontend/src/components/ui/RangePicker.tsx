@@ -1,22 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 
-// ─── Time-range picker (presets + custom absolute window) ─────────────────────
-// Presets mirror the server whitelist in services/historyRange.js (PRESET_WINDOW).
-// Keep the two in step: an unknown preset silently falls back to -1h server-side,
-// which would look like the button simply didn't work.
+// ─── Time-range picker (presets + custom window) ─────────────────────
+// Presets must match the server list in services/historyRange.js (PRESET_WINDOW); an
+// unknown preset silently becomes -1h on the server.
 //
-// TWO VISUAL VARIANTS exist because this codebase runs two design systems side by side
-// (see CLAUDE.md "Page Style Status"): most pages use the Grafana `--gf-*` tokens, while
-// ServerDetail is `slate-*` + `dark:` overrides.
-//
-// EVERY consumer now uses the default `slate`, including the Grafana pages, so `gf` is
-// currently unreferenced. That is deliberate and specifically about the POPOVER: the `gf`
-// popover paints `--gf-panel` — the same colour as the panel behind it — with a
-// rgba(255,255,255,0.07) border, so it barely separated from the page it floated over. The
-// slate popover is slate-800 on a white/10 border and reads as a layer above. A floating
-// surface should not be the same colour as what it covers. `gf` is kept rather than
-// deleted because the token-based look is still the house style for anything that sits
-// INSIDE a panel; if nothing ever needs it again it should go.
+// Two styles: `slate` (the default, used everywhere now) and `gf`. The slate popover
+// stands out from the panel behind it; the gf one used the same colour as the panel.
+// `gf` is kept for anything placed inside a panel.
 
 export const PRESETS = ["-1h", "-6h", "-24h", "-7d", "-30d"] as const;
 export type Preset = (typeof PRESETS)[number];
@@ -40,9 +30,9 @@ export function rangeSpanSec(v: RangeValue): number {
   return { "-1h": 3600, "-6h": 21600, "-24h": 86400, "-7d": 604800, "-30d": 2592000 }[v.preset];
 }
 
-// `datetime-local` speaks LOCAL wall-clock with no zone ("2026-08-04T14:30"), while
-// the API speaks UTC ISO. These convert via the Date constructor, which reads a
-// zone-less string as local time — exactly what the user meant when they typed it.
+// `datetime-local` uses local time with no zone ("2026-08-04T14:30"), the API uses UTC
+// ISO. The Date constructor reads a zone-less string as local time, which is what the
+// user meant.
 function isoToLocalInput(iso: string): string {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return "";
@@ -73,31 +63,25 @@ export default function RangePicker({
   onChange: (v: RangeValue) => void;
   error?: string | undefined; // server-side rejection, surfaced next to the inputs
   variant?: "slate" | "gf";
-  // "sm" is the default because most consumers put this in a 32px PANEL HEADER
-  // alongside other controls, where a taller control would burst the row. "md"
-  // matches the standard .gf-btn body size (13px / px-2.5 / py-1) for pages that
-  // give the picker a toolbar of its own — Environment, where it sits next to
-  // Recalibrate gas and looked undersized beside it.
+  // "sm" (default) fits a 32px panel header. "md" matches the standard .gf-btn size, for
+  // pages where the picker has its own toolbar (Environment).
   size?: "sm" | "md";
 }) {
   const [open, setOpen] = useState(false);
   const [startInput, setStartInput] = useState("");
   const [stopInput, setStopInput] = useState("");
   const [localError, setLocalError] = useState("");
-  // Which "last N" chip filled the fields, purely so the pressed one can look pressed.
-  // Held as state rather than derived by comparing the inputs to what a chip WOULD
-  // produce, because those windows end at `now` — the comparison would stop matching a
-  // second after the click and the highlight would flicker off on its own.
+  // Which "last N" chip filled the fields, so it can show as pressed. Kept as state,
+  // since comparing the fields would stop matching a second later (the window ends at
+  // now).
   const [quickPick, setQuickPick] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const isCustom = value.kind === "custom";
   const gf = variant === "gf";
 
-  // Per-variant class sets. Kept as whole literal strings (not built by
-  // concatenation) so Tailwind's scanner can see every class it must emit.
-  // `shrink-0` so the preset group is never squeezed to nothing when it shares a
-  // wrapped header row with other controls.
+  // Class sets per style, as full literal strings so Tailwind can find them. `shrink-0`
+  // keeps the preset group from being squeezed.
   const groupCls = gf
     ? "flex rounded-md overflow-hidden shrink-0 border border-[var(--gf-panel-border)]"
     : "flex gap-1 shrink-0 bg-slate-100 dark:bg-white/[0.05] rounded-md p-0.5";
@@ -112,12 +96,8 @@ export default function RangePicker({
             ? "bg-white dark:bg-white/[0.12] text-slate-900 dark:text-white shadow-sm"
             : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
         }`;
-  // POSITIONING MATTERS HERE. At >=sm this is an absolutely positioned dropdown. On a
-  // phone `absolute` is unusable: the picker sits in a panel header whose root may set
-  // `overflow-hidden` (rounded corners), so a dropdown taller than the panel is clipped
-  // and the inputs become unreachable. `fixed` escapes every overflow and stacking
-  // ancestor, so on mobile it becomes a bottom sheet pinned to the viewport — fully
-  // visible wherever the panel sits and however far the page is scrolled.
+  // From sm up this is a dropdown. On a phone it is a bottom sheet (`fixed`), because
+  // the panel header may be `overflow-hidden` and would clip a dropdown.
   const popPos =
     "fixed inset-x-3 bottom-3 z-[70] sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:mt-1.5 sm:w-auto sm:min-w-[250px]";
   const popCls = gf
@@ -207,10 +187,7 @@ export default function RangePicker({
             {presetLabel[p]}
           </button>
         ))}
-        {/* ICON-ONLY on a phone. Five presets plus a calendar icon AND the word "Custom"
-            runs past a 360px screen, and "Custom" is the one label that is redundant — it
-            is the only non-preset in the group, and a calendar icon says "pick dates" on
-            its own. The word comes back from `sm`, where there is room for it. */}
+        {/* Icon only on a phone; the word "Custom" comes back from sm. */}
         <button
           onClick={openEditor}
           title="Custom time range"
@@ -243,9 +220,7 @@ export default function RangePicker({
             <input name="startInput"
               type="datetime-local"
               value={startInput}
-              // Typing a date by hand means the fields no longer describe the chip that
-              // filled them, so the highlight must drop — a stale one would claim the
-              // window is "last 6h" when it is not.
+              // Typing a date by hand clears the chip highlight, since the fields no longer match it.
               onChange={(e) => { setStartInput(e.target.value); setQuickPick(null); }}
               className={inputCls}
               style={{ colorScheme: "dark light" }}

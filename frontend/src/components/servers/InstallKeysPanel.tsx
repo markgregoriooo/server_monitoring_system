@@ -6,14 +6,10 @@ import { GF as gf, STATUS } from "../../theme/gf";
 const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
 // ─── Agent install keys (admin) ─────────────────────────────────────────────────
-//
-// The credential the installer presents at enrollment. It used to be a single
-// AGENT_INSTALL_KEY in backend/.env — unrotatable without shell access, with no
-// expiry, no revocation and no record of who issued it. Now an admin mints one per
-// rollout here, copies the ready-made install command, and revokes it when done.
-//
-// Revoking a key blocks NEW enrollments only. Servers already enrolled with it keep
-// reporting on their own agent token; to stop one of those, remove the server.
+// The credential the installer uses to enroll. An admin creates one per rollout,
+// copies the install command and revokes it when done. Revoking only blocks new
+// enrollments; enrolled servers keep reporting with their own token (remove a
+// server to stop it).
 
 
 // A translucent accent, so it tints whatever surface is under it rather than replacing
@@ -58,14 +54,8 @@ interface RevokeTarget {
 }
 
 /**
- * Copy to the clipboard, with a fallback that actually works here.
- *
- * `navigator.clipboard` requires a SECURE CONTEXT — HTTPS, or localhost. The dashboard
- * is served over plain HTTP on the LAN (http://192.168.100.9:5173), where the whole API
- * is `undefined`. Relying on it alone would leave the copy button doing nothing at all,
- * silently, in exactly the environment this ships into. `execCommand` is deprecated but
- * is still the only thing that works on an insecure origin, so it stays until the
- * dashboard is behind the HTTPS hostname Google sign-in already needs.
+ * Copy to the clipboard. `navigator.clipboard` needs HTTPS or localhost, and the LAN
+ * dashboard may be plain HTTP, so the older `execCommand` fallback is kept.
  */
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -133,10 +123,7 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
   };
 
   const color = state === "ok" ? gf.accentText : state === "fail" ? RED : gf.textMuted;
-  // FAILURE is the one state that cannot be icon-only. This dashboard is served over
-  // plain HTTP on the LAN, where navigator.clipboard does not exist and the execCommand
-  // fallback can still refuse — so the button has to say what to do instead, not just
-  // turn red and leave the user clicking it again.
+  // On failure the button says what to do, since on plain HTTP both copy methods can fail.
   const failed = state === "fail";
   return (
     <button
@@ -170,29 +157,18 @@ const STATUS_COLOR: Record<InstallKey["status"], string> = {
   revoked: RED,
 };
 
-// The dashboard's own host is the best guess at the URL agents should post to, since an
-// admin is usually browsing at the same address the servers can reach.
-//
-// EXCEPT when that address is loopback. The command is meant to be run on a DIFFERENT
-// machine, where "localhost" means that machine itself — so a literal http://localhost:3000
-// is not merely a poor guess, it is guaranteed wrong, and wrong in a way that fails later
-// (the agent starts, can't reach a backend, and looks like a network problem). Substituting
-// a placeholder makes the command refuse to run until it has been filled in, which is the
-// behaviour you want from a value nobody can guess on the user's behalf.
+// The dashboard's own address is the best guess for where agents should post. But
+// not localhost: the command runs on another machine, where localhost means itself,
+// so a placeholder is used instead and the command will not run until it is filled in.
 const isLocalUrl = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(API_URL);
 
 const COMMAND_URL = (() => {
   if (!isLocalUrl) return API_URL;
   try {
     const u = new URL(API_URL);
-    // Rebuilt from parts rather than string-replaced: it keeps the port and survives
-    // an IPv6 literal like http://[::1]:3000, where a naive host regex does not.
-    //
-    // `<backend-server-ip>` rather than `<domain>`: the value wanted here is the LAN IP
-    // of the machine running the backend, and "domain" invites the PUBLIC hostname —
-    // which is wrong twice over. Agents talk to :3000 directly rather than through
-    // nginx, and pointing them at the public name makes ingest depend on ICTU's edge
-    // and the internet being up. Same placeholder the deployment guide uses (§0.1).
+    // Rebuilt from parts to keep the port and handle IPv6 like http://[::1]:3000.
+    // `<backend-server-ip>` because agents should post to the backend's LAN IP on :3000,
+    // not the public hostname. Same placeholder as the deployment guide (§0.1).
     return `${u.protocol}//<backend-server-ip>${u.port ? `:${u.port}` : ""}`;
   } catch {
     return API_URL;
@@ -235,10 +211,8 @@ export default function InstallKeysPanel() {
   const [creating, setCreating] = useState(false);
   const [expiresInDays, setExpiresInDays] = useState("");
   const [error, setError] = useState("");
-  // Plaintext keys we currently hold, by key id — either just minted, or fetched back
-  // from GET /reveal. Kept in component state only; the page never writes a key to
-  // localStorage or sessionStorage, so the browser is not a second place it can leak from.
-  // Re-opening after a reload costs one audited request instead.
+  // Plaintext keys we currently have (just created, or fetched with GET /reveal). Kept
+  // in component state only, never in localStorage or sessionStorage.
   const [sessionKeys, setSessionKeys] = useState<Record<number, string>>({});
   // Which key's command box is currently open.
   const [revealId, setRevealId] = useState<number | null>(null);
@@ -273,15 +247,9 @@ export default function InstallKeysPanel() {
     load();
   }, [load]);
 
-  // The "Enrolled" count is derived from what is actually enrolled RIGHT NOW, so it moves
-  // for reasons that have nothing to do with this panel: an admin removes a server further
-  // up the same page, approves a pending agent, or a key revoke cuts a fleet off. Without
-  // this the panel only re-fetched after its OWN mutations, so a removed server left the
-  // count visibly stale until a full page reload — which reads as the number being wrong.
-  //
-  // `serverRemoved` covers deletion AND revoke-with-agents (routes/agents.js emits it for
-  // each cut-off server); `agentApproved` is the one event that makes the count RISE, since
-  // an enrolment only counts once it is approved.
+  // "Enrolled" changes for reasons outside this panel (a server removed, an agent
+  // approved, a revoke), so re-fetch on `serverRemoved` (also sent for each server cut
+  // off by a revoke) and `agentApproved`.
   useEffect(() => {
     const refresh = () => load();
     socket.on("serverRemoved", refresh);
@@ -314,9 +282,8 @@ export default function InstallKeysPanel() {
     load();
   };
 
-  // Revoking is a two-step: open the dialog, which fetches the servers this key
-  // enrolled, so the admin picks between "stop new installs" and "stop those servers
-  // too" while looking at the actual list of what would go dark.
+  // Revoking opens a dialog that lists the servers this key enrolled, so the admin
+  // chooses "stop new installs" or "stop those servers too" while seeing the list.
   const openRevoke = async (k: InstallKey) => {
     setError("");
     setRevoking({ key: k, servers: [], loading: true });
@@ -360,13 +327,8 @@ export default function InstallKeysPanel() {
       style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
     >
       {/* Header */}
-      {/* A FIXED 32px row with a truncating title cut "Agent install keys · 2 active"
-          in half on a phone: at 13px, `tracking-widest` (0.1em) spends ~38px on letter
-          spacing alone, and the "+ New key" button takes the rest. The title now steps
-          down a size and a tracking step below sm — which fits it on one line at 360px —
-          and may WRAP instead of being clipped on anything narrower. `minHeight` with
-          symmetric padding reproduces the old 32px exactly wherever it still fits on one
-          line, so the desktop header is unchanged. */}
+      {/* The title steps down a size and letter-spacing below sm so it fits at 360px, and may
+         wrap on anything narrower. `minHeight` keeps the desktop header at 32px. */}
       <div
         className="flex items-center justify-between gap-2 px-3 py-1.5 shrink-0"
         style={{ minHeight: 32, borderBottom: `1px solid ${gf.divider}` }}
@@ -429,9 +391,8 @@ export default function InstallKeysPanel() {
               >
                 {creating ? (
                   <>
-                    {/* Spinner rather than only swapping the word: minting encrypts the key
-                        and writes a row, so the button can sit disabled long enough that
-                        static text reads as a dead control. */}
+                    {/* Spinner while creating the key (it encrypts and writes a row), so the disabled
+                       button does not look dead. */}
                     <span
                       className="inline-block w-3 h-3 rounded-full animate-spin"
                       style={{
@@ -547,9 +508,8 @@ export default function InstallKeysPanel() {
               <tbody>
                 {keys.map((k) => (
                   <tr key={k.id} style={{ borderBottom: `1px solid ${gf.divider}` }}>
-                    {/* The prefix is the key's identity now that there is no label. It is
-                        also the only part of a key that survives minting, so it is what the
-                        audit log and the revoke dialog name it by. */}
+                    {/* The prefix identifies the key (there is no label); the audit log and revoke dialog
+                       use it too. */}
                     <td className="px-2 py-2 text-[13px] whitespace-nowrap" style={{ color: gf.textPrimary }}>
                       {k.keyPrefix}…
                       {k.createdByName && (
@@ -586,10 +546,8 @@ export default function InstallKeysPanel() {
                     </td>
                     <td className="px-2 py-2 whitespace-nowrap">
                       <div className="flex items-center justify-end gap-2">
-                        {/* A button rather than a click on the whole row: Revoke and
-                            Delete live in this same row, and a row-wide target next to a
-                            destructive button invites misclicks. Hidden for keys created
-                            before they were recoverable — an offer that would only fail. */}
+                        {/* A separate button rather than a clickable row, since Revoke and Delete are in the
+                           same row. Hidden for keys that cannot be shown again. */}
                         {k.canReveal && revealId !== k.id && (
                           <button
                             type="button"
@@ -638,9 +596,7 @@ export default function InstallKeysPanel() {
         )}
       </div>
 
-      {/* Revoke dialog. Two outcomes, both spelled out, with the affected servers named
-          — the difference between them is a whole branch's monitoring, so this must not
-          be a yes/no on an ambiguous question. */}
+      {/* Revoke dialog: both options spelled out, with the affected servers listed. */}
       {revoking && (
         <div
           className="fixed inset-0 z-[90] flex items-center justify-center p-4"

@@ -2,20 +2,10 @@ import { useCallback } from "react";
 import { useScrolled, prefersReducedMotion } from "./motion";
 
 /**
- * "Back to top" control for the landing page.
- *
- * The page is long — hero, figures, walkthrough, coverage, demo reel, data flow,
- * analytics, photos, FAQ, footer — and the only way back to the sign-in button at the
- * top was a scroll all the way up. The topbar is fixed and does carry a Sign in button,
- * so this is a convenience rather than the only route back; that is why it is quiet
- * rather than a large accent-coloured FAB.
- *
- * ── Why it appears on SCROLL DEPTH, not at the bottom ──────────────────────────
- * "Show it when they reach the bottom" sounds like the narrower, tidier rule, and it
- * is the wrong one: the moment someone wants to go back up is the moment they stop
- * reading, which is rarely the last pixel of the page. Anyone who has scrolled past
- * the fold is far enough in for the control to be worth having, and it costs one
- * button in a corner.
+ * "Back to top" button for the landing page. The page is long; the fixed topbar also
+ * has Sign in, so this is a small, quiet convenience. It appears once the visitor has
+ * scrolled past the fold, not only at the bottom, since people rarely stop reading at
+ * the very end.
  */
 export default function BackToTop() {
   // 700px is comfortably past the hero on every viewport this page targets, so the
@@ -23,10 +13,8 @@ export default function BackToTop() {
   const show = useScrolled(700);
 
   const toTop = useCallback(() => {
-    // `smooth` on a page this long is a slow ride, but it is the behaviour that makes
-    // the jump legible — an instant teleport to the top reads as a page change. The
-    // reduced-motion branch is not politeness: a full-page smooth scroll is exactly the
-    // kind of large-area movement that triggers vestibular symptoms.
+    // Smooth scroll so the jump is visible; skipped under reduced motion, since a long
+    // smooth scroll can cause motion sickness.
     window.scrollTo({
       top: 0,
       behavior: prefersReducedMotion() ? "auto" : "smooth",
@@ -37,9 +25,8 @@ export default function BackToTop() {
     <button
       type="button"
       onClick={toTop}
-      // aria-hidden + tabIndex -1 while hidden, so the button does not sit in the tab
-      // order as an invisible stop. `pointer-events-none` covers the mouse for the
-      // same reason — opacity alone would leave a clickable ghost in the corner.
+      // aria-hidden, tabIndex -1 and pointer-events-none while hidden, so the invisible
+      // button cannot be tabbed to or clicked.
       aria-hidden={!show}
       tabIndex={show ? 0 : -1}
       aria-label="Back to top"

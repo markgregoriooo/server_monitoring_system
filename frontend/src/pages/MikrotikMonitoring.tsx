@@ -12,10 +12,8 @@ import type { DeviceFirstPoll } from "../api/api";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── MikroTik list page ───────────────────────────────────────────────────────
-// First page = the fleet list (one compact row per router, with "View"); clicking
-// through swaps in MikrotikDetail for the full drill-down. Mirrors
-// ServerMetrics ↔ ServerDetail and NetworkMonitoring ↔ NetworkDetail.
-// Types + the per-device charts/ports live in MikrotikDetail.tsx.
+// One row per router with "View", which opens MikrotikDetail in place (like ServerMetrics
+// ↔ ServerDetail). Types and the per-device charts/ports are in MikrotikDetail.tsx.
 
 // ─── Grafana tokens (match NetworkMonitoring.tsx) ─────────────────────────────
 
@@ -66,9 +64,9 @@ function mapMk(r: any): MkDevice {
     monitored: r.monitored ?? true,
   };
 }
-// Merge one live `networkMetrics` payload onto the row we already hold. Every field is
-// optional: a poll carries metrics, while an add/config-save carries identity + settings
-// only. Anything absent keeps its current value.
+// Merge one live `networkMetrics` payload into the current row. All fields are optional:
+// a poll carries metrics, an add or config save carries identity and settings. Missing
+// fields keep their value.
 function mergeMkLive(prev: MkDevice | undefined, p: any): MkDevice {
   const base = prev ?? mapMk({ ...p, monitored: p.monitored ?? false });
   return {
@@ -92,9 +90,8 @@ function mergeMkLive(prev: MkDevice | undefined, p: any): MkDevice {
     useTls: p.useTls != null ? Boolean(p.useTls) : base.useTls,
     apiUsername: p.apiUsername ?? base.apiUsername,
     monitored: p.monitored != null ? Boolean(p.monitored) : base.monitored,
-    // Only a real poll carries ports. An add/config-save sends an empty array, which
-    // must NOT wipe the ports we're already showing — offline clearing is handled by
-    // the separate `networkStatus` event.
+    // Only a real poll carries ports; an add/config save sends an empty array, which must
+    // not clear them. Offline is handled by the `networkStatus` event.
     interfaces: Array.isArray(p.interfaces) && p.interfaces.length ? mapMk(p).interfaces : base.interfaces,
   };
 }
@@ -127,17 +124,11 @@ function Panel({
 
 // ─── Ghost button (matches ServerMetrics / NetworkMonitoring "View") ──────────
 
-// One labelled fact in a drawer's summary strip. The strip used to be bare values —
-// "RB951G-2HnD", "monitor-ro", "8729 · TLS" — which only reads if you already know
-// which field is which. The key is what makes a value information.
-// ─── Status, with the one state that is NOT a status ──────────────────────────
-//
-// A MikroTik with no RouterOS login has never been polled, so `status` is "Offline" —
-// which is wrong in the way that matters: the router is not down, nobody has told us how
-// to log in, and the fix is an admin action rather than a trip to the rack. That
-// distinction used to be written only inside the expandable drawer, so the list showed a
-// red "Offline" and the sentence explaining it was one click away and easy to never find.
-// It belongs on the row, where the status it is correcting is.
+// One labelled value in a drawer's summary strip, so each value says what it is.
+// ─── Status, including "API not configured" ──────────────────────────
+// A MikroTik with no RouterOS login has never been polled, so `status` is "Offline",
+// but it is not down: an admin needs to add the login. So the row shows "API not
+// configured" where the status is.
 function MkStatus({ d }: { d: MkDevice }) {
   if (!d.monitored) {
     return (
@@ -160,8 +151,8 @@ function MkStatus({ d }: { d: MkDevice }) {
 }
 
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
-// Same pattern as ServerMetrics' ServerDrawerRow: the row carries what you scan, the
-// drawer the ports and identity you'd otherwise open the detail page for.
+// Same pattern as ServerMetrics' ServerDrawerRow: the row has the summary, the drawer
+// the ports and identity.
 function MkDrawerRow({ d, isOpen, colSpan }: { d: MkDevice; isOpen: boolean; colSpan: number }) {
   const up = d.interfaces.filter((i) => i.linkUp).length;
   return (
@@ -223,9 +214,8 @@ function PortsCell({ d }: { d: MkDevice }) {
   );
 }
 
-// ─── Port chip (compact per-port state for the LIST row) ──────────────────────
-// The full utilization bars live in the detail view — the list only needs an
-// at-a-glance "which ports are up".
+// ─── Port chip (per-port state in the list row) ──────────────────────
+// The list only shows which ports are up; bars are in the detail view.
 
 function PortChip({ label, up, util }: { label: string; up: boolean; util?: number | null }) {
   const showUtil = up && util != null && Number.isFinite(util);
@@ -246,9 +236,9 @@ function PortChip({ label, up, util }: { label: string; up: boolean; util?: numb
   );
 }
 
-// ─── Password input with a show/hide toggle ───────────────────────────────────
-// RouterOS passwords are typed by hand and are never displayed again once saved, so
-// being able to verify what you typed before committing avoids a save-then-fail loop.
+// ─── Password input with show/hide ───────────────────────────────────
+// RouterOS passwords are never shown after saving, so let the admin check what they
+// typed first.
 
 function PasswordField({
   value, onChange, placeholder,
@@ -298,12 +288,8 @@ function PasswordField({
 // ─── Admin: add a new MikroTik ────────────────────────────────────────────────
 
 function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdded: (msg: string) => void; usedNames: string[] }) {
-  // Blank, not pre-filled. A real value sitting in a field is not a suggestion — it is
-  // text the admin has to select and delete before typing their own, on every single
-  // add, and the one that slips through unedited registers a router called "Campus
-  // MikroTik". The old values live on as PLACEHOLDERS, which say the same thing and
-  // cost nothing to ignore. Location may be left empty: createDevice falls back to
-  // "Server Room" server-side, so the same value lands in the DB either way.
+  // Empty fields with placeholders, not pre-filled values that have to be deleted each
+  // time. Location may be empty: createDevice uses "Server Room" by default.
   const [name, setName] = useState("");
   const [ip, setIp] = useState("");
   const [location, setLocation] = useState("");
@@ -316,10 +302,9 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  // Any edit to a field the probe depends on invalidates the probe. A green "OK —
-  // RouterOS 7.x" sitting beside a password that has since been retyped is worse than
-  // no result at all: it vouches for a credential nothing ever tried. Same rule as the
-  // Add router / Add UPS forms — see components/devices/DeviceProbe.tsx.
+  // Changing a field the test depends on clears the test result, so a pass never refers
+  // to values that were not tested. Same as the Add router / Add UPS forms (see
+  // components/devices/DeviceProbe.tsx).
   const edit = <T,>(setter: (v: T) => void) => (v: T) => {
     setTestResult(null);
     setter(v);
@@ -375,9 +360,8 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
     if (apiPassword) body.apiPassword = apiPassword;
     const r = await api.addMikrotik(body);
     setBusy(false);
-    // Does not claim it works. The backend logs in and polls it once immediately, and
-    // that verdict arrives on `deviceFirstPoll` a second or two later — which replaces
-    // this line with what actually happened.
+    // Does not say it works yet: the backend logs in and polls once, and the result arrives
+    // on `deviceFirstPoll` a moment later and replaces this line.
     if (r.success) onAdded("MikroTik registered — testing the API login…");
     else setErr(r.error || "Add failed — did you run the migration?");
   };
@@ -421,10 +405,8 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
                   const on = e.target.checked;
                   setTestResult(null);
                   setUseTls(on);
-                  // Move the port with the toggle. The label promises 8729, but the port
-                  // is a separate field — leaving it at 8728 means speaking TLS to a
-                  // plain port, which just hangs until the socket times out. Only the
-                  // two default ports are auto-switched; a custom port is left alone.
+                  // Switch the port with the TLS toggle (8728 ↔ 8729); TLS on the plain port just hangs
+                  // until timeout. Only the two default ports are switched; a custom port is left alone.
                   setApiPort((p) => (on ? (p === 8728 ? 8729 : p) : p === 8729 ? 8728 : p));
                 }}
               />
@@ -448,10 +430,8 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
               {testResult.msg}
             </div>
           )}
-          {/* Never BLOCKS the save on a failed or skipped test: a MikroTik can
-              legitimately be registered before its API service is enabled, or before
-              somebody else opens the port. Refusing would just teach people to skip the
-              test. It states the consequence instead. Same rule on all three Add forms. */}
+          {/* A failed or skipped test never blocks saving (the API service may not be enabled
+             yet); it states the consequence instead. Same on all three Add forms. */}
           {!testResult?.ok && (
             <p className="text-[11px]" style={{ color: gf.textDim }}>
               Not verified yet. Adding without a successful test is allowed — the card will
@@ -506,9 +486,7 @@ function ConnectionModal({
     else setResult({ ok: false, msg: r.error || "Save failed" });
   };
 
-  // Tests what's currently typed, not what's stored — so a wrong password never has to
-  // be saved just to discover it's wrong. A blank password field falls back to the
-  // stored one server-side.
+  // Tests what is typed, not what is saved. A blank password uses the saved one.
   const test = async () => {
     setBusy("test");
     setResult(null);
@@ -551,10 +529,8 @@ function ConnectionModal({
                 onChange={(e) => {
                   const on = e.target.checked;
                   setUseTls(on);
-                  // Move the port with the toggle. The label promises 8729, but the port
-                  // is a separate field — leaving it at 8728 means speaking TLS to a
-                  // plain port, which just hangs until the socket times out. Only the
-                  // two default ports are auto-switched; a custom port is left alone.
+                  // Switch the port with the TLS toggle (8728 ↔ 8729); TLS on the plain port just hangs
+                  // until timeout. Only the two default ports are switched; a custom port is left alone.
                   setApiPort((p) => (on ? (p === 8728 ? 8729 : p) : p === 8729 ? 8728 : p));
                 }}
               />
@@ -604,9 +580,8 @@ export default function MikrotikMonitoring() {
   const isAdmin = user?.role === "admin";
   const [configFor, setConfigFor] = useState<MkDevice | null>(null);
   const [adding, setAdding] = useState(false);
-  // Toasts carry a TONE, so a registration whose first RouterOS login failed is not
-  // reported in the same green box as one that worked. Same shape as the Network and
-  // UPS pages.
+  // Toasts have a tone, so a registration whose first login failed is not shown in green.
+  // Same as the Network and UPS pages.
   const [toast, setToast] = useState<{ msg: string; tone: "ok" | "warn" } | null>(null);
   const showToast = (msg: string, tone: "ok" | "warn" = "ok") => {
     setToast({ msg, tone });
@@ -619,9 +594,9 @@ export default function MikrotikMonitoring() {
   const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Deep-link from a notification: /mikrotik?device=<id> opens that router's detail
-  // once the list has loaded, then drops the param (so Back returns to the list and a
-  // refresh doesn't re-trigger). Same contract as ServerMetrics — see routeFor.
+  // Deep link from a notification: /mikrotik?device=<id> opens that router once the list
+  // loads, then removes the parameter (so Back returns to the list). Same as ServerMetrics;
+  // see routeFor.
   useEffect(() => {
     const deviceParam = searchParams.get("device");
     if (!deviceParam) return;
@@ -683,11 +658,9 @@ export default function MikrotikMonitoring() {
       setDevices((prev) => prev.filter((d) => d.id !== id));
       setDetailId((cur) => (cur === id ? null : cur));
     };
-    // How the just-registered MikroTik's FIRST API login went. Sent only to the admin
-    // who registered it. This matters more here than on the SNMP pages: a MikroTik is
-    // registered with a USERNAME AND PASSWORD, so "no data yet" and "those credentials
-    // are wrong" were indistinguishable until something actually tried to connect —
-    // and when it did, the answer went to the server console and to nobody else.
+    // How the new MikroTik's first API login went, sent only to the admin who added it.
+    // With a username and password involved, "no data yet" and "wrong credentials" look the
+    // same until a login is tried.
     const onFirstPoll = (d: DeviceFirstPoll) => {
       if (d?.kind !== "mikrotik") return; // routers and UPS have their own pages
       if (d.ok) {
@@ -718,10 +691,8 @@ export default function MikrotikMonitoring() {
   const online = devices.filter((d) => d.status === "Online").length;
   const allIfaces = devices.flatMap((d) => d.interfaces);
   const portsUp = allIfaces.filter((i) => i.linkUp).length;
-  // WORST across the fleet, not the average. A status tile exists to make you look —
-  // and an average is the one aggregation guaranteed to stop that: one router at 98%
-  // with three idle ones averages to ~29% and shows green while a device is on fire.
-  // Devices that haven't reported (offline) contribute nothing rather than counting as 0.
+  // The worst across the fleet, not the average, which would hide one router at 98%.
+  // Devices that have not reported are left out.
   const cpuVals = devices.filter((d) => d.cpuPercent != null).map((d) => d.cpuPercent as number);
   const memVals = devices.filter((d) => d.memPercent != null).map((d) => d.memPercent as number);
   const worstCpu = cpuVals.length ? Math.round(Math.max(...cpuVals)) : 0;
@@ -729,9 +700,8 @@ export default function MikrotikMonitoring() {
   const reporting = Math.max(cpuVals.length, memVals.length);
   const aggSub = reporting > 1 ? `worst of ${reporting}` : "router load";
 
-  // Drill-down: render the per-router detail in place (Back returns to the list),
-  // mirroring ServerMetrics ↔ ServerDetail. Look the device up by id each render so
-  // the open page keeps receiving live socket updates from the list's state.
+  // Detail view in place (Back returns to the list). Looked up by id each render so it
+  // keeps getting live updates from the list's state.
   const detail = detailId ? devices.find((d) => d.id === detailId) ?? null : null;
   if (detail) {
     return (

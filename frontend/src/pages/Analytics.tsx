@@ -7,17 +7,15 @@ import { GF as gf, STATUS } from "../theme/gf";
 import { usePersistedState as useSharedPersistedState } from "../hooks/usePersistedState";
 const { green: GREEN, orange: ORANGE, red: RED } = STATUS;
 
-// Predictive Analytics: disk-full ETA (linear regression) + alert analytics
-// (Phase 1), trend/projection (seasonal Holt-Winters, Phase 2), anomaly detection
-// (per-hour z-score + IQR, Phase 3), threshold recommendations (percentiles,
-// Phase 4) and the UPS-battery / link-saturation ETAs (Phase 2b). Backend:
-// services/analyticsService.js → /api/analytics. See predictive-analytics.md.
+// Predictive Analytics: disk-full ETA (linear regression) and alert analytics,
+// trends with projection (seasonal Holt-Winters), anomaly detection (per-hour z-score
+// + IQR), threshold recommendations (percentiles), and UPS battery / link saturation
+// ETAs. Backend: services/analyticsService.js → /api/analytics. See
+// predictive-analytics.md.
 //
-// Every device is rendered through <DeviceLabel>, which pairs the operator-facing
-// name with a class badge. With servers, MikroTik, routers and UPS all forecasting
-// side by side, a bare name like "core-01" is ambiguous — the badge is what makes a
-// row identifiable at a glance. Names come from MySQL (display_name → device_name),
-// NOT the InfluxDB tag, so a renamed device reads the same here as everywhere else.
+// Every device is shown through <DeviceLabel>: its name plus a type badge, since a
+// bare name like "core-01" is ambiguous. Names come from MySQL (display_name →
+// device_name), not the InfluxDB tag, so renamed devices match the rest of the app.
 
 type Confidence = "high" | "medium" | "low";
 
@@ -141,9 +139,8 @@ interface MetricTrend {
     etaHours: number;
     action: string;
   } | null;
-  // "insufficient_history" = there IS history, but not enough of it (or too gappy) to
-  // project from — distinct from "insufficient_data", which means barely any points at
-  // all. The first shows the quality notice; the second is just an empty panel.
+  // "insufficient_history" = there is history, but too little or too patchy to project
+  // from (shows the quality notice). "insufficient_data" = hardly any points (empty panel).
   status: "ok" | "insufficient_data" | "insufficient_history";
 }
 
@@ -220,10 +217,8 @@ const TYPE_COLOR: Record<string, string> = {
   Sensor: "#6B7280",
 };
 
-// Lookback windows sized to what each thing PHYSICALLY does, not one shared number.
-// Disk fills over weeks; a campus uplink grows over a semester; a UPS battery ages over
-// YEARS, so a 30-day window cannot separate real degradation from the load swings that
-// move runtime minute to minute — hence the much longer options and default. See
+// Lookback windows fit how each thing changes: disk over weeks, an uplink over a
+// semester, a UPS battery over years (so its default is much longer). See
 // predictive-analytics.md §16.
 interface LookbackOption { value: number; label: string }
 const D = (d: number): LookbackOption => ({ value: d, label: `${d}d` });
@@ -231,52 +226,33 @@ const D = (d: number): LookbackOption => ({ value: d, label: `${d}d` });
 const DISK_LOOKBACKS = [D(14), D(30), D(90)];
 const LINK_LOOKBACKS = [D(30), D(90), D(180)];
 const UPS_LOOKBACKS = [D(90), D(180), D(365)];
-// Anomalies: the per-hour-of-day baseline needs several samples per hour bucket, and a
-// 7-day window holds exactly ONE Saturday per bucket — so weekend readings both inflate
-// the deviation and risk flagging as anomalies on a campus. 14 days is the sane floor.
+// Anomalies need several samples per hour bucket; 7 days has only one Saturday per
+// bucket, so 14 days is the minimum.
 const ANOMALY_LOOKBACKS = [D(7), D(14), D(30)];
 // Alert analytics is descriptive, so any window is "valid"; 30 days is the usual
 // incident-review period, 90 shows a term.
 const ALERT_LOOKBACKS = [D(7), D(30), D(90)];
-// Threshold suggestions are deliberately NOT tunable from the page. The window is the
-// one input that changes the suggested number, so exposing it invites sliding it until
-// the recommendation agrees with the threshold you already wanted — which defeats the
-// point of a data-driven suggestion. 30 days is a representative period: long enough not
-// to tune to a quiet week, short enough not to bake in load the hardware has outgrown.
+// Threshold suggestions use a fixed 30-day window, not a control: sliding the window
+// until the suggestion matches what you wanted defeats the purpose.
 const REC_WINDOW_DAYS = 30;
-// Trend has NO lookback control, deliberately — but the reasoning changed with the model.
-// It used to be "exponential smoothing forgets, so a wider window barely moves the
-// projection". That is still true of the LEVEL and TREND terms, and is no longer true of
-// the whole forecast: the daily hour-of-day profile is an AVERAGE over the window, so more
-// days genuinely sharpen it. The window is fixed because it is now a correctness input
-// rather than a preference — too short and the profile collapses and the projection
-// silently degrades to a straight line. Chosen here, not exposed.
-// (The ANOMALY window below IS a real model parameter and stays adjustable.)
-// 7 days, not 2. The projection now removes the daily cycle before fitting and puts it
-// back on afterwards, and the quality of that hour-of-day profile is set by how many
-// cycles it was averaged over. On a synthetic room, widening 48h → 168h took the 12h
-// mean absolute error from 0.14 °C to 0.05 °C; two days is the bare minimum the backend
-// will accept before it falls back to a straight line.
+// Trend lookback is fixed, not a control: the hour-of-day profile is averaged over the
+// window, and a window that is too short makes the projection fall back to a straight
+// line. 7 days: on a test room, going from 48h to 168h cut the 12h error from 0.14 °C
+// to 0.05 °C. The backend needs at least two days. (The anomaly window below stays
+// adjustable.)
 const TREND_LOOKBACK_HOURS = 168;
-// How far AHEAD the projection runs, deliberately independent of the lookback. Deriving
-// it from the lookback coupled two unrelated questions — picking a 24h window to steady
-// the trend line also silently shortened the forecast to 6h, which is not what "look back
-// further" means to anyone. 12h is the operational horizon: far enough to act on before
-// the next shift, and now safe to run across a daily cycle because the projection carries
-// the hour-of-day shape rather than extrapolating one straight line through it.
+// How far ahead the projection runs, separate from the lookback. 12h: enough to act
+// on before the next shift, and safe across a daily cycle since the projection
+// includes the hour-of-day shape.
 const TREND_HORIZON_HOURS = 12;
-// Live updates: server metrics (~10s/host), SNMP/MikroTik polls (~30-60s) and environment
-// readings (~3s) all stream in over the socket. We coalesce that firehose to at most one
-// analytics refresh per this window — a multi-day regression barely moves between ticks and
-// each refresh runs several Flux queries.
+// Live updates arrive over the socket (servers ~10s, polls ~30-60s, environment ~3s).
+// Refresh the analytics at most once per this window; each refresh runs several queries.
 const LIVE_REFRESH_MS = 15_000;
 const mono = "'JetBrains Mono', monospace";
 
-// Adaptive type scale. The page sets ONE root size that grows with the viewport and every
-// text size on it is expressed in `em` relative to this — so the whole page scales
-// smoothly (no breakpoint jumps) and stays readable on a laptop as well as on the wall
-// display in the server room. 11px floor keeps the dense tables legible on a phone;
-// 13.5px ceiling stops it ballooning on a large monitor.
+// Scaling type: one root size that grows with the viewport, with all text in `em`,
+// so the page scales smoothly from a laptop to the server-room wall display. 11px
+// minimum for phones, 13.5px maximum for large monitors.
 const ROOT_FONT = "clamp(11px, 0.25vw + 10.2px, 13.5px)";
 
 const METRIC_OPTIONS = [
@@ -308,9 +284,8 @@ const ROUTER_METRICS = new Set<string>([
   "router_cpu", "router_mem", "router_clients", "router_latency", "router_loss",
 ]);
 
-/* `short` is what a phone shows. Only one label actually needs it — "Trends & Anomalies" is
-   wide enough on its own to push "Recommendations" off the strip, and the page's own heading
-   says "Anomalies" a few pixels below anyway. */
+/* `short` is used on a phone, only for "Trends & Anomalies", which otherwise pushes
+   "Recommendations" off the strip. */
 const TABS = [
   { key: "forecasts", label: "Forecasts", short: "Forecasts" },
   { key: "trends", label: "Trends & Anomalies", short: "Trends" },
@@ -336,10 +311,8 @@ const fmtFullBy = (etaDays: number): string => {
   return d.toLocaleDateString("en-PH", { month: "short", day: "2-digit", year: "numeric" });
 };
 
-// Round axis tick values — 1/2/5 x a power of ten, so the axis reads 28 / 30 / 32 rather
-// than 27.83 / 30.14 / 32.45. Mirrors backend/services/analyticsMath.js `niceTicks`; it
-// cannot be imported because that module is Node-only and this is the one place the chart
-// needs it. Kept deliberately identical so the two never disagree about an axis.
+// Round axis ticks (1/2/5 x a power of ten), e.g. 28 / 30 / 32. Same as `niceTicks` in
+// backend/services/analyticsMath.js (which is Node-only); keep them identical.
 function niceTicks(min: number, max: number, count = 4): number[] {
   if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [];
   const raw = (max - min) / Math.max(1, count - 1);
@@ -380,21 +353,14 @@ const LINK_STATUS_LABEL: Record<LinkForecast["status"], string> = {
 };
 
 // ─── View state that survives navigation ──────────────────────────────────────
-// React Router unmounts this page when you leave it, so without persistence every visit
-// reset the tab, the metric, the device and every lookback. That is a real cost here:
-// getting to "Memory on WEB-PROD" takes two controls, and an operator checking the
-// Dashboard mid-investigation would come back to a blank slate.
-//
-// localStorage (not sessionStorage) matches the sidebar's collapse/group prefs and the
-// theme, so the view also survives a refresh. `isValid` guards the restored value — a
-// stale tab key or a metric that no longer exists would otherwise render an empty page
-// or send a 400 to the API on mount.
+// The router unmounts this page when you leave, so without this the tab, metric,
+// device and lookbacks reset on every visit. Stored in localStorage (like the sidebar
+// and theme). `isValid` checks restored values so a stale key does not give an empty
+// page or a 400.
 const VIEW_KEY = "cspc_analytics_view";
 
-// The implementation now lives in hooks/usePersistedState (the Dashboard needs it too).
-// This thin wrapper keeps the SHORT keys the call sites below already use, which also
-// keeps every already-stored preference working — switching to full keys would silently
-// reset everyone's saved lookbacks and tab.
+// Thin wrapper around hooks/usePersistedState that keeps the existing short keys, so
+// saved preferences keep working.
 const usePersistedState = <T,>(
   key: string,
   initial: T,
@@ -409,9 +375,8 @@ const isOneOf = (opts: readonly LookbackOption[]) => (v: unknown): boolean =>
   typeof v === "number" && opts.some((o) => o.value === v);
 
 // ─── One row of any capacity forecast ─────────────────────────────────────────
-// Disk, UPS battery and link saturation are the same question asked three ways —
-// "how long until this crosses a line?" — so they render through one table instead of
-// three near-identical ones. Only the units, the bound and which direction is bad differ.
+// Disk, UPS battery and link saturation all ask "how long until this crosses a line?",
+// so they share one table; only units, bound and direction differ.
 interface ForecastRow {
   key: string;
   name: string;
@@ -464,9 +429,8 @@ export default function Analytics() {
 
   // Phase 2/3 — metric focus (one selector drives both Trend and Anomaly panels).
   const [selMetric, setSelMetric] = usePersistedState<string>("metric", "temperature", isMetricKey);
-  // The device is persisted as a raw id and re-validated against the loaded options
-  // below — a remembered server that has since been decommissioned must not leave the
-  // panels silently empty.
+  // The device is stored as a raw id and checked against the loaded options, so a
+  // removed server does not leave the panels empty.
   const [selDevice, setSelDevice] = usePersistedState<number | null>("deviceId", null);
   const [trend, setTrend] = useState<MetricTrend | null>(null);
   const [anom, setAnom] = useState<AnomalyResult | null>(null);
@@ -488,10 +452,8 @@ export default function Analytics() {
     if (s.success) setSummary(s.data?.summary ?? null);
   }, [alertDays]);
 
-  // The three forecasts load INDEPENDENTLY, each keyed to its own lookback. Fetching them
-  // together meant adjusting the UPS window also re-fetched disk and link and blanked all
-  // three panels — the page collapsed by the height of three tables and the browser
-  // clamped the scroll back to the top, away from the control just used.
+  // The three forecasts load separately, each with its own lookback, so changing one
+  // does not blank all three panels and jump the scroll to the top.
   const loadDisk = useCallback(async (silent = false) => {
     if (!silent) setDiskLoading(true);
     const f = await api.getDiskForecast(diskDays);
@@ -536,11 +498,9 @@ export default function Analytics() {
     setNetDevices([...byId.values()]);
   }, []);
 
-  // Forecasts load on mount + their own lookback change (they are also the source of the
-  // device lists the Trends tab's selector needs, so they load regardless of active tab).
-  // The other tabs load lazily when first activated.
-  // Accuracy is backtested from history already on disk, so it needs no schedule and no
-  // waiting — it loads once with the forecasts it describes.
+  // Forecasts load on mount and when their lookback changes (they also feed the Trends
+  // device list). Other tabs load when first opened. Accuracy is computed from existing
+  // history, so it loads with the forecasts.
   const loadAccuracy = useCallback(async () => {
     const a = await api.getForecastAccuracy("disk", { days: diskDays, horizon: 7 });
     if (a.success) setAccuracy(a.data?.accuracy ?? null);
@@ -555,9 +515,8 @@ export default function Analytics() {
   useEffect(() => { loadRouters(); }, [loadRouters]);
   useEffect(() => { if (tab === "alerts") loadSummary(); }, [tab, loadSummary]);
 
-  // Live alert analytics: re-pull the summary whenever an alert is raised
-  // (`notification`) or its lifecycle changes (`alertUpdated` — acknowledge / resolve /
-  // auto-resolve), so "Open now" and the rest track without a manual refresh.
+  // Refresh the alert summary when an alert is raised (`notification`) or changes
+  // (`alertUpdated`), so "Open now" stays current.
   useEffect(() => {
     const onAlertChange = () => { loadSummary(); };
     socket.on("notification", onAlertChange);
@@ -568,22 +527,16 @@ export default function Analytics() {
     };
   }, [loadSummary]);
 
-  // Device pickers for the Trends tab. Servers come from the disk forecast, routers from
-  // the link forecast (every device that reports interface traffic). Both already carry
-  // the resolved name + class label, so the dropdown reads the same as the tables.
+  // Device lists for the Trends tab: servers from the disk forecast, routers from the
+  // link forecast; both already carry the display name and type.
   const servers = useMemo(
     () => forecasts.map((f) => ({ id: f.deviceId, name: f.name, typeLabel: f.typeLabel })),
     [forecasts],
   );
-  // This list was built from `linkForecasts` — every device that reports INTERFACE
-  // traffic. That silently excluded exactly one class of device: a PING-ONLY router has
-  // no interfaces at all, so it produced no link forecast and never appeared in the
-  // picker — making Latency and Packet Loss unreachable for the one device whose ONLY
-  // metrics those are.
-  //
-  // So the list now comes from the device endpoints, with the link forecast folded in
-  // as a fallback: a device deleted from the dashboard still has history in InfluxDB,
-  // and dropping it from the picker would hide a trend that is still perfectly readable.
+  // Routers come from the device endpoints, not only the link forecast: a ping-only
+  // router has no interfaces, so it would never appear, and latency/loss are its only
+  // metrics. The link forecast is still merged in so devices removed from the dashboard
+  // but with history remain selectable.
   const routers = useMemo(() => {
     const seen = new Map<number, { id: number; name: string; typeLabel: string | null }>();
     for (const d of netDevices) seen.set(d.id, d);
@@ -611,10 +564,9 @@ export default function Analytics() {
     [deviceOptions, selDevice],
   );
 
-  // A device-scoped metric needs a device picked. This also REPAIRS a restored id: the
-  // remembered device may have been decommissioned since, or belong to the other class
-  // (a server id restored while a router metric is selected), in which case fall back to
-  // the first available rather than querying an id that yields nothing.
+  // A device-level metric needs a device. Also fixes a restored id that no longer exists
+  // or is the wrong type (e.g. a server id with a router metric) by picking the first
+  // available one.
   useEffect(() => {
     if (!needsDevice) return;
     const first = deviceOptions[0];
@@ -623,11 +575,8 @@ export default function Analytics() {
     if (!stillValid) setSelDevice(first.id);
   }, [needsDevice, selDevice, deviceOptions]);
 
-  // Trend and anomalies load INDEPENDENTLY. Sharing one loader meant changing the anomaly
-  // window also re-fetched the trend and blanked both panels to "Loading…" — the page lost
-  // the ~500px of chart and tables, the document shrank, and the browser clamped the
-  // scroll position back to the top, throwing the reader away from the very control they
-  // had just used. Anomaly reloads now leave the trend chart untouched.
+  // Trend and anomalies load separately, so changing the anomaly window does not reload
+  // the trend chart and jump the page to the top.
   const focusDevice = needsDevice ? selDevice : null;
   const focusReady = !needsDevice || selDevice != null;
 
@@ -661,11 +610,10 @@ export default function Analytics() {
 
   useEffect(() => { if (tab === "recs") loadRecs(); }, [tab, loadRecs]);
 
-  // ── Live data: keep the active tab current with no manual refresh ──
-  // serverMetrics (agents), networkMetrics/upsMetrics (SNMP + MikroTik pollers) and
-  // sensorData (ESP32) all stream in. Re-pull the active tab's panels when fresh data
-  // lands, coalesced to ≤1 refresh per LIVE_REFRESH_MS and silent (no spinners) so
-  // values update in place. Alert Analytics lives off the alert-socket effect above.
+  // ── Live data: keep the active tab current ──
+  // serverMetrics (agents), networkMetrics/upsMetrics (pollers) and sensorData (ESP32)
+  // trigger a quiet reload of the active tab, at most once per LIVE_REFRESH_MS. Alert
+  // analytics uses the alert-socket effect above.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const trigger = () => {
@@ -768,9 +716,8 @@ export default function Analytics() {
   const linkRows: ForecastRow[] = useMemo(
     () => linkForecasts.map((l) => ({
       key: `link-${l.deviceId}-${l.interface}`,
-      // On the campus MikroTik an interface IS a building, so lead with the label an
-      // operator recognises and keep the port as the technical sub-line. The device name
-      // and class now live on the group header, so repeating them per row would be noise.
+      // On the MikroTik each port is a building, so show the label first and the port name
+      // below. Device name and type are on the group header.
       name: l.interfaceLabel ?? l.interface,
       typeLabel: null,
       sub: l.interfaceLabel ? l.interface : null,
@@ -829,12 +776,9 @@ export default function Analytics() {
         </div>
       </div>
 
-      {/* ── Tabs — each tab lazy-loads its own data (see the load effects above) ──
-          SCROLLS sideways rather than wrapping. As `flex-wrap`, a phone pushed
-          "Recommendations" onto a second line where it sat alone BELOW the underline that
-          defines the tab strip — it stopped looking like a tab and started looking like a
-          stray button. One scrolling line keeps the row and its baseline intact, which is
-          also what every mobile tab bar does, so the swipe is already learned. */}
+      {/* ── Tabs (each loads its own data; see the load effects above) ──
+         Scrolls sideways on a phone instead of wrapping, so no tab ends up alone below the
+         underline. */}
       <div
         className="flex items-center gap-1 overflow-x-auto"
         style={{
@@ -1069,9 +1013,8 @@ export default function Analytics() {
           {/* ── Metric focus: selector drives Trend + Anomaly panels ── */}
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-[0.9em] uppercase tracking-widest" style={{ color: gf.textDim }}>Metric</span>
-            {/* Changing the metric deliberately does NOT clear the device: CPU → Memory
-                should keep you on the same server. The repair effect above swaps it only
-                when the new metric belongs to the other device class. */}
+            {/* Changing the metric keeps the device (CPU → Memory stays on the same server). The
+               effect above only switches it when the metric is for the other device type. */}
             <Select
               value={selMetric}
               options={METRIC_SELECT_OPTIONS}
@@ -1098,10 +1041,8 @@ export default function Analytics() {
           {/* ── Trend & short-term projection ── */}
           <Panel
             title="Trend & Short-Term Projection"
-            // Says WINDOW, not "history". The window is what we ask InfluxDB for; how much
-            // history actually came back is a different number the chart footer reports
-            // ("30h history"). Wording it as history here contradicted that footer on the
-            // same panel whenever a device had less data than the window.
+            // Says window, not history: this is what we ask InfluxDB for. How much history came
+            // back is shown in the chart footer.
             subtitle={
               trend?.status === "insufficient_history"
                 ? `${trend.lookbackHours}h window · projection withheld`
@@ -1111,10 +1052,8 @@ export default function Analytics() {
             {trendLoading && !trend ? (
               <Empty>Loading trend…</Empty>
             ) : trend?.status === "insufficient_history" ? (
-              // The data cannot support a projection, so there ISN'T one — and the panel
-              // says which check failed rather than showing an empty chart. The HISTORY is
-              // still drawn: it is real, and seeing where the gaps are is the fastest way
-              // to understand why the forecast is being withheld.
+              // The data cannot support a projection, so none is drawn and the panel says which
+              // check failed. The history is still drawn, which shows where the gaps are.
               <div className="space-y-3">
                 <DataQualityNotice quality={trend.dataQuality} />
                 {trend.series.length >= 2 && (
@@ -1221,21 +1160,16 @@ export default function Analytics() {
           title="Threshold Recommendations"
           subtitle={
             recDevice == null
-              // Not "All servers": the unscoped pass also evaluates the ROOM metrics
-              // (temperature, humidity, gas), which is why they appear in the table. They
-              // have no per-device version — there is no such thing as one server's share
-              // of "the server room is too hot" — so they show here and nowhere else.
+              // Not "All servers": the unscoped view also includes the room metrics (temperature,
+              // humidity, gas), which only exist here.
               ? `All servers + server room · pooled over ${REC_WINDOW_DAYS} days · warn = p95, critical = p99`
               : `${
                   [...servers, ...routers].find((s) => s.id === recDevice)?.name ?? "Device"
                 } only · last ${REC_WINDOW_DAYS} days`
           }
           action={
-            /* Routers belong in this picker, not just servers. `router_latency` is
-               recommendable ONLY per device (see analyticsService METRICS) — a rack
-               switch answering in <1 ms and an ISP CPE in 30 ms are both healthy, so a
-               pooled percentile fits neither. Offering servers alone left that the one
-               recommendation the backend could produce and the UI could never ask for. */
+            /* Routers are in this picker too: `router_latency` is only recommended per device
+               (see analyticsService METRICS). */
             servers.length > 0 || routers.length > 0 ? (
               <Select
                 value={recDevice == null ? "" : String(recDevice)}
@@ -1314,11 +1248,7 @@ export default function Analytics() {
                             </Td>
                             {isAdmin && (
                               <Td>
-                                {/* Raised ONLY when it will actually do something. A rule
-                                    already matching its suggestion stays flat and dim, so
-                                    the rows that need an admin's attention stand proud of
-                                    the ones that don't — this writes to live alert rules,
-                                    so it should never look armed when it isn't. */}
+                                {/* Raised only when applying would change something; this writes to live alert rules. */}
                                 <button
                                   disabled={!changed || applying === r.metric}
                                   onClick={() => applyRecommendation(r)}
@@ -1359,9 +1289,8 @@ export default function Analytics() {
 }
 
 // ─── Shared forecast table ────────────────────────────────────────────────────
-// Disk, UPS and link forecasts render through this one component. Keeping a single
-// table means the three panels cannot drift apart in how they colour an ETA, phrase a
-// status or report a fit — which they previously could, being three copies.
+// Disk, UPS and link forecasts use this one component, so they colour ETAs, word
+// statuses and report fit the same way.
 function ForecastPanel({
   title, subtitle, entityHeader, etaHeader, byHeader, rows, loading, empty, note, lookback,
 }: {
@@ -1376,20 +1305,16 @@ function ForecastPanel({
   note: string;
   lookback: { value: number; options: readonly LookbackOption[]; onChange: (d: number) => void };
 }) {
-  // Explicit toggles only. Absent = fall back to the default-open rule below, so a group
-  // the user has never touched still opens itself when it has something to act on, while
-  // one they deliberately collapsed stays collapsed across refreshes.
-  // The caveats matter — they are what stops a forecast being read as a promise — but
-  // three paragraphs stacked down the page drowned the actual numbers. Kept, one click away.
+  // Explicit toggles only. With none set, groups with something to act on open by
+  // default; a group the user closed stays closed across refreshes.
+  // The caveats are one click away rather than printed in full on the page.
   const [showNote, setShowNote] = useState(false);
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
   const toggleGroup = (key: string) =>
     setToggled((t) => ({ ...t, [key]: !(t[key] ?? defaultOpen(key)) }));
 
-  // Rows carrying a groupKey are rendered as collapsible per-device sections (link
-  // saturation: one router can own a dozen interfaces, which buried everything else on
-  // the page). Rows without one render flat, as disk and UPS do — one row per device
-  // there already, so grouping would just add a layer to click through.
+  // Rows with a groupKey show as collapsible per-device sections (a router can have a
+  // dozen interfaces). Rows without one (disk, UPS) are flat, one per device.
   const groups = useMemo(() => {
     if (!rows.some((r) => r.groupKey)) return null;
     const map = new Map<string, ForecastRow[]>();
@@ -1474,9 +1399,8 @@ function ForecastPanel({
                     const open = isGroupOpen(g);
                     return (
                       <Fragment key={g.key}>
-                        {/* Group header doubles as the toggle. It stays a table row rather
-                            than a separate table so every group shares one set of column
-                            widths — split tables would drift out of alignment. */}
+                        {/* The group header is the toggle. It stays a table row so all groups share the same
+                           column widths. */}
                         <tr
                           onClick={() => toggleGroup(g.key)}
                           className="cursor-pointer"
@@ -1571,17 +1495,12 @@ function DeviceLabel({ name, typeLabel, sub }: { name: string; typeLabel: string
   );
 }
 
-// Depth here is a consistent language, not decoration:
-//   RECESSED (inset shadow) = something you put a value INTO — the select controls and
-//                             the lookback track.
-//   RAISED   (drop shadow + light top edge) = something that ACTS or is currently chosen —
-//                             the selected lookback segment and an armed Apply button.
-// Native <select> loses its arrow under appearance:none, so a chevron is drawn back in.
-// The <option> list is rendered by the OS, so its styling is best-effort and only some
-// browsers honour it — the control itself carries the design either way.
-// Reveals a panel's caveats on demand. They are worth keeping — a forecast read without
-// them is a forecast over-trusted — but they are reference material, not something to
-// re-read on every visit, so they stay one click away instead of on the page.
+// Depth has a meaning:
+//   recessed (inset shadow)   = somewhere you enter a value (selects, lookback track)
+//   raised (drop shadow)      = something that acts or is selected (chosen lookback,
+//                               an active Apply button)
+// A native <select> loses its arrow with appearance:none, so a chevron is drawn.
+// Shows a panel's caveats on demand.
 function InfoToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
   return (
     <button
@@ -1605,23 +1524,16 @@ function InfoToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
 
 interface SelectOption { value: string; label: string; group: string | null }
 
-// A CUSTOM listbox, not a native <select>. A native select's option list is drawn by the
-// operating system, so it takes no shadow, radius or elevation no matter what CSS says —
-// styling the popup at all requires owning it. This renders its own panel, which can then
-// be given the raised treatment the rest of the page uses.
-//
-// Owning it also means owning the behaviour a native select gave us for free, so: click
-// outside and Escape close it, Up/Down move, Enter/Space select, Home/End jump, the
-// trigger keeps proper listbox ARIA, and the active option is scrolled into view.
+// A custom listbox instead of a native <select>, whose dropdown is drawn by the OS and
+// cannot be styled. It handles click-outside and Escape to close, Up/Down, Enter/Space,
+// Home/End, listbox ARIA, and scrolls the active option into view.
 function Select({ value, options, onChange, title, align = "left" }: {
   value: string;
   options: readonly SelectOption[];
   onChange: (v: string) => void;
   title?: string;
-  // Which edge the dropdown is pinned to. A menu is always WIDER than its trigger
-  // (the labels are nowrap), so a left-pinned menu grows rightward — fine for the
-  // triggers in a left-aligned toolbar, but off the panel and off the screen for one
-  // sitting in a right-aligned panel header. Pin that one right instead.
+  // Which edge the dropdown is aligned to. The menu is wider than its trigger, so one in
+  // a right-aligned header is aligned right to stay on screen.
   align?: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
@@ -1683,9 +1595,8 @@ function Select({ value, options, onChange, title, align = "left" }: {
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={onKeyDown}
-        // Recessed while closed (a field), raised while open (an active surface). Both
-        // shadows come from the theme's own button tokens, so they hold up in light mode
-        // where a hardcoded black shadow just looks like dirt.
+        // Recessed when closed, raised when open. Shadows come from the theme's button tokens
+        // so they also work in light mode.
         className={`flex items-center gap-2 pl-3 pr-2.5 py-1.5 text-[0.9em] rounded-[3px] outline-none cursor-pointer transition-all ${open ? "gf-btn" : ""}`}
         style={{
           color: gf.textPrimary,
@@ -1759,24 +1670,17 @@ function Select({ value, options, onChange, title, align = "left" }: {
   );
 }
 
-// Segmented control rather than loose buttons: the options are mutually exclusive, and
-// one solid group reads as a single switch instead of three things to click. The depth is
-// doing work, not decoration — the track is RECESSED (inset shadow) and the selected
-// segment is RAISED out of it (drop shadow + a light top edge), so which window is active
-// is legible from the shape alone, before the accent colour is read. Matters on a wall
-// display and for anyone who can't rely on the blue.
+// A segmented control for mutually exclusive options: a recessed track with the
+// selected segment raised, so the active window shows from the shape alone, not just
+// the colour.
 function LookbackPicker({ value, options, onChange }: {
   value: number; options: readonly LookbackOption[]; onChange: (d: number) => void;
 }) {
   return (
     <span className="flex items-center gap-2">
       <span className="text-[0.82em] uppercase tracking-widest" style={{ color: gf.textDim }}>Lookback</span>
-      {/* Recessed track holding a raised key. The active segment uses the shared .gf-btn
-          surface (--gf-btn-face / sheen / shadow), which is defined per theme — a
-          hand-picked grey read as almost nothing in dark (#181B1F on #111217 is barely
-          seven levels apart) and washed out entirely in light. The token set is tuned for
-          exactly this: a face that sits ABOVE the page tone in dark, and white with a real
-          border plus sheen in light, where white-on-white needs the border to exist. */}
+      {/* The active segment uses the shared .gf-btn surface (per-theme tokens); a hand-picked
+         grey was nearly invisible in dark mode and washed out in light mode. */}
       <span
         className="flex gap-0.5 p-0.5 rounded-[3px]"
         style={{
@@ -1792,10 +1696,8 @@ function LookbackPicker({ value, options, onChange }: {
               key={o.value}
               onClick={() => onChange(o.value)}
               aria-pressed={active}
-              // No accent colour on purpose: this is a view filter, not an action, and
-              // three sets of blue segments competed with the alert severities and the
-              // Apply button. Surface + weight carry the active state instead, which also
-              // survives a wall display and anyone who can't rely on the blue.
+              // No accent colour: this is a view filter, not an action. The active state is shown by
+              // surface and weight.
               className={`px-3 py-1 text-[0.9em] rounded-[2px] cursor-pointer transition-all ${active ? "gf-btn" : ""}`}
               style={{
                 color: active ? gf.textPrimary : gf.textMuted,
@@ -1813,10 +1715,8 @@ function LookbackPicker({ value, options, onChange }: {
   );
 }
 
-// How much history this row's forecast actually saw. It falls short of the requested
-// window whenever the device is newer than the window or InfluxDB retention is shorter
-// than it — both of which silently weaken a forecast, so they are shown rather than
-// assumed. Amber once the real span is under half of what was asked for.
+// How much history this forecast actually used. It can be less than requested when the
+// device is newer or retention is shorter. Amber when under half the requested window.
 function HistoryCell({ days, requested }: { days: number; requested: number }) {
   if (!days) return <span style={{ color: gf.textDim }}>—</span>;
   const short = days < requested * 0.5;
@@ -1831,10 +1731,8 @@ function HistoryCell({ days, requested }: { days: number; requested: number }) {
   );
 }
 
-// R² below zero just means "worse than predicting the average" — the sign is the whole
-// message. Printing the raw figure (R²=-19083549.75, which a dead-flat series really can
-// produce) is noise that reads like a broken number, so collapse it to a word. MAE still
-// shows: it stays meaningful in the metric's own unit however bad the fit is.
+// R² below zero means "worse than predicting the average", so it is shown as a word
+// instead of a huge negative number. MAE is still shown.
 function FitCell({ r2, mae, maeSuffix }: { r2: number | null; mae: number | null; maeSuffix: string }) {
   const maeText = mae == null ? "" : `±${mae}${maeSuffix}`;
   if (r2 == null) return <span style={{ color: gf.textDim }}>{maeText || "—"}</span>;
@@ -1939,9 +1837,8 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div className="py-6 text-center text-[1em]" style={{ color: gf.textDim }}>{children}</div>;
 }
 
-// Why no projection is being shown. Deliberately specific: "not enough data" alone leaves
-// an operator with nothing to act on, while "12 of 24 hours have ever been recorded" says
-// exactly what to fix — leave the sensor running overnight.
+// Why no projection is shown, specifically (e.g. "12 of 24 hours have been recorded"),
+// so the operator knows what to fix.
 function DataQualityNotice({ quality }: { quality: MetricTrend["dataQuality"] }) {
   if (!quality) return <Empty>Not enough history for this metric yet.</Empty>;
 
@@ -2046,10 +1943,9 @@ function LegendDot({ color, label, dashed }: { color: string; label: string; das
   );
 }
 
-// Lightweight inline-SVG line chart (no chart lib — matches this page's hand-rolled
-// style). Plots actual + EWMA history and the dashed seasonal projection, with the
-// forecast region shaded. Strokes use non-scaling-stroke so width stays uniform under
-// the non-uniform viewBox scaling.
+// Small inline-SVG line chart (no chart library). Plots actual and EWMA history and the
+// dashed seasonal projection, with the forecast area shaded. non-scaling-stroke keeps
+// line width even under the stretched viewBox.
 function TrendChart({
   series, projection, unit,
 }: {
@@ -2071,27 +1967,20 @@ function TrendChart({
 
   const x = (t: number) => ((t - tMin) / (tMax - tMin || 1)) * W;
   const y = (v: number) => H - padY - ((v - vMin) / (vMax - vMin || 1)) * (H - 2 * padY);
-  // Lifts the pen wherever the readings stopped, instead of drawing one straight segment
-  // across the outage — which is how a five-day sensor dropout came to look identical to
-  // five calm minutes. A single `d` can hold several `M` subpaths, so this is still one
-  // <path> per series.
+  // Breaks the line where readings stopped, instead of drawing straight across an outage.
+  // One `d` can hold several `M` subpaths, so it is still one <path> per series.
   const path = (pts: { t: number; v: number }[]) =>
     pathWithGaps(pts.map((p) => ({ t: p.t, x: x(p.t), y: y(p.v) })));
 
   const lastE = hist[hist.length - 1];
   if (!lastE) return <Empty>Not enough points to chart.</Empty>;
-  // Connect from the ACTUAL last reading, not the EWMA tail. The projection is now
-  // anchored to the observation (analyticsMath.forecastSeasonal), so joining it to the
-  // smoothed line would draw a visible kink at the boundary — and undo the whole point
-  // of anchoring, which is that the forecast starts where the data visibly ended.
+  // Start the projection from the last actual reading, not the EWMA tail; the forecast
+  // is anchored to the reading (analyticsMath.forecastSeasonal).
   const projLine = [{ t: lastE.t, v: lastE.v }, ...proj];
   const boundary = x(lastE.t);
 
-  // Value scale on the LEFT EDGE, where a vertical axis belongs. It used to be printed as
-  // a "27.8°C – 34.5°C" caption under the chart, which read as a pair with the timestamp
-  // beside it — so the axis bounds looked like "the readings at Sat 12:00 PM". Ticks are
-  // round numbers (niceTicks) and each one is positioned with the same y() the paths use,
-  // so label and gridline cannot drift apart.
+  // Value scale on the left edge. Ticks are round numbers (niceTicks) placed with the
+  // same y() as the paths.
   const ticks = niceTicks(vMin, vMax, 4);
   const AXIS_W = 46;   // px reserved for the value labels
   const nowLeftPct = (boundary / W) * 100;
@@ -2129,16 +2018,9 @@ function TrendChart({
             <path d={path(hist.map((h) => ({ t: h.t, v: h.e })))} fill="none" stroke="var(--gf-accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
             <path d={path(projLine)} fill="none" stroke={ORANGE} strokeWidth={2} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
           </svg>
-            {/* "now" rides the boundary line ABOVE the axis, not inside it.
-                All three labels used to share one 16px absolutely-positioned row, and the
-                boundary is not near the middle: a 168h window with a 12h projection puts
-                it at ~93%, so "now" printed straight over the right-hand time and the row
-                read "Sun 2:00 PMnowSun 12:29 A". Lifting it out removes the collision by
-                construction rather than by tuning offsets.
-
-                It is HTML rather than SVG <text> deliberately — the chart is drawn with
-                preserveAspectRatio="none", which stretches the viewBox horizontally and
-                would distort any glyphs inside it. */}
+            {/* "now" sits above the axis on the boundary line, so it no longer overlaps the
+               right-hand time label. HTML rather than SVG <text>, since the stretched viewBox
+               (preserveAspectRatio="none") would distort text. */}
             {proj.length > 0 && (
               <span
                 className="absolute whitespace-nowrap px-1 rounded-[2px] text-[0.82em] pointer-events-none"
@@ -2177,11 +2059,9 @@ function TrendChart({
   );
 }
 
-// Per-hour forecast table — turns the projection into explicit "at <clock time> ≈ <value>"
-// rows so an operator reads specific hours, not just a curve ("by 3 PM it reaches ~28°C").
-// The projection is sampled at finer steps (15m/30m/1h); we pick one point per upcoming
-// hour. "Change" is vs the previous hour (first row vs the latest actual reading). Rows
-// whose value reaches the trend's alert threshold are flagged with the severity badge.
+// Per-hour forecast table: "at <time> ≈ <value>" rows, one per upcoming hour from the
+// projection. "Change" is against the previous hour (the first row against the latest
+// reading). Rows that reach the alert threshold get the severity badge.
 function HourlyForecast({
   projection, current, unit, advice,
 }: {

@@ -6,35 +6,21 @@ const GREEN = "#73BF69";
 const ORANGE = "#FF780A";
 
 /**
- * What the pin is actually PRINTED as on the board.
- *
- * GPIO 36 and 39 are silk-screened `VP` and `VN` (the chip's SENSOR_VP / SENSOR_VN), and no
- * DevKit prints "36" or "39" anywhere. Telling an installer to wire to GPIO 36 sends them
- * looking for a label that does not exist and reads as "this board is missing that pin".
- *
- * Safe as a constant, unlike the pin NUMBERS: this is a fact about the ESP32 die, not about
- * how our board is wired, so it cannot drift the way a hardcoded MQ2_PINS[] copy would.
+ * What the pin is labelled on the board. GPIO 36 and 39 are printed `VP` and `VN`,
+ * never "36" or "39". Safe as a constant: this is about the ESP32 chip, not our wiring.
  */
 const SILKSCREEN: Record<number, string> = { 36: "VP", 39: "VN" };
 
 /**
- * "Add smoke sensor" — the same shape as the Add Aircon modal, deliberately.
+ * "Add smoke sensor", laid out like the Add Aircon modal: a list of slots, each with
+ * its GPIO, taken ones greyed out.
  *
- * Both answer the identical question for someone standing at the box with a soldering iron:
- * *which pin do I wire this to*. Two different layouts for the same act would be two things
- * to learn, so this mirrors the IR channel picker — a list of slots, each naming its GPIO,
- * with the taken ones greyed out.
+ * The GPIO comes from the device (`gasSensorMap`, sent on every ESP32 connect), not a
+ * constant here. With the ESP32 offline the modal says so instead of guessing pins.
  *
- * The GPIO comes from the DEVICE (`gasSensorMap`, sent on every ESP32 connect), never from a
- * constant here: the pin numbers live in the firmware's MQ2_PINS[] and a copy in the
- * dashboard is one that goes stale the day the board is re-pinned. With the ESP32 offline the
- * modal says so rather than showing pins it cannot vouch for — the same warning the Add
- * Aircon modal shows, for the same reason.
- *
- * ⚠️ "Add" here means TWO things at once: mark the channel fitted, and name it. Marking a
- * channel fitted is a hardware claim — an ADC pin with nothing on it floats, reads noise, and
- * MQ-2 noise through an exponential curve is a believable ppm that can raise a false smoke
- * alarm. So the copy tells you to wire it FIRST, and the confirmation step is not decoration.
+ * Adding marks the channel as wired and names it. An unwired pin reads noise that can
+ * raise a false smoke alarm, so the text says to wire it first and there is a
+ * confirmation step.
  */
 export default function AddGasSensorModal({
   sensors,
@@ -65,10 +51,8 @@ export default function AddGasSensorModal({
     if (channel == null) return;
     setBusy(true);
     setError(null);
-    // enabled:false, NOT a delete. The channel is a physical pin on the board — it does not
-    // stop existing because a sensor came off it — and keeping the row keeps the name for
-    // whoever wires the next one to the same place. Same reasoning as the SOFT revoke on
-    // install keys: the history of what was there is the point.
+    // enabled:false, not a delete: the pin is still there and its name is kept for the
+    // next sensor wired to it.
     const res = await api.updateGasSensor(channel, { enabled: false });
     setBusy(false);
     if (!res.success) { setError(res.error || "Could not remove the sensor."); return; }
@@ -170,9 +154,8 @@ export default function AddGasSensorModal({
                         onClick={() => pick(s.channel)}
                         className="flex items-center justify-between px-3 py-2.5 text-left"
                         style={{
-                          // In-use rows stay SELECTABLE — this is also where renaming and
-                          // removing live — but sit back visually so the free slots still read
-                          // as the default action.
+                          // Channels in use stay selectable (renaming and removing happen here) but are dimmed,
+                          // so free slots look like the default choice.
                           opacity: inUse && !isSel ? 0.55 : 1,
                           cursor: "pointer",
                           background: isSel ? "var(--gf-accent-dim)" : "var(--gf-hover)",
@@ -289,9 +272,8 @@ export default function AddGasSensorModal({
 
           <div className="flex justify-end gap-2">
             {editing && (
-              // Sits apart from the primary action, and says "remove" rather than "delete":
-              // the channel and its name survive, only the claim that a sensor is wired to it
-              // is withdrawn.
+              // Kept apart from the main button, and says "remove": the channel and its name stay,
+              // only the "sensor is wired" flag is cleared.
               <button
                 type="button"
                 onClick={remove}

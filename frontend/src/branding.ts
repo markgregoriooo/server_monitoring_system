@@ -1,7 +1,6 @@
-// Central place for all user-facing branding (system name, subtitle, tagline,
-// logo text). Values come from frontend/.env (VITE_* — Vite embeds them at BUILD
-// time, so restart `npm run dev` after editing .env). Each falls back to the
-// CSPC-ICTU defaults, so the UI shows correct names even with no .env present.
+// User-facing branding (system name, subtitle, tagline, logo text). Values come from
+// frontend/.env (VITE_*), which Vite embeds at build time, so restart `npm run dev`
+// after changing it. Each falls back to the CSPC-ICTU defaults.
 const env = import.meta.env;
 
 export const BRAND = {
@@ -23,15 +22,9 @@ export const BRAND = {
   supportEmail: env.VITE_SUPPORT_EMAIL?.trim() || "ictusupport@cspc.edu.ph",
 
   /* ── Footer contact block ──────────────────────────────────────────────────
-     Every field below is OPTIONAL and the footer omits any that is blank, so an
-     unset value leaves a tidy gap rather than an empty label. That is deliberate:
-     a footer is where an institution's real-world details go, and a placeholder
-     like "123 Main St" reaching a live page is worse than no address at all.
-
-      `campus` ships with a default that needs CONFIRMING before go-live. The
-     others ship blank because inventing a phone number or a room is worse than
-     leaving it out. Set them in frontend/.env (VITE_*) — Vite inlines them at
-     BUILD time, so restart the dev server after editing. */
+     All optional; the footer leaves out anything blank. `campus` has a default that
+     should be confirmed before go-live; the rest are blank rather than made up. Set them
+     in frontend/.env (VITE_*) and restart the dev server. */
 
   /** Office responsible for the system. Shown as the contact's name. */
   supportUnit:

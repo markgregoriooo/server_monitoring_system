@@ -1,25 +1,17 @@
--- Let an admin re-open an install key's install command after leaving the page.
+-- Let an admin reopen an install key's install command after leaving the page.
 --
--- ⚠️ Run this if you already applied 2026-08-15_agent_install_keys.sql. It is also folded
--- into v13_cspc-ictu-monitoring-system.sql, so a fresh import already has the column.
+-- Run this if you already applied 2026-08-15_agent_install_keys.sql. It is also in
+-- v13_cspc-ictu-monitoring-system.sql.
 --
--- WHY A SECOND COLUMN INSTEAD OF READING THE HASH: a hash is one-way by construction, so
--- `key_hash` can answer "is this the key?" and can never answer "what was the key?".
--- Showing the command again needs the original back, which needs reversible storage.
+-- A hash cannot give the key back, so showing the command again needs a reversible
+-- copy. Encrypted, not plaintext, because the nightly database dump is copied offsite.
+-- The key (SECRET_ENC_KEY, falling back to MIKROTIK_ENC_KEY) is in backend/.env, not in
+-- the database or the backup.
 --
--- WHY ENCRYPTED AND NOT PLAINTEXT: the key is a credential. `ops/db-backup` writes a
--- nightly mysqldump onto the same drive the NDJSON backups live on, and the offsite
--- rclone job syncs that drive to cloud storage — so a plaintext column would put every
--- install key into a file that leaves the building. Encrypted, a dump on its own is
--- useless: the key material is SECRET_ENC_KEY (falling back to MIKROTIK_ENC_KEY) in
--- backend/.env, which is neither in the database nor in the backup.
+-- `key_hash` is still used for lookup (one indexed query).
 --
--- `key_hash` STAYS and remains the lookup path. Enrollment matches one indexed hash;
--- decrypting every row to compare would turn an O(1) lookup into a scan.
---
--- NULL = a key minted before this change, or one created while no encryption key was
--- configured. Those still enrol perfectly well — they simply cannot be shown again, and
--- the UI hides the button rather than offering one that fails.
+-- NULL = a key created before this change or while no encryption key was set. It still
+-- works for enrollment; it just cannot be shown again, and the UI hides the button.
 
 ALTER TABLE `agent_install_keys`
   ADD COLUMN `key_cipher` varchar(255) DEFAULT NULL

@@ -1,22 +1,13 @@
 import type { ReactNode } from "react";
 
 /**
- * Browser chrome around a visual, so a recreated panel reads as "a screen of the
- * product" rather than as decoration floating on the page.
+ * Browser chrome around a visual, so a recreated panel looks like a screen of the
+ * product. Kept plain: three dots, a URL pill, a hairline.
  *
- * Deliberately understated: three dots, a URL pill, a hairline. No macOS gloss,
- * no perspective tilt, no drop-shadow bloom. The dashboard inside is dense and
- * dark; ornate chrome around it competes with the thing it is framing.
- *
- * The URL is the REAL deployment hostname — a small honesty: the address someone will
- * actually type. It is the live one, not an illustration, so it has to move when the
- * deployment does: `monitoring.cspc.edu.ph` was the address ICTU was going to publish,
- * and the system now runs on `monitoring.cspc-ictu.stream` behind a Cloudflare Tunnel
- * (`cloudflare-tunnel-setup.md`).
- *
- * ⚠️ Change it here and the walkthrough (LoginTutorial) and the animation (DemoReel)
- * both follow — neither passes `url`, and a frame showing an address that does not resolve
- * is worse than no address at all.
+ * The URL is the real address people will type, so it must change with the
+ * deployment: ICTU will publish `datacenter.cspc.edu.ph` (switch at go-live); the
+ * system currently runs on `monitoring.cspc-ictu.stream` through a Cloudflare Tunnel
+ * (`cloudflare-tunnel-setup.md`). LoginTutorial and DemoReel use this default too.
  */
 export default function BrowserFrame({
   children,

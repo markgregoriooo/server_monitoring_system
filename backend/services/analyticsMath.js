@@ -1,24 +1,15 @@
-// ─── Predictive-analytics math (PURE) ─────────────────────────────────────────
-//
-// Every statistical function behind the Analytics feature, with **no imports**.
-// That is deliberate and load-bearing: `analyticsService.js` opens MySQL and
-// InfluxDB connections at import time, so anything living there is untestable
-// without a running stack. Keeping the math here lets `backend/tests/` exercise
-// it under plain `node --test` with no DB, no .env and no network — the same
-// reason `serverMetricUtils.js` and `historyRange.js` are import-free.
-//
-// Rule for this file: no I/O, no config reads, no clock reads. Everything takes
-// its inputs as arguments and returns a value. If you need a query or `Date.now()`,
-// it belongs in analyticsService.js.
-//
-// The math is documented in predictive-analytics.md §2–§4.
+// ─── Predictive-analytics math ───────────────────────────────────────────────
+// All the statistics behind the Analytics page, with no imports, so backend/tests
+// can run it without a database (analyticsService.js connects to MySQL and InfluxDB
+// on import). No I/O, no config and no clock reads here; those go in
+// analyticsService.js. The math is explained in predictive-analytics.md §2–§4.
 
 // ─── Output gates ─────────────────────────────────────────────────────────────
 export const MIN_POINTS = 6;      // need a real series before we trust a slope
 export const STABLE_EPS = 0.0001; // %/hour below this magnitude = effectively flat
-// An ETA is surfaced only when the fit is trustworthy AND the horizon is sane. A
-// near-flat/noisy disk has a tiny positive slope that is real arithmetic but a
-// meaningless forecast (e.g. ~660 days) — report "stable" instead. See §3.
+// Only show an ETA when the fit is good and the horizon is reasonable. A nearly
+// flat disk has a tiny slope that gives a meaningless date (e.g. 660 days), so it
+// reports "stable" instead. See §3.
 export const MIN_ETA_R2 = 0.4;    // below this = "low" confidence → don't trust an ETA
 export const MAX_ETA_DAYS = 365;  // a >1-year projection from a short window isn't a forecast
 
@@ -52,16 +43,13 @@ export const stddev = (a, m = mean(a)) => {
   return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / (a.length - 1));
 };
 
-// Server-room local hour (UTC+8) — so the per-hour-of-day baseline labels "2 PM" the
-// way the operators read the clock. Influx timestamps are UTC; we offset for bucketing
-// only. Passed the offset explicitly so this stays independent of server locale.
+// Local hour (UTC+8) for the hour-of-day baseline. Influx times are UTC; the offset
+// is passed in so the result does not depend on the server's locale.
 export const TZ_OFFSET_H = 8;
 export const localHour = (ms, offsetH = TZ_OFFSET_H) =>
   (new Date(ms).getUTCHours() + offsetH) % 24;
 
-// Local day-of-week (0 = Sunday), offset the same way as localHour — a UTC timestamp late
-// on a Sunday evening is already Monday in Naga, and bucketing it as Sunday would file
-// Monday's traffic under the weekend.
+// Local day of week (0 = Sunday), offset like localHour.
 export const localDay = (ms, offsetH = TZ_OFFSET_H) => {
   const d = new Date(ms);
   const shifted = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours() + offsetH);
@@ -73,12 +61,9 @@ export const isWeekend = (ms, offsetH = TZ_OFFSET_H) => {
   return day === 0 || day === 6;
 };
 
-// Baseline bucket index. The detector compares a reading against "normal for this hour",
-// but on a campus a Saturday 2 PM and a Tuesday 2 PM are nothing alike: pooling all seven
-// days pulls the mean down and inflates the deviation, which BLINDS the detector on
-// weekdays (a real spike falls inside a σ widened by quiet weekends) and can flag a
-// perfectly normal Sunday as anomalous. Splitting day-type doubles the buckets to 48 and
-// compares like with like.
+// Baseline bucket: hour of day, split into weekday and weekend (48 buckets). A
+// Saturday 2 PM and a Tuesday 2 PM are very different on a campus, and pooling them
+// hides real weekday spikes and flags normal Sundays.
 export const BASELINE_BUCKETS = 48;
 export const baselineBucket = (ms, offsetH = TZ_OFFSET_H) =>
   localHour(ms, offsetH) + (isWeekend(ms, offsetH) ? 24 : 0);
@@ -92,17 +77,12 @@ export const bucketLabel = (idx) => ({
 // Window helper: pick an aggregate bucket appropriate to the lookback length.
 export const everyForHours = (h) => (h <= 24 ? "15m" : h <= 72 ? "30m" : "1h");
 
-// Same idea for the multi-DAY capacity forecasts. A battery-degradation window is
-// measured in months, and pulling it at 1h buckets would drag ~4300 points per device
-// into Node to fit a straight line through — hourly resolution tells you nothing about a
-// trend that unfolds over a year. Widening the bucket keeps every window in the same
-// few-hundred-points band, which is all a regression needs.
+// Wider buckets for the multi-day forecasts. A months-long window at 1h would pull
+// thousands of points just to fit a line; this keeps each window at a few hundred.
 export const bucketForDays = (d) => (d <= 30 ? "1h" : d <= 120 ? "6h" : "1d");
 
-// Actual span of a series in days (first → last sample), NOT the requested lookback.
-// The two differ whenever InfluxDB retention is shorter than the window asked for, or
-// the device simply hasn't been reporting that long — so this is what tells an operator
-// whether a "180-day" forecast really saw 180 days.
+// Actual span of a series in days (first to last sample), not the requested
+// lookback. They differ when retention is shorter or the device is newer.
 export function spanDays(raw) {
   if (!raw || raw.length < 2) return 0;
   let min = Infinity, max = -Infinity;
@@ -120,9 +100,9 @@ export const parseEveryMs = (e) => {
   return n * { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2]];
 };
 
-// ─── Ordinary least-squares simple linear regression ──────────────────────────
-// points: [{ x, y }]; we use x = hours-since-first-sample. Returns slope/intercept
-// plus in-sample R²/MAE, or null if a line cannot be fit (too few / degenerate).
+// ─── Ordinary least-squares linear regression ──────────────────────────
+// points: [{ x, y }] with x = hours since the first sample. Returns slope, intercept,
+// R² and MAE, or null if no line can be fitted.
 export function linearRegression(points) {
   const n = points.length;
   if (n < 2) return null;
@@ -162,9 +142,9 @@ export function splitTrainTest(points, ratio = 0.8) {
   return { train: points.slice(0, cut), test: points.slice(cut) };
 }
 
-// Fit on the past 80%, score on the recent 20%. The caller keeps the all-points model
-// for the projection itself (more data = steadier estimate); this held-out score is
-// what decides whether to trust it. Too few points to split → in-sample score.
+// Fit on the first 80%, score on the last 20%. The projection still uses the model
+// fitted on all points; this held-out score decides whether to trust it. With too
+// few points to split, the in-sample score is used.
 export function validate(points, model) {
   if (points.length < 10) return { r2: model.r2, mae: model.mae };
   const { train, test } = splitTrainTest(points, 0.8);
@@ -185,8 +165,8 @@ export function percentile(values, p) {
 }
 
 // ─── Smoothing: EWMA + Holt's linear trend ────────────────────────────────────
-// Exponentially weighted moving average. alpha∈(0,1]; higher = more responsive to
-// recent points. Statistics, not ML — used for the smoothed trend line.
+// Exponentially weighted moving average. alpha in (0,1]; higher follows recent
+// points more closely. Used for the smoothed line on the chart.
 export function ewma(values, alpha = 0.3) {
   if (!values.length) return [];
   const out = [values[0]];
@@ -194,17 +174,12 @@ export function ewma(values, alpha = 0.3) {
   return out;
 }
 
-// Holt's linear method (double exponential smoothing): tracks a level + a trend — the
-// NON-seasonal case of Holt-Winters. forecast(h) extrapolates h steps past the last point.
+// Holt's linear method (double exponential smoothing): a level plus a trend, i.e.
+// Holt-Winters without seasonality. forecast(h) projects h steps past the last point.
 //
-// USE THIS ONLY FOR HORIZONS SHORTER THAN THE DATA'S CYCLE. It extrapolates the slope
-// it currently sees, forever, in a straight line. On a server room's temperature — which
-// is dominated by a 24 h cycle — a 12 h projection made at 11 PM catches the evening's
-// falling limb and runs it straight through dawn into midday, forecasting the coolest
-// figure of the day at the exact hour the room is hottest. Wrong by ~8 °C, and wrong in
-// the opposite direction, which is worse than merely imprecise.
-//
-// For anything that crosses a meaningful part of a cycle, use forecastSeasonal below.
+// It extends the current slope in a straight line, so only use it for horizons
+// shorter than the data's cycle. On room temperature (a 24h cycle) a 12h forecast
+// made at night would carry the evening drop into midday. Use forecastSeasonal for that.
 export function holtLinear(values, { alpha = 0.5, beta = 0.2 } = {}) {
   const n = values.length;
   if (n < 2) return null;
@@ -221,10 +196,7 @@ export function holtLinear(values, { alpha = 0.5, beta = 0.2 } = {}) {
 }
 
 // ─── Daily seasonality ────────────────────────────────────────────────────────
-//
-// How far each local hour typically sits from the window's overall mean. This is the
-// same fact `detectAnomalies` already derives per hour bucket — a server room at 3 AM is
-// simply not the same room as at 3 PM — but the projection was never given it.
+// How far each local hour usually sits from the overall mean.
 
 /** Local hours that must carry data before the daily shape is trusted (of 24). */
 export const MIN_PROFILE_HOURS = 18;
@@ -232,11 +204,10 @@ export const MIN_PROFILE_HOURS = 18;
 export const MIN_PROFILE_CYCLES = 2;
 
 /**
- * Mean deviation from the overall mean, per local hour-of-day.
+ * Mean deviation from the overall mean for each hour of the day.
  *
  * Returns { deviations: number[24] (0 where unknown), hoursCovered, cycles, usable }.
- * Hours with no data get 0 — a neutral offset, so a gap in the window flattens that hour
- * rather than inventing a swing for it.
+ * Hours with no data get 0, which flattens that hour instead of inventing a swing.
  */
 export function hourlyProfile(raw, { offsetH = TZ_OFFSET_H } = {}) {
   const deviations = new Array(24).fill(0);
@@ -271,11 +242,8 @@ export function hourlyProfile(raw, { offsetH = TZ_OFFSET_H } = {}) {
 }
 
 // ─── Is this window good enough to forecast from? ─────────────────────────────
-//
-// A projection drawn from a half-empty window is not a weaker forecast, it is a
-// confident-looking wrong one. The failure that motivated this: a sensor that only ran
-// during office hours had NO samples between 01:00 and 10:00, so the model had never
-// observed a morning — and was still asked to predict one. Better to say so.
+// A half-empty window gives a confident but wrong forecast, e.g. a sensor that only
+// ran during office hours has never seen a morning. Better to say so.
 
 /** Of 24 local hours, how many must carry at least one sample. */
 export const MIN_COVERAGE_HOURS = 18;
@@ -287,11 +255,10 @@ export const MAX_GAP_HOURS = 6;
 export const MIN_SPAN_DAYS = 2;
 
 /**
- * Judge whether a series can support a forecast, and say precisely why not.
+ * Judge whether a series can support a forecast, and if not, why.
  *
- * Coverage is measured against the window the data ACTUALLY spans, not the lookback that
- * was requested — a system installed three days ago is not "missing" its first four days,
- * and penalising it for that would flag every new deployment as broken.
+ * Coverage is measured against the span the data actually covers, not the
+ * requested lookback, so a new install is not flagged for missing days.
  *
  * @returns { ok, reason, message, points, spanDays, hoursCovered, coverage, largestGapHours }
  */
@@ -356,24 +323,17 @@ export function assessSeries(raw, { stepMs, offsetH = TZ_OFFSET_H } = {}) {
 export const ANCHOR_FADE_MS = 3 * 3_600_000;
 
 /**
- * Project a cyclic series: Holt on the DESEASONALISED values, then put the daily shape
- * back on. The additive form of Holt-Winters, with two deliberate choices.
+ * Forecast a cyclic series: Holt on the values with the daily shape removed, then
+ * add the shape back (additive Holt-Winters).
  *
- * 1. FIT ON RAW, NOT SMOOTHED. The old path ran EWMA first and then fitted Holt to the
- *    result, so the projection started from a doubly-lagged level — which is why its
- *    first step could jump ~2 °C away from the reading displayed beside it. Smoothing is
- *    for the eye; the fit should see the data.
+ * 1. Fitted on the raw values, not the smoothed line, so the forecast does not
+ *    start from a lagged level.
+ * 2. Shifted to start at the last actual reading; the shift fades out linearly
+ *    over ANCHOR_FADE_MS, so one noisy reading does not bias the whole horizon.
  *
- * 2. ANCHOR TO THE LAST OBSERVATION, THEN FADE. The model's value at the join rarely
- *    equals the last actual reading, and a forecast that opens by contradicting the
- *    number on screen is not believed no matter how good the rest is. So the whole
- *    projection is shifted by that gap, and the shift decays linearly to zero over
- *    ANCHOR_FADE_MS — continuous at the join, converging to the model after. A constant
- *    shift would carry one noisy reading across the entire horizon.
- *
- * Falls back to the plain linear projection when the window cannot support a daily shape
- * (too few hours covered, or under MIN_PROFILE_CYCLES days) — with a short horizon that
- * is still reasonable, and `seasonal: false` tells the caller which one it got.
+ * Falls back to a straight-line projection when the window cannot support a daily
+ * shape (too few hours or fewer than MIN_PROFILE_CYCLES days); `seasonal: false`
+ * tells the caller.
  *
  * @param raw [{ t: epochMs, y }]
  * @returns { points: [{t, value}], trendPerHour, seasonal, profile, anchorOffset } | null
@@ -415,8 +375,7 @@ export function forecastSeasonal(raw, { horizonMs, stepMs, offsetH = TZ_OFFSET_H
 }
 
 // ─── Advisory copy ────────────────────────────────────────────────────────────
-// Plain-language remediation per metric — the "what to do" once analytics flags a
-// concern. Keyed by the alert_rules metric vocabulary.
+// What to do when analytics flags a metric, keyed by alert_rules metric name.
 export const METRIC_ACTION = {
   cpu: "upgrade the CPU, rebalance the workload, or investigate runaway processes",
   mem: "upgrade the RAM or investigate memory-heavy processes",
@@ -448,7 +407,7 @@ export function diskAdvice(name, status, etaDays, full) {
 
 // ─── Projections ──────────────────────────────────────────────────────────────
 // Regress a series and solve for when it reaches `full`. entry = { deviceId, name,
-// raw: [{ t: epochMs, y }] }. Used for disk (per volume) — the flagship forecast.
+// raw: [{ t: epochMs, y }] }. Used for disk (per volume).
 export function forecastSeries(entry, full) {
   const raw = [...entry.raw].sort((a, b) => a.t - b.t);
   const current = raw.length ? raw[raw.length - 1].y : null;
@@ -513,10 +472,9 @@ export function forecastSeries(entry, full) {
   };
 }
 
-// Linear projection of a series to a bound. direction "down" = value falling to a floor
-// (UPS runtime); "up" = value rising to a ceiling (link utilization). Mirrors
-// forecastSeries() gating (R² ≥ MIN_ETA_R2, horizon ≤ MAX_ETA_DAYS) so a noisy/flat
-// series reports "stable" rather than a bogus date.
+// Linear projection to a bound. "down" = falling to a floor (UPS runtime), "up" =
+// rising to a ceiling (link utilization). Same gates as forecastSeries(), so a
+// noisy or flat series reports "stable" instead of a date.
 export function projectToBound(raw, { bound, direction }) {
   const sorted = [...raw].sort((a, b) => a.t - b.t);
   const current = sorted.length ? sorted[sorted.length - 1].y : null;
@@ -560,11 +518,9 @@ export function projectToBound(raw, { bound, direction }) {
   return out;
 }
 
-// Pick the volume a server will run out of FIRST. Note this is not the same question
-// agentService.checkThresholds asks — it alerts on the fullest volume *right now*, while a
-// forecast cares about the soonest to fill. A 40%-used volume climbing 5%/day beats a
-// static 88% one. Fall back to the fullest when nothing has a trustworthy ETA, which is
-// also what makes the two agree on a quiet system.
+// The volume that will fill first. Threshold alerts look at the fullest volume
+// now; a forecast cares about the one filling fastest. Falls back to the fullest
+// when nothing has a reliable ETA.
 export function worstVolumeForecast(forecasts) {
   if (!forecasts.length) return null;
   const withEta = forecasts.filter((f) => f.etaDays != null);
@@ -576,25 +532,18 @@ export function worstVolumeForecast(forecasts) {
   );
 }
 
-// ─── Backtesting: how wrong were we, really? ──────────────────────────────────
-//
-// R² and MAE describe how well a line FITS history. Neither says whether a forecast came
-// true, which is the question anyone actually cares about — and the one a defence panel
-// asks. This measures it by rolling-origin validation:
+// ─── Backtesting ──────────────────────────────────────────────────────────────
+// R² and MAE show how well a line fits history, not whether forecasts came true.
+// Rolling-origin validation measures that:
 //
 //   for several points in the past ("origins"):
-//     fit using ONLY the data that existed at that origin
+//     fit using only the data available at that origin
 //     predict the value `horizon` ahead
-//     compare against what the metric actually did
+//     compare with what actually happened
 //
-// The alternative — recording live predictions and grading them later — measures the same
-// thing but yields nothing until predictions mature (weeks or months). This produces a
-// real number from the history already on disk, and gives many samples rather than a few.
-//
-// It measures VALUE error at the horizon ("we said 71%, it was 73%") rather than ETA
-// error in days. ETA error is undefined whenever a disk hasn't actually filled yet, which
-// is almost always — value error is always computable and never quietly censors the
-// inconvenient cases.
+// It works from existing history instead of waiting weeks for live predictions.
+// It measures value error at the horizon ("we said 71%, it was 73%"), because ETA
+// error is undefined until a disk actually fills.
 export function backtestSeries(raw, { horizonMs, folds = 5, minTrain = MIN_POINTS * 2 } = {}) {
   const out = { folds: 0, mae: null, bias: null, worst: null, samples: [] };
   const s = [...raw].sort((a, b) => a.t - b.t);
@@ -655,9 +604,7 @@ export function backtestSeries(raw, { horizonMs, folds = 5, minTrain = MIN_POINT
   return out;
 }
 
-// Round, human-readable tick values inside [min, max] — 1/2/5 x a power of ten, the
-// convention every charting library uses because 28 / 30 / 32 is readable at a glance and
-// 27.83 / 30.14 / 32.45 is not. Returns [] when the span is degenerate.
+// Round tick values inside [min, max] (1/2/5 x a power of ten). [] when the span is zero.
 export function niceTicks(min, max, count = 4) {
   if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [];
   const raw = (max - min) / Math.max(1, count - 1);
@@ -666,9 +613,8 @@ export function niceTicks(min, max, count = 4) {
   // Thresholds are the midpoints between 1/2/5/10, not the values themselves. Snapping
   // "up" at each boundary (norm 2.2 → 5) overshoots badly and leaves one tick on the axis.
   const step = (norm <= 1.5 ? 1 : norm <= 3 ? 2 : norm <= 7 ? 5 : 10) * mag;
-  // Repeated addition of a float step drifts (0.4 + 0.2 = 0.6000000000000001), and that
-  // lands verbatim on the axis. Steps are always 1/2/5 x a power of ten, so the step's own
-  // magnitude gives exactly how many decimals a tick can legitimately have.
+  // Adding a float step repeatedly drifts (0.4 + 0.2 = 0.6000000000000001), so round
+  // each tick to the number of decimals the step has.
   const decimals = Math.max(0, -Math.floor(Math.log10(step)));
   const out = [];
   for (let v = Math.ceil(min / step) * step; v <= max + step * 1e-9; v += step) {

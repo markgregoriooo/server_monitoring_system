@@ -73,10 +73,8 @@ function roleCfg(role: string) {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-// Grafana status/role pill (tinted background + dot).
-// `neutral` keeps the chrome grey and lets the DOT carry the colour, so a table of
-// statuses reads as one calm column instead of a row of coloured blocks. The signal
-// is still there — it's just one small dot per row rather than a tinted rectangle.
+// Status/role pill (tinted background + dot). `neutral` keeps it grey and lets the dot
+// carry the colour, so the column stays calm.
 function Pill({
   color, dot, neutral, children,
 }: { color: string; dot?: boolean; neutral?: boolean; children: React.ReactNode }) {
@@ -104,9 +102,8 @@ function RoleBadge({ role }: { role: string }) {
 }
 
 function StatusBadge({ status, lastLogin }: { status?: string; lastLogin?: string | null | undefined }) {
-  // An approved (active) account that has never signed in shows as "Invited"
-  // rather than green "Active" — it's enabled, but the user hasn't logged in yet.
-  // (Disabled accounts still read "Inactive" regardless, so the two stay distinct.)
+  // An active account that has never signed in shows as "Invited" rather than "Active".
+  // Disabled accounts still show "Inactive".
   if ((status === "active" || !status) && !lastLogin) {
     return <Pill color={BLUE} dot neutral>Invited</Pill>;
   }
@@ -114,10 +111,8 @@ function StatusBadge({ status, lastLogin }: { status?: string; lastLogin?: strin
   return <Pill color={s.color} dot neutral>{s.label}</Pill>;
 }
 
-// `sub` is the count that is NOT in the headline number — invited accounts under
-// Active, pending registrations under Total. It exists because the alternative was a
-// headline that quietly folded two different things together, which is exactly how
-// the Active card came to disagree with the table beneath it.
+// `sub` is what is not in the headline number: invited accounts under Active, pending
+// registrations under Total.
 function StatPanel({ label, value, color, sub }: { label: string; value: number; color: string; sub?: string }) {
   return (
     <div className="p-3 rounded-[2px] bg-[var(--gf-panel)] border border-[var(--gf-panel-border)]">
@@ -252,11 +247,8 @@ function ConfirmDialog({
   );
 }
 
-// Small action button used in the table actions cell.
-// Row actions share ONE neutral, raised surface (.gf-btn) — a tinted rectangle per
-// action turned the column into a colour chart and made every button shout equally.
-// `danger` tints only the LABEL, so Delete still reads as destructive without the
-// chrome competing; removing that signal entirely would be worse than the noise.
+// Small button for the actions cell. All row actions share one neutral raised surface
+// (.gf-btn); `danger` only colours the label, so Delete still reads as destructive.
 function ActionBtn({
   onClick, title, danger, children,
 }: {
@@ -344,12 +336,9 @@ export default function UserManagement() {
       setPending((prev) => prev.filter((x) => x.id !== p.id));
       reloadUsers();
       const label = role === "admin" ? "Admin" : "IT Staff";
-      /* The approval email is the ONLY way this person learns their account works — they
-         hold no session, so nothing can be pushed to them. If it didn't go out, say so
-         loudly: the admin is the only one who can pass the word on by other means, and a
-         silent failure leaves someone waiting for a message that is never coming. Shown
-         in the error style despite the approval having succeeded — the colour is what
-         gets it read, and the wording keeps the two outcomes distinct. */
+      /* The approval email is the only way the person learns their account works. If it was
+         not sent, say so clearly (error style, even though the approval succeeded) so the
+         admin can tell them another way. */
       if (r.data?.emailed === false) {
         showToast(`${p.name} approved as ${label}, but the email could not be sent — tell them directly.`, "error");
       } else {
@@ -386,20 +375,15 @@ export default function UserManagement() {
     return matchSearch && matchRole && u.status !== "pending";
   });
 
-  // ⚠️ "Active" means two different things on this page, so it is counted as two.
-  // `StatusBadge` calls an approved account that has NEVER signed in "Invited", not
-  // "Active" — so a single card counting `status === 'active'` read 7 while the table
-  // under it showed 6 Active and 1 Invited. Both were right about their own question;
-  // they just used one word. The headline now counts people who have actually signed
-  // in, and the invited ones are named underneath rather than folded in silently.
+  // "Active" is counted two ways: the headline counts people who have signed in, and
+  // approved accounts that never signed in are listed as invited underneath, matching
+  // the table's "Invited" badge.
   const isActiveRow   = (u: User) => !u.status || u.status === "active";
   const signedIn      = users.filter((u) => isActiveRow(u) && u.last_login).length;
   const invited       = users.filter((u) => isActiveRow(u) && !u.last_login).length;
   const totalInactive = users.filter((u) => u.status === "inactive").length;
-  // Every count that describes THE LIST has to hide `pending` rows, because the list
-  // does: `filtered` sends them to the approval panel above instead. Counting them
-  // here is what made the panel header read "6 of 8" with two rows that could never
-  // be shown, and made Active + Inactive fail to add up to Total.
+  // Counts describing the list leave out `pending` rows, because the list does (they are
+  // in the approval panel), so Active + Inactive adds up to Total.
   const listed        = users.filter((u) => u.status !== "pending").length;
   const pendingCount  = users.length - listed;
   const roleGroups    = ["admin", "it_staff"].reduce((acc, r) => {
@@ -415,8 +399,8 @@ export default function UserManagement() {
   };
 
   // ── Save edit ──
-  // Only username / role / status are sent. name + email come from the user's Google
-  // account and are re-synced on their next sign-in, so editing them here would revert.
+  // Only username, role and status are sent. Name and email come from Google and are
+  // re-synced at sign-in.
   const handleEdit = async () => {
     if (!editUser) return;
     if (!editForm.username.trim()) { setEditError("Username is required."); return; }
@@ -438,9 +422,8 @@ export default function UserManagement() {
 
   // ── Toggle status ──
   const handleToggleStatus = async (u: User) => {
-    // Invert on "can sign in", not on the literal "inactive". The old check sent a
-    // REJECTED user to 'inactive' (offering "Disable" on an account that was
-    // already blocked); now it enables them, which is the un-reject path.
+    // Based on "can sign in", not the literal "inactive", so a rejected user gets "Enable"
+    // (which undoes the rejection) instead of "Disable".
     const newStatus: string = isEnabled(u) ? "inactive" : "active";
     try {
       const result = await api.updateUserStatus(u.id, newStatus);
@@ -470,9 +453,9 @@ export default function UserManagement() {
     setDeleteLoading(false);
   };
 
-  // Mirrors the server-side guard: never offer actions that would remove the last
-  // active admin, and never let you act on your own account. (The backend in
-  // userService.js is the authoritative boundary; this just hides dead buttons.)
+  // Same rule as the server: never offer actions that would remove the last active admin,
+  // or act on your own account. The backend (userService.js) enforces it; this only hides
+  // the buttons.
   const activeAdminCount = users.filter(
     (u) => u.role === "admin" && (u.status ?? "active") === "active",
   ).length;
@@ -481,15 +464,12 @@ export default function UserManagement() {
     u.role === "admin" && (u.status ?? "active") === "active" && activeAdminCount <= 1;
   const isProtected = (u: User) => isSelf(u) || isLastActiveAdmin(u);
   const isAdmin     = (u: User) => u.role === "admin";
-  // "Can this account currently sign in?" — a null status counts as active, matching
-  // the stat cards and StatusBadge. Everything else (inactive AND rejected) is off,
-  // so the Enable/Disable control points the right way for a rejected registration.
+  // Can this account sign in? A null status counts as active, as in the stat cards and
+  // StatusBadge. Inactive and rejected are both off.
   const isEnabled   = (u: User) => !u.status || u.status === "active";
 
-  // Row actions, defined once and rendered by BOTH layouts below (phone card + table
-  // row). A plain function called as `{userActions(u)}`, deliberately not a component
-  // declared in here: a component defined inside a render is a new type on every
-  // render, so React would tear down and rebuild these buttons each time.
+  // Row actions, used by both the phone card and the table row. A plain function, not a
+  // component defined here, so React does not rebuild the buttons on every render.
   const userActions = (u: User) => (
     <>
       {!isSelf(u) && (
@@ -544,9 +524,8 @@ export default function UserManagement() {
 
       {/* ── Stat cards ── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        {/* Conditional SPREAD, not `sub={x || undefined}`: tsconfig sets
-            exactOptionalPropertyTypes, under which passing an explicit `undefined` to
-            an optional prop is an error. */}
+        {/* Conditional spread instead of `sub={x || undefined}`: with exactOptionalPropertyTypes,
+           passing undefined to an optional prop is an error. */}
         <StatPanel label="Total Users" value={listed} color="var(--gf-text-primary)"
           {...(pendingCount > 0 ? { sub: `+${pendingCount} pending` } : {})} />
         <StatPanel label="Active"      value={signedIn} color={GREEN}
@@ -684,11 +663,8 @@ export default function UserManagement() {
           <div className="text-center py-14 text-[var(--gf-text-dim)] text-xs">No users match the current filter.</div>
         ) : (
           <>
-          {/* TWO layouts over one list. A seven-column account table is a sideways
-              scroll on a handset, and Role / Status / Actions — everything an admin
-              opens this page to change — are exactly the columns that fall off the
-              right edge. Cards below `md`, the table unchanged from `md` up. Same
-              split UpsMonitoring.tsx already uses for the UPS list. */}
+          {/* Two layouts from one list: cards below `md` (a seven-column table pushes Role, Status
+             and Actions off a phone screen), the table from `md` up. Same as UpsMonitoring.tsx. */}
           <div className="md:hidden flex flex-col">
             {filtered.map((u, i) => (
               <div
@@ -718,9 +694,7 @@ export default function UserManagement() {
                   <span className="flex-shrink-0"><RoleBadge role={u.role} /></span>
                 </div>
 
-                {/* break-all, not truncate: the email is the identity Google login
-                    matches on, and it is the one field here you cannot guess the rest
-                    of once it has been cut off. */}
+                {/* break-all instead of truncate: the email is how the account is identified. */}
                 <div className="text-[12px] break-all text-[var(--gf-text-muted)]">
                   {u.email || <span className="text-[var(--gf-text-dim)]">—</span>}
                 </div>
@@ -862,11 +836,8 @@ export default function UserManagement() {
                 options={[
                   { value: "active",   label: "Active" },
                   { value: "inactive", label: "Inactive" },
-                  // A rejected registration has no matching option, so the select
-                  // renders BLANK and hides the account's real state. Keep the entry
-                  // (only while it applies) so the status is visible and an admin can
-                  // switch to Active — undoing an accidental reject without having to
-                  // delete the row and lose the audit trail.
+                  // A rejected account has no matching option, so the select would show blank. Keep the
+                  // option while it applies, so the status is visible and can be switched to Active.
                   ...(editForm.status === "rejected"
                     ? [{ value: "rejected", label: "Rejected" }]
                     : []),

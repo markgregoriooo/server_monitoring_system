@@ -6,33 +6,23 @@ import alertsService from "./alertsService.js";
 import { describeError } from "../utils/httpError.js";
 
 // ─── Predictive alerting ──────────────────────────────────────────────────────
+// Runs the analytics forecasts on a schedule and raises real alerts through
+// notificationService, so a disk projected to fill up reaches someone even when
+// nobody has the Analytics page open. Scheduled rather than on each metric post,
+// since each forecast queries weeks of history.
 //
-// Everything analyticsService produces was PULL-only: a disk projected to fill in three
-// days existed solely on the Analytics page, so it reached nobody unless someone happened
-// to have that page open. Threshold alerting pushes (bell, toast, email, Alerts page);
-// forecasts did not. This closes that gap by running the same forecasts on a schedule and
-// raising REAL alerts through notificationService, so a prediction reaches an operator the
-// same way a breach does.
-//
-// Why a scheduled job and not the metric path: a forecast is several Flux queries over
-// weeks of history. Evaluating it on every agent POST (~10s per host) would be absurd, and
-// pointless — a multi-week regression does not meaningfully move between two samples.
-//
-// De-dup: forecasts are re-raised at most once per ALERT_COOLDOWN_MIN while the alert
-// stays open (default 24h), rather than the 30-minute default meant for live metrics.
-// Recovery auto-resolves through alertsService, exactly like a threshold alert.
+// Forecast alerts are re-raised at most once per ALERT_COOLDOWN_MIN (default 24h)
+// while open, and auto-resolve through alertsService like threshold alerts.
 
-// Alert types. Deliberately distinct from the threshold types (`disk`, `ups_runtime`, …):
-// "disk is 95% full NOW" and "disk will be full in 6 days" are different incidents with
-// different responses, and sharing a type would make them de-dup against each other.
+// Separate alert types from the threshold ones: "disk is 95% full now" and "disk
+// will be full in 6 days" must not de-dup against each other.
 export const TYPE_DISK = "disk_forecast";
 export const TYPE_UPS = "ups_battery_forecast";
 export const TYPE_LINK = "link_forecast";
 const FORECAST_TYPES = [TYPE_DISK, TYPE_UPS, TYPE_LINK];
 
-// Env-var parse that also REJECTS zero and negatives — an interval or a day-count
-// of 0 is a misconfiguration, not a value. Distinct from the other num() helpers:
-// see audits/naming-readability-report-2026-08-25.md — N-03.
+// Env-var parse that rejects zero and negatives. See
+// audits/naming-readability-report-2026-08-25.md (N-03).
 const positiveEnvNum = (v, dflt) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : dflt);
 
 // An ETA inside CRITICAL_DAYS needs action now; inside WARNING_DAYS needs planning.
@@ -121,10 +111,8 @@ async function checkUpsForecasts() {
 }
 
 // ─── Link saturation ──────────────────────────────────────────────────────────
-// One alert per DEVICE, not per interface: `alerts` is keyed by device_id + type, so two
-// saturating ports on one router would de-dup against each other and the second would be
-// silently dropped. Alerting on the worst interface keeps the signal honest, and the
-// message names which port it is.
+// One alert per device, on its worst port: alerts are keyed by device + type, so
+// per-port alerts would de-dup against each other. The message names the port.
 async function checkLinkForecasts() {
   const forecasts = await analyticsService.forecastLinkSaturation({ lookbackDays: LINK_DAYS });
   const worstByDevice = new Map();
@@ -162,17 +150,10 @@ async function checkLinkForecasts() {
 }
 
 // ─── Anomalies ────────────────────────────────────────────────────────────────
-// detectAnomalies was pull-only too, which quietly undercut the feature's own claim: the
-// pitch for a per-hour-of-day baseline is that it catches what static thresholds miss (a
-// 2 AM CPU spike still under 80%), but that only holds if somebody is looking. Here it
-// pushes, like every other detector in the system.
-//
-// An anomaly is an EVENT, not an ongoing condition, so — like the server "came online"
-// alert — it is raised and then immediately resolved: it belongs in the feed and the
-// history, not in the open-alert count forever.
-//
-// De-dup is therefore by FRESHNESS rather than by the open-alert cooldown: only anomalies
-// newer than the last pass are considered, so a given spike is announced exactly once.
+// Pushes anomalies (e.g. a 2 AM CPU spike under the threshold) as alerts. An
+// anomaly is an event, so it is raised and resolved right away, like the "came
+// online" alert. Only anomalies newer than the last run are used, so each spike
+// is announced once.
 const ANOMALY_ENABLED = String(process.env.ANALYTICS_ANOMALY_ALERTS ?? "true").toLowerCase() !== "false";
 const ANOMALY_DAYS = positiveEnvNum(process.env.ANALYTICS_ANOMALY_DAYS, 14);
 // Freshness window, with a margin so an anomaly landing near a pass boundary is not lost
@@ -183,9 +164,8 @@ const SERVER_ANOMALY_METRICS = ["cpu", "mem", "disk"];
 const ROUTER_ANOMALY_METRICS = ["router_cpu", "router_mem", "router_clients"];
 const ENV_ANOMALY_METRICS = ["temperature", "gas", "humidity"];
 
-// Which (metric, device) pairs to scan. Bounded by the device count on purpose — this is
-// a handful of Flux queries per device, run a few times a day, not a per-sample cost.
-// Offline devices are skipped: they cannot produce a fresh anomaly, only stale ones.
+// (metric, device) pairs to scan: a few queries per device, a few times a day.
+// Offline devices are skipped.
 async function anomalyTargets() {
   const [rows] = await db.query(
     `SELECT device_id AS id,
@@ -226,9 +206,7 @@ async function checkAnomalies() {
     const fresh = result.anomalies.filter((a) => Date.parse(a.t) >= cutoff);
     if (!fresh.length) continue;
 
-    // ONE alert per device+metric summarising the burst. A noisy hour can produce dozens
-    // of flagged readings, and dozens of notifications for one event is how people learn
-    // to ignore the bell.
+    // One alert per device+metric for the whole burst, not one per flagged reading.
     const worst = fresh.reduce((w, a) => (Math.abs(a.z) > Math.abs(w.z) ? a : w));
     const severe = worst.iqrOutlier || Math.abs(worst.z) >= 4;
     const when = new Date(worst.t).toLocaleString("en-PH", {
@@ -242,9 +220,8 @@ async function checkAnomalies() {
     const alertId = await notificationService.raiseAlert({
       deviceId: t.deviceId,
       type: `anomaly_${t.metric}`,
-      // Deliberately not critical: this is "unusual", not "broken". Keeping it below the
-      // default email threshold means anomalies inform the bell without mailing everyone
-      // every time the campus has a quiet afternoon.
+      // Warning, not critical: "unusual", not "broken". It stays below the default email
+      // threshold so anomalies show in the bell without emailing everyone.
       severity: severe ? "warning" : "info",
       title: `Unusual ${result.label.toLowerCase()}`,
       message,
@@ -260,8 +237,7 @@ async function checkAnomalies() {
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
-// Never throws: one failing forecast (Influx down, say) must not stop the others or kill
-// the interval that calls this.
+// Never throws: one failing forecast must not stop the others or the interval.
 async function runForecastAlerts() {
   const results = await Promise.allSettled([
     checkDiskForecasts(),

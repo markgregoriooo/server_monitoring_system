@@ -193,17 +193,14 @@ test("no user-supplied text can reach the logo path", () => {
 // ─── Signature block ──────────────────────────────────────────────────────────
 
 test("the shipped default is Prepared by + Approved by", () => {
-  // ⚠️ ICTU's written answer was all three (Prepared / Noted / Approved). Narrowed to
-  // two on 2026-08-28 at the project team's instruction — "Noted by:" is one press of
-  // Add line away. Pinned here so the divergence from the client's answer cannot drift
-  // further without someone deciding to.
+  // ICTU's answer was all three (Prepared / Noted / Approved); the default was set to two
+  // on 2026-08-28 at the project team's request. Tested so it only changes on purpose.
   assert.deepEqual(
     DEFAULT_SIGNATORIES.map((s) => s.role),
     ["Prepared by:", "Approved by:"],
   );
-  // Only the first is auto-filled: nobody has approved anything at the moment a PDF is
-  // written, so printing a name there would assert an approval that has not happened on
-  // a document filed for accreditation.
+  // Only the first line is filled in automatically; nobody has approved the report when
+  // the PDF is created.
   assert.deepEqual(DEFAULT_SIGNATORIES.map((s) => s.auto), [true, false]);
 });
 
@@ -299,10 +296,8 @@ test("an ordinary filename is kept as the admin recognises it", () => {
 });
 
 test("any directory part is dropped, both separators", () => {
-  // Display-only today, but a value that is only CURRENTLY display-only is one
-  // refactor away from being joined to a directory.
-  // String.raw so the backslashes are literal — written with normal escapes this reads
-  // as "....env", which has no separator in it and would pass while testing nothing.
+  // Display-only, but tested like a path anyway. String.raw keeps the backslashes, or this
+  // would read "....env" and test nothing.
   assert.equal(sanitizeFileName(String.raw`..\..\.env`), ".env");
   assert.equal(sanitizeFileName(String.raw`C:\Users\me\Desktop\seal.png`), "seal.png");
   assert.equal(sanitizeFileName("C:/Windows/System32/evil.png"), "evil.png");

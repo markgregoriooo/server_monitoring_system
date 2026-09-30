@@ -8,17 +8,14 @@ import { describeError } from "../utils/httpError.js";
 
 const router = express.Router();
 
-// Every report action lands in `system_logs` (module 'reports' — a value the schema
-// already carried) so it shows up on the History page alongside auth, aircon and
-// alert activity. Reads (list, scope-options) are not audited: they are noise, and
-// the History page is for actions that changed or exported something.
+// Report actions are written to system_logs (module 'reports') so they appear on the
+// History page. Reads are not logged.
 const describe = (r) =>
   `${r.title}${r.deviceName ? ` [${r.deviceName}]` : ""} (${r.type})`;
 
-// Who originally generated the report. A History row's actor is whoever performed
-// THIS action — for a delete that's the admin — so the author has to be carried in
-// the description or it is lost with the row. `generatedByName` is null when that
-// user has since been removed (BASE_SELECT left-joins `users`).
+// Who generated the report. The History row's actor is whoever did this action (for
+// a delete, the admin), so the author goes in the description. Null if that user
+// has been removed.
 const byAuthor = (r) => ` — created by ${r.generatedByName ?? `user #${r.generatedBy ?? "?"}`}`;
 
 // GET /api/reports — list saved reports (newest first), optional ?type= filter.
@@ -31,9 +28,8 @@ router.get("/", authMiddleware, async (req, res, next) => {
   }
 });
 
-// GET /api/reports/scope-options?type=network — devices this report type can be
-// scoped to, for the Generate modal's device picker. Empty = campus-wide only.
-// Declared before the /:id routes so the literal path can't be read as an id.
+// GET /api/reports/scope-options?type=network ─ devices this report type can be
+// limited to. Empty = campus-wide only. Declared before the /:id routes.
 router.get("/scope-options", authMiddleware, async (req, res, next) => {
   try {
     const devices = await reportService.scopeOptions(String(req.query.type ?? ""));
@@ -44,11 +40,8 @@ router.get("/scope-options", authMiddleware, async (req, res, next) => {
 });
 
 // ─── Report template (ICTU branding) ─────────────────────────────────────────
-//
-// All declared BEFORE the /:id routes so a literal path can never be parsed as an id.
-//
-// ICTU asked for the letterhead to be theirs to maintain — "what if they change logo" —
-// so the mark and the page size are configuration, not files in the repo.
+// Declared before the /:id routes. ICTU maintains its own logos and page size, so
+// they are settings, not files in the repo.
 
 // GET /api/reports/template — active paper size + which marks are ICTU's own uploads.
 // Readable by both roles: the Generate modal needs the size options and the default.
@@ -107,12 +100,9 @@ router.put("/template/unit-name", authMiddleware, requireRole("admin"), async (r
   }
 });
 
-// PUT /api/reports/template/signatories — the signature block (admin).
-// Body: { signatories: [{ role, name, auto }] }. Order is the printed order.
-//
-// Validated strictly here rather than folded: normalizeSignatories DROPS a line with no
-// role, and silently printing fewer signature lines than an admin just configured is
-// exactly the kind of change nobody notices until a document comes back unsigned.
+// PUT /api/reports/template/signatories ─ the signature block (admin).
+// Body: { signatories: [{ role, name, auto }] }, in printed order. Validated
+// strictly so a line without a role is rejected instead of silently dropped.
 router.put("/template/signatories", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     const sent = req.body?.signatories;
@@ -141,17 +131,10 @@ router.put("/template/signatories", authMiddleware, requireRole("admin"), async 
   }
 });
 
-// POST /api/reports/template/logo/:slot — upload a letterhead mark (admin).
-// Body is the RAW image (Content-Type: image/png or image/jpeg), not multipart and not
-// base64. Three reasons:
-//   - multer was removed with the avatar-upload feature (middleware/upload.js is gone),
-//     and a whole multipart dependency for one admin-only endpoint is not worth it;
-//   - base64-in-JSON would inflate the payload by a third and would have to fight the
-//     100 kB JSON_BODY_LIMIT that protects every other route;
-//   - express.raw is already in Express, and gives a Buffer, which is what both the
-//     content sniff and fs.writeFileSync want.
-// The declared Content-Type only decides whether the body is parsed at all — what the
-// file actually IS gets decided by its leading bytes in reportBrandingService.
+// POST /api/reports/template/logo/:slot ─ upload a letterhead logo (admin).
+// The body is the raw image (image/png or image/jpeg), not multipart or base64:
+// no extra dependency, and base64 would not fit the 100 kB JSON limit. The file
+// type is checked from its first bytes in reportBrandingService, not from the header.
 router.post(
   "/template/logo/:slot",
   authMiddleware,
@@ -164,10 +147,8 @@ router.post(
           error: "Send the image as a raw body with Content-Type image/png or image/jpeg.",
         });
       }
-      // The original filename rides in a HEADER, since the body is the raw image.
-      // URI-encoded by the client so a non-ASCII name survives a header, which is
-      // Latin-1 by spec. Decoding is guarded: a malformed sequence throws, and it is
-      // only a display label — not worth failing an upload that otherwise succeeded.
+      // The original filename comes in a header (URI-encoded by the client). A bad
+      // encoding is ignored; it is only a display label.
       let originalName = "";
       try {
         originalName = decodeURIComponent(String(req.get("X-Logo-Filename") ?? ""));
@@ -218,16 +199,13 @@ router.delete("/template/logo/:slot", authMiddleware, requireRole("admin"), asyn
   }
 });
 
-// POST /api/reports — start generating a report from live data (admin + it_staff).
+// POST /api/reports ─ generate a report from live data (admin + it_staff).
 // Body: { type, title?, periodStart?, periodEnd?, deviceId?, paperSize? }
-// `deviceId` scopes the report to one device; omit for campus-wide.
-// `paperSize` is a4 | letter | folio; omit to take the admin's configured default
-// (ICTU asked for the size to be chosen per report, defaulting to long bond).
+// `deviceId` limits it to one device; omit for campus-wide. `paperSize` is
+// a4 | letter | folio; omit for the configured default.
 //
-// Answers 202 with the `pending` row as soon as it is recorded, then builds in the
-// background — a 30-day network report queries a lot of InfluxDB and would otherwise
-// hold the request open. The finished (or failed) row is pushed back over Socket.IO
-// as `reportUpdated`; the row status is the fallback for a client that missed it.
+// Answers 202 with the pending row, then builds in the background. The result is
+// pushed as `reportUpdated`; the row status covers a client that missed it.
 router.post(
   "/",
   authMiddleware,
@@ -255,9 +233,8 @@ router.post(
 
       res.status(202).json({ report });
 
-      // Deliberately not awaited. build() never throws, but keep the .catch() so an
-      // unexpected rejection can't become an unhandled rejection and take down the
-      // process — this runs after the response is already sent.
+      // Not awaited. build() never throws, but keep .catch() so an unexpected rejection
+      // cannot crash the process after the response was sent.
       reportService.build(report.id).catch((err) => {
         console.error("[REPORTS] background build error:", describeError(err));
       });
@@ -293,10 +270,9 @@ router.get("/:id/download", authMiddleware, async (req, res, next) => {
   }
 });
 
-// POST /api/reports/:id/email — mail an already-generated report as a PDF
-// attachment (admin + it_staff). Separate from generate on purpose: re-sending must
-// not rebuild the report, since a saved report's numbers are frozen.
-// Always sends to the requesting user's own address.
+// POST /api/reports/:id/email ─ email an already-generated report as a PDF
+// (admin + it_staff). Does not rebuild, so the numbers stay as generated. Always
+// sent to the requesting user.
 router.post("/:id/email", authMiddleware, requireRole("admin", "it_staff"), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);

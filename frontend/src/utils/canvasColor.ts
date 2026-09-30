@@ -1,30 +1,16 @@
-// ─── Colours that a <canvas> can actually use ───────────────────────────────────
-//
-// Canvas parses CSS colour STRINGS, but it knows nothing about the document — so a
-// custom property is not a colour to it. That matters here because several stat tiles
-// fall back to `var(--gf-text-muted)` whenever a metric has no reading (no devices
-// registered, sensor offline, a gas value that hasn't arrived yet).
-//
-// The sparklines also built their translucent area fill by APPENDING hex digits to the
-// colour (`color + "44"`), which silently assumes every caller passes a 6-digit hex.
-//
-// Put together those two assumptions produced `var(--gf-text-muted)44`, and
-// `addColorStop` rejects an unparseable colour by THROWING. Canvas drawing runs inside a
-// React effect, so the throw escaped the component and took the whole page down — a
-// blank Dashboard, caused by a grey sparkline. It only appeared on ranges where some
-// metric happened to have no data, which is why -7d looked fine and -24h did not.
-//
-// Import-free, like utils/envThresholds and utils/seriesGaps. It does read the document
-// (that is the entire point of resolving a custom property), so it must run in a browser.
+// ─── Colours a <canvas> can use ───────────────────────────────────
+// Canvas cannot read CSS variables, and some tiles fall back to
+// `var(--gf-text-muted)` when there is no reading. The sparklines also made their fill
+// by appending hex digits (`color + "44"`). Together that produced
+// `var(--gf-text-muted)44`, addColorStop threw, and the whole page went blank. No
+// imports; reads the document, so it runs in the browser.
 
 /** Last-resort colour if a custom property resolves to nothing — `--gf-text-muted` (dark). */
 const FALLBACK = "#8E95A0";
 
 /**
- * Resolve `var(--token)` / `var(--token, fallback)` against the document root.
- *
- * Anything that is already a literal colour is returned untouched, so this is safe to
- * call on every colour rather than only the ones suspected of being tokens.
+ * Resolve `var(--token)` / `var(--token, fallback)` against the document root. A literal
+ * colour is returned as is, so it is safe to call on any colour.
  */
 export function resolveColor(color: string, hops = 0): string {
   const raw = (color ?? "").trim();
@@ -37,21 +23,15 @@ export function resolveColor(color: string, hops = 0): string {
   } catch {
     /* no document (SSR / test) — fall through to the literal fallback below */
   }
-  // A var() may itself name another var(); one hop is all this codebase uses. BOUNDED
-  // anyway: a self-referential or mutually-referential custom property (--a: var(--b);
-  // --b: var(--a)) would otherwise recurse forever inside a canvas draw, which hangs the
-  // tab rather than merely painting the wrong colour.
+  // A var() may name another var(); one level is all this app uses. Limited anyway, so a
+  // circular definition cannot loop forever and hang the tab.
   if (value.startsWith("var(") && hops < 4) return resolveColor(value, hops + 1);
   return value || (m[2] ?? "").trim() || FALLBACK;
 }
 
 /**
- * The same colour at a given alpha, as `rgba(...)`.
- *
- * Handles #rgb, #rrggbb, #rrggbbaa and rgb()/rgba() — every form this codebase produces,
- * plus the shapes a resolved custom property can come back as. An unrecognised colour is
- * returned opaque rather than throwing: a sparkline drawn in the wrong shade is a visual
- * nit, and one that takes the page down with it is not.
+ * The same colour at a given alpha, as `rgba(...)`. Handles #rgb, #rrggbb, #rrggbbaa and
+ * rgb()/rgba(). An unknown colour is returned opaque instead of throwing.
  */
 export function alphaColor(color: string, alpha: number): string {
   const c = resolveColor(color);

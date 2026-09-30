@@ -1,32 +1,21 @@
--- Dashboard-managed agent install keys.
+-- Agent install keys managed from the dashboard.
 --
--- ⚠️ Already folded into v13_cspc-ictu-monitoring-system.sql. Run this ONLY against a
--- database created before 2026-08-15; a fresh import of v13 already has the table and
--- re-running it fails with "Table already exists".
+-- Already included in v13_cspc-ictu-monitoring-system.sql. Only run this on a database
+-- created before 2026-08-15 (on v13 it fails with "Table already exists").
 --
--- WHY: AGENT_INSTALL_KEY lived in backend/.env — a live bearer credential that only
--- someone with shell access could change, with no expiry, no revocation, and no record
--- of who issued it or what enrolled with it. Moving it into a table makes it an
--- administered object: an admin mints one per rollout, labels it, and revokes it when
--- the rollout is done or the key leaks.
+-- AGENT_INSTALL_KEY used to be one value in backend/.env, with no expiry, no revocation
+-- and no record of who used it. Now an admin creates a key per rollout and revokes it
+-- when done.
 --
--- A key also OWNS the servers it enrolled: agent_tokens.install_key_id records which
--- key let each machine in, so revoking a key can (at the admin's choice) cut those
--- servers off too. That is the branch model — one key per office, revoke the key and
--- that office's servers stop reporting. See installKeyService.revoke({ revokeAgents }).
+-- agent_tokens.install_key_id records which key enrolled each server, so revoking a key
+-- can also cut those servers off, if the admin chooses (one key per office). See
+-- installKeyService.revoke({ revokeAgents }). That is always a separate, explicit choice,
+-- and the UI lists the affected servers first. To remove one server without touching a
+-- key, use DELETE /api/servers/:id.
 --
--- ⚠️ The two credentials still have separate lifecycles, and cutting agents off is an
--- EXPLICIT second action, never an implicit side effect: the install key is used once at
--- enrollment, while agent_tokens.approved_token is what an agent posts metrics with
--- forever after. The revoke UI lists exactly which servers would stop before doing it,
--- because monitoring going dark unannounced is the failure this whole system exists to
--- prevent. Per-server revocation without touching a key is DELETE /api/servers/:id.
---
--- The plaintext key is NEVER stored. Only its SHA-256 hash (for lookup) and a short
--- prefix (so the UI can name a key nobody can read any more). SHA-256 rather than
--- bcrypt on purpose: these are 24 random bytes, so there is no dictionary to slow an
--- attacker down with, and a fast hash lets the enrollment path find the row with one
--- indexed lookup instead of scanning every key and comparing each in turn.
+-- Only the key's SHA-256 hash (for lookup) and a short prefix (for display) are stored,
+-- never the key. SHA-256, not bcrypt: the key is 24 random bytes, so a slow hash adds
+-- nothing, and a fast one allows a single indexed lookup.
 
 CREATE TABLE `agent_install_keys` (
   `install_key_id` int(11) NOT NULL,
@@ -51,32 +40,26 @@ ALTER TABLE `agent_install_keys`
 ALTER TABLE `agent_install_keys`
   MODIFY `install_key_id` int(11) NOT NULL AUTO_INCREMENT;
 
--- SET NULL, not CASCADE: deleting the admin who issued a key must not delete the key
--- (that would revoke enrollment for a whole branch as a side effect of an HR change)
--- and must not erase the record that the key existed. Matches alert_rules.updated_by.
+-- SET NULL, not CASCADE: deleting the admin who created a key must not delete the key.
+-- Same as alert_rules.updated_by.
 ALTER TABLE `agent_install_keys`
   ADD CONSTRAINT `fk_install_keys_created_by` FOREIGN KEY (`created_by`)
     REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   ADD CONSTRAINT `fk_install_keys_revoked_by` FOREIGN KEY (`revoked_by`)
     REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
--- Which key enrolled this agent. NULL = enrolled before this feature, or via the legacy
--- .env key (which has no row). Those agents are unaffected by any key revoke, because
--- there is no key they can be attributed to.
---
--- SET NULL rather than CASCADE: install keys are never hard-deleted (revoke is soft), but
--- if one ever were, the ENROLLMENT must survive it — deleting a key row must not delete
--- the record of the servers it authorised.
+-- Which key enrolled this agent. NULL = enrolled before this feature or with the .env
+-- key; such agents are not affected by revoking a key. SET NULL rather than CASCADE, so
+-- deleting a key never deletes the record of what it enrolled.
 ALTER TABLE `agent_tokens`
   ADD COLUMN `install_key_id` int(11) DEFAULT NULL COMMENT 'Which install key enrolled this agent; NULL = legacy/.env enrollment' AFTER `device_id`,
   ADD KEY `idx_agent_tokens_install_key` (`install_key_id`),
   ADD CONSTRAINT `fk_agent_tokens_install_key` FOREIGN KEY (`install_key_id`)
     REFERENCES `agent_install_keys` (`install_key_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
--- 'revoked' = this agent's authorisation was withdrawn wholesale, by revoking the install
--- key it enrolled with. Distinct from 'rejected', which means an admin declined a NEW
--- enrollment (and which agentService.reject implements by deleting the device outright).
--- A revoked row is KEPT so the device, its logs and its history survive, and so the same
--- machine can re-enrol onto the same device_id instead of forking its time-series.
+-- 'revoked' = the agent's authorisation was withdrawn by revoking its install key.
+-- Different from 'rejected' (an admin declined a new enrollment; the device is deleted).
+-- A revoked row is kept, so the device keeps its logs and history and can re-enroll on
+-- the same device_id.
 ALTER TABLE `agent_tokens`
   MODIFY `status` enum('pending','approved','rejected','revoked') DEFAULT NULL;

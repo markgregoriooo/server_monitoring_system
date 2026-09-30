@@ -9,29 +9,26 @@
 #      frontend   nginx        the built dashboard                  :8080
 #
 #  First run:
-#      cp .env.docker.example .env      # fill it in — compose reads it
+#      cp .env.docker.example .env      # fill it in; compose reads it
 #      docker compose up -d --build
 #      docker compose logs -f backend
 #
 #  Day to day:
 #      docker compose ps                # what is running, and is it healthy
 #      docker compose up -d backend     # after editing backend/.env
-#          (NOT `restart` — env_file is read when a container is CREATED, so
-#          restart reuses the old values and the edit appears to do nothing.
-#          `up -d` notices the change and recreates the container.)
-#      docker compose down              # stop everything, KEEP the data
+#          (not `restart`: env_file is read when a container is created, so
+#          restart keeps the old values)
+#      docker compose down              # stop everything, keep the data
 #      docker compose down -v           # also deletes the volumes = the data
 #
-#  Cloudflare's tunnel is NOT a container here. cloudflared runs on the host and
-#  points at localhost:3000 and localhost:8080, which is what the two published
-#  ports below are for. See deployment-guide.md §5.
+#  The HTTPS proxy in front (ICTU's, or cloudflared for testing) is not part of
+#  this file; it points at ports 3000 and 8080. See deployment-guide.md §5.
 # ============================================================================
 
 services:
   # ── MariaDB ──────────────────────────────────────────────────────────────
-  # MariaDB, not MySQL: v13_cspc-ictu-monitoring-system.sql is a 10.4 dump, and
-  # the alert-rule uniqueness index relies on persistent generated columns that
-  # were verified on MariaDB (CLAUDE.md, alertRulesService).
+  # MariaDB, not MySQL: v13_cspc-ictu-monitoring-system.sql and the alert-rule unique
+  # index (persistent generated columns) were tested on MariaDB.
   db:
     image: mariadb:10.11
     restart: unless-stopped
@@ -40,24 +37,22 @@ services:
       MARIADB_DATABASE: ${DB_NAME:-cspc-ictu-monitoring-system}
       MARIADB_USER: ${DB_USER:?set DB_USER in .env}
       MARIADB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      # Read only by 02-first-admin.sh, on the first start. Blank = no seed.
+      FIRST_ADMIN_EMAIL: ${FIRST_ADMIN_EMAIL:-}
       TZ: ${TZ:-Asia/Manila}
     volumes:
       - db-data:/var/lib/mysql
-      # Loaded ONCE, on the very first start, when the data volume is empty.
-      # It does nothing on later starts — an existing database is never
-      # re-initialised, so this cannot clobber live data. To re-seed you must
-      # delete the volume on purpose (`docker compose down -v`).
+      # Loaded once, on the first start when the data volume is empty. An existing database
+      # is never re-initialised. To start over, delete the volume (`docker compose down -v`).
       - ./v13_cspc-ictu-monitoring-system.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # Then, on that same first start: create FIRST_ADMIN_EMAIL as an active admin, since v13
+      # has no admin and sign-in needs admin approval. See the script's header.
+      - ./ops/docker/first-admin.sh:/docker-entrypoint-initdb.d/02-first-admin.sh:ro
     healthcheck:
-      # Pings over TCP (-h 127.0.0.1), NOT the local socket, and that detail is
-      # load-bearing on the very first start. While the schema is importing, the
-      # entrypoint is running a TEMPORARY server with --skip-networking: a
-      # socket-based check passes against it, compose reports the database
-      # healthy, and then the temporary server shuts down to hand over to the
-      # real one — so the backend starts against a database that is going away.
-      # (Seen once here: the first `up` died with "dependency failed to start".)
-      # A TCP check simply cannot see the temporary server, so "healthy" means
-      # the real server is accepting the connections the backend will make.
+      # Checks over TCP (-h 127.0.0.1), not the local socket. During the first start the
+      # schema loads on a temporary server with networking off; a socket check would pass
+      # against it, and the backend would start just as that server shuts down. Over TCP,
+      # "healthy" means the real server is up.
       test: ['CMD-SHELL', 'mariadb-admin ping -h 127.0.0.1 -u root -p"$$MARIADB_ROOT_PASSWORD" --silent']
       interval: 10s
       timeout: 5s
@@ -65,8 +60,7 @@ services:
       # Generous: this covers the one-off schema import on first boot, and
       # failures inside the start period do not count against the retries.
       start_period: 90s
-    # Deliberately NOT published to the host. Nothing outside this stack needs
-    # to reach MySQL, and 3306 on a campus LAN is a standing invitation. Add
+    # Not published to the host: nothing outside needs MySQL. Add
     # `ports: ["127.0.0.1:3306:3306"]` temporarily if you need Workbench.
 
   # ── InfluxDB 2 ───────────────────────────────────────────────────────────
@@ -100,15 +94,12 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file:
-      # Everything the app needs that is NOT about reaching the two databases:
-      # JWT_SECRET, DEVICE_SECRET, the Google credentials, SMTP, the encryption
-      # keys, every tuning knob. Keep using the file you already maintain.
+      # Everything the app needs other than the database connection: JWT_SECRET,
+      # DEVICE_SECRET, Google credentials, SMTP, the encryption keys, all tuning settings.
       - backend/.env
     environment:
-      # These OVERRIDE env_file, and they have to: backend/.env says
-      # DB_HOST=localhost, which inside a container means the container itself.
-      # `db` and `influxdb` are the service names above — Docker's internal DNS
-      # resolves them on the private network.
+      # These override env_file: backend/.env has DB_HOST=localhost, which inside a container
+      # is the container itself. `db` and `influxdb` are the service names above.
       DB_HOST: db
       DB_PORT: 3306
       DB_NAME: ${DB_NAME:-cspc-ictu-monitoring-system}
@@ -119,38 +110,29 @@ services:
       INFLUX_ORG: ${INFLUX_ORG:-cspc-ictu}
       INFLUX_BUCKET: ${INFLUX_BUCKET:-monitoring}
       TZ: ${TZ:-Asia/Manila}
-      # Pinned to the mount point below, overriding backend/.env. A host path
-      # left in backend/.env (BACKUP_DIR=/mnt/backup/backups, the non-Docker
-      # instructions) would otherwise make the backend write into the
-      # container's own writable layer: no error, backups "working", and all of
-      # it gone with the next rebuild. Where the files land on the HOST is
-      # BACKUP_HOST_DIR in the root .env, not this.
+      # Fixed to the mount point below, overriding backend/.env. A host path left there would
+      # make the backend write inside the container, and the backups would be lost on rebuild.
+      # Where the files go on the host is BACKUP_HOST_DIR in the root .env.
       BACKUP_DIR: /app/backups
       BACKUP_OFFSITE_MARKER: /app/backups/.last_offsite_sync
     ports:
-      # Published on ALL interfaces on purpose. The ESP32 opens its socket to
-      # this port and the Go agents POST to it, both over the campus LAN — they
-      # never go through the tunnel. Firewall it to the agent subnets.
+      # Published on all interfaces: the ESP32 and the Go agents connect to this port over
+      # the campus LAN, not through the proxy. Firewall it to those subnets.
       - "3000:3000"
     volumes:
-      # Named volumes, so the data outlives `docker compose down` and any
-      # rebuild of the image. backups is the on-site copy that is meant to
-      # survive the database itself — see backup-storage.md.
+      # Named volumes, so the data survives `docker compose down` and rebuilds.
       #
-      # backups can be a HOST FOLDER instead: set BACKUP_HOST_DIR in the root
-      # .env (e.g. /mnt/backup/backups, the USB drive). Production should — a
-      # named volume lives on the same disk as db-data, so it does not survive
-      # that disk, and the nightly dump + Backblaze upload
-      # (ops/backup-setup-linux.md) run on the host and need a real path to
-      # read. Unset, this stays the named volume. The folder must be writable
-      # by uid 1000 (the image's `node` user).
+      # backups can be a host folder instead: set BACKUP_HOST_DIR in the root .env (e.g.
+      # /mnt/backup/backups, the USB drive). Production should: a named volume is on the same
+      # disk as the database, and the nightly dump and Backblaze upload
+      # (ops/backup-setup-linux.md) need a real path. The folder must be writable by uid 1000
+      # (the image's `node` user).
       - ${BACKUP_HOST_DIR:-backend-backups}:/app/backups
       - backend-reports:/app/reports
       - backend-branding:/app/branding
     depends_on:
-      # Wait for HEALTHY, not merely started. The backend survives its stores
-      # being down, but a first boot against an empty MariaDB logs a wall of
-      # connection errors that reads like a broken deployment.
+      # Wait until healthy, not just started, so the first boot does not log a wall of
+      # connection errors.
       db:
         condition: service_healthy
       influxdb:
@@ -162,15 +144,13 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        # BUILD args, not runtime env — Vite bakes these into the JS. Change
-        # either and you must rebuild: `docker compose up -d --build frontend`.
-        # VITE_API_URL is the PUBLIC origin (no port) when the tunnel is in
-        # front; leave it blank for a plain LAN install.
+        # Build args, not runtime env: Vite builds these into the JS, so changing either needs
+        # `docker compose up -d --build frontend`. VITE_API_URL is the public address (no port)
+        # when a proxy is in front; blank for a plain LAN install.
         VITE_API_URL: ${VITE_API_URL:-}
         VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:?set VITE_GOOGLE_CLIENT_ID in .env}
-        # Branding. The fallbacks are the real CSPC values, so leaving these
-        # out of .env still produces a correctly-branded dashboard — they are
-        # here so another institution can rebrand without touching any code.
+        # Branding. The defaults are the CSPC values; they are here so another institution can
+        # rebrand without code changes.
         VITE_APP_NAME: ${VITE_APP_NAME:-CSPC-ICTU}
         VITE_APP_FULL_NAME: ${VITE_APP_FULL_NAME:-Camarines Sur Polytechnic Colleges – Information and Communications Technology Unit}
         VITE_APP_SUBTITLE: ${VITE_APP_SUBTITLE:-MONITORING}

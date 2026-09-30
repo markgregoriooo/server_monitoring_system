@@ -7,10 +7,9 @@ import { describeError } from "../utils/httpError.js";
 
 const router = express.Router();
 
-// Push one device's current shape to every open dashboard on the SHARED
-// `networkMetrics` event, so an add / connection edit shows up live instead of only
-// after the next 30s poll or a manual reload. The client merge treats every field as
-// optional, so a payload without `interfaces` leaves existing port data alone.
+// Send the device's current state to every dashboard on `networkMetrics`, so an add
+// or edit shows up right away instead of at the next poll. Missing fields (such as
+// `interfaces`) leave the existing data alone.
 async function emitDevice(io, id) {
   if (!io) return;
   try {
@@ -40,16 +39,10 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res, next) =>
     // 409 when the name is already taken, 400 for the rest.
     if (!r.ok) return res.status(r.status ?? 400).json({ error: r.error || "Create failed." });
     await emitDevice(req.app.get("io"), r.id);
-    /* Log in and poll it once immediately, rather than leaving the card blank for up to
-       MIKROTIK_POLL_INTERVAL_MS. Worth more here than on SNMP: a MikroTik is registered with
-       a USERNAME AND PASSWORD, so "no data yet" and "those credentials are wrong" look the
-       same until something actually tries to connect. Fire-and-forget — the result arrives
-       on the usual broadcast, and the 30s cadence is untouched.
-
-       The verdict also goes back to the ADMIN WHO ADDED IT, on `user:<id>`. Until it did,
-       a failed first login was written to the server console and nowhere else, so the one
-       person who could fix the credentials was the one person not told they were wrong.
-       Same contract as routes/network.js — see the long note there. */
+    /* Log in and poll once right away. With a MikroTik, "no data yet" and "wrong
+       password" look the same until something connects. Not awaited; the result comes
+       through the usual broadcast, and the admin who added it is told how the first
+       poll went (same as routes/network.js). */
     const io = req.app.get("io");
     const userId = req.user?.id;
     void mikrotikPollerService.pollDeviceNow(io, r.id).then(({ ok, reason }) => {
@@ -81,9 +74,9 @@ router.get("/:id/interfaces", authMiddleware, async (req, res, next) => {
 });
 
 // ── PUT /api/mikrotik/:id/interfaces ─ set port labels + alerting (admin) ─────
-// Body: { labels: [{ name, label, monitored? }] }. `monitored: false` silences
-// interface-down alerts for that port; omitting it leaves the current setting alone.
-// A blank label clears the label, and drops the row only when it holds nothing else.
+// Body: { labels: [{ name, label, monitored? }] }. `monitored: false` mutes
+// interface-down alerts for that port; leaving it out keeps the current setting.
+// A blank label clears the label.
 router.put("/:id/interfaces", authMiddleware, requireRole("admin"), async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid device id." });
@@ -98,9 +91,8 @@ router.put("/:id/interfaces", authMiddleware, requireRole("admin"), async (req, 
   }
 });
 
-// ── DELETE /api/mikrotik/:id ─ decommission a MikroTik (admin) ────────────────
-// Cascades to mikrotik_devices / network_interfaces / device_logs / alerts.
-// Mirrors DELETE /api/network/:id on the router/UPS side.
+// ── DELETE /api/mikrotik/:id ─ remove a MikroTik (admin) ──────────────────────
+// Cascades to mikrotik_devices, network_interfaces, device_logs and alerts.
 router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid device id." });
@@ -146,9 +138,8 @@ router.put("/:id/connection", authMiddleware, requireRole("admin"), async (req, 
   }
 });
 
-// ── POST /api/mikrotik/test ─ probe credentials BEFORE the device exists (admin).
-// Used by the Add form so a login can be verified without persisting it first.
-// One path segment, so it never collides with /:id/test below.
+// ── POST /api/mikrotik/test ─ test credentials before the device exists (admin).
+// Used by the Add form.
 router.post("/test", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     res.json(await mikrotikPollerService.testConnection(null, req.body ?? {}));
@@ -157,9 +148,8 @@ router.post("/test", authMiddleware, requireRole("admin"), async (req, res, next
   }
 });
 
-// ── POST /api/mikrotik/:id/test ─ probe the API (admin).
-// Body may carry credentials to test instead of the stored ones; an empty body tests
-// exactly what is saved.
+// ── POST /api/mikrotik/:id/test ─ test the API connection (admin).
+// The body may carry credentials to test; an empty body tests the saved ones.
 router.post("/:id/test", authMiddleware, requireRole("admin"), async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid device id." });

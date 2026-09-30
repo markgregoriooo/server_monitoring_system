@@ -6,17 +6,11 @@ import {
   SESSION_MAX_HOURS,
 } from "../middleware/auth.js";
 
-// ─── The absolute session ceiling ─────────────────────────────────────────────
-//
-// The sliding renewal in middleware/auth.js has no upper bound of its own — `ist` plus
-// SESSION_MAX_HOURS is the only thing that ends a session that keeps being used. That
-// ceiling was enforced in exactly one place (maybeRenewToken) and by exactly one
-// mechanism (declining to mint a new token), which meant it had NO effect on a
-// Socket.IO connection: a socket authenticates once at the handshake and never needs
-// another token, so it kept streaming past the cap indefinitely.
-//
-// These pin the shared predicate that now backs the handshake and the revocation sweep.
-// Pure — auth.js imports the mysql POOL, but creating a pool opens no connection.
+// ─── Absolute session cap ─────────────────────────────────────────────
+// `ist` + SESSION_MAX_HOURS is the only limit on a session that keeps being used.
+// It was only applied when renewing, which never affects a Socket.IO connection.
+// These test the shared check now used by the handshake and the revocation sweep.
+// auth.js imports the mysql pool, but creating a pool opens no connection.
 
 const HOUR = 3600;
 const NOW = 1_800_000_000; // fixed clock, so nothing here depends on wall time
@@ -24,10 +18,8 @@ const CAP = SESSION_MAX_HOURS * HOUR;
 const TOKEN_TTL = HOUR; // must track RENEW_TTL / issueSession's expiresIn
 
 test("the hard expiry is the cap PLUS one token lifetime", () => {
-  // Not the cap itself. Past the cap the middleware stops RENEWING rather than
-  // 401-ing, so the last token minted just under the wire stays valid for one more
-  // TTL — the documented "worst case a session lives this + 1h". Enforcing the bare
-  // cap here would disconnect sockets belonging to sessions HTTP is still serving.
+  // Cap + one token lifetime, not the bare cap: the last token issued before the cap
+  // stays valid for one more hour, and HTTP still serves it.
   const ist = NOW - CAP;
   assert.equal(sessionHardExpirySec({ ist }), ist + CAP + TOKEN_TTL);
 });
@@ -51,28 +43,21 @@ test("the boundary itself is refused (>=, not >)", () => {
 });
 
 test("`iat` is the fallback when a token predates `ist`", () => {
-  // A token minted before `ist` existed has no session anchor. Treating it as ageless
-  // is the exact hole `ist` was introduced to close, so it is measured from `iat`
-  // instead — its session is bounded from its current token rather than not at all.
+  // A token from before `ist` existed is measured from `iat`, not treated as ageless.
   assert.equal(sessionPastHardLimit({ iat: NOW - CAP - TOKEN_TTL - 1 }, NOW), true);
   assert.equal(sessionPastHardLimit({ iat: NOW }, NOW), false);
 });
 
 test("`ist` wins over `iat` when both are present", () => {
-  // Every renewal stamps a fresh `iat` while carrying `ist` through unchanged. Reading
-  // `iat` in preference would make a renewed token look brand new and restore the
-  // unbounded sliding window this exists to stop.
+  // Renewal gives a new `iat` but keeps `ist`; reading `iat` first would make a renewed
+  // token look new.
   const claims = { ist: NOW - CAP - TOKEN_TTL - 1, iat: NOW };
   assert.equal(sessionPastHardLimit(claims, NOW), true);
 });
 
 test("claims with no time anchor at all are not refused", () => {
-  // `sessionHardExpirySec` returns null and the caller decides. Failing OPEN is correct
-  // here and only here: a token with neither claim cannot be produced by this app
-  // (jwt.sign always stamps `iat`), so reaching this means something upstream changed,
-  // and the liveness predicate — account status and token_version — is the check that
-  // actually guards the data. Refusing on a missing claim would turn a signing-side
-  // change into a fleet-wide disconnect.
+  // With neither claim, `sessionHardExpirySec` returns null. This app always sets `iat`,
+  // so it cannot normally happen; the status/token_version check still applies.
   assert.equal(sessionHardExpirySec({}), null);
   assert.equal(sessionPastHardLimit({}, NOW), false);
   assert.equal(sessionPastHardLimit(null, NOW), false);

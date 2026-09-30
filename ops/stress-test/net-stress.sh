@@ -2,16 +2,13 @@
 # ============================================================================
 #  Network I/O stress  →  moves `net_bytes_sent` / `net_bytes_recv`
 # ----------------------------------------------------------------------------
-#  ⚠  NO ALERT RULE READS THESE. There is no seeded rule for server network
-#  throughput — link_util / link_errors belong to ROUTER interfaces (SNMP and
-#  MikroTik), not to an agent-reported server. So this test moves the Network tile
-#  on Server Metrics and the network series in a server report; it will not raise a
-#  notification. That is the system working as designed, not a broken test.
+#  No alert rule uses these: link_util / link_errors are for router interfaces, not
+#  servers. This moves the Network tile on Server Metrics and the network series in a
+#  server report, but raises no notification. That is expected.
 #
-#  Defaults to LOOPBACK, which still counts: the agent reads gopsutil
-#  IOCounters(false) — the sum across every interface, `lo` included — so traffic
-#  that never leaves the VM moves both counters, and moves them twice, once as sent
-#  and once as received. No switch port, no uplink, nobody else's bandwidth.
+#  Uses loopback by default, which still counts: the agent sums every interface
+#  (gopsutil IOCounters(false)), `lo` included, so local traffic moves both counters
+#  without touching the real network.
 #
 #  Usage:
 #    ./net-stress.sh                       # loopback, flat out, 3 minutes

@@ -19,9 +19,8 @@ type HeaderProps = {
   onOpenProfile?: () => void;
 };
 
-// The page half of the breadcrumb comes from src/pageTitles.ts, shared with the browser
-// tab title. It used to be a private copy here, and `/mikrotik` and `/analytics` were
-// never added to it — so the breadcrumb on both pages read "Dashboard".
+// The page part of the breadcrumb comes from src/pageTitles.ts, shared with the
+// browser tab title.
 
 function LivePing() {
   return (
@@ -81,10 +80,9 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse, onOp
     hour: "2-digit", minute: "2-digit", hour12: false,
   });
 
-  // Shown on the "open sidebar" buttons (mobile burger + desktop reopen) so a HIDDEN
-  // sidebar still surfaces everything its nav badges would: alerts needing attention
-  // PLUS pending approvals (servers + user registrations, admin-only). Red when any
-  // alert is open (urgent), else accent (just pending). 0 for it_staff = alerts only.
+  // Shown on the "open sidebar" buttons so a hidden sidebar still shows what its badges
+  // would: open alerts plus pending approvals (servers and registrations, admin only).
+  // Red when any alert is open, otherwise accent. it_staff only see alerts.
   const navAttention = openAlertCount + pendingAgentCount + pendingUserCount;
   const navBadge = navAttention > 0 ? (
     <span className="absolute -top-1 -right-1 min-w-[14px] h-3.5 px-0.5 rounded-full text-white flex items-center justify-center"
@@ -95,9 +93,8 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse, onOp
   ) : null;
 
   return (
-    /* `gap-4` is load-bearing, not cosmetic. `justify-between` only spreads the two groups
-       while there is slack — once they fill the bar it spreads NOTHING, and LIVE ends up
-       against the theme button with no space at all. The gap is the guaranteed floor. */
+    /* `gap-4` keeps space between the two groups; justify-between alone leaves none once
+       the bar is full. */
     <header className="h-10 flex items-center justify-between gap-4 px-4 flex-shrink-0"
       style={{
         background:   "var(--gf-header)",
@@ -129,11 +126,8 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse, onOp
           </button>
         )}
 
-        {/* Grafana-style breadcrumb.
-            `min-w-0` + truncate makes THIS the thing that yields when the bar is tight. It
-            is the most expendable: the page you are on is also named in the sidebar and in
-            the page's own heading, whereas LIVE has nowhere else to appear. Without it the
-            breadcrumb refuses to shrink and pushes LIVE into the theme button instead. */}
+        {/* Grafana-style breadcrumb. `min-w-0` + truncate makes it the part that shrinks when
+           space is tight, since the page name also appears in the sidebar and page heading. */}
         <div className="flex items-center gap-1.5 text-[13px] min-w-0">
           <span className="truncate" style={{ color: "var(--gf-text-muted)" }}>{section}</span>
           <span className="hidden sm:inline" style={{ color: "var(--gf-text-dim)" }}>/</span>
@@ -150,14 +144,9 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse, onOp
           {now}
         </span>
 
-        {/* Theme toggle.
-            Moved here from the sidebar's bottom rail (2026-08-28). It was a labelled
-            row down there, which put a display preference below the navigation and out
-            of sight whenever the rail was collapsed or the viewport was a phone — while
-            every other chrome-level control already lived in this bar.
-            Icon-only, in the same `gf-icon-btn` box as the widget and bell beside it, so
-            the three read as one family. The title names the theme you will GET, not the
-            one you are in — the same wording the sidebar used. */}
+        {/* Theme toggle, in the topbar with the other controls (moved from the sidebar on
+           2026-08-28, where it was hidden when the rail was collapsed). Icon-only, same
+           `gf-icon-btn` as its neighbours. The title names the theme you will switch to. */}
         <button
           onClick={toggleTheme}
           aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
@@ -177,11 +166,8 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse, onOp
           )}
         </button>
 
-        {/* Pop-out live widget (Picture-in-Picture) — Chromium-only, hidden elsewhere.
-            Uses the same .gf-icon-btn box as the bell beside it: it was previously a bare
-            glyph with JS hover, so two neighbouring controls in one toolbar read as
-            different kinds of thing. `is-open` marks the widget as active exactly the way
-            the bell marks its panel as open. */}
+        {/* Pop-out live widget (Picture-in-Picture), Chromium only. Same .gf-icon-btn as the
+           bell; `is-open` marks it active like the bell's open panel. */}
         {pipSupported && (
           <button
             onClick={() => (pipOpen ? closePip() : openPip())}
@@ -218,10 +204,8 @@ export default function Header({ onMenuToggle, collapsed, onToggleCollapse, onOp
           {bellOpen && <NotificationPanel onClose={() => setBellOpen(false)} />}
         </div>
 
-        {/* User avatar — opens the same My Profile modal the sidebar's profile row does.
-            It LOOKED clickable (an avatar in a top bar always does) and did nothing, which
-            on a phone mattered more than anywhere else: the sidebar is behind a hamburger,
-            so the one visible route to the profile was the one that was inert. */}
+        {/* User avatar: opens the same My Profile modal as the sidebar's profile row (on a
+           phone the sidebar is behind the menu button). */}
         {user && (
           <button
             onClick={onOpenProfile}

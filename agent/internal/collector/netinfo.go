@@ -55,9 +55,8 @@ func hexLEToIP(h string) string {
 	return net.IPv4(b[3], b[2], b[1], b[0]).String()
 }
 
-// dnsServers returns a comma-separated list of configured IPv4 DNS servers, or
-// "" if none could be read. Best-effort and cross-platform. Only called once at
-// registration, so the Windows path may shell out to PowerShell.
+// dnsServers returns a comma-separated list of IPv4 DNS servers, or "" if none could be
+// read. Only called at registration, so the Windows path may run PowerShell.
 func dnsServers() string {
 	if runtime.GOOS == "windows" {
 		return dnsServersWindows()

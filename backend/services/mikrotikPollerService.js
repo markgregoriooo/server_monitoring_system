@@ -10,13 +10,11 @@ import { computeUtilizationPct, counterDelta } from "./snmpUtils.js";
 import { logDevice } from "./deviceLogs.js";
 import { describeError } from "../utils/httpError.js";
 
-// ─── MikroTik poller: ONE campus router via the RouterOS API, pull-based ───────
-//
-// The sibling of snmpPollerService (data source B). Instead of SNMP it speaks the
-// RouterOS API, and it produces the SAME sample shape → reuses writeNetworkSample()
-// (router_metrics + network_traffic + the networkMetrics broadcast). Each building
-// is a PORT, labeled via network_interfaces (interface_name → location_label).
-// Because polling IS the heartbeat, there's no separate offline sweep.
+// ─── MikroTik poller (RouterOS API) ───────
+// Counterpart of snmpPollerService, but over the RouterOS API. Produces the same
+// sample shape and reuses writeNetworkSample() (router_metrics, network_traffic,
+// the networkMetrics broadcast). Each building is a port, labelled through
+// network_interfaces. Polling is the heartbeat, so there is no separate sweep.
 
 const TIMEOUT_MS = Number(process.env.MIKROTIK_API_TIMEOUT_MS) || 5000;
 
@@ -24,19 +22,12 @@ const TIMEOUT_MS = Number(process.env.MIKROTIK_API_TIMEOUT_MS) || 5000;
 const prevIface = new Map(); // `${id}:${name}` -> { rx(BigInt), tx(BigInt), t(ms) }
 const latest = new Map(); // id -> shaped summary for GET /api/mikrotik
 
-// ─── Tombstones: devices deleted while a poll was IN FLIGHT ────────────────────
-//
-// A poll takes up to MIKROTIK_API_TIMEOUT_MS (5s) — and takes the FULL timeout precisely
-// when the device is misconfigured, which is the one most likely to be deleted. Delete it
-// in that window and the in-flight poll still ran to completion: it wrote a
-// router_metrics point for a device that no longer exists, and broadcast `networkMetrics`
-// for it. The dashboard's merge treats an id it does not know as a NEW device and appends
-// it — so the row the admin had just deleted reappeared, and stayed until a reload.
-//
-// `removeDevice` records the id here; the two functions that write or emit consult it.
-// Time-bounded rather than permanent so the map cannot grow for the life of the process,
-// and generously — one poll interval would be enough, several minutes costs nothing and
-// also covers a device deleted during a slow retry.
+// ─── Devices deleted while a poll is running ────────────────────
+// A poll can take the full MIKROTIK_API_TIMEOUT_MS, and a misconfigured device
+// (the likeliest to be deleted) always does. Without this, the running poll would
+// write a point for the deleted device and broadcast it, and the dashboard would
+// add the row back. removeDevice records the id here for a few minutes, and the
+// write/emit functions check it.
 const removedAt = new Map(); // id -> ms timestamp of the DELETE
 const TOMBSTONE_MS = 5 * 60 * 1000;
 function markRemoved(id) {
@@ -103,14 +94,9 @@ const connFor = (d) => ({
 });
 
 // ─── Utilization (per-interface delta vs the previous cycle) ───────────────────
-//
-// Uses the SHARED computeUtilizationPct rather than its own arithmetic. This function
-// used to divide (dRx + dTx) by the link capacity — the sum of both directions — while
-// the SNMP poller takes the busier DIRECTION. Ethernet is full-duplex, so each direction
-// gets the full link speed: a 100 Mbit/s port carrying 60 Mbit/s each way is at 60%, not
-// 120%. Both pollers feed the SAME global `link_util` rule, so the MikroTik was reporting
-// up to twice an SNMP router's figure for identical load and tripping the 80% warning at
-// around 40% real utilisation.
+// Uses the shared computeUtilizationPct: the busier direction divided by link
+// speed, since Ethernet is full-duplex. Summing both directions read up to twice
+// the SNMP poller's value for the same load.
 function withUtilization(deviceId, ifaces) {
   const now = Date.now();
   return ifaces.map((i) => {
@@ -142,17 +128,13 @@ async function collect(d, labels) {
 }
 
 // ─── Status + threshold logging ────────────────────────────────────────────────
-// `reason` names WHICH failure this is, for the device_logs line. Without it every
-// failure read "MikroTik unreachable — no API response", which conflates two states
-// needing opposite fixes: a router that is genuinely down, and a router that is up and
-// answering ICMP while its API rejects us (service disabled, wrong port, credentials,
-// an address-list rule). The SNMP poller has drawn exactly this distinction since it
-// was written; this one never did. See pollDevice's catch.
+// `reason` goes into the device_logs line to tell a router that is down from one
+// that answers ping while its API rejects us (service disabled, wrong port,
+// credentials, address-list rule). See pollDevice's catch.
 async function setReachable(io, d, online, reason = "") {
   const id = Number(d.id);
-  // Deleted mid-poll — see the tombstone note above. Everything below writes to the
-  // device row, the device log, the alert state or the browsers, all of which would be
-  // resurrecting a device an admin removed.
+  // Deleted while polling (see above): skip everything below so the device is not
+  // brought back.
   if (isRemoved(id)) return;
   if (!online) latest.set(id, { status: "Offline", reachable: false, uptimeSeconds: null, interfaces: [] });
   const newStatus = online ? "online" : "offline";
@@ -174,51 +156,32 @@ async function setReachable(io, d, online, reason = "") {
   await deviceAlerts.checkReachability(d, online, { label: "MikroTik", severity: "critical" });
 }
 
-// Router CPU/mem + per-interface link utilization & interface-down alerting now
-// lives in deviceAlerts.js (configurable alert_rules + REAL alerts: bell / email /
-// Alerts page), shared with the generic SNMP poller — replacing the device-log-only
-// interface-down check that used to be here.
+// Router CPU/mem, link utilization and interface-down alerting are in
+// deviceAlerts.js, shared with the SNMP poller.
 
 // ─── Per-device poll ────────────────────────────────────────────────────────────
 async function pollDevice(io, d) {
   const labels = await loadInterfaceLabels(d.id);
-  // ICMP alongside the API call, exactly as the SNMP poller does it. Started first so
-  // the two overlap rather than adding their latencies together; icmpPing never
-  // rejects, so this is always safe to await.
-  //
-  // Without it a MikroTik was the one router class with no latency_ms / packet_loss_pct
-  // at all — so `router_latency` and `router_loss` (alert rules, Analytics trends and
-  // anomalies, the report columns) silently had no data for the campus core routers,
-  // which are the devices those metrics matter most for. It also made the metric
-  // inconsistent: present on some routers, absent on others, for no reason a user
-  // could see.
+  // Ping at the same time as the API call, like the SNMP poller. Started first so the
+  // two overlap; icmpPing never rejects. Gives the MikroTik latency_ms and
+  // packet_loss_pct like every other router.
   const icmpPromise = icmpPing.ping(d.ip);
 
   let sample;
   try {
     sample = await collect(d, labels); // throws if unreachable
   } catch (err) {
-    //  Every `return` below is a FAILED poll that this function deliberately does not
-    // rethrow (pollAll's catch would reset the cache and wipe the ICMP figures). That
-    // made "did not throw" mean nothing, and pollDeviceNow — which reports the result of
-    // a registration back to the admin — read it as success. A MikroTik added with a
-    // wrong password therefore answered with "logged in over the RouterOS API — now
-    // polling". Each path now returns its own verdict, and the toast says what happened.
-    //
-    // Handled here rather than rethrown: pollAll's catch calls setReachable(), which
-    // resets the `latest` cache entry, and that would wipe the ICMP figures again.
+    // Each `return` below is a failed poll that is handled here rather than rethrown
+    // (pollAll's catch would reset the cache and lose the ICMP figures). Each path
+    // returns its own result, so pollDeviceNow can report a wrong password correctly.
     const icmp = await icmpPromise;
 
-    // node-routeros can reject a failed connect with an error carrying NO message at
-    // all (verified against a closed port: `err.message` is ""), which left the log
-    // line reading "poll failed for X (ip):  — …" with a blank where the cause belongs.
-    // Fall back through the fields that do carry something.
+    // node-routeros can reject a failed connect with an empty message, so fall back
+    // through the fields that have something.
     const cause = err?.message || err?.code || err?.errno || String(err ?? "") || "no detail from the RouterOS client";
 
-    // A BROKEN PROBE IS NOT A MEASUREMENT. No `ping` binary, or an account that cannot
-    // run it, yields reachable:false — the absence of an observation, not an outage.
-    // Report only what was actually seen, and store nothing. Same guard, and the same
-    // reasoning, as pollRouterByPing in the SNMP poller.
+    // If ping itself could not run (no binary, no permission), reachable:false is not a
+    // measurement. Report only what was seen and store nothing, as in pollRouterByPing.
     if (icmp.probeError) {
       console.error(
         `[MIKROTIK_POLLER] poll failed for ${d.name} (${d.ip}): ${cause} ` +
@@ -239,10 +202,8 @@ async function pollDevice(io, d) {
     await setReachable(io, d, false, verdict);
 
 
-    // Nothing is lost by saying so. The ICMP fields below are still written, so the
-    // stored record reads "unreachable, yet answering in 2.3 ms with no loss" — which
-    // is precisely the signature of a live router with a dead API, and is a sharper
-    // diagnostic than a bare reachable:true would have been.
+    // The ICMP fields are still written, so the record shows "unreachable, yet answers
+    // ping in 2.3 ms", which points straight at a dead API on a live router.
     const icmpOnly = {
       reachable: false,
       descr: null,
@@ -267,11 +228,8 @@ async function pollDevice(io, d) {
     // GET /api/mikrotik keep showing the latency and loss that are still being measured.
     latest.set(Number(d.id), {
       status: "Offline",
-      // Agrees with `status` for the same reason as above — NetworkDetail's Status tile
-      // prints "reachable" as its subtitle from this flag, and "Offline / reachable" is
-      // a contradiction on screen. That the host answers ping is carried by the two
-      // ICMP figures, the device_logs line and the ICMP chart, none of which conflict
-      // with anything.
+      // Matches `status`, since NetworkDetail shows this flag under Status and
+      // "Offline / reachable" would contradict itself. Ping results are shown elsewhere.
       reachable: false,
       latencyMs: icmp.latencyMs,
       packetLossPct: icmp.packetLossPct,
@@ -299,9 +257,7 @@ async function pollDevice(io, d) {
   latest.set(Number(d.id), {
     status: "Online",
     reachable: true,
-    // ICMP, collected above. Cached so GET /api/mikrotik can serve it — without this
-    // the poller measured latency, wrote it to InfluxDB and alerted on it, while the
-    // pages that show a MikroTik had no way to read it at all.
+    // Cache the ICMP figures so GET /api/mikrotik can return them.
     latencyMs: sample.latencyMs,
     packetLossPct: sample.packetLossPct,
     uptimeSeconds: sample.uptimeSeconds,
@@ -312,9 +268,8 @@ async function pollDevice(io, d) {
       name: i.name,
       locationLabel: i.locationLabel ?? "",
       linkUp: Boolean(i.linkUp),
-      // Carried separately from linkUp so the port editor can say "disabled in
-      // RouterOS" rather than "down" — the two look identical on the wire but only
-      // one of them is a fault. See services/linkAlertPolicy.js.
+      // Kept separate from linkUp so the port editor can say "disabled in RouterOS"
+      // instead of "down". See services/linkAlertPolicy.js.
       adminUp: i.adminUp !== false,
       utilizationPct: i.utilizationPct ?? null,
       rxBytes: i.rxBytes != null ? String(i.rxBytes) : null,
@@ -346,20 +301,13 @@ async function pollDevice(io, d) {
 let polling = false;
 
 /**
- * Poll ONE MikroTik immediately, then leave the 30s cadence untouched.
+ * Poll one MikroTik right away; the 30s schedule is unchanged. Same as
+ * snmpPollerService.pollDeviceNow. With a MikroTik, "no data yet" and "wrong
+ * password" look the same until a login is tried.
  *
- * Same reasoning as snmpPollerService.pollDeviceNow — see the long note there. The wait is
- * shorter here (MIKROTIK_POLL_INTERVAL_MS, 30s) but the feedback matters more: a MikroTik is
- * registered with a USERNAME AND PASSWORD, so "no data yet" and "those credentials are
- * wrong" look identical until something actually tries to log in.
- *
- * Never throws — the caller fires and forgets so the HTTP response is not held behind an API
- * timeout.
- *
- * Returns `{ ok, reason }` rather than a bare boolean so the caller can TELL SOMEBODY: a
- * failed first login used to reach the server console and nowhere else. routes/mikrotik.js
- * forwards it to the admin who registered the device. Same contract as
- * snmpPollerService.pollDeviceNow.
+ * Never throws; the caller does not wait so the HTTP response is not held up.
+ * Returns `{ ok, reason }`, which routes/mikrotik.js sends to the admin who added
+ * the device.
  */
 export async function pollDeviceNow(io, deviceId) {
   const id = Number(deviceId);
@@ -367,9 +315,8 @@ export async function pollDeviceNow(io, deviceId) {
     const d = (await loadDevices()).find((x) => Number(x.id) === id);
     if (!d) return { ok: false, reason: "device not found" };
     try {
-      //  `pollDevice` resolves on the failure path too — see the note in its catch.
-      // Reading "it did not throw" as success is what made a MikroTik added with a wrong
-      // password toast "logged in over the RouterOS API — now polling".
+      // `pollDevice` also resolves when it fails, so check its result instead of
+      // treating "did not throw" as success.
       const r = await pollDevice(io, d);
       if (r?.reachable) return { ok: true, reason: null };
       return { ok: false, reason: r?.reason ?? "the router did not answer" };
@@ -395,11 +342,9 @@ async function pollAll(io) {
       try {
         await pollDevice(io, d);
       } catch (err) {
-        // Now a BACKSTOP only. The API-unreachable case — by far the common one — is
-        // handled inside pollDevice, which combines it with the ICMP verdict and does
-        // not rethrow. What still lands here is everything else: a label lookup, an
-        // InfluxDB write, an alert evaluation. Those are faults in the monitoring
-        // rather than in the router, so the reason is logged verbatim.
+        // Fallback only. API failures are handled inside pollDevice; what lands here is a
+        // failure in our own side (label lookup, InfluxDB write, alert check), so the
+        // reason is logged as is.
         console.error(
           `[MIKROTIK_POLLER] poll failed for ${d.name} (${d.ip}):`,
           err?.message ?? err,
@@ -484,13 +429,12 @@ async function saveConnection(id, { apiPort, useTls, apiUsername, apiPassword } 
 }
 
 // ─── Admin: test connection ──────────────────────────────────────────────────────
-// `override` carries credentials straight from the admin form, so a login can be
-// verified BEFORE it is persisted. Previously this only read the stored row, which
-// meant you had to save a possibly-wrong password to find out it was wrong.
-//   id = null            → fully ad-hoc test (the Add form, device doesn't exist yet)
-//   id + override        → stored device, but test what's currently typed
-//   id + empty override  → stored device, test what's saved (original behaviour)
-// A blank `apiPassword` in an override means "keep using the stored one".
+// `override` carries credentials from the form, so a login can be tested before
+// it is saved.
+//   id = null            → ad-hoc test (the Add form; the device does not exist yet)
+//   id + override        → stored device, test what is typed now
+//   id + empty override  → stored device, test what is saved
+// A blank `apiPassword` in an override means "use the stored one".
 async function testConnection(id, override = {}) {
   const o = override ?? {};
   let conn;
@@ -540,10 +484,9 @@ async function createDevice({ name, ip, location, apiPort, useTls, apiUsername, 
   if (!nm) return { ok: false, error: "Name is required." };
   if (!String(ip ?? "").trim()) return { ok: false, error: "IP address is required." };
 
-  // Names must be unique among MikroTiks. Two identically-named cards are
-  // indistinguishable in the list apart from their IP line — which is exactly how one
-  // physical router ends up registered twice, double-polled and double-alerting.
-  // LOWER() is explicit rather than relying on the table's case-insensitive collation.
+  // Names must be unique among MikroTiks, so one router is not registered twice
+  // (double polling, double alerts). LOWER() is explicit instead of relying on the
+  // collation.
   const [dupe] = await db.query(
     `SELECT device_id FROM devices
       WHERE device_type = 'mikrotik' AND LOWER(device_name) = LOWER(?)
@@ -575,8 +518,7 @@ async function createDevice({ name, ip, location, apiPort, useTls, apiUsername, 
 }
 
 // ─── Port labels (network_interfaces) ───────────────────────────────────────────
-// One row per labelled port. Rows are OPTIONAL: a port with no row simply shows its
-// raw RouterOS name. Until now these could only be seeded by hand in SQL.
+// One row per labelled port. Optional: a port without a row shows its RouterOS name.
 
 async function getInterfaces(deviceId) {
   const [rows] = await db.query(
@@ -596,15 +538,9 @@ async function getInterfaces(deviceId) {
   }));
 }
 
-// Upsert one row per port. There is no UNIQUE index on (device_id, interface_name),
-// so this checks before writing rather than relying on ON DUPLICATE KEY.
-//
-// A blank label used to DELETE the row, on the principle that "no label" is the absence
-// of a row. That stopped being safe once the row also carries alerting state: clearing
-// a label would have thrown away `ever_up` (making a live port look never-connected and
-// silencing it) and `monitor_link` (un-silencing a port an admin had muted). So a row is
-// only deleted when it holds nothing else worth keeping — otherwise the label is blanked
-// in place and the table still doesn't accumulate rows that say nothing.
+// Upsert one row per port (no UNIQUE index, so check first). A blank label only
+// deletes the row when it holds nothing else; the row also carries `ever_up` and
+// `monitor_link`, which must not be lost when a label is cleared.
 async function saveInterfaces(deviceId, labels) {
   const id = Number(deviceId);
   if (!Number.isInteger(id)) return { ok: false, error: "Invalid device id." };
@@ -668,12 +604,10 @@ async function saveInterfaces(deviceId, labels) {
   return { ok: true };
 }
 
-// ─── Admin: decommission a MikroTik ─────────────────────────────────────────────
-// Deleting the `devices` row cascades to mikrotik_devices, network_interfaces,
-// device_logs and alerts (all FK ON DELETE CASCADE). Also drops this device's
-// in-memory poller state so a later id reuse can't inherit stale counters or alert
-// bands. InfluxDB history is left intact (orphaned by its device_id tag).
-// Mirrors snmpPollerService.removeDevice on the router/UPS side.
+// ─── Admin: remove a MikroTik ─────────────────────────────────────────────
+// Deleting the devices row cascades to mikrotik_devices, network_interfaces,
+// device_logs and alerts. Also clears this device's in-memory state so a reused
+// id starts clean. InfluxDB history is kept. Same as snmpPollerService.removeDevice.
 async function removeDevice(id) {
   const deviceId = Number(id);
   if (!Number.isInteger(deviceId)) return false;

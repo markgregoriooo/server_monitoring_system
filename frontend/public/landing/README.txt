@@ -47,10 +47,8 @@ means the words have to follow it:
   brief    NOT shown to visitors. It is the shot brief for whoever is taking
            the photo, and only appears in the dev placeholder.
 
-⚠️ `detail` makes factual claims about the hardware — sampling intervals,
-which sensor does what, how the IR is driven. It is the one place on the page
-where a photograph is annotated with assertions, so a stale sentence there is
-a wrong claim with a picture attached. Re-read it when the subject changes.
+`detail` describes the hardware (sampling intervals, which sensor does what,
+how the IR is driven), so re-read it whenever the photo's subject changes.
 
 ===========================================================================
  SHOOTING NOTES

@@ -11,26 +11,15 @@ import {
   fmtTime, focusLineOptions, lineSeries, loadColor,
 } from "./focusShared";
 
-// ─── One router's throughput, on the Dashboard ──────────────────────────────────
-//
-// The sibling of ServerFocus for routers and the MikroTik. The device list above was
-// already good at "which box, and is it up"; what it could not answer is "is this link
-// getting busier", which is the question that precedes a saturated uplink.
-//
-// IN and OUT are separate lines rather than a total, because Ethernet is full-duplex and
-// the two directions saturate independently — a summed line hides an uplink that is
-// maxed inbound while idle outbound. Same reasoning the SNMP poller uses when it takes
-// the BUSIER DIRECTION for link_util rather than the sum (services/snmpUtils.js).
-//
-// Unlike the server chart there is NO fixed axis: throughput has no natural ceiling, so
-// pinning one would either flatten a busy link or leave a quiet one drawing along the
-// floor. Utilisation-against-capacity is the tile's job, where the port's speed is known.
+// ─── One router's throughput on the Dashboard ──────────────────────────────────
+// Same idea as ServerFocus, for routers and the MikroTik: is this link getting busier?
+// In and out are separate lines, since Ethernet is full-duplex and each direction can
+// fill up on its own (the poller uses the busier direction for link_util). No fixed
+// axis: throughput has no natural ceiling.
 
 const IN_COLOR = "#5DCAA5";
 const OUT_COLOR = "#D85A30";
-// ICMP series. Latency reuses the humidity/"link quality" blue used elsewhere for a
-// measured-not-alarming reading; loss takes the danger red, because any loss at all is
-// a fault (see the seeded router_loss rule — 0% is healthy on every link).
+// ICMP series: latency in blue, loss in red (any loss is a fault).
 const LATENCY_COLOR = "#3CC8E8";
 const LOSS_COLOR = "#F2495C";
 
@@ -43,10 +32,8 @@ export interface FocusNetDevice {
   memPercent?: number | null | undefined;
   connectedClients?: number | null | undefined;
   interfaces?: { name: string; locationLabel?: string; linkUp?: boolean; utilizationPct?: number | null }[] | undefined;
-  // "ping" = registered without an SNMP community (ISP-owned CPE). Such a router has no
-  // interfaces and no byte counters — EVER — so the throughput chart below would sit on
-  // "No traffic stored for this range yet" permanently, which reads as a broken feed
-  // rather than as a device that has no traffic data to give.
+  // "ping" = registered without an SNMP community. It never has interfaces or byte
+  // counters, so it shows latency/loss instead of an always-empty throughput chart.
   mode?: "snmp" | "ping" | undefined;
   latencyMs?: number | null | undefined;
   packetLossPct?: number | null | undefined;
@@ -60,14 +47,8 @@ interface Point {
   loss: number | null;
 }
 
-// Values stay in BYTES PER SECOND, exactly as the endpoint returns them, and are scaled
-// only at the moment of display (formatBps).
-//
-// They used to be converted to MB/s up front and rounded to three decimals. On a campus
-// router that idles in the tens of KB/s, every point rounded to 0.00 — so the legend read
-// "In 0.00 MB/s" while the chart, auto-scaled to that tiny range, drew a clearly moving
-// line. Two contradictory claims from one number, and the wrong one is the one people
-// trust. Converting late means the unit can follow the magnitude.
+// Kept in bytes per second as returned, and only scaled when displayed (formatBps).
+// Converting to MB/s up front rounded a quiet link to 0.00 while the chart still moved.
 
 export default function NetworkFocus({
   device,
@@ -82,9 +63,8 @@ export default function NetworkFocus({
   const [loading, setLoading] = useState(false);
 
   const deviceId = device?.id ?? null;
-  // A MikroTik is polled over the RouterOS API and lives behind /api/mikrotik, but both
-  // endpoints are served by networkHistoryHandler and return the identical shape — only
-  // the route differs.
+  // A MikroTik uses /api/mikrotik, but both endpoints use networkHistoryHandler and
+  // return the same shape.
   const isMikrotik = device?.type === "mikrotik";
   // Decided here, not at render: it selects WHICH array the effect keeps.
   const isPing = device?.mode === "ping";
@@ -106,10 +86,9 @@ export default function NetworkFocus({
     req.then((r) => {
       if (!alive) return;
       setLoading(false);
-      // Throughput and ICMP come back as SEPARATE arrays with their own timestamps —
-      // they do not share windows (see networkHistoryHandler). Whichever one this
-      // device charts becomes the series; interleaving them here would put a null in
-      // every other row and withGaps would then cut the line into fragments.
+      // Throughput and ICMP come back as separate arrays with their own timestamps (see
+      // networkHistoryHandler). Only the series this device charts is used; mixing them
+      // would put nulls in every other row and break the line.
       const tp: any[] = r.success && r.data ? r.data.history ?? [] : [];
       const ic: any[] = r.success && r.data ? r.data.icmp ?? [] : [];
       setHistory(
@@ -125,9 +104,8 @@ export default function NetworkFocus({
       );
     });
 
-    // No live tail here. `networkMetrics` carries the poller's CUMULATIVE counters, not a
-    // rate, so appending one would mean re-deriving the throughput on the client — and at
-    // a 30-60s poll cadence that whole second implementation buys a single extra point.
+    // No live updates: `networkMetrics` carries cumulative counters, not rates, and at a
+    // 30-60s poll it would only add one point.
     return () => { alive = false; };
   }, [deviceId, isMikrotik, isPing, range]);
 
@@ -145,9 +123,8 @@ export default function NetworkFocus({
       history.map((p) => fmtTime(p.time, spanSec)),
       [rawIn, rawOut, rawLat, rawLoss],
     );
-    // `.at(-1)` on the raw arrays can still be null when the last window had no reading
-    // for that field — the two measurements are merged as a UNION, so a throughput row
-    // may carry no ICMP value and vice versa. Fall back to the last non-null.
+    // The last value may be null when the last window had no reading for that field, so
+    // fall back to the last non-null value.
     const lastReal = (a: (number | null)[]) => {
       for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i] as number;
       return null;
@@ -180,11 +157,8 @@ export default function NetworkFocus({
     .sort((a, b) => (b.utilizationPct ?? 0) - (a.utilizationPct ?? 0))[0];
   const portsUp = ifaces.filter((i) => i.linkUp === true).length;
 
-  // A ping device gets its OWN two series. Latency and loss share a chart because both
-  // are "how healthy is this link" and neither has a unit the other would distort at
-  // this scale — a link at 30 ms and 0% sits low on both, and either one climbing is
-  // the thing worth seeing. Deliberately NOT a fixed 0-100 axis: latency has no ceiling
-  // and pinning one would flatten every real change.
+  // A ping-only device gets its own two series, latency and loss, on one chart. No
+  // fixed axis, since latency has no ceiling.
   const data: ChartData<"line"> = {
     labels,
     datasets: pingMode
@@ -200,11 +174,8 @@ export default function NetworkFocus({
 
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5">
-      {/* The tile grid is gone — this panel is the chart now. What the tiles carried that
-          a throughput chart cannot say is folded into this one line: reachability, ports
-          up, and the busiest link, which is the number that precedes a saturated uplink.
-          CPU and client count exist only on a MikroTik (the SNMP poller cannot read them),
-          so they appear only when they are real rather than as a misleading 0. */}
+      {/* One status line instead of tiles: reachability, ports up and the busiest link. CPU
+         and clients only exist on a MikroTik, so they only appear there. */}
       <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap text-[11px]" style={{ color: "var(--gf-text-muted)" }}>
         {pingMode ? (
           /* No ports to count. Lead with loss — the number that says whether this link
@@ -271,11 +242,8 @@ export default function NetworkFocus({
         </ChartMessage>
       ) : (
         <div style={{ height: FOCUS_CHART_H }}>
-          {/* The formatter has to follow the SERIES, not the panel: formatBps on a
-              latency series would label 30 ms as "30 B/s". Loss and latency share the
-              axis, so the unit is left off the tick and carried by the legend instead —
-              "30" reads fine against a legend that says ms, whereas a hardcoded "ms"
-              would be wrong for the loss line. */}
+          {/* The formatter follows the series, not the panel (formatBps would label 30 ms as
+             "30 B/s"). Latency and loss share the axis, so the unit is on the legend. */}
           <Line
             data={data}
             options={
@@ -307,19 +275,9 @@ export default function NetworkFocus({
           <>
             <LegendDot color={IN_COLOR} label="In" value={offline ? "—" : formatBps(inNow)} />
             <LegendDot color={OUT_COLOR} label="Out" value={offline ? "—" : formatBps(outNow)} />
-            {/* ICMP as BADGES, not lines. Latency and loss are measured on an SNMP
-                router and a MikroTik exactly as they are on a ping-only one — the
-                poller runs a ping alongside every walk and every API call — but they
-                do not belong on this chart: bytes/sec, milliseconds and percent share
-                no axis, and a third and fourth line would bury the throughput this
-                panel exists to show. A number is the right form for them here, because
-                what a glance needs from link quality is "is it still fine", not a shape.
-                The ping-only branch above keeps them as lines, where they ARE the chart.
-
-                Read from the LIVE device row rather than from `history`, the same call
-                ServerFocus makes for its tiles: the chart may be showing a 30-day range
-                whose last aggregated point is hours old, while these two are current as
-                of the most recent poll. */}
+            {/* Latency and loss shown as badges, not lines: they are measured for SNMP and MikroTik
+               routers too, but bytes/sec, ms and % cannot share an axis. Taken from the live
+               device row (like ServerFocus), so they are current even on a 30-day range. */}
             <LegendDot
               color={LATENCY_COLOR}
               label="Latency"

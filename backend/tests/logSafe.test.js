@@ -3,13 +3,9 @@ import assert from "node:assert/strict";
 import { logSafe } from "../utils/logSafe.js";
 
 // ─── Log injection (CWE-117) ──────────────────────────────────────────────────
-//
-// The values these guard are fully attacker-controlled and reachable without
-// authentication: the `User-Agent` on any rejected request (middleware/auth.js) and the
-// `hostname` in an enrollment body (routes/agents.js).
-//
-// String.fromCharCode is used throughout rather than escape sequences, so this file
-// cannot itself end up containing the invisible control characters it is testing.
+// These values can be sent without logging in: the User-Agent on a rejected request
+// (middleware/auth.js) and the hostname in an enrollment (routes/agents.js).
+// String.fromCharCode is used so this file has no raw control characters in it.
 const LF = String.fromCharCode(10);
 const CR = String.fromCharCode(13);
 const TAB = String.fromCharCode(9);

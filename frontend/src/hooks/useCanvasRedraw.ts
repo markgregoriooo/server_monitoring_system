@@ -1,21 +1,14 @@
 import { useEffect, useState } from "react";
 import type { RefObject } from "react";
 
-// ─── Redraw a hand-drawn canvas when its pixels stop matching the screen ────────
-//
-// `fitCanvas` (utils/hidpiCanvas) sizes a canvas bitmap for the display it is on. That
-// is only correct until one of two things moves, and BOTH are ordinary on a desktop:
-//
-//   • the element's width changes — the window is resized, the sidebar collapses, a
-//     panel reflows. Only matters for a canvas that is `width: 100%`.
-//   • the DEVICE PIXEL RATIO changes — browser zoom (Ctrl +/-) changes it, so does
-//     dragging the window to a monitor on a different Windows scaling factor.
-//
-// The second is the one a resize listener misses. A gauge pinned at `maxWidth: 130` keeps
-// exactly the same CSS width through a zoom, so nothing resizes — the bitmap is simply
-// wrong for the screen now, and the gauge goes soft until something else forces a render.
-//
-// Returns a counter to drop into the drawing effect's dependency array.
+// ─── Redraw a canvas when its pixels no longer match the screen ────────
+// `fitCanvas` (utils/hidpiCanvas) sizes a canvas for the current display. That goes
+// wrong when:
+//   • the element's width changes (window resize, sidebar collapse) — only for a
+//     `width: 100%` canvas;
+//   • the device pixel ratio changes (browser zoom, or moving to a monitor with
+//     different scaling). A resize listener misses this, and the canvas goes blurry.
+// Returns a counter to add to the drawing effect's dependency array.
 
 export function useCanvasRedraw(ref: RefObject<HTMLElement | null>): number {
   const [tick, setTick] = useState(0);
@@ -30,9 +23,8 @@ export function useCanvasRedraw(ref: RefObject<HTMLElement | null>): number {
       ro.observe(el);
     }
 
-    // A `dppx` query only ever matches ONE ratio, so it cannot be left in place: it is
-    // re-armed against the new ratio each time it fires. Without the re-arm this reports
-    // the first zoom step and then goes quiet for every one after it.
+    // A `dppx` media query matches only one ratio, so it is re-created for the new ratio
+    // each time it fires; otherwise only the first zoom step is caught.
     let mq: MediaQueryList | null = null;
     const onRatio = () => {
       detach();

@@ -4,18 +4,15 @@
 # ----------------------------------------------------------------------------
 #  Seeded global rules this crosses:  mem >= 80 warning,  mem >= 95 critical
 #
-#  ⚠  THE ONE TEST THAT CAN TAKE THE VM DOWN. Past a certain point the kernel OOM
-#  killer picks a victim by score, and the biggest processes on a monitoring VM are
-#  often sshd, the agent, or the very database you are watching. If it kills the
-#  agent, the dashboard raises "server offline" instead of "memory critical" — a
-#  different alert, a worse demo, and a VM you may have to reboot from the console.
-#  Hence the default target of 85% (warning band) and the refusal to go past 90%
-#  without -y.
+#  This one can take the VM down: near the limit the kernel's OOM killer may kill
+#  sshd, the agent or the database. If it kills the agent, the dashboard shows
+#  "server offline" instead of "memory critical". So the default target is 85%
+#  (warning), and going past 90% needs -y.
 #
 #  Usage:
 #    ./mem-stress.sh                 # ~85% used for 3 minutes → warning
-#    ./mem-stress.sh -p 96 -y -d 2m  # cross the critical rule, deliberately
-#    ./mem-stress.sh -p 96 -y -r 64  # same on a SMALL VM (~2 GB): shrink the reserve
+#    ./mem-stress.sh -p 96 -y -d 2m  # cross the critical rule
+#    ./mem-stress.sh -p 96 -y -r 64  # same on a small VM (~2 GB): shrink the reserve
 #    ./mem-stress.sh -m 1024         # allocate exactly 1 GB
 # ============================================================================
 set -uo pipefail
@@ -82,9 +79,8 @@ USED_PCT=$(( USED_MB * 100 / TOTAL_MB ))
 # for sshd to accept a login and the agent to keep POSTing while the test runs.
 RESERVE_MB=$(( TOTAL_MB / 20 ))
 [ "$RESERVE_MB" -lt 256 ] && RESERVE_MB=256
-# -r overrides it — the only way to reach the 95% critical rule on a small VM, where
-# the 256 MB floor alone is a double-digit share of RAM. 32 MB is a hard minimum:
-# below that the agent itself can be starved and you get "server offline" instead.
+# -r overrides it; needed to reach 95% on a small VM, where 256 MB is a large share of
+# RAM. 32 MB minimum, or the agent itself may be starved.
 if [ -n "$RESERVE_ARG" ]; then
   case "$RESERVE_ARG" in ''|*[!0-9]*) die "-r needs a whole number of MB." ;; esac
   [ "$RESERVE_ARG" -ge 32 ] || die "-r must be at least 32 MB."
@@ -156,13 +152,11 @@ trap 'cleanup; exit 130' INT TERM
 trap 'cleanup' EXIT
 
 # ─── Allocation method, in order of preference ───────────────────────────────
-# python3  — exact, unprivileged, and the pages are TOUCHED so they are resident
-#            rather than merely promised. An untouched allocation moves nothing:
-#            Linux hands out address space lazily and the agent reports resident
-#            memory, so a malloc nobody writes to is invisible on the dashboard.
-# stress-ng— if it happens to be installed, it does the same job.
-# /dev/shm — tmpfs, so a file there IS memory. Works with no interpreter at all.
-#            Capped by the tmpfs size (usually 50% of RAM), which is why it is last.
+# python3  — exact, needs no privileges, and writes to the pages so they are really
+#            in use (Linux allocates lazily, and untouched memory does not show).
+# stress-ng— used if installed.
+# /dev/shm — tmpfs, so a file there is memory. Needs no interpreter, but is limited
+#            by the tmpfs size (usually 50% of RAM), so it is last.
 if have python3; then
   METHOD="python3"
 elif have stress-ng; then

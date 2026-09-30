@@ -19,10 +19,8 @@ router.get(
   }),
 );
 
-// Logged-in user updates own profile — USERNAME ONLY.
-// Name, email and profile photo are owned by Google: googleAuthService re-syncs them
-// from the ID token on every sign-in, so accepting edits here would silently discard
-// them at the next login. The multipart/photo-upload path was removed with them.
+// Logged-in user updates their own profile: username only. Name, email and photo
+// come from Google and are re-synced on every sign-in.
 router.patch("/me", authMiddleware, asyncHandler(async (req, res) => {
     const updatedUser = await userService.updateOwnProfile(req.user.id, {
       username: req.body?.username,
@@ -36,21 +34,8 @@ router.patch("/me", authMiddleware, asyncHandler(async (req, res) => {
   }),
 );
 
-// ─── No password endpoints ────────────────────────────────────────────────────
-//
-// `PATCH /users/me/password` and the password half of `POST /users` were removed on
-// 2026-08-25. They were DEAD auth code: sign-in has been Google-only since the
-// password login was deleted, so nothing reads `users.hash_password` and no password
-// set here could ever authenticate anyone.
-//
-// It was not merely unused, it was broken — every account is a Google account, so
-// `hash_password` is NULL, and `bcrypt.compare(input, null)` THROWS
-// ("Illegal arguments: string, object"). The endpoint answered 500 for every user who
-// could reach it. Nothing in the frontend called it; the UI had already gone.
-//
-// Removed rather than left alone because a live authentication endpoint nobody uses,
-// nobody tests and nobody looks at is exactly where a real vulnerability survives.
-// `bcryptjs` went with it. See audits/auth-flow-security-2026-08-25.md — AF-03.
+// No password endpoints: sign-in is Google-only, so they were removed on 2026-08-25
+// together with bcryptjs. See audits/auth-flow-security-2026-08-25.md (AF-03).
 
 // Admin: list registrations awaiting approval.
 // MUST be declared before "/:id" so "pending" isn't captured as an :id param.
@@ -81,10 +66,9 @@ router.get(
   }),
 );
 
-// `POST /users` (admin-created account with a password) was removed with the password
-// endpoints above — same reason: the password it demanded could never authenticate
-// anyone. Accounts arrive by Google self-registration and are approved below; the very
-// first admin is promoted by hand (deployment-guide.md §4.3).
+// There is no admin "create user" route. Accounts come from Google sign-in and are
+// approved below. The first admin comes from FIRST_ADMIN_EMAIL under Docker, or is
+// promoted by hand (deployment-guide.md §4.3).
 
 // Update user
 router.patch(
@@ -155,16 +139,9 @@ router.post(
       description: `Approved registration ${user.name} (${user.email}) as ${user.role}`,
       ...clientInfo(req),
     });
-    // Tell the person their account is live. Until this existed, an approved user had
-    // NO way to find out: `userApproved` below is a socket event that only reaches
-    // admins, and the approved user holds no session for anything to be pushed to. The
-    // only signal was retrying the sign-in and noticing the message had changed.
-    //
-    // Awaited rather than fire-and-forget. The sender never throws and returns a
-    // boolean, so this cannot fail the approval — and awaiting is what lets the
-    // response say whether the person was actually reached. An admin who sees it failed
-    // can pass the word on another way; a silent failure leaves someone waiting for a
-    // message that is never coming.
+    // Email the person that their account is active; otherwise they have no way to
+    // know. Awaited so the response can report whether the email was sent (the sender
+    // never throws).
     const emailed = await emailService.sendAccountApprovedEmail(user);
     if (!emailed) {
       console.warn(
@@ -195,15 +172,9 @@ router.post(
       level: "warning",
       ...clientInfo(req),
     });
-    // Close the loop for the person too. Neutral by design — no reason and no actor,
-    // see services/accountEmailTemplate.js — because a rejection can be a security
-    // decision, and an email that explains itself tells whoever registered exactly what
-    // was noticed. The case this exists for is the one rejected by mistake, who
-    // otherwise has no way to learn of it or say so.
-    //
-    // Sent AFTER rejectUser, so a request for a user who does not exist (or is not
-    // pending) throws first and nobody is mailed about a state change that never
-    // happened.
+    // Tell the person they were rejected, without a reason or the admin's name (see
+    // services/accountEmailTemplate.js). Sent after rejectUser, so nobody is emailed if
+    // the rejection itself failed.
     const emailed = await emailService.sendAccountRejectedEmail(target);
     if (!emailed) {
       console.warn(

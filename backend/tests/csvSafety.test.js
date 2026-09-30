@@ -3,13 +3,8 @@ import assert from "node:assert/strict";
 import { toCSV } from "../services/reportRenderer.js";
 
 // ─── CSV formula injection (CWE-1236) ─────────────────────────────────────────
-//
-// RFC 4180 quoting makes a cell PARSE correctly; it says nothing about what a
-// spreadsheet DOES with the text. These pin the neutralisation in csvCell.
-//
-// The reachable inputs are real: a report `title` comes from the request body, and device
-// names come from `devices.device_name`, which agentService.register fills from the
-// agent-supplied hostname with no character validation.
+// Quoting only makes a cell parse; these test the formula neutralisation in csvCell.
+// Report titles and device names (from agent hostnames) can contain such text.
 
 /** Build the smallest report the renderer accepts, with `cells` as one table row. */
 const reportWith = (cells, title = "T") => ({

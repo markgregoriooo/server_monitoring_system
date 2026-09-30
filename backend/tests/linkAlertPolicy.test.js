@@ -18,8 +18,8 @@ test("an empty socket is not a fault, however long it stays down", () => {
 });
 
 test("a port disabled in RouterOS is not a fault", () => {
-  // The regression this exists for: `disabled=yes` used to be folded into linkUp, so
-  // switching a port off on purpose produced the loudest alert on the dashboard.
+  // `disabled=yes` used to be treated as link down, so turning a port off on purpose
+  // raised an alert.
   const disabled = { ...LIVE_PORT_DOWN, adminUp: false };
   assert.equal(isLinkFault(disabled), false);
   assert.equal(linkAlertReason(disabled), "disabled");
@@ -58,9 +58,8 @@ test("missing gate data defaults to silence, not to a fault", () => {
 });
 
 test("the four gates are checked in priority order", () => {
-  // Reason ordering is what the port editor shows a user, so the MOST actionable
-  // explanation has to win: "you silenced it" outranks "it is disabled" outranks
-  // "it never had a cable".
+  // The port editor shows the most useful reason first: muted, then disabled, then
+  // never connected.
   assert.equal(
     linkAlertReason({ adminUp: false, linkUp: false, everUp: false, monitored: false }),
     "silenced",

@@ -32,7 +32,7 @@ test("they are real Errors, so instanceof and stack still work", () => {
 });
 
 test("exposure follows INTENT, not just the status range", () => {
-  // src/server.js shows a message when `expose` is true OR the status is 4xx.
+  // src/server.js shows the message when `expose` is true or the status is 4xx.
   //
   // 4xx is always written for a user:
   assert.equal(badRequest("duplicate email").expose, true);
@@ -41,9 +41,8 @@ test("exposure follows INTENT, not just the status range", () => {
   // An ACCIDENTAL 5xx must stay generic — a driver message is not for a browser:
   assert.equal(new HttpError(500, "ER_NO_SUCH_TABLE: cspc.reports").expose, false);
 
-  // A DELIBERATE 5xx exposes: its text is the entire point ("Email is not configured
-  // on this server"). unavailable() and ServiceUnavailable must agree here — they are
-  // the same status and callers treat them interchangeably (L-01).
+  // A 5xx raised on purpose is exposed ("Email is not configured on this server").
+  // unavailable() and ServiceUnavailable must behave the same (L-01).
   assert.equal(unavailable().expose, true);
   assert.equal(new ServiceUnavailable().expose, true);
   assert.equal(unavailable("x").status, new ServiceUnavailable("x").status);

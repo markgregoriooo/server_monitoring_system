@@ -4,21 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// ─── Every async route handler must route its errors somewhere ────────────────
-//
-// Express 4 does not catch a rejected promise returned by a handler. It becomes an
-// unhandled rejection: no 500, no error-middleware, and the request hangs until the
-// client times out — which reads as "the dashboard froze", not as an error.
-//
-// Two mechanisms are in use, and both are fine:
-//   utils/asyncHandler.js   the decorator — `asyncHandler(async (req, res) => …)`
+// ─── Every async route handler must pass its errors on ────────────────
+// Express 4 does not catch a rejected promise from a handler: the request just hangs.
+// Two accepted patterns:
+//   utils/asyncHandler.js   the wrapper, `asyncHandler(async (req, res) => …)`
 //   an explicit try/catch   `catch (err) { next(err) }`
-//
-// At the time of writing all 92 async handlers use one or the other. This test exists so
-// that stays true: adding a third, unguarded one fails here rather than in production.
-// It parses the route files as TEXT, so it needs no MySQL, no InfluxDB and no .env.
-//
-// See audits/design-patterns-report-2026-08-25.md — P-06.
+// This reads the route files as text and fails if a handler uses neither.
+// See audits/design-patterns-report-2026-08-25.md (P-06).
 
 const ROUTES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "routes");
 

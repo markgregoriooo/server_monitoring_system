@@ -5,21 +5,11 @@ import { STATUS } from "../../theme/gf";
 const { green: GREEN } = STATUS;
 
 /**
- * The architecture, as a diagram data actually moves through.
- *
- * The previous version of this section was a row of boxes with "→" between them,
- * which is a picture of a sentence. Here each connector is a real path and a
- * packet rides it, so the direction, the convergence (three ingest paths into one
- * backend) and the split (live socket to the browser vs. history through the
- * stores) are all visible rather than described.
- *
- * The top arc is the honest bit most diagrams of this shape get wrong: the
- * dashboard does NOT poll the database for live values. The backend broadcasts
- * over Socket.IO the moment a sample lands, and the stores are read for HISTORY.
- * Two different lanes, drawn as two different lanes.
- *
- * SVG on large screens only. Scaled down to a phone the labels would be 4px, so
- * below `lg` the caller renders a stacked list instead.
+ * The architecture as a diagram with data moving through it: three ingest paths into
+ * one backend, then live data over Socket.IO to the browser and history through the
+ * databases. The dashboard gets live values from the socket, not by polling the
+ * database, so those are drawn as two separate lanes. SVG on large screens only;
+ * below `lg` the caller shows a stacked list.
  */
 
 const ACCENT = "#5794F2";
@@ -37,22 +27,16 @@ interface Box {
   tone?: string;
 }
 
-// The three source boxes share a width on purpose — a column of boxes that are
-// nearly-but-not-quite the same size reads as a mistake. It is 152 rather than 130
-// because the Pollers label now names three protocols: at 10.5px monospace,
-// "SNMP · RouterOS · ICMP" is ~139px and spilled out of the old 130px box. Widening the
-// column also moves where the connectors start (see LINKS: x=166, was 136).
+// The three source boxes share one width (152). The Pollers label "SNMP · RouterOS ·
+// ICMP" needs ~139px at 10.5px monospace. Connectors start at x=166.
 const BOXES: Box[] = [
   { x: 6, y: 18, w: 160, h: 52, title: "ESP32", sub: "DHT22 · MQ-2 · IR", tone: GREEN },
   { x: 6, y: 92, w: 160, h: 52, title: "Go agents", sub: "one per server", tone: GREEN },
-  // ICMP is not a fourth ingest path — it rides the same pull poller. It earns a name
-  // here because it is the only one that can monitor equipment we hold no credentials
-  // for, which at CSPC is the only non-MikroTik router that exists.
+  // ICMP is not a separate ingest path (it runs in the poller), but it is named because
+  // it monitors equipment we have no credentials for.
   { x: 6, y: 166, w: 160, h: 52, title: "Pollers", sub: "SNMP · RouterOS · ICMP", tone: GREEN },
-  // 196 wide, not 150: "validate · alert · broadcast" is 28 monospace characters,
-  // about 176px at 10.5px, and was spilling past both edges of the old box. It is the
-  // hub and already the tallest box, so being the widest reads as hierarchy rather
-  // than as an odd size. Its right edge moves 430 → 476, which is where l4/l5 start.
+  // 196 wide to fit "validate · alert · broadcast" (~176px). Its right edge is at 476,
+  // where l4/l5 start.
   { x: 280, y: 79, w: 196, h: 90, title: "Node.js", sub: "validate · alert · broadcast", tone: ACCENT },
   { x: 560, y: 44, w: 130, h: 54, title: "InfluxDB", sub: "time-series" },
   { x: 560, y: 150, w: 130, h: 54, title: "MySQL", sub: "state · alerts" },
@@ -125,12 +109,8 @@ export default function FlowDiagram() {
     });
     cleanups.push(() => boxAnim.pause());
 
-    // 3. Then packets ride each connector, forever.
-    //
-    // createMotionPath resolves the path into x/y/rotate tracks, so a dot follows
-    // the real curve rather than a straight line between its endpoints. Each link
-    // gets its own duration so the packets never march in lockstep, which is what
-    // makes it read as traffic instead of as a carousel.
+    // 3. Then packets ride each connector, forever. createMotionPath makes each dot follow
+    // the actual curve, and each link has its own duration so the dots do not move in step.
     LINKS.forEach((link, i) => {
       const dot = root.querySelector<SVGCircleElement>(`[data-dot="${link.id}"]`);
       const pathEl = root.querySelector<SVGPathElement>(`[data-link="${link.id}"]`);

@@ -5,10 +5,9 @@ import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 import { normalizeStatus } from "../utils/envThresholds";
 
-// One live summary, subscribed ONCE here and shared via context, so any number of
-// widget tiles read the same state without each opening its own socket listeners.
-// Consumes the exact streams the Dashboard already gets (sensorData / serverMetrics /
-// serverStatus / serverRemoved / airconStatus) — see pages/Dashboard.tsx.
+// One live summary, subscribed once here and shared through context, so widget tiles
+// do not each open their own socket listeners. Uses the same streams as the Dashboard
+// (sensorData / serverMetrics / serverStatus / serverRemoved / airconStatus).
 
 export interface EnvLive {
   temperature: number;
@@ -86,24 +85,17 @@ export interface LiveSummary {
   // Ping-only routers among them. A tile showing "0/0 ports" for these would read as
   // three dead links rather than as three devices that have no ports to report.
   pingOnlyRouters: number;
-  // Per-stream "we haven't heard anything in a suspiciously long time". A stream that
-  // has never produced data is NOT stale — that is an empty state, and the tiles
-  // already say "No UPS" / "—" for it.
+  // Per stream: nothing heard for a suspiciously long time. A stream that has never
+  // sent data is empty, not stale; the tiles already show "No UPS" / "—".
   stale: Record<StreamKey, boolean>;
 }
 
 // ─── Staleness ────────────────────────────────────────────────────────────────
-// The connection dot reflects the SOCKET, not each data source. If a collector dies
-// while the socket stays healthy — the SNMP poller crashing, the ESP32 dropping off —
-// nothing emits an offline status (the poller is what would have emitted it), so a
-// tile freezes on its last reading and goes on looking green. On a glance surface
-// whose whole job is "is anything wrong", a confidently-wrong number is worse than an
-// obvious gap, so each stream is timed out independently.
-//
-// Thresholds are a generous multiple of each source's real cadence, because a missed
-// sample is normal and only a RUN of them means something. Device-level failure is
-// already covered elsewhere (the offline sweep for servers, poller reachability for
-// routers/UPS) — this catches the layer above, where the collector itself is gone.
+// The connection dot shows the socket, not each source. If a collector dies while the
+// socket stays up (the SNMP poller crashing, the ESP32 dropping off), nothing reports
+// it and a tile would keep showing its last value. So each stream has its own
+// timeout, a generous multiple of its normal interval (one missed sample is normal).
+// Device failures are covered elsewhere; this catches a collector that is gone.
 export type StreamKey = "env" | "servers" | "ups" | "network";
 
 const STALE_AFTER_MS: Record<StreamKey, number> = {
@@ -120,8 +112,8 @@ const STALE_TICK_MS = 10_000;
 
 const LiveSummaryContext = createContext<LiveSummary | null>(null);
 
-// REST rows and socket payloads carry the same field names for these, so one mapper
-// serves both paths (see UpsMonitoring.mapUps / NetworkMonitoring.mapNet).
+// REST rows and socket payloads use the same field names, so one mapper serves both
+// (see UpsMonitoring.mapUps / NetworkMonitoring.mapNet).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapUps(r: any): UpsLive {
   return {
@@ -135,8 +127,8 @@ function mapUps(r: any): UpsLive {
   };
 }
 
-// `fallbackType` is used only when the payload omits `type` — the SNMP list endpoint
-// doesn't stamp one, while the shared networkMetrics event always does.
+// `fallbackType` is only used when the payload has no `type` (the SNMP list endpoint
+// does not set one; networkMetrics always does).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapNet(r: any, fallbackType = "router"): NetLive {
   const ifaces: any[] = Array.isArray(r.interfaces) ? r.interfaces : [];
@@ -165,9 +157,8 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
   const [aircons, setAircons] = useState<AirconLive[]>([]);
   const [upsList, setUpsList] = useState<UpsLive[]>([]);
   const [routers, setRouters] = useState<NetLive[]>([]);
-  // Last time each stream produced anything. null = nothing yet (an empty state, not a
-  // stale one). A REST seed counts as an update, or a freshly opened widget would look
-  // stale for up to a full poll interval before the first push landed.
+  // Last time each stream sent anything. null = nothing yet (empty, not stale). A REST
+  // seed counts, so a newly opened widget does not look stale until the first push.
   const [lastAt, setLastAt] = useState<Record<StreamKey, number | null>>({
     env: null,
     servers: null,
@@ -207,11 +198,9 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
       });
     seedServers();
 
-    // UPS + routers are POLLED server-side (60s SNMP / 30s RouterOS), so unlike the
-    // push streams there may be a long wait before the first event. Seed from REST so
-    // a freshly-opened widget shows real values immediately instead of dashes.
-    // MikroTiks come from their own endpoint but merge into the same `routers` list —
-    // they share the networkMetrics/networkStatus events downstream.
+    // UPS and routers are polled (60s SNMP / 30s RouterOS), so the first event may take a
+    // while. Seed from REST so a new widget shows values right away. MikroTiks come from
+    // their own endpoint but go into the same `routers` list.
     const seedUps = () =>
       api.getUpsDevices().then((r) => {
         if (alive && r.success && r.data) {
@@ -321,8 +310,8 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
       });
       mark("ups");
     };
-    // Unreachable → zero the live values rather than leaving the last-known charge on
-    // screen, which would read as a healthy UPS that simply stopped being polled.
+    // Unreachable: clear the live values instead of leaving the last charge, which would
+    // look like a healthy UPS.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const onUpsStatus = (d: any) =>
       setUpsList((prev) =>
@@ -348,9 +337,8 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
         const row = idx === -1 ? undefined : prev[idx];
         if (!row) return [...prev, incoming];
         const next = [...prev];
-        // A payload without `interfaces` (e.g. a connection edit, which re-emits the
-        // device) must not wipe the port counts, so only take the port fields when this
-        // sample actually carried them.
+        // A payload without `interfaces` (e.g. after a connection edit) must not clear the port
+        // counts, so only take port fields when the sample has them.
         next[idx] = dev.interfaces
           ? { ...row, ...incoming }
           : { ...row, name: incoming.name, status: incoming.status, type: incoming.type };
@@ -364,10 +352,8 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
         prev.map((r) =>
           r.id === Number(d?.id)
             ? d?.status === "Offline"
-              // latency goes null (there was no measurement) while loss goes to 100
-              // (there was: nothing came back). Same asymmetry as icmpPing's DOWN
-              // result — a fabricated 0 ms would drag a latency read toward zero at
-              // exactly the moment the link is worst.
+              // Latency goes null (nothing measured) and loss goes to 100 (nothing came back), as in
+              // icmpPing's down result; 0 ms would look falsely good.
               ? { ...r, status: "Offline", portsUp: 0, worstUtil: null, latencyMs: null, packetLossPct: 100 }
               : { ...r, status: d?.status }
             : r,
@@ -422,9 +408,8 @@ export function LiveSummaryProvider({ children }: { children: ReactNode }) {
     // `mark` is a stable useCallback, so this still re-subscribes only on login/logout.
   }, [user, mark]);
 
-  // A stream with no data yet is NOT stale — that's an empty state, and the tiles
-  // already render "No UPS" / "—" for it. Only a stream that WAS reporting and then
-  // went quiet counts.
+  // A stream with no data yet is not stale (it is empty); only one that was reporting and
+  // then went quiet counts.
   const isStale = useCallback(
     (k: StreamKey) => {
       const at = lastAt[k];

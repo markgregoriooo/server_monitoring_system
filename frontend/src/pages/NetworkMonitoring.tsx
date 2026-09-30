@@ -13,18 +13,10 @@ import type { DeviceFirstPoll } from "../api/api";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── Router list page ─────────────────────────────────────────────────────────
-//
-// USER-FACING WORDING: everything here says "router", never "router/switch".
-// A managed switch is still fully supported and registers through this same form —
-// SNMP reads IF-MIB from both and the poller cannot tell them apart — but naming
-// both device classes in the UI raised more questions than it answered at CSPC,
-// where there is no switch to register. The capability is documented in
-// router-ups-monitoring.md; the label is kept plain.
-// First page = the fleet list (one compact card per router, with "View"); clicking
-// through swaps in NetworkDetail for the full drill-down. Mirrors
-// MikrotikMonitoring ↔ MikrotikDetail and ServerMetrics ↔ ServerDetail, so moving
-// between the MikroTik and SNMP pages doesn't mean relearning the layout.
-// Types live in NetworkDetail.tsx — this module imports them, never the reverse.
+// The UI says "router", not "router/switch". A managed switch works the same way (SNMP
+// IF-MIB), but CSPC has none to register; see router-ups-monitoring.md.
+// One row per router with "View", which opens NetworkDetail in place, like
+// MikrotikMonitoring ↔ MikrotikDetail. Types are in NetworkDetail.tsx.
 
 // ─── Grafana tokens (match ServerMetrics.tsx) ─────────────────────────────────
 
@@ -37,10 +29,9 @@ const inputStyle: React.CSSProperties = {
   fontFamily: "'JetBrains Mono', monospace",
 };
 
-// Blank form for "Add router". The community starts EMPTY, not at "public": here a blank
-// community is a real choice — it registers the router for ICMP-only monitoring — so
-// pre-filling a guess would silently opt every router into SNMP. (The UPS form does start
-// at "public", because a UPS has no ping-only mode.)
+// Blank "Add router" form. The community starts empty: blank means ICMP-only
+// monitoring, so pre-filling "public" would opt every router into SNMP. (The UPS form
+// starts at "public", since a UPS has no ping-only mode.)
 interface NetForm {
   name: string;
   ip: string;
@@ -49,11 +40,8 @@ interface NetForm {
   location: string;
 }
 
-// Blank, not pre-filled — same reasoning as the Add MikroTik form: a real value in a field
-// is not a suggestion, it is text the admin has to delete before typing their own, every
-// time. The suggestion lives on as a placeholder instead, and parseCommon falls back to
-// "CSPC-ICTU Server Room" when the field is left empty, so the same value reaches the DB
-// either way.
+// Empty field with a placeholder rather than a value to delete. parseCommon uses
+// "CSPC-ICTU Server Room" when it is left empty.
 const EMPTY_NET_FORM: NetForm = {
   name: "",
   ip: "",
@@ -148,11 +136,9 @@ function Panel({
 
 // ─── Ghost button (matches ServerMetrics "View") ──────────────────────────────
 
-// ─── Port chip (compact per-port state for the LIST card) ─────────────────────
-// The list only needs an at-a-glance "which ports are up"; the full per-port table
-// (speed / Tx / Rx / errors / util) lives in the detail view. Matches MikroTik's
-// list — and replaces the old full-width utilization bars, whose empty tracks read
-// as loading skeletons on the idle ports that are the normal case here.
+// ─── Port chip (per-port state in the list) ─────────────────────
+// The list only shows which ports are up; the full table (speed / Tx / Rx / errors /
+// util) is in the detail view. Same as the MikroTik list.
 
 function PortChip({ label, up, util }: { label: string; up: boolean; util?: number | null }) {
   const showUtil = up && util != null && Number.isFinite(util);
@@ -173,13 +159,10 @@ function PortChip({ label, up, util }: { label: string; up: boolean; util?: numb
   );
 }
 
-// One labelled fact in a drawer's summary strip. The strip used to be bare values
-// separated by gaps — "dev-router-01", "RB951G-2HnD", "4h 16m" — which only reads if
-// you already know the schema. The key is what makes a value information.
+// One labelled value in a drawer's summary strip, so each value says what it is.
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
-// Mirrors ServerMetrics' ServerDrawerRow: the table shows what you SCAN, the drawer
-// holds what you'd otherwise have to open the detail page for. Animated by max-height
-// rather than conditional rendering, so it slides instead of snapping.
+// Like ServerMetrics' ServerDrawerRow: the table has the summary, the drawer the rest.
+// Animated with max-height so it slides open.
 function NetDrawerRow({ d, isOpen, colSpan }: { d: NetDevice; isOpen: boolean; colSpan: number }) {
   const up = d.interfaces.filter((i) => i.linkUp).length;
   return (
@@ -198,9 +181,8 @@ function NetDrawerRow({ d, isOpen, colSpan }: { d: NetDevice; isOpen: boolean; c
               <Meta label="Uptime" value={formatUptime(d.uptimeSeconds)} />
             </div>
             {d.mode === "ping" ? (
-              /* A ping device is not a broken SNMP device, and must not look like
-                 one. It reports exactly three things and will never report ports, so
-                 name the mode and show what it does have instead of an empty list. */
+              /* A ping device reports three things and never has ports, so show its mode and what it
+                 has instead of an empty list. */
               <div className="flex flex-col gap-1.5">
                 <span className="text-[11px] tracking-widest uppercase" style={{ color: gf.textDim }}>
                   ICMP ping · no SNMP community
@@ -246,9 +228,8 @@ function NetDrawerRow({ d, isOpen, colSpan }: { d: NetDevice; isOpen: boolean; c
 // Compact ports figure for the table cell — the count is the scannable bit, the chips
 // live in the drawer.
 function PortsCell({ d }: { d: NetDevice }) {
-  // A ping device has no ports and never will. An em-dash here would read as
-  // "SNMP is broken / not polled yet", which is the opposite of the truth — so say
-  // what it IS instead, and put the one number it does have where the eye lands.
+  // A ping device has no ports; say what it is and show the number it does have, rather
+  // than a dash that looks like a failure.
   if (d.mode === "ping") {
     const loss = d.packetLossPct;
     const lossColor =
@@ -292,17 +273,14 @@ export default function NetworkMonitoring() {
   // Which row's drawer is open (one at a time), same as ServerMetrics.
   const [openId, setOpenId] = useState<string | null>(null);
   const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
-  // Toasts carry a TONE now. A registration whose first poll failed is not a success,
-  // and reporting it in the same green box as a working one is how the old
-  // "Router added — polling starts within a minute" managed to be reassuring and wrong
-  // at the same moment.
+  // Toasts have a tone, so a registration whose first poll failed is not shown as success.
   const [toast, setToast] = useState<{ msg: string; tone: "ok" | "warn" } | null>(null);
   const probe = useProbe();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Deep-link from a notification: /network?device=<id> opens that router's detail
-  // once the list has loaded, then drops the param (so Back returns to the list and a
-  // refresh doesn't re-trigger). Same contract as ServerMetrics — see routeFor.
+  // Deep link from a notification: /network?device=<id> opens that router once the list
+  // loads, then removes the parameter (so Back returns to the list). Same as ServerMetrics;
+  // see routeFor.
   useEffect(() => {
     const deviceParam = searchParams.get("device");
     if (!deviceParam) return;
@@ -347,10 +325,8 @@ export default function NetworkMonitoring() {
   const save = async () => {
     if (!form.name.trim()) return setFormError("Device name is required.");
     if (!form.ip.trim()) return setFormError("IP address is required.");
-    // A blank community is a CHOICE, not an omission: it registers the device for
-    // ICMP monitoring. Refusing it is what kept the one router this system most
-    // needs to watch — the ISP-owned CPE, which will never hand out a community —
-    // out of the dashboard entirely.
+    // A blank community is allowed: it registers the device for ICMP monitoring (e.g. ISP
+    // equipment with no community).
     setSaving(true);
     setFormError("");
     const res = await api.addNetworkDevice({
@@ -366,12 +342,8 @@ export default function NetworkMonitoring() {
       setDevices((prev) => (prev.some((d) => d.id === added.id) ? prev : [...prev, added]));
       setFormOpen(false);
       probe.reset();
-      // Deliberately does NOT claim the device is working. The backend polls it once
-      // immediately and sends the verdict back on `deviceFirstPoll` a second or two
-      // later — that handler replaces this line with what actually happened. Saying
-      // "polling starts within a minute" here, as this used to, was a promise the page
-      // was in no position to make and was exactly as reassuring on a mistyped
-      // community as on a real router.
+      // Does not say the device works yet: the backend polls it once and the result arrives on
+      // `deviceFirstPoll` a moment later and replaces this line.
       showToast("Router registered — testing it now…");
     } else {
       setFormError(res.error || "Could not add router.");
@@ -433,11 +405,8 @@ export default function NetworkMonitoring() {
       setDevices((prev) => prev.filter((d) => d.id !== id));
       setDetailId((prev) => (prev === id ? null : prev));
     };
-    // How the just-registered device's FIRST poll went. Sent only to the admin who
-    // registered it, so this is never somebody else's device flashing a warning at you.
-    // Without it the failure lived in the server console: the card said Offline, which
-    // is what an unpolled healthy router also says, and there was nothing on screen to
-    // tell the admin whether to wait or to go and fix the community string.
+    // How the new device's first poll went, sent only to the admin who added it, so a wrong
+    // community shows up on screen instead of only in the server log.
     const onFirstPoll = (d: DeviceFirstPoll) => {
       if (d?.kind !== "router") return; // UPS and MikroTik have their own pages
       if (d.ok) {
@@ -476,9 +445,8 @@ export default function NetworkMonitoring() {
   const peakUtil = upUtil.length ? Math.round(Math.max(...upUtil)) : 0;
   const onlineColor = total === 0 ? gf.textMuted : online === total ? GREEN : online === 0 ? RED : ORANGE;
 
-  // Drill-down: render the per-router detail in place (Back returns to the list),
-  // mirroring MikrotikMonitoring ↔ MikrotikDetail. Look the device up by id each
-  // render so the open page keeps receiving the list's live socket updates.
+  // Detail view in place (Back returns to the list). Looked up by id each render so it
+  // keeps getting live updates from the list's state.
   const detail = detailId ? devices.find((x) => x.id === detailId) ?? null : null;
   if (detail) {
     return <NetworkDetail device={detail} isAdmin={isAdmin} onBack={() => setDetailId(null)} />;
@@ -541,11 +509,8 @@ export default function NetworkMonitoring() {
           </div>
         </Panel>
       ) : (
-        /* Wide list + expandable drawer, matching the Server Metrics front page: one
-           full-width table you can scan down, with each row clicking open to reveal the
-           ports. The old two-up card grid showed every port for every router at once,
-           which meant scrolling past detail you hadn't asked for to find the one router
-           you cared about. */
+        /* A full-width list with expandable rows, like the Server Metrics page, so you can scan
+           routers and open only the one you want. */
         <Panel
           title="Routers"
           noPad
@@ -682,10 +647,7 @@ export default function NetworkMonitoring() {
                 Polled once the moment you add it, then every cycle (≤60s) — no restart needed.
               </p>
 
-              {/* Test BEFORE saving. This is the whole point: an address that answers
-                  nothing, or a community the device ignores, is caught here next to the
-                  field that caused it — instead of becoming a registered device whose
-                  card says Offline for a reason that only ever reached the server log. */}
+              {/* Test before saving, so a wrong address or community is caught next to the field. */}
               <ProbeResultPanel state={probe.state} />
 
               {formError && <div className="text-[12px]" style={{ color: RED }}>{formError}</div>}
@@ -700,10 +662,8 @@ export default function NetworkMonitoring() {
                   Cancel
                 </button>
               </div>
-              {/* Never BLOCKS the save on a failed probe. A device can legitimately be
-                  registered before it is reachable — cabled next week, or behind a
-                  firewall rule somebody else has to open — and refusing that would just
-                  teach people to skip the test. It states the consequence instead. */}
+              {/* A failed test never blocks saving (the device may not be reachable yet); it states
+                 the consequence instead. */}
               {probe.state.phase === "done" && !probePassed(probe.state) && (
                 <p className="text-[11px]" style={{ color: ORANGE }}>
                   You can still add it — it will show as Offline until whatever is named above is fixed.

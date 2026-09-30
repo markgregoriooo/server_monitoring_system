@@ -1,8 +1,5 @@
-// Unit tests for the pure server-metric helpers.
-// Run: npm test   (node --test, no test-runner dependency)
-//
-// These import services/serverMetricUtils.js ONLY, which has no imports of its
-// own — so the suite runs with no MySQL, no InfluxDB and no .env.
+// Tests for the server-metric helpers. Run: npm test (node --test)
+// serverMetricUtils.js has no imports, so no MySQL, InfluxDB or .env is needed.
 
 import test from "node:test";
 import assert from "node:assert/strict";

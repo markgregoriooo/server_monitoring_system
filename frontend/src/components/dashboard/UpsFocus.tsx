@@ -10,21 +10,11 @@ import {
   fmtTime, focusLineOptions, lineSeries, loadColor,
 } from "./focusShared";
 
-// ─── One UPS's battery and load, on the Dashboard ───────────────────────────────
-//
-// The third focus panel. The device list above answers "is it on mains", which is the
-// alarm; this answers the question that comes before it — is the battery holding its
-// charge over weeks, and is the load creeping up towards the capacity that determines
-// how long that battery lasts.
-//
-// Battery % and load % share the 0-100 axis. Runtime is MINUTES, a different unit whose
-// numbers are an order of magnitude apart from a percentage, so it stays a tile — putting
-// "18 min" on a 0-100 axis beside "97%" invites reading the runtime as a percentage.
-//
-// Battery charge is inverted in meaning versus every other metric on this Dashboard:
-// LOWER is worse. loadColor is higher-is-worse, so charge is coloured by its own bands
-// (matching the seeded ups_charge rules: warning <= 50, critical <= 20) rather than by
-// passing it through a helper that would paint a nearly-flat battery green.
+// ─── One UPS's battery and load on the Dashboard ───────────────────────────────
+// Shows whether the battery holds its charge over time and whether the load is
+// creeping up. Battery % and load % share the 0-100 axis; runtime is in minutes, so it
+// is shown as text. Battery charge is lower-is-worse, so it is coloured by its own
+// bands (the seeded ups_charge rules: warning <= 50, critical <= 20).
 
 const CHARGE_COLOR = "#73BF69";
 const LOAD_COLOR = "#EF9F27";
@@ -99,9 +89,8 @@ export default function UpsFocus({
 
   const spanSec = rangeSpanSec(range);
 
-  // Breaks inserted wherever the poller stopped. This matters most here: a UPS that stops
-  // answering during a power event is exactly when the line must NOT be drawn straight
-  // across the missing hours as though the battery held steady through them.
+  // Gaps wherever the poller stopped, so missing hours during a power event are not
+  // drawn as a steady battery.
   const { labels, chargeData, loadData } = useMemo(() => {
     const { labels: l, series } = withGaps(
       history.map((p) => Date.parse(p.time)),
@@ -129,11 +118,8 @@ export default function UpsFocus({
 
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5">
-      {/* Tiles replaced by one line, same as the other two panels. Power SOURCE leads it:
-          "on battery" outranks every other number here, because mains is gone and the
-          clock is running however full the pack currently reads. Runtime stays as text
-          rather than joining the chart — it is minutes, and putting "18" on a 0-100 axis
-          beside "97%" invites reading the backup time as a percentage. */}
+      {/* One status line. Power source comes first: "on battery" matters more than any other
+         number here. Runtime stays as text (minutes, not a percentage). */}
       <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap text-[11px]" style={{ color: "var(--gf-text-muted)" }}>
         {onBattery ? (
           <span className="font-semibold" style={{ color: "#E02F44" }}>ON BATTERY</span>
@@ -166,10 +152,8 @@ export default function UpsFocus({
         </div>
       )}
 
-      {/* Current values ride on the legend, so dropping the tiles didn't drop the numbers.
-          Battery is coloured lower-is-worse (chargeColor) — it is the one metric on this
-          Dashboard inverted from all the others, and loadColor would paint a nearly-flat
-          pack green. */}
+      {/* Current values on the legend. Battery uses chargeColor (lower is worse); loadColor
+         would show a nearly empty battery as green. */}
       <div className="flex items-center gap-3 flex-wrap">
         <LegendDot
           color={CHARGE_COLOR}

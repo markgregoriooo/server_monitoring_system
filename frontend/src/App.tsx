@@ -83,11 +83,8 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
 function AppShell() {
   const { user, idleLogout, confirmIdleLogout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState<boolean>(false);
-  /* Header avatar -> Sidebar's My Profile modal. A COUNTER, not a boolean: a boolean would
-     have to be reset to false before it could fire again, so opening the modal, closing it
-     and clicking the avatar a second time would do nothing. Every increment is a new
-     request. The modal stays owned by the Sidebar — two instances would be two copies of
-     the same form, each able to save a different username. */
+  /* Header avatar -> Sidebar's My Profile modal. A counter rather than a boolean, so each
+     click opens it again without resetting anything first. The modal stays in the Sidebar. */
   const [profileSignal, setProfileSignal] = useState(0);
   const [collapsed, setCollapsed] = useState<boolean>(
     () => localStorage.getItem("cspc_sidebar_collapsed") === "1",
@@ -101,16 +98,12 @@ function AppShell() {
   }, []);
   const location = useLocation();
 
-  // Names the browser tab after the current page. Mounted HERE rather than in the
-  // signed-in shell below, because /login and /privacy are returned from this component
-  // by their own early returns and would otherwise keep whatever title the last page set.
+  // Sets the browser tab title. Mounted here because /login and /privacy return early
+  // below and would otherwise keep the previous page's title.
   useDocumentTitle();
 
-  /* Keeps each route at the offset the user left it on. Mounted here for the same reason
-     as the title above: /login and /privacy leave this component through their own early
-     returns, and they are the two routes that scroll the DOCUMENT — so without this,
-     reading the privacy notice to the bottom and coming back dropped the sign-in page in
-     at the notice's offset. */
+  /* Restores each route's scroll position. Mounted here for the same reason as the title:
+     /login and /privacy return early, and they are the pages that scroll the document. */
   useScrollMemory();
 
   // Ctrl/Cmd + B toggles the sidebar (like a code editor)
@@ -125,9 +118,8 @@ function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [toggleCollapsed]);
   const isLoginPage = location.pathname === "/login";
-  // The Privacy Notice is PUBLIC. It has to render for a signed-out visitor — a
-  // notice you can only read once you have an account and have already agreed to
-  // it is not a notice — so it is checked before the redirect below, not after.
+  // The Privacy Notice is public: it must be readable before signing in, so it is checked
+  // before the redirect below.
   const isPolicyPage = location.pathname === "/privacy";
 
   if (isPolicyPage) {
@@ -150,13 +142,10 @@ function AppShell() {
     );
   }
 
-  // Signed in, but has not accepted the version of the Privacy Notice currently in
-  // force (never accepted, or it was revised since). Nothing else renders until
-  // they do — no sidebar, no routes, no socket-fed pages. `policy_current` comes
-  // from the server, so bumping the version re-gates everyone with no frontend
-  // change. If the field is absent (an older cached session object), don't gate:
-  // failing open here beats locking every user out of the dashboard over a
-  // missing field, and their next sign-in supplies it.
+  // Signed in but has not accepted the current Privacy Notice version: show only the gate
+  // (no sidebar, routes or live pages). `policy_current` comes from the server, so bumping
+  // the version asks everyone again. If the field is missing (an old cached session),
+  // don't block; the next sign-in provides it.
   if (user?.policy_current && user.policy_version !== user.policy_current) {
     return <PolicyGate />;
   }
@@ -182,21 +171,16 @@ function AppShell() {
           onOpenProfile={() => setProfileSignal((n) => n + 1)}
         />
 
-        {/* The shell above is `h-screen overflow-hidden`, so THIS is the page scroll
-            container — a document- or body-level scroll lock would be a no-op here. While
-            the drawer is open below lg, freeze it so the page behind the backdrop cannot be
-            scrolled out from under it. The `lg:` half is not decoration: without it,
-            widening to desktop while `mobileOpen` is still set would leave the dashboard
-            permanently unscrollable, and nothing on a desktop ever clears that flag. */}
+        {/* This is the scroll container (the shell is `h-screen overflow-hidden`). Lock it while
+           the mobile drawer is open. `lg:` so widening to desktop with the drawer still set
+           cannot leave the page unscrollable. */}
         <main
           className={`flex-1 ${
             mobileOpen ? "overflow-hidden lg:overflow-y-auto" : "overflow-y-auto"
           }`}
         >
-          {/* Keyed on the path so navigating away CLEARS a caught error — otherwise the
-              boundary keeps showing the failed page after the user has moved on. Placed
-              inside <main> on purpose: the sidebar and header stay usable, so a broken
-              page is something you can navigate out of rather than a dead tab. */}
+          {/* Keyed on the path so moving to another page clears a caught error. Inside <main> so
+             the sidebar and header keep working. */}
           <ErrorBoundary key={location.pathname} label={location.pathname}>
           <Routes>
             <Route path="/" element={
@@ -294,14 +278,11 @@ function AppShell() {
       {/* Live notification toasts — overlay, independent of the current route */}
       <ToastHost />
 
-      {/* CRITICAL takeover — blocking, centred, audible. Sits alongside the toast host rather
-          than replacing it: warnings and info still belong in the corner, and only `critical`
-          is allowed to stop someone working. Mounted at the shell so it covers every route. */}
+      {/* Critical alert takeover: blocking, centred, with sound. Warnings and info stay as
+         toasts in the corner. Mounted here so it covers every page. */}
       <CriticalAlertModal />
 
-      {/* Idle timeout notice. The session is already gone; this explains why, and OK
-          completes the sign-out. Rendered here rather than per-page so it covers
-          whatever the user was last looking at. */}
+      {/* Idle timeout notice: the session has already ended; OK finishes the sign-out. */}
       {idleLogout && <IdleLogoutModal onConfirm={confirmIdleLogout} />}
 
       {/* Picture-in-Picture live widget — portals into its own window when open */}
@@ -311,11 +292,8 @@ function AppShell() {
 }
 
 export default function App() {
-  /* Unlock audio on the first click/keypress anywhere — in practice the sign-in click, long
-     before any alert exists. Browsers start every AudioContext suspended and will not resume
-     it without a user gesture, so an alarm that first asks for sound at the moment of the
-     emergency is exactly the one that gets blocked. Doing it here, once, at the top of the
-     tree, is what makes the critical siren actually audible when it matters. */
+  /* Unlock audio on the first click or keypress (usually the sign-in click). Browsers keep
+     audio suspended until a user gesture, so doing it early makes the critical alarm audible. */
   useEffect(() => { primeAlarm(); }, []);
 
   return (

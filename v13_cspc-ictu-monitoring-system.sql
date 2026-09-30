@@ -26,15 +26,10 @@ SET time_zone = "+00:00";
 --
 -- Table structure for table `agent_install_keys`
 --
--- Dashboard-managed enrollment keys, replacing the single AGENT_INSTALL_KEY in
--- backend/.env. The plaintext key is never stored — only its SHA-256 hash (indexed
--- lookup on the enrollment path) and a short prefix for display.
---
--- ⚠️ Revoking an install key does NOT revoke any already-enrolled agent: the runtime
--- credential is the agent's AGT- token, a separate row with a separate lifecycle
--- (agent_tokens — stored the same way as this table since 2026-08-25: a SHA-256 hash for
--- lookup plus an AES-256-GCM copy for re-delivery, never the plaintext).
---
+-- Enrollment keys managed from the dashboard (replacing AGENT_INSTALL_KEY in
+-- backend/.env). Only the SHA-256 hash (for lookup) and a short prefix (for display)
+-- are stored, never the key. Revoking a key does not revoke enrolled agents: they use
+-- their own AGT- token in agent_tokens.
 
 CREATE TABLE `agent_install_keys` (
   `install_key_id` int(11) NOT NULL,
@@ -57,15 +52,12 @@ CREATE TABLE `agent_install_keys` (
 -- Table structure for table `agent_tokens`
 --
 
--- ⚠️ NO readable credential is stored in this table at all. The PENDING token is a
--- SHA-256 hash too (`pending_token_hash`) — it was plaintext until 2026-08-25b, and because
--- POST /agents/status exchanges it for the permanent credential (repeatedly, with no
--- auth), a database dump was one HTTP call away from live agent credentials.
--- ⚠️ The permanent AGT- credential is NEVER stored in readable form. `approved_token_hash`
--- is the lookup path; `approved_token_cipher` is an encrypted copy that exists only because
--- an agent which loses agent.conf must be able to collect its token again (the same path
--- carries the ADOPT workflow). The old plaintext `approved_token` column was dropped by
--- migrations/2026-08-25_agent_token_hash.sql — see audits/api-infra-security-2026-08-25.md A-05.
+-- No readable credential is stored in this table. The pending token is stored as a
+-- SHA-256 hash (`pending_token_hash`), since POST /agents/status exchanges it for the
+-- permanent token. The permanent AGT- token is stored as a hash for lookup
+-- (`approved_token_hash`) plus an encrypted copy (`approved_token_cipher`) so an agent
+-- that loses agent.conf can collect it again. See
+-- migrations/2026-08-25_agent_token_hash.sql and audits/api-infra-security-2026-08-25.md A-05.
 
 CREATE TABLE `agent_tokens` (
   `id` int(11) NOT NULL,
@@ -196,13 +188,9 @@ CREATE TABLE `alert_rules` (
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_by` int(11) DEFAULT NULL,
-  -- Derived scope keys, written by nobody. They exist ONLY so the uniqueness index below
-  -- can compare rules whose device_id / interface_name are NULL — which is the DEFAULT
-  -- case here, not an edge case: a GLOBAL rule is precisely one with device_id IS NULL.
-  -- A UNIQUE index treats NULLs as distinct, so a plain
-  --   UNIQUE (device_id, interface_name, metric_name, severity)
-  -- permits unlimited duplicate global rules. Verified on MariaDB 10.4.32. Folding NULL
-  -- to a sentinel is what makes the constraint real.
+  -- Derived scope keys, never written directly. They let the unique index below compare
+  -- rules where device_id / interface_name are NULL (every global rule has device_id NULL),
+  -- because a UNIQUE index treats NULLs as distinct.
   -- -1 is safe: device_id is an AUTO_INCREMENT key, never negative.
   -- '' is safe: alertRuleValidation's nullableStr() stores an empty port name as NULL.
   `scope_device` int(11) AS (IFNULL(`device_id`, -1)) PERSISTENT COMMENT 'Derived. NULL device_id folded to -1 for uq_alert_rules_scope_severity.',
@@ -220,9 +208,9 @@ INSERT INTO `alert_rules` (`alert_rule_id`, `device_id`, `interface_name`, `metr
 (4, NULL, NULL, 'mem', 95, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-06-14 14:10:26', NULL),
 (5, NULL, NULL, 'disk', 80, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
 (6, NULL, NULL, 'disk', 90, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
--- temperature + humidity follow ASHRAE TC 9.9 (Thermal Guidelines, 5th ed.): WARNING at the
--- edge of the RECOMMENDED envelope (27 °C), CRITICAL at the Class A1 ALLOWABLE limit
--- (32 °C / 80 %RH). Was 30/34 °C and 70 %RH until 2026-09-25 — see
+-- temperature + humidity follow ASHRAE TC 9.9 (Thermal Guidelines, 5th ed.): warning at the
+-- edge of the recommended envelope (27 °C), critical at the Class A1 allowable limit
+-- (32 °C / 80 %RH). Changed from 30/34 °C and 70 %RH on 2026-09-25, see
 -- migrations/2026-09-25_ashrae_env_thresholds.sql
 (8, NULL, NULL, 'temperature', 32, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:23:05', NULL),
 (9, NULL, NULL, 'gas', 150, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-07-23 10:20:16', NULL),
@@ -242,26 +230,23 @@ INSERT INTO `alert_rules` (`alert_rule_id`, `device_id`, `interface_name`, `metr
 (26, NULL, NULL, 'ups_runtime', 5, '<=', 'critical', 1, '2026-07-01 02:48:11', '2026-07-01 02:48:11', NULL),
 (28, NULL, NULL, 'link_errors', 10, '>=', 'warning', 1, '2026-07-31 07:08:15', '2026-07-31 07:08:15', NULL),
 (29, NULL, NULL, 'link_errors', 100, '>=', 'critical', 1, '2026-07-31 07:08:15', '2026-07-31 07:08:15', NULL),
--- ups_load and router_clients were evaluated by deviceAlerts from the start but never
--- seeded, so both were silent forever (alerting is rules-only: no rule, no alert).
--- router_clients ships INACTIVE — the right number is site-specific, so it is put in
--- front of an admin to set rather than guessed. See migrations/2026-08-16_missing_alert_rules.sql
+-- ups_load and router_clients rules (no rule means no alert). router_clients is inactive:
+-- the right number depends on the site, so an admin sets it.
+-- See migrations/2026-08-16_missing_alert_rules.sql
 (30, NULL, NULL, 'ups_load', 80, '>=', 'warning', 1, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
 (31, NULL, NULL, 'ups_load', 90, '>=', 'critical', 1, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
 (32, NULL, NULL, 'router_clients', 200, '>=', 'warning', 0, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
 (33, NULL, NULL, 'router_clients', 300, '>=', 'critical', 0, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
--- ICMP link quality (deviceAlerts.checkRouter). The only two things SNMP cannot report:
--- a walk either answers or times out, so a link dropping a third of its packets reads as
--- healthy until it goes flat Offline. Also the ONLY numeric metrics a ping-only router
--- (no community string — ISP CPE) has. See migrations/2026-08-22_icmp_alert_rules.sql
--- router_loss ships ACTIVE: loss is not site-specific, 0% is healthy everywhere.
--- ⚠️ With PING_COUNT=3 the possible values are 0/33/67/100, so both bands trip on the
--- first lost echo. Raise PING_COUNT to 10 for a finer scale.
+-- ICMP link quality (deviceAlerts.checkRouter): what SNMP cannot report, and the only
+-- numeric metrics a ping-only router has. See migrations/2026-08-22_icmp_alert_rules.sql
+-- router_loss is active: 0% loss is healthy everywhere.
+-- With PING_COUNT=3 loss can only be 0/33/67/100, so both bands trip on the first lost
+-- echo. Raise PING_COUNT to 10 for 10% steps.
 (34, NULL, NULL, 'router_loss', 5, '>=', 'warning', 1, '2026-08-22 00:00:00', '2026-08-22 00:00:00', NULL),
 (35, NULL, NULL, 'router_loss', 20, '>=', 'critical', 1, '2026-08-22 00:00:00', '2026-08-22 00:00:00', NULL),
--- router_latency ships INACTIVE — a rack switch answers in <1 ms, an ISP CPE in 20-40 ms
--- and both are healthy, so one global number would either page constantly or never fire.
--- Watch a device's real figure, then set a per-device rule at ~2-3x it and enable.
+-- router_latency is inactive: normal latency depends on the link (<1 ms for a rack
+-- switch, 20-40 ms for ISP equipment). Watch a device's real value, then set a
+-- per-device rule at about 2-3x it and enable it.
 (36, NULL, NULL, 'router_latency', 100, '>=', 'warning', 0, '2026-08-22 00:00:00', '2026-08-22 00:00:00', NULL),
 (37, NULL, NULL, 'router_latency', 300, '>=', 'critical', 0, '2026-08-22 00:00:00', '2026-08-22 00:00:00', NULL);
 
@@ -341,32 +326,22 @@ CREATE TABLE `device_network` (
 --
 -- Table structure for table `gas_sensors`
 --
--- One row per physical MQ-2 channel. `channel` is 1-based and maps to the firmware's
--- MQ2_PINS[channel-1], exactly as aircon_state.ir_channel maps to IR_CHANNEL_PINS.
---
--- The split is the same one the IR channel pool uses: the DEVICE knows which ADC pins it
--- has, the DATABASE knows which of them somebody actually soldered a sensor to and where
--- that sensor points. Neither can answer the other's question, and baking either into the
--- firmware means a reflash to add a sensor.
---
--- The 4-channel ceiling is HARDWARE, not schema: ADC2 is unusable while WiFi is on, and
--- GPIO 32/33 are reserved for IR channels 3 and 4.
+-- One row per MQ-2 channel. `channel` is 1-based and maps to the firmware's
+-- MQ2_PINS[channel-1], like aircon_state.ir_channel. The ESP32 reports its pins; this
+-- table records which have a sensor wired and where it is. The limit of four is the
+-- hardware (ADC2 is unusable with WiFi on, GPIO 32/33 are for IR), not the schema.
 -- See migrations/2026-09-17_gas_sensors.sql
---
 
 CREATE TABLE `gas_sensors` (
   `channel` tinyint(3) UNSIGNED NOT NULL,
-  -- The pin the DEVICE reported for this channel on its last connect, remembered so the
-  -- "wire a sensor" dialog can name a GPIO before the ESP32 has ever connected to this
-  -- process. The firmware stays the source of truth; this is a cache of its answer.
+  -- The pin the ESP32 reported for this channel on its last connect, kept so the "wire a
+  -- sensor" dialog can show it before the ESP32 connects. The firmware remains the source.
   `gpio` tinyint(3) UNSIGNED DEFAULT NULL,
   -- Where this sensor physically IS. NULL until somebody says, and the UI falls back to
   -- "MQ2-<channel>" — the same COALESCE-to-a-technical-name pattern as devices.display_name.
   `location_label` varchar(100) DEFAULT NULL,
-  -- Is a sensor actually soldered to this pin? An unwired ADC input FLOATS: it does not
-  -- read zero, it reads noise, and noise through the MQ-2 curve is a plausible-looking ppm
-  -- that can trip a smoke alarm. A channel stays silent until somebody asserts the hardware
-  -- exists — the same reason enabledChannels[] starts false for unwired IR pins.
+  -- Is a sensor wired to this pin? An unwired ADC pin reads noise that can look like smoke,
+  -- so a channel is ignored until enabled (like unwired IR pins).
   `enabled` tinyint(1) NOT NULL DEFAULT 0,
   `updated_by` int(11) DEFAULT NULL,
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
@@ -375,10 +350,8 @@ CREATE TABLE `gas_sensors` (
 --
 -- Dumping data for table `gas_sensors`
 --
--- Channels 1 and 2 ship ENABLED because those two sensors are the ones already wired and
--- running; a fresh install must not come up with smoke detection switched off. Channels 3
--- and 4 exist but stay disabled — the pins are free, the sensors are not there yet.
---
+-- Channels 1 and 2 (the sensors already wired) start enabled, so smoke detection is on
+-- after a fresh install. Channels 3 and 4 start disabled until sensors are fitted.
 
 INSERT INTO `gas_sensors` (`channel`, `gpio`, `location_label`, `enabled`) VALUES
 (1, 34, NULL, 1),
@@ -450,14 +423,10 @@ CREATE TABLE `network_interfaces` (
 
 CREATE TABLE `notification_prefs` (
   `user_id` int(11) NOT NULL,
-  -- Alert email is OPT-IN. This shipped as DEFAULT 1, and since nothing wrote a row until
-  -- somebody pressed Save on the Settings page, the default decided the channel for every
-  -- account that had never been used: approving a registration started mailing it critical
-  -- alerts before its owner had signed in, could reach this toggle, or had been shown the
-  -- Privacy Notice. The bell, the toast and the popup all need a signed-in browser; email
-  -- is the one channel that reaches a stranger, so it is the one that waits to be asked.
-  -- Mirrored by notificationService.PREF_DEFAULTS, which registerGoogleUser seeds a row
-  -- from. See migrations/2026-09-18_notification_prefs_default_off.sql
+  -- Alert email is opt-in (default 0): email is the only channel that reaches someone who
+  -- has never signed in or seen the Privacy Notice. Matches
+  -- notificationService.PREF_DEFAULTS, which registerGoogleUser uses to create the row.
+  -- See migrations/2026-09-18_notification_prefs_default_off.sql
   `email_enabled` tinyint(4) NOT NULL DEFAULT 0,
   `popup_enabled` tinyint(4) NOT NULL DEFAULT 1,
   `min_email_severity` enum('info','warning','critical') NOT NULL DEFAULT 'critical',
@@ -478,12 +447,9 @@ CREATE TABLE `reports` (
   `paper_size` enum('a4','letter','folio') NOT NULL DEFAULT 'folio' COMMENT 'Page size the PDF was rendered at; folio = long bond, 8.5x13in',
   `reference_no` varchar(40) DEFAULT NULL COMMENT 'Assigned at build time, e.g. ICTU-SRV-2026-001. NULL until generated.',
   `device_id` int(11) DEFAULT NULL,
-  -- A second, ORTHOGONAL scope. `device_id` carries a foreign key to `devices`, so there is
-  -- no id that means "the server room" and no sentinel that would survive the constraint —
-  -- and the ESP32 is not a `devices` row, which is why its alerts are written with
-  -- `device_id IS NULL`. NULL here keeps its original meaning (campus-wide), so every
-  -- report generated before this existed still reads exactly as it did.
-  -- The two are never both set. See migrations/2026-09-18_report_room_scope.sql
+  -- Second scope column. device_id is a foreign key to devices, so no id can mean "the
+  -- server room" (ESP32 alerts have device_id NULL). NULL here means campus-wide, as
+  -- before. The two are never both set. See migrations/2026-09-18_report_room_scope.sql
   `scope_kind` varchar(16) DEFAULT NULL COMMENT 'NULL = campus-wide, ''room'' = room-level alerts only (device_id IS NULL)',
   `status` enum('pending','generated','failed') DEFAULT NULL,
   `file_path` varchar(255) DEFAULT NULL,
@@ -551,10 +517,9 @@ CREATE TABLE `settings` (
 --
 -- Dumping data for table `settings`
 --
--- Report template defaults. `folio` (long bond) is ICTU's stated default page size;
--- blank logo filenames mean "use the marks committed under backend/assets/branding".
+-- Report template defaults. `folio` (long bond) is ICTU's default page size; blank logo
+-- file names mean "use the logos in backend/assets/branding".
 -- See migrations/2026-08-28_report_template.sql and reports-client-questionnaire.md.
---
 
 INSERT INTO `settings` (`setting_key`, `setting_value`, `description`) VALUES
 ('report.paper_size', 'folio', 'Default page size for generated PDF reports: a4 | letter | folio (long bond).'),
@@ -740,12 +705,9 @@ ALTER TABLE `alert_rules`
   ADD KEY `idx_rules_updated_by` (`updated_by`),
   ADD KEY `idx_rules_dev_iface_metric` (`device_id`,`interface_name`,`metric_name`,`is_active`),
   -- One rule per (scope, metric, severity). Two `temperature`/`warning` rows in one scope
-  -- are not additive — getRoomThresholds resolves a severity with .find(), so the value
-  -- pushed to the ESP32 is decided by row order and editing the losing row changes
-  -- nothing. Enforced in the app too (alertRuleValidation.duplicateSeverityError); this is
-  -- the backstop for the hand-edited row, which deployment-guide.md §4.3 documents as a
-  -- real practice. Built on the folded scope_* columns — see the note on the table above
-  -- for why the obvious index would not have worked.
+  -- are not combined (getRoomThresholds takes the first it finds). The app checks this too
+  -- (alertRuleValidation.duplicateSeverityError); this also covers rows edited in SQL.
+  -- Built on the scope_* columns (see the note on the table above).
   -- See migrations/2026-08-26_alert_rule_scope_uniqueness.sql
   ADD UNIQUE KEY `uq_alert_rules_scope_severity` (`scope_device`,`scope_iface`,`metric_name`,`severity`);
 
@@ -1034,10 +996,7 @@ ALTER TABLE `users`
 --
 -- Constraints for table `agent_install_keys`
 --
--- SET NULL, not CASCADE: deleting the admin who issued a key must not delete the key
--- (that would revoke enrollment for a whole branch as a side effect of an HR change)
--- and must not erase the record that the key existed.
---
+-- SET NULL, not CASCADE: deleting the admin who created a key must not delete the key.
 ALTER TABLE `agent_install_keys`
   ADD CONSTRAINT `fk_install_keys_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   ADD CONSTRAINT `fk_install_keys_revoked_by` FOREIGN KEY (`revoked_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
@@ -1076,9 +1035,8 @@ ALTER TABLE `alerts`
   ADD CONSTRAINT `fk_alerts_alert_rules1` FOREIGN KEY (`alert_rule_id`) REFERENCES `alert_rules` (`alert_rule_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   ADD CONSTRAINT `fk_alerts_devices2` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE,
   ADD CONSTRAINT `fk_alerts_resolved_by` FOREIGN KEY (`resolved_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  -- SET NULL, not CASCADE: this used to DELETE every alert a departing user had ever
-  -- acknowledged — erasing exactly the incidents someone took responsibility for, while
-  -- keeping the ones nobody touched. The name goes; the incident stays.
+  -- SET NULL, not CASCADE: deleting a user keeps the alerts they acknowledged; only the name
+  -- is removed.
   ADD CONSTRAINT `fk_alerts_users1` FOREIGN KEY (`acknowledged_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
@@ -1092,16 +1050,12 @@ ALTER TABLE `alert_notifications`
 -- Constraints for table `alert_rules`
 --
 ALTER TABLE `alert_rules`
-  -- ⚠️ NO `ON UPDATE CASCADE` here, unlike every other FK in this file. `device_id`
-  -- feeds the PERSISTENT generated column `scope_device` above, and MariaDB refuses a
-  -- cascading UPDATE action on a column a generated column is built from:
+  -- No ON UPDATE CASCADE here, unlike the other FKs: device_id feeds the generated column
+  -- `scope_device`, and MariaDB 10.11 refuses a cascading update on it:
   --   ERROR 1901: Function or expression 'device_id' cannot be used in the
   --               GENERATED ALWAYS AS clause of `scope_device`
-  -- 10.4 accepted it and 10.11 does not, so the clause made this file abort ON IMPORT
-  -- at this line — and because the import is one pass, EVERY constraint below was then
-  -- silently skipped, leaving a database that has all its tables and only some of its
-  -- foreign keys. Nothing is lost by dropping it: device_id is an AUTO_INCREMENT
-  -- surrogate that is never updated, so the cascade could never have fired.
+  -- With it, the import stopped at this line and skipped every constraint below. device_id
+  -- is an AUTO_INCREMENT key that is never updated, so nothing is lost.
   ADD CONSTRAINT `fk_alert_rules_devices2` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE,
   ADD CONSTRAINT `fk_alert_rules_updated_by` FOREIGN KEY (`updated_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -1188,10 +1142,9 @@ ALTER TABLE `suggestions`
 --
 -- Constraints for table `system_logs`
 --
--- SET NULL, not CASCADE: deleting a user used to take their whole audit trail with them,
--- including the policy-acceptance evidence rows. The Privacy Notice commits to a 365-day
--- retention for this table; a cascade made the real retention "until the account is
--- deleted". user_id is documented as "null = system action", so readers already cope.
+-- SET NULL, not CASCADE: deleting a user keeps their audit trail (including policy
+-- acceptance records), which the Privacy Notice keeps for 365 days. user_id NULL already
+-- means "system action" to readers.
 ALTER TABLE `system_logs`
   ADD CONSTRAINT `fk_system_logs_users` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 

@@ -1,9 +1,8 @@
 // Thin wrapper around the Web Notifications API (OS-level popups). Kept free of
 // app types so it never couples back to NotificationContext.
 
-// `onActivate` runs when the user CLICKS the popup. Passed in as a callback rather
-// than a route string so this module stays free of app types and router knowledge —
-// the caller decides where a notification leads (see notificationUtils.routeFor).
+// `onActivate` runs when the popup is clicked. A callback, so this module needs no
+// router knowledge (see notificationUtils.routeFor).
 type DesktopPayload = {
   title: string;
   message: string;
@@ -32,9 +31,8 @@ export async function requestDesktopPermission(): Promise<NotificationPermission
   }
 }
 
-// Fire an OS popup — but only when the tab is NOT focused. A focused user already
-// sees the in-app toast, so the desktop popup is reserved for the background case
-// (its whole point). No-op if permission isn't granted.
+// Show an OS popup only when the tab is not focused (a focused user sees the in-app
+// toast). Does nothing without permission.
 export function fireDesktopNotification(n: DesktopPayload): void {
   if (!desktopGranted()) return;
   if (typeof document !== "undefined" && document.visibilityState === "visible") return;
@@ -43,9 +41,7 @@ export function fireDesktopNotification(n: DesktopPayload): void {
     if (n.alertId != null) opts.tag = `alert-${n.alertId}`; // collapse dupes across tabs
     const popup = new Notification(n.title, opts);
 
-    // A click must do what the in-app toast does: bring the dashboard forward and open
-    // the alert's page. Without this the popup is a dead end — and since it only fires
-    // when the tab is BACKGROUNDED, "dismiss" is never what the user wanted.
+    // Clicking does what the toast does: brings the dashboard forward and opens the alert's page.
     popup.onclick = (event) => {
       event.preventDefault(); // some browsers otherwise also open a blank tab
       // Focus can be refused (browser policy, or the window is already gone). Navigate

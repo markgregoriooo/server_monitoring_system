@@ -5,17 +5,9 @@ import { STATUS } from "../../theme/gf";
 const { green: GREEN, orange: ORANGE, critical: RED } = STATUS;
 
 /**
- * One small animated visual per coverage card.
- *
- * Each is a different FORM, not the same shape in a different colour: bars that
- * fill, packets that travel a wire, a cell that charges, a curve inside a band.
- * Four cards carrying four recoloured copies of one icon is exactly the texture
- * that reads as generated, and it is the thing the consultant reacted to.
- *
- * Each visual also says what its data actually looks like — utilisation is a
- * bar, throughput is movement along a link, charge is a reservoir, room
- * temperature is a line with a safe band around it. The picture teaches the
- * metric.
+ * One small animated visual per coverage card, each a different form that matches
+ * its data: bars that fill (utilisation), packets on a wire (throughput), a cell that
+ * charges (battery), a line inside a band (room temperature).
  */
 
 const ACCENT = "#5794F2";
@@ -57,8 +49,7 @@ function Stage({
 }
 
 /* ── Servers: utilisation bars fill to their reading ────────────────────────
-   Three bars, because the agent reports three things and the disk one is the
-   worst-volume figure the alerting actually uses. */
+   Three bars for the three things the agent reports (disk is the worst volume). */
 const BARS = [
   { label: "cpu", to: 0.44, color: "#378ADD" },
   { label: "mem", to: 0.76, color: "#7F77DD" },
@@ -76,9 +67,8 @@ export function ServersVisual() {
           });
           return;
         }
-        // Each bar animates to its OWN target, so this is a loop rather than one
-        // call with a function-value: every bar has a different end width, and
-        // anime's per-target function form doesn't type-resolve for `width`.
+        // Each bar animates to its own width, so this is a loop; anime's per-target
+        // function form does not type-check for `width`.
         const anims = Array.from(fills).map((el, i) => {
           const target = Number(el.dataset["target"] ?? 0);
           el.setAttribute("width", "0");
@@ -128,9 +118,7 @@ export function ServersVisual() {
   );
 }
 
-/* ── Network: packets travel the link, in the direction data moves ──────────
-   The motion is the metric here. A static line would be a picture of a cable;
-   dots moving along it is throughput. */
+/* ── Network: packets travel the link in the direction data moves ────────── */
 export function NetworkVisual() {
   return (
     <Stage
@@ -178,9 +166,7 @@ export function NetworkVisual() {
   );
 }
 
-/* ── Power: the cell charges to its reading ─────────────────────────────────
-   A reservoir, because that is what a battery is: the number that matters is how
-   much is left, not how fast it is moving. */
+/* ── Power: the cell charges to its reading ───────────────────────────────── */
 export function PowerVisual() {
   return (
     <Stage
@@ -229,9 +215,8 @@ export function PowerVisual() {
   );
 }
 
-/* ── Server room: the curve, inside the band it must stay in ────────────────
-   The band is the point. A temperature line alone is a squiggle; a line drawn
-   against its warning and critical thresholds is a room being kept safe. */
+/* ── Server room: the curve inside the band it must stay in ────────────────
+   The line is drawn against its warning and critical thresholds. */
 const TEMP_PTS = [24.4, 24.6, 24.5, 24.9, 25.2, 25.0, 25.4, 25.9, 26.3, 26.1, 26.6, 27.0, 26.8, 26.5, 26.4];
 
 export function ClimateVisual() {

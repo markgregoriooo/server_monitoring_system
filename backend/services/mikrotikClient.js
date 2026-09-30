@@ -1,15 +1,11 @@
-// ─── RouterOS API client (live MikroTik reads) ────────────────────────────────
-//
-// Thin wrapper over `node-routeros`, LAZY-loaded so the app still starts if the
-// dependency isn't installed yet (the MikroTik just reports offline). Install with:
+// ─── RouterOS API client (MikroTik) ────────────────────────────────
+// Wraps node-routeros, loaded lazily so the backend still starts without it (the
+// MikroTik then shows offline). Install with:
 //   cd backend && npm install node-routeros
 //
-// Returns the SAME sample shape snmpPollerService.collectRouter() produces, so the
-// poller can hand it straight to writeNetworkSample() (shared with the SNMP path) —
-// except MikroTik fills cpuPercent / memPercent / connectedClients (SNMP leaves null).
-//
-// The exact RouterOS command words/props below are best-effort and should be
-//    confirmed against the dev MikroTik in Phase 2 (see mikrotik-dev-setup.md).
+// Returns the same sample shape as snmpPollerService.collectRouter(), so the
+// poller passes it to writeNetworkSample(); MikroTik also fills cpuPercent,
+// memPercent and connectedClients.
 
 import { readFileSync } from "fs";
 import { describeError } from "../utils/httpError.js";
@@ -21,13 +17,9 @@ const numOrNull = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-// Returns 0n on a parse failure, and that is NOT the same as a counter reading zero.
-// rx-byte/tx-byte are cumulative counters: downstream, counterDelta sees the value drop
-// from (say) 5 000 000 to 0 and reads it as a counter RESET, discarding the interval. So
-// an unreadable counter looked exactly like a rebooted router — and silently, because
-// this swallowed the reason. It still returns 0n (throwing would abort the whole poll
-// over one bad field) but it now says so once.
-// See audits/error-flow-report-2026-08-25.md — F-03.
+// Returns 0n on a parse failure, which counterDelta would read as a counter reset
+// (like a reboot). Throwing would fail the whole poll over one field, so it still
+// returns 0n but logs it once. See audits/error-flow-report-2026-08-25.md (F-03).
 let bigParseFailureReported = false;
 function toBig(v) {
   try {
@@ -71,12 +63,10 @@ function parseCount(res) {
 }
 
 // ─── API-SSL (port 8729) ────────────────────────────────────────────────────────
-// RouterOS ships a SELF-SIGNED certificate, so strict verification fails against a
-// stock router — an empty `{}` (Node's defaults) rejects the handshake, which made the
-// use_tls flag effectively unusable. Default to not verifying the chain: the connection
-// is still ENCRYPTED, which is the point on a management LAN, we just can't prove the
-// peer's identity. Set MIKROTIK_TLS_VERIFY=true once you've installed a CA-signed
-// certificate on the router (and point MIKROTIK_TLS_CA at the CA file if it's private).
+// RouterOS ships a self-signed certificate, so strict checking fails on a stock
+// router. By default the connection is encrypted but the certificate is not
+// verified. Set MIKROTIK_TLS_VERIFY=true after installing a CA-signed certificate
+// (and MIKROTIK_TLS_CA for a private CA).
 function tlsOptions() {
   const verify = String(process.env.MIKROTIK_TLS_VERIFY ?? "").toLowerCase() === "true";
   const opts = { rejectUnauthorized: verify };
@@ -108,20 +98,10 @@ async function openApi(conn) {
     timeout: Math.max(1, Math.ceil((conn.timeout || 5000) / 1000)), // node-routeros uses seconds
     tls: conn.tls ? tlsOptions() : undefined,
   });
-  // Crash guard — see the sequence below. Without this, a router that can't be
-  // reached over TLS takes down the WHOLE backend process rather than failing one poll.
-  //
-  // node-routeros registers only `once` listeners for 'error', and its Connector.onError
-  // does: emit('error') → destroy(). destroy() calls socket.destroy() AND
-  // removeAllListeners() — so:
-  //
-  //   1. socket errors        → emit('error')        → handled, promise rejects ✓
-  //   2. destroy()            → removeAllListeners() → every 'error' handler is gone
-  //   3. destroy's own socket error → emit('error')  → NOBODY LISTENING → process dies
-  //
-  // An unhandled 'error' event doesn't reject a promise, it throws out of the event
-  // loop, so no try/catch at the call site can stop it. Simply attaching a listener
-  // isn't enough either, because step 2 removes it — it has to be re-armed afterwards.
+  // Crash guard. node-routeros's onError emits 'error' and then destroy(), which
+  // removes all listeners; if destroying the socket raises another error, nobody is
+  // listening and the whole backend process crashes. So a listener is re-attached
+  // after destroy.
   api.on("error", () => {});
   const connecting = api.connect(); // creates api.connector synchronously
   const connector = api.connector;
@@ -139,15 +119,11 @@ async function openApi(conn) {
   return api;
 }
 
-// Physical ports only. `/interface/print` returns EVERY logical interface — bridge,
-// wlan, vlan, pppoe, lo — so a 5-port router reports 7+ rows and the dashboard invents
-// "buildings" that aren't ports at all. In this feature one building = one PHYSICAL
-// port, so anything virtual is noise.
-//
-// Preference order:
-//   1. names from /interface/ethernet/print — the definitive list of physical ports
-//   2. the `type` column on /interface/print (values like "ether", "bridge", "wlan")
-//   3. unfiltered — never blank the page because of a RouterOS-version quirk
+// Physical ports only: /interface/print also lists bridge, wlan, vlan, pppoe and
+// lo, which are not buildings. In order of preference:
+//   1. names from /interface/ethernet/print (the physical ports)
+//   2. the `type` column on /interface/print ("ether", "bridge", "wlan", ...)
+//   3. unfiltered, so a RouterOS version quirk never blanks the page
 function physicalOnly(ifaces, ethNames) {
   const all = Array.isArray(ifaces) ? ifaces : [];
   if (ethNames && ethNames.size) {
@@ -170,11 +146,8 @@ function shape(res, ifaces, speeds, connectedClients, ethNames, clientsByIface =
     txBytes: toBig(i["tx-byte"]),
     rxErrors: numOrNull(i["rx-error"]) ?? 0,
     txErrors: numOrNull(i["tx-error"]) ?? 0,
-    // Carrier and admin state are SEPARATE facts and must not be folded together.
-    // Folding them made `disabled=yes` — an operator deliberately switching a port off
-    // — indistinguishable from a cable falling out, so the ports ICTU had shut down on
-    // purpose were the loudest alerts on the dashboard. linkAlertPolicy needs both to
-    // tell "that socket is off" from "that building went dark".
+    // Carrier and admin state are kept separate, so a port disabled on purpose is not
+    // reported like a cable coming out. linkAlertPolicy uses both.
     linkUp: i.running === "true",
     adminUp: i.disabled !== "true",
     speedMbps: speeds[i.name] ?? 0,
@@ -195,18 +168,15 @@ function shape(res, ifaces, speeds, connectedClients, ethNames, clientsByIface =
   };
 }
 
-// Poll one MikroTik over the RouterOS API. Throws on a connection failure (the
-// poller treats that as "offline"). Returns the shared network sample shape
-// (raw cumulative byte counters; the poller derives utilization_pct).
+// Poll one MikroTik over the API. Throws on a connection failure (the poller marks
+// it offline). Returns the shared sample shape with raw byte counters.
 export async function collect(conn) {
   const api = await openApi(conn);
   try {
     const resArr = await api.write("/system/resource/print"); // it gets cpu, mem, version, board, uptime
     const res = Array.isArray(resArr) ? resArr[0] : resArr;
-    // `=stats=` asks for the byte/error counters, but not every RouterOS build accepts
-    // it as an API attribute (notably several v6 releases) and a rejected word THROWS —
-    // which would fail the entire poll and flip the router Offline even though it is
-    // perfectly reachable. Try it, then fall back to a plain print.
+    // Some RouterOS versions (several v6 releases) reject `=stats=` and throw, which
+    // would mark a working router offline. Try it, then fall back to a plain print.
     let ifaces;
     try {
       ifaces = await api.write("/interface/print", ["=stats="]); // all interfaces + RX/TX bytes, errors
@@ -215,9 +185,8 @@ export async function collect(conn) {
       ifaces = await api.write("/interface/print");
     }
 
-    // Best-effort per-port link speed (for utilization_pct). This same call also gives
-    // the definitive list of PHYSICAL ports, which physicalOnly() uses to drop bridge /
-    // wlan / vlan rows from /interface/print.
+    // Per-port link speed (for utilization_pct). The same call gives the list of
+    // physical ports used by physicalOnly().
     const speeds = {};
     const ethNames = new Set();
     try {
@@ -230,12 +199,9 @@ export async function collect(conn) {
       /* not all interfaces are ethernet */
     }
 
-    // Connected clients = bound DHCP leases (only if the MikroTik runs DHCP).
-    // Two levels: the device TOTAL, plus a per-interface breakdown when the topology
-    // allows it. Each lease names its DHCP `server`, and each DHCP server binds to one
-    // `interface` — so server→interface + leases-per-server gives clients-per-port.
-    // That only resolves when each port has its own DHCP server / subnet; on one flat
-    // bridged network every lease belongs to the bridge and there is nothing to split.
+    // Connected clients = bound DHCP leases (if the MikroTik runs DHCP). Gives the total
+    // and, when each port has its own DHCP server, a per-port count (lease → server →
+    // interface). On one flat bridged network all leases belong to the bridge.
     let connectedClients = null;
     let clientsByIface = {};
     try {

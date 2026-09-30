@@ -31,10 +31,9 @@ $ConfPath   = Join-Path $InstallDir "agent.conf"
 $TaskName   = "CSPC-ICTU Monitoring Agent"
 $ShutdownTaskName = "CSPC-ICTU Monitoring Agent - Shutdown Notice"
 
-# Where installs made before the 2026-08-18 rename put things. The agent shipped as
-# go-agent.exe under a folder and task of its own, and this installer keys off those
-# paths — so without the migration below an upgrade would leave the OLD task running
-# alongside the new one, and the host would post twice every interval.
+# Paths used by installs before the 2026-08-18 rename (go-agent.exe, its own folder and
+# task). Without the migration below an upgrade would leave the old task running too,
+# and the server would post twice.
 $OldInstallDir = "C:\Program Files\cspc-agent"
 $OldTaskName   = "CSPC-ICTU-MonitoringAgent"
 
@@ -45,11 +44,9 @@ if (-not (Test-Path $BinarySrc)) {
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item $BinarySrc $BinaryDst -Force
 
-# ── Migrate an install that predates the rename ───────────────────────────────
-# agent.conf is carried across FIRST: it holds this machine's approved token, so moving
-# it keeps the enrolment, the device id and the history. (Losing it is survivable — the
-# agent re-registers onto the same device and picks its token back up without another
-# approval — but it would read as a re-enrolment for no reason.)
+# ── Migrate an install from before the rename ───────────────────────────────
+# Move agent.conf first: it has this machine's approved token, so the enrollment,
+# device id and history are kept.
 $oldTask = Get-ScheduledTask -TaskName $OldTaskName -ErrorAction SilentlyContinue
 $oldConf = Join-Path $OldInstallDir "agent.conf"
 if ($oldTask -or (Test-Path $OldInstallDir)) {
@@ -79,15 +76,13 @@ if (-not (Test-Path $ConfPath)) {
   & $BinaryDst --register-only -api-url $ApiUrl -install-key $InstallKey -conf $ConfPath
 }
 else {
-  # Say so LOUDLY. An install key was supplied, so silently ignoring it reads as
-  # "the key was applied" — which is how a machine ends up still attributed to an old key
-  # (or to none at all) while the operator believes they moved it onto the new one.
+  # Warn clearly: the key is ignored here, and the operator may think it was applied.
   Write-Host "NOTE: agent.conf already exists - this machine is ALREADY ENROLLED."
   Write-Host "NOTE: the install key you supplied was NOT used. The enrolment is unchanged, so this"
   Write-Host "      server stays attributed to whatever key first enrolled it (possibly this one)."
-  # A machine that is still approved keeps its approval and its AGT- token through a
-  # re-enroll — it is only re-filed under the new key. One whose key was revoked comes
-  # back as pending and does need approving again.
+  # An approved machine keeps its approval and AGT- token through a re-enroll; it is only
+  # moved to the new key. One whose key was revoked comes back as pending and needs
+  # approving again.
   Write-Host "      Only if you meant to MOVE it onto a different key, re-run with -ReEnroll."
 }
 
@@ -95,8 +90,8 @@ $action    = New-ScheduledTaskAction -Execute $BinaryDst -Argument "-conf `"$Con
 $trigger   = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 # -AllowStartIfOnBatteries / -DontStopIfGoingOnBatteries: a server on a UPS counts as
-# "on battery" during an outage, so the defaults would kill the agent exactly then (and
-# block startup on any battery-powered host). -ExecutionTimeLimit 0: the agent runs forever.
+# "on battery" during an outage, and the defaults would stop the agent then.
+# -ExecutionTimeLimit 0: the agent runs indefinitely.
 $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable `
               -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
               -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
@@ -106,13 +101,10 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
   -Principal $principal -Settings $settings -Force | Out-Null
 
 # ── Shutdown notice ───────────────────────────────────────────────────────────
-# The agent above runs as a scheduled task, and Windows does not reliably tell a
-# scheduled-task process that the machine is going down — it is simply killed, and the
-# backend would only find out when the heartbeats stop. This second task fires on
-# System Event 1074 (User32), which Windows logs the moment a shutdown or restart is
-# INITIATED — Start menu, shutdown.exe, Windows Update — while the network is still up,
-# and runs a one-shot `--notify-shutdown` so the alert is raised immediately.
-# A power cut or a held power button logs nothing; the heartbeat covers those.
+# Windows does not reliably tell a scheduled-task process that the machine is shutting
+# down. This second task runs on System Event 1074 (logged when a shutdown or restart
+# starts, while the network is still up) and sends `--notify-shutdown`, so the alert is
+# raised right away. A power cut logs nothing; the heartbeat covers that.
 $class   = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
 $onShutdown = $class | New-CimInstance -ClientOnly
 $onShutdown.Enabled = $true

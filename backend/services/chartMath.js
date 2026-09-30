@@ -1,18 +1,10 @@
-// ─── Chart geometry — PURE, import-free ──────────────────────────────────────
-//
-// The arithmetic behind the report charts, kept away from pdfkit so `npm test` can pin
-// it with no document, no MySQL and no InfluxDB — the same split as analyticsMath and
-// reportTemplate.
-//
-// Everything a chart needs to be *correct* lives here (what the axis runs from, where a
-// value lands, how many bars fit). reportChart.js only draws what these return.
+// ─── Chart geometry ──────────────────────────────────────
+// The math behind the report charts, kept apart from pdfkit so it can be unit-tested.
+// reportChart.js only draws what these return.
 
 /**
- * A "nice" axis maximum: the next 1 / 2 / 2.5 / 5 x 10^n above the data.
- *
- * An axis that ends exactly at the largest sample puts that point on the frame, where it
- * reads as clipped rather than as the peak. Rounding up to a round number also gives
- * gridlines a reader can do arithmetic against — 0/25/50/75/100 rather than 0/23/46/69/92.
+ * A round axis maximum: the next 1 / 2 / 2.5 / 5 x 10^n above the data, so the top
+ * point is not on the frame and gridlines are round numbers.
  *
  * @param {number} max largest value in the data
  * @returns {number} an axis top >= max, always > 0
@@ -42,13 +34,9 @@ export function ticks(top, count = 4) {
 }
 
 /**
- * Format an axis label without trailing noise: 100.0 becomes 100, 12.5 stays 12.5.
- *
- * ⚠️ A fractional tick keeps its decimals however large the number is. niceMax can
- * return a 2.5 x 10^n top, which gives gridlines at 6.25 / 12.5 / 18.75 — rounding those
- * to 6 / 13 / 19 puts a WRONG number against a correctly-drawn line, which is worse than
- * an ugly one. Only past a thousand, where a fraction cannot matter to the reading, is
- * the value rounded.
+ * Format an axis label: 100.0 becomes 100, 12.5 stays 12.5. Fractions are kept
+ * (a 2.5 x 10^n top gives lines at 6.25 / 12.5 / 18.75); only values over a
+ * thousand are rounded.
  *
  * @param {number} v
  * @returns {string}
@@ -62,11 +50,8 @@ export function axisLabel(v) {
 }
 
 /**
- * Map a value to a y coordinate inside a plot box.
- *
- * ⚠️ PDF coordinates grow DOWNWARD, so the larger value gets the SMALLER y. Getting this
- * backwards draws every chart upside down while every number in it stays correct, which
- * is the kind of bug that survives a code review.
+ * Map a value to a y coordinate in the plot box. PDF y grows downward, so a larger
+ * value gets a smaller y.
  *
  * @param {number} value
  * @param {number} top axis maximum
@@ -83,10 +68,7 @@ export function yFor(value, top, y0, h) {
 }
 
 /**
- * Evenly spaced x positions for `n` points across a plot box.
- *
- * A single point sits in the MIDDLE rather than on the left edge — one sample plotted
- * hard against the axis reads as the start of a series that got cut off.
+ * Evenly spaced x positions for `n` points. A single point goes in the middle.
  *
  * @param {number} n
  * @param {number} x0 left edge
@@ -117,11 +99,8 @@ export function barLayout(groups, perGroup, w) {
 }
 
 /**
- * Which point indices should carry an x-axis label.
- *
- * Every label on a 30-day series overlaps into an unreadable smear, so labels are thinned
- * to at most `maxLabels`, ALWAYS including the first and last — the two a reader looks
- * for to know what the chart covers.
+ * Which points get an x-axis label: at most `maxLabels`, always including the first
+ * and last.
  *
  * @param {number} n number of points
  * @param {number} maxLabels
@@ -140,11 +119,8 @@ export function labelIndices(n, maxLabels = 8) {
 }
 
 /**
- * Split a series into runs of consecutive REAL numbers.
- *
- * A gap in the data must break the line, not be bridged: joining across a missing day
- * draws a straight segment through time nothing was measured in, which reads as a
- * measurement. Same reason the dashboard charts have a gap helper.
+ * Split a series into runs of real numbers, so a gap in the data breaks the line
+ * instead of being bridged.
  *
  * @param {(number|null|undefined)[]} values
  * @returns {{start: number, values: number[]}[]}

@@ -2,13 +2,12 @@ import db from "../config/mysql.js";
 import notificationService from "./notificationService.js";
 import alertBandState from "./alertBandState.js";
 
-// ─── Alert lifecycle (the shared incident state, distinct from the per-user bell) ──
+// ─── Alert lifecycle (shared, not the per-user bell) ──
 // alerts.status: 'active' → 'acknowledged' → 'resolved'.
 //   acknowledge = manual ("I'm on it"): sets acknowledged_by + acknowledged_at.
-//   resolve     = manual OR auto (metric recovered): sets resolved_at.
-// This is ONE shared row per alert (everyone sees the same status), unlike
-// alert_notifications.is_read which is per-user. `io` is injected once (init) so the
-// recovery path + routes can broadcast `alertUpdated` without threading it through.
+//   resolve     = manual or automatic (metric recovered): sets resolved_at.
+// One shared row per alert, unlike alert_notifications.is_read which is per user.
+// `io` is set once in init() so routes and recovery can broadcast `alertUpdated`.
 
 let _io = null;
 function init(io) {
@@ -54,8 +53,8 @@ const BASE_SELECT = `
     LEFT JOIN users u   ON u.user_id   = a.acknowledged_by`;
 
 // Alert history, newest first. Optional filters:
-//   status  active | acknowledged | resolved, or "open" = anything not yet resolved
-//   device  one device's alerts only — what a server's detail page asks for
+//   status  active | acknowledged | resolved, or "open" = not resolved yet
+//   device  one device's alerts (used by the server detail page)
 async function list({ status, limit = 100, device } = {}) {
   const n = Math.min(500, Math.max(1, parseInt(limit, 10) || 100));
   const where = [];
@@ -130,13 +129,10 @@ async function resolve(id, userId) {
   return alert;
 }
 
-// Auto-resolve every open (active/acknowledged) alert for a device+metric once the
-// metric recovers to normal. Leaves acknowledged_by as-is (a system close, not a
-// human one). deviceId may be NULL (room-level environment alerts).
-//
-// `above` narrows it to the severities that outrank a band: a metric that falls from
-// critical to warning closes its CRITICAL alert and leaves any WARNING alert open,
-// because the warning condition is still true.
+// Resolve every open alert for a device+metric once it has recovered. Keeps
+// acknowledged_by as it was. deviceId may be NULL (room alerts). `above` limits it
+// to severities above a band: dropping from critical to warning closes the critical
+// alert and keeps the warning one open.
 async function autoResolveMetric(deviceId, type, { above = null } = {}) {
   const dId = deviceId ?? null;
   const partial = above && above !== alertBandState.DEFAULT_BAND;
@@ -156,26 +152,22 @@ async function autoResolveMetric(deviceId, type, { above = null } = {}) {
       WHERE device_id <=> ? AND type = ? AND status <> 'resolved'${sevSql}`,
     params,
   );
-  // Re-arm the detector (matches the manual-resolve path; harmless on the recovery
-  // path since the trigger already set this band back to normal). NOT on a partial
-  // close: the metric is still in a band, and the caller is about to record it.
+  // Reset the band, like a manual resolve. Not on a partial close: the metric is
+  // still in a band and the caller records it.
   if (!partial) alertBandState.resetBand(dId, type);
   for (const r of open) broadcast(await getById(r.alert_id));
   return open.length;
 }
 
-// One reading's band transition, shared by every threshold trigger (servers,
-// routers/UPS/MikroTik, the room environment). Applies recovery confirmation, closes
-// whatever a confirmed drop has made untrue, and records the band.
+// One reading's band change, shared by every threshold trigger. Applies recovery
+// confirmation, closes the alerts a confirmed drop has made untrue, and stores
+// the band.
 //
-// Returns { effective, downgraded, dropped }. `dropped` is the band a CONFIRMED drop
-// landed in ("normal" = full recovery), else null — callers write it to the device's
-// event log so the history shows a problem ending, not only starting.
-// `downgraded` is true when a confirmed drop landed
-// in a band that still has no open alert — e.g. memory went straight to critical (so no
-// warning alert was ever raised), then settled at 88%. The caller raises the lower-band
-// alert in that case, so the incident list keeps saying the metric is still elevated
-// instead of going quiet the moment the critical alert closes.
+// Returns { effective, downgraded, dropped }. `dropped` is the band a confirmed
+// drop landed in ("normal" = full recovery), else null; callers log it so the
+// device history shows the problem ending. `downgraded` is true when the drop
+// landed in a band with no open alert (e.g. it jumped straight to critical, then
+// settled at warning); the caller then raises the warning alert.
 async function settleBand(deviceId, type, prevBand, band) {
   const { effective, resolveAbove } = alertBandState.settle(deviceId, type, prevBand, band);
   let downgraded = false;
@@ -194,14 +186,9 @@ async function settleBand(deviceId, type, prevBand, band) {
   return { effective, downgraded, dropped: resolveAbove };
 }
 
-// Rebuild the in-memory bands from the alerts that are actually OPEN.
-//
-// The bands live in memory, and they used to start from "normal" after a backend
-// restart and after a server's offline flip (alertBandState.resetDevice). An alert left
-// open across either could then never auto-resolve: the next normal reading looked
-// like normal → normal, which is no transition at all. That is how a Memory critical
-// alert from the day before was still open. Seeding the band from the open alert makes
-// the next normal reading a real recovery, which closes it through the usual path.
+// Rebuild the in-memory bands from the alerts that are still open. Without it, an
+// alert left open across a restart or an offline flip could never auto-resolve,
+// because the next normal reading looked like no change at all.
 //
 // deviceId undefined = every device (startup); a number or null = that one device.
 async function seedBands(deviceId) {

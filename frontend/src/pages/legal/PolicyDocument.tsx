@@ -1,18 +1,14 @@
 import { BRAND } from "../../branding";
 
 /**
- * The Privacy Notice & Terms of Use text — ONE component, rendered both by the
- * public /privacy page and inside the acceptance gate. That is the point: the
- * document someone agrees to must be byte-for-byte the document anyone can read
- * without an account. Two copies would drift, and the drift would be invisible.
+ * The Privacy Notice & Terms of Use text, one component used by both the public
+ * /privacy page and the acceptance gate, so what people agree to is exactly what anyone
+ * can read.
  *
- * Structured around what the Data Privacy Act of 2012 (RA 10173) expects a privacy
- * notice to state: what is collected, why, who sees it, how long it is kept, where
- * it lives, who it is shared with, and how a data subject exercises their rights.
- *
- * Everything here describes what the code actually does today. If you change
- * what the system collects, keeps, or sends, change this text AND bump
- * POLICY_VERSION in backend/services/policyService.js so everyone re-accepts.
+ * Follows what the Data Privacy Act of 2012 (RA 10173) expects: what is collected, why,
+ * who sees it, how long it is kept, where it is stored, who it is shared with, and how
+ * to exercise data subject rights. It describes what the code does now; if that changes,
+ * update this text and bump POLICY_VERSION in backend/services/policyService.js.
  */
 
 const CONTACT = BRAND.supportEmail || "ictusupport@cspc.edu.ph";

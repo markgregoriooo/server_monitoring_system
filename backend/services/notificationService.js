@@ -3,13 +3,9 @@ import db from "../config/mysql.js";
 import emailService from "./emailService.js";
 import { describeError } from "../utils/httpError.js";
 
-// Notifications = the bell feed. One `alerts` row is the EVENT; we fan it out to
-// one `alert_notifications` row PER active user (the per-user read state + feed).
-// A single raiseAlert() therefore both persists and live-pushes to every recipient.
-//
-// `io` is injected once at startup (init) so trigger sites — the offline sweep,
-// threshold checks, future UPS/router events — can raise an alert without
-// threading the Socket.IO server through every call.
+// Notifications (the bell feed). One `alerts` row is the event, copied into one
+// `alert_notifications` row per active user (per-user read state). raiseAlert()
+// saves it and pushes it live to everyone. `io` is set once in init().
 
 let _io = null;
 export function init(io) {
@@ -19,22 +15,14 @@ export function init(io) {
 const SEVERITIES = ["info", "warning", "critical"];
 const SEV_RANK = { info: 0, warning: 1, critical: 2 };
 
-// What a user who has never touched the Settings page gets. ONE definition, read by the
-// recipient query below, by getPrefs(), and by userService.registerGoogleUser seeding a
-// row for a brand-new account — three places that used to each carry their own literal.
+// Defaults for a user who has never changed their settings. Used by the recipient
+// query, getPrefs() and userService.registerGoogleUser.
 //
-// ⚠️ `emailEnabled: false` is the deliberate part, and it makes alert email an opt-IN.
-// The bell, the toast and the OS popup all require a signed-in browser, so they cannot
-// reach somebody who has never used the system; EMAIL can, and did. An approved account
-// with no prefs row was mailed critical alerts before its owner had ever seen the
-// dashboard, could not switch them off without signing in (the toggle is behind the
-// login), and had never been shown the Privacy Notice that says what we do with their
-// address (RA 10173 — privacy-policy.md). Nobody is mailed until they ask to be.
-//
-// Turning it on is one toggle on Settings → Notification preferences.
-// `migrations/2026-09-18_notification_prefs_default_off.sql` backfilled an explicit row
-// for everyone who had already signed in, so this did not quietly mute anybody who was
-// relying on the old default.
+// Alert email is opt-in (`emailEnabled: false`): email is the only channel that
+// reaches someone who has never signed in or seen the Privacy Notice (RA 10173).
+// Users turn it on in Settings → Notification preferences.
+// migrations/2026-09-18_notification_prefs_default_off.sql kept email on for
+// everyone who had already signed in.
 export const PREF_DEFAULTS = { emailEnabled: false, popupEnabled: true };
 
 function normalizeSeverity(s) {
@@ -49,28 +37,18 @@ function toClient(r) {
     id: r.id, // alert_notifications.id — the per-user row the client marks read
     alertId: r.alert_id,
     deviceId: r.device_id,
-    // A server carries TWO names and a notification needs both. `display_name` is the
-    // label an admin gave it ("Main DB server") and is what every page shows; the
-    // hostname is what the agent reports and what you type into a terminal. An alert
-    // that names only one of them is a question either way — "which box is that?" if
-    // it shows the label, "which one did we call that?" if it shows the hostname.
-    //
-    // Effective name first, same COALESCE the rest of the app uses (agentService's
-    // SERVER_SELECT, analyticsService's device identity), so a renamed device reads
-    // the same here as everywhere else.
+    // A server has a display name ("Main DB server") and a hostname, and an alert
+    // should show both. Display name first, using the same COALESCE as the rest of
+    // the app, so a renamed device reads the same everywhere.
     deviceName: (r.display_name ?? "").trim() || r.device_name || null,
-    // ...and the hostname alongside it, but ONLY when it actually differs. A device
-    // with no display name would otherwise render as "web-01 (web-01)", which is
-    // noise, so the UI can print this unconditionally when it is non-null.
+    // The hostname too, only when it differs, so it never reads "web-01 (web-01)".
     deviceHostname:
       (r.display_name ?? "").trim() && r.display_name.trim() !== r.device_name
         ? r.device_name
         : null,
-    // The devices row's kind (server|router|mikrotik|ups|esp32|aircon). The client
-    // needs it to know WHICH page a notification belongs to: deviceAlerts.checkRouter
-    // is shared by the SNMP and MikroTik pollers, so both stamp `router_*`/`link_*`,
-    // and routers, UPS and MikroTiks all raise the same `device_offline`. The alert
-    // type alone therefore can't tell those pages apart — this is what does.
+    // The device type (server|router|mikrotik|ups|esp32|aircon). The client uses it to
+    // open the right page, since routers, UPS and MikroTiks share alert types such as
+    // `device_offline`.
     deviceType: r.device_type ?? null,
     type: r.type,
     title: r.title,
@@ -89,29 +67,18 @@ function toClient(r) {
   };
 }
 
-// Raise one alert and fan it out to every active user. Best-effort: a notification
-// failure must never break the monitoring path that triggered it, so this swallows
-// errors and returns the new alert_id (or null on failure).
+// Raise one alert and send it to every active user. Best-effort: errors are
+// swallowed so monitoring never breaks. Returns the new alert_id or null.
 async function raiseAlert({ deviceId, type, title, message, severity = "info", metricValue = null, alertRuleId = null, cooldownMin = null }) {
   try {
     if (!SEVERITIES.includes(severity)) severity = "info";
     const dId = deviceId ?? null;
 
-    // Cooldown / de-dup (restart-proof): skip if an identical alert (same device +
-    // type + severity) is still OPEN and was raised within the window. Stops the bell +
-    // email repeating for a value that stays in-band across polls AND across backend
-    // restarts (the in-memory hysteresis can't survive a restart; this DB check can).
-    //
-    // `status <> 'resolved'` is the key: once an alert is resolved (manually or
-    // auto-resolved when the metric recovered), it no longer suppresses — so a genuine
-    // RECURRENCE re-alerts immediately instead of waiting out the window. This matches
-    // how real incident tools de-dup (per open incident, not a blind wall clock).
-    // `<=>` is MySQL's null-safe equals, since device_id may be NULL (system alerts).
-    // Callers may override the window. A live metric flapping around its threshold wants
-    // the short default; a FORECAST ("disk full in ~6 days") moves on a scale of days, so
-    // re-announcing it every 30 minutes would be noise — analyticsAlerts passes a much
-    // longer window. Auto-resolve on recovery still works either way, since the de-dup is
-    // scoped to alerts that are still open.
+    // De-dup: skip if an identical alert (device + type + severity) is still open and
+    // was raised within the window. Stored in the DB, so it survives restarts. A
+    // resolved alert no longer blocks, so a real recurrence alerts right away. `<=>` is
+    // the null-safe equals, since device_id may be NULL. Callers can pass a longer
+    // window (forecast alerts use days, not 30 minutes).
     const cooldown = Number(cooldownMin) || Number(process.env.NOTIFY_COOLDOWN_MIN) || 30;
     const [[recent]] = await db.query(
       `SELECT alert_id FROM alerts
@@ -132,11 +99,9 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
     );
     const alertId = ins.insertId;
 
-    // 2) recipients — every active user, with their email + email preferences.
-    //    A missing notification_prefs row falls back to PREF_DEFAULTS: the feed row and
-    //    the live push still happen, the EMAIL does not. Bound as a parameter rather than
-    //    written into the SQL, so the default has one definition and not a second one
-    //    hiding inside a query string.
+    // 2) Recipients: every active user with their email preferences. Users with no
+    //    notification_prefs row use PREF_DEFAULTS (feed and live push yes, email no).
+    //    Passed as a parameter so the default lives in one place.
     const emailMinDefault = normalizeSeverity(process.env.NOTIFY_EMAIL_MIN_SEVERITY) || "critical";
     const [users] = await db.query(
       `SELECT u.user_id, u.email,
@@ -174,20 +139,17 @@ async function raiseAlert({ deviceId, type, title, message, severity = "info", m
         _io.to(`user:${r.user_id}`).emit("notification", toClient(r));
       }
     } else {
-      // init(io) is called once at startup (src/server.js). Reaching here means the
-      // wiring is broken, and the old `if (_io)` swallowed that silently — the alert row
-      // and the email still go out, but no bell, no toast, no OS popup, with nothing in
-      // the log to say why. A dropped ALERT is the most expensive silent failure in this
-      // system, so it says so. See audits/design-patterns-report-2026-08-25.md — P-09.
+      // init(io) should have been called at startup (src/server.js). Log it, because
+      // otherwise the bell, toast and popup silently stop while email still goes out.
+      // See audits/design-patterns-report-2026-08-25.md (P-09).
       console.error(
         `[notify] alert ${alertId}: raiseAlert() ran before init(io) — ` +
           `${rows.length} in-app notification(s) dropped (row + email unaffected)`,
       );
     }
 
-    // 5) email channel — severity-gated, per-user pref. Only when SMTP is
-    //    configured. Concurrent + best-effort: an email failure never affects the
-    //    bell/toast that already fired. Mark emailed=1 so a re-run never re-sends.
+    // 5) Email: by severity and per-user preference, only when SMTP is configured.
+    //    Sent in parallel and best-effort. emailed=1 so it is never sent twice.
     if (emailService.isEnabled()) {
       const byUser = new Map(users.map((u) => [u.user_id, u]));
       await Promise.allSettled(
@@ -260,9 +222,8 @@ async function markAllRead(userId) {
   return res.affectedRows;
 }
 
-// Mark THIS user's bell row for a specific alert read — used when they acknowledge or
-// resolve that alert (acting on it means they've seen it). Scoped to the one user;
-// never touches anyone else's read state.
+// Mark this user's bell entry for one alert as read (used when they acknowledge or
+// resolve it). Only this user's row.
 async function markReadByAlert(userId, alertId) {
   if (!userId || !alertId) return 0;
   const [res] = await db.query(

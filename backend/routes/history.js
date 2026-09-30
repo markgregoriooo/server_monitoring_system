@@ -9,8 +9,8 @@ const router = express.Router();
 // admin and it_staff can view it. Managing things stays gated elsewhere.
 router.use(authMiddleware, requireRole("admin", "it_staff"));
 
-// GET /api/history — unified activity/audit timeline across system_logs,
-// aircon_logs, alerts and device_logs, with actor accountability.
+// GET /api/history ─ combined activity timeline from system_logs, aircon_logs,
+// alerts and device_logs, with who did what.
 // Query: days, category, severity, actorType (admin|staff|system), search, page, pageSize
 router.get(
   "/",

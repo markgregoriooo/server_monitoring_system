@@ -11,10 +11,8 @@ import {
   assertBuildersComplete,
 } from "../services/reportTypes.js";
 
-// The report-type registry replaced four parallel maps in reportService.js. These tests
-// pin the two things that made the old shape dangerous: that the derived views still
-// agree with each other, and that a type without a builder is caught loudly.
-// See audits/design-patterns-report-2026-08-25.md — P-08.
+// Tests for the report-type registry: the derived lists agree, and a type without a
+// builder is caught. See audits/design-patterns-report-2026-08-25.md (P-08).
 
 test("every registered type has a label", () => {
   for (const t of REPORT_TYPES) {
@@ -64,16 +62,10 @@ test("assertBuildersComplete rejects a builder with no registry entry", () => {
   assert.throws(() => assertBuildersComplete(builders), /no registry entry: somethingNew/);
 });
 
-// ─── Contract: the registry vs the DATABASE enum ──────────────────────────────
-//
-// `reports.type` is an ENUM in the schema, which makes the SQL a FIFTH place the report
-// types are written down — and the one the registry cannot derive from. An enum that
-// lacks a type does not fail at boot like a missing builder does: `create()` passes
-// validation, then the INSERT is rejected (or, on a non-strict server, silently coerced
-// to ''), so the failure appears at the database and points nowhere useful.
-//
-// Same tactic as tests/contract.test.js, which parses the Go agent's metrics.go and fails
-// when its json tags drift from NUMERIC_FIELDS. A drift test beats a comment.
+// ─── Registry vs the database ENUM ──────────────────────────────
+// `reports.type` is an ENUM in the schema. A missing value only fails at INSERT (or is
+// stored as '' on a non-strict server), so this checks the two agree, like
+// contract.test.js does for the Go agent.
 
 const SCHEMA = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -109,14 +101,8 @@ test("the reports.type SQL enum matches the registry exactly", () => {
 });
 
 // ─── Report period width (BL-05) ──────────────────────────────────────────────
-//
-// `reportService.create` is not import-free (MySQL + InfluxDB), so the RULE is pinned
-// here rather than the function. Both must agree; the constant and the comparison are
-// duplicated deliberately and kept side by side so a drift is visible in one file.
-//
-// Why the rule exists: `start < end` alone accepts "2000-01-01", scheduling Flux
-// queries over 26 years of history. The build is asynchronous and never throws, so the
-// request looks fine while a long query holds one of ten shared pool connections.
+// reportService.create needs MySQL and InfluxDB, so the rule is tested here and kept
+// next to a copy of the constant. `start < end` alone would accept a 26-year range.
 
 const MAX_PERIOD_DAYS = Number(process.env.REPORT_MAX_PERIOD_DAYS) || 366;
 const spanDays = (start, end) => (new Date(end) - new Date(start)) / 86_400_000;

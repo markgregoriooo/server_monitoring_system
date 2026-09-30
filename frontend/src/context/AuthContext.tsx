@@ -32,10 +32,9 @@ interface User {
   created_at?: string | undefined;
   last_login?: string | undefined;
 
-  // Privacy Notice & Terms. `policy_version` is what this user last accepted
-  // (null = never); `policy_current` is what the SERVER says is in force. The
-  // acceptance gate shows when they differ, so bumping the version server-side
-  // re-prompts everyone without a frontend release.
+  // Privacy Notice & Terms. `policy_version` is what this user last accepted (null =
+  // never); `policy_current` is the version in force on the server. The gate shows
+  // when they differ.
   policy_version?: string | null | undefined;
   policy_accepted_at?: string | null | undefined;
   policy_current?: string | undefined;
@@ -70,17 +69,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const saved = sessionStorage.getItem("cspc_user");
       if (!saved) return null;
 
-      // Only restore a session whose token is STILL ALIVE.
-      //
-      // sessionStorage lives as long as the tab does, so a dashboard left open
-      // overnight still has its user object here the next morning — with a token
-      // that died an hour into the night. Restoring on the strength of the user
-      // object alone booted straight into the dashboard, fired a dozen authenticated
-      // requests that every one came back 403, filled the console with failures, and
-      // landed on the login page anyway. To the person at the keyboard that looks
-      // like being kicked out immediately after signing in.
-      //
-      // The token states its own expiry, so this costs nothing and needs no network.
+      // Only restore a session whose token is still valid. A tab left open overnight still
+      // has the user object in sessionStorage but an expired token; restoring it would
+      // fire requests that all fail and then land on the login page. The token's own
+      // expiry is checked, with no network call.
       const token = readToken();
       const msLeft = token ? msUntilTokenExpiry() : null;
       if (!token || (msLeft !== null && msLeft <= 0)) {
@@ -104,13 +96,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // is already dead at this point — this only holds the notice on screen.
   const [idleLogout, setIdleLogout] = useState(false);
 
-  // Keep the socket connection in sync with auth state. This also runs on mount,
-  // so a session restored from sessionStorage after a page refresh reconnects the
-  // socket (and resumes live sensor data) without needing to log out and back in.
-  //
-  // `idleLogout` is part of the condition because `user` deliberately stays set while
-  // the notice is up (so the page behind it doesn't vanish) — without this the effect
-  // would helpfully reconnect the socket we just closed.
+  // Keep the socket in step with the auth state. Also runs on mount, so a session
+  // restored after a refresh reconnects the socket. `idleLogout` is in the condition
+  // because `user` stays set while the idle notice is shown; otherwise this would
+  // reconnect the socket that was just closed.
   useEffect(() => {
     if (user && !idleLogout) {
       if (!socket.connected) socket.connect();
@@ -119,10 +108,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [user, idleLogout]);
 
-  // Clear the session locally, no server round-trip. Used by manual logout (after
-  // notifying the server) and by both auto-logout paths below, where the token is
-  // already invalid so calling the server is pointless. Setting user to null makes
-  // AppShell redirect to /login automatically.
+  // Clear the session locally, with no server call. Used by manual logout (after telling
+  // the server) and by the auto-logout paths, where the token is already invalid.
+  // Setting user to null makes AppShell redirect to /login.
   const clearLocalSession = useCallback(() => {
     socket.disconnect();
     setUser(null);
@@ -131,34 +119,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.removeItem("cspc_token_at");
   }, []);
 
-  // Idle timeout. Unlike every other teardown this one does NOT drop straight to the
-  // login page: being bounced to a sign-in screen with no explanation, after stepping
-  // away for a coffee, reads as a crash. The user gets a notice they have to
-  // acknowledge instead.
-  //
-  // The session is destroyed HERE, not when OK is clicked. Token gone, socket
-  // closed, storage cleared — all of it, immediately, at the 15-minute mark. The
-  // modal is only an explanation, and it must never be the thing keeping a session
-  // alive, or an idle timeout could be defeated by simply never clicking OK. `user`
-  // stays in React state purely so the page behind the notice doesn't blank out; it
-  // is a rendering detail, and it authorises nothing, because the credentials it
-  // would have travelled with are already gone.
+  // Idle timeout. Instead of dropping straight to the login page, the user gets a notice
+  // explaining what happened. The session is destroyed right here at the 15-minute mark
+  // (token, socket, storage); the notice only explains it, so not clicking OK cannot
+  // keep a session alive. `user` stays in state only so the page behind the notice
+  // does not go blank.
   const beginIdleLogout = useCallback(() => {
     console.warn("[session] ended — idle: tab hidden for 15 minutes");
 
-    // Revoke SERVER-SIDE first, then clear locally.
-    //
-    // This used to clear sessionStorage and stop there — which ends the session for
-    // this browser but leaves the token itself perfectly valid for the rest of its
-    // life (up to an hour). An idle timeout is the one teardown where that gap is
-    // real: the token has NOT expired, and nothing has bumped token_version, so a
-    // copy taken from this machine keeps working for an hour after the screen was
-    // supposedly secured. The explicit Sign out button has always called this; the
-    // automatic timeout is the case where nobody is present to press it.
-    //
-    // Fire-and-forget, and the local teardown does not wait on it: an offline or slow
-    // backend must never delay securing an unattended screen. `api.logout()` reads
-    // the token from storage, so it is issued BEFORE the keys are removed.
+    // Revoke on the server first, then clear locally. Otherwise the token would still work
+    // for up to an hour after the screen locked. Not awaited, so a slow backend never
+    // delays securing the screen. `api.logout()` reads the token from storage, so it is
+    // called before the keys are removed.
     void api.logout().catch(() => {
       /* best effort — the local session is torn down regardless */
     });
@@ -168,37 +140,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.removeItem("cspc_token");
     sessionStorage.removeItem("cspc_token_at");
 
-    // Tell the sign-in page WHY, so the banner there matches the modal instead of the
-    // user arriving at a bare login form a moment after being told something happened.
-    //
-    // Set HERE and not in confirmIdleLogout, because the modal is not the only way out
-    // of this state: the session is already destroyed by this point, so a reload — or a
-    // restored tab — lands straight on /login without OK ever being clicked. Setting it
-    // at the moment of logout covers every exit; setting it on the button would cover
-    // only the tidy one.
-    //
-    // The VALUE distinguishes the two ways a session ends, since they read differently
-    // to whoever is standing there: "expired" is the token running out, "idle" is the
-    // system deciding nobody was watching.
+    // Tell the sign-in page why, so its banner matches. Set here rather than on the OK
+    // button, because a reload or restored tab reaches /login without OK being clicked.
+    // The value tells the two cases apart: "expired" (the token ran out) and "idle"
+    // (nobody was watching).
     sessionStorage.setItem("cspc_session_expired", "idle");
 
     setIdleLogout(true);
   }, []);
 
-  // OK on the notice: finish the job. The `cspc_session_expired` flag was already set by
-  // beginIdleLogout (see there for why it is set at logout rather than here), so the
-  // sign-in page carries the reason through.
+  // OK on the notice: finish the sign-out. The `cspc_session_expired` flag was already
+  // set in beginIdleLogout.
   const confirmIdleLogout = useCallback(() => {
     setIdleLogout(false);
     setUser(null); // AppShell redirects to /login
   }, []);
 
-  // Every path that ends a session goes through here, so the console always names
-  // the one that fired. Four different mechanisms can log a user out — a rejected
-  // request, the token's own expiry, the idle-away timer, and server-side socket
-  // revocation — and they all produce the identical "Your session expired" screen.
-  // Without the label they are indistinguishable from the outside, which is exactly
-  // what makes a spurious logout hard to chase.
+  // Every logout goes through here, so the console names which one fired: a rejected
+  // request, token expiry, the idle timer or socket revocation. They all show the same
+  // "session expired" screen.
   const endSession = useCallback(
     (reason: string, detail?: unknown) => {
       console.warn(`[session] ended — ${reason}`, detail ?? "");
@@ -208,25 +168,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [clearLocalSession],
   );
 
-  // Reactive auto-logout: the axios response interceptor emits this when the backend
-  // rejects one of our requests. Act only if we still hold a token, so a stray event
-  // after logout is a no-op. The login page shows a notice via the flag.
+  // Reactive auto-logout: the axios interceptor fires this when the backend rejects a
+  // request. Only acts while we still hold a token.
   //
-  // A single rejected request is NOT proof the session is dead, and treating it as
-  // proof is what made this destructive. Any one response can be rejected for reasons
-  // that have nothing to do with the session still being valid — it was sent under a
-  // token that has since been replaced by the sliding renewal, it raced a reconnect,
-  // it was retried by the browser, or it simply arrived late. The old code destroyed
-  // the session on the first such reply, which is why a burst of parallel requests
-  // (pip/LiveSummaryContext re-seeds four endpoints the instant the socket connects,
-  // i.e. immediately after login) could throw the user straight back to the sign-in
-  // page while their credentials were perfectly good.
-  //
-  // So: ask the server. ONE authoritative call with the CURRENT token decides. If
-  // /auth/me answers, the session is alive and the rejection belonged to something
-  // stale — keep the user signed in and re-arm the guard. Only a rejection of THIS
-  // check ends the session. A network or 5xx failure is not an auth answer at all and
-  // must never log anyone out.
+  // One rejected request does not prove the session is dead: it may have been sent with
+  // a token that was just renewed, raced a reconnect or arrived late (e.g. the burst of
+  // requests LiveSummaryContext sends right after login). So ask the server once with
+  // the current token: if /auth/me answers, stay signed in. Only a rejection of this
+  // check ends the session; a network or 5xx error never logs anyone out.
   useEffect(() => {
     const onExpired = async (e: Event) => {
       if (!sessionStorage.getItem("cspc_user")) return; // not logged in — ignore stray events
@@ -253,13 +202,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("cspc:session-expired", onExpired as EventListener);
   }, [endSession]);
 
-  // Server-side revocation of a LIVE socket (services/socketSessions.js): the
-  // account was disabled, removed, or its tokens revoked while this connection was
-  // open. HTTP would have caught it at the next request, but a dashboard sitting on
-  // socket-fed pages makes no requests for minutes — so without this the user keeps
-  // watching live data they are no longer entitled to. Same treatment as an expiry:
-  // the reason isn't shown, since the login page already explains a disabled account
-  // if they try to sign back in.
+  // The server revoked this live socket (services/socketSessions.js): the account was
+  // disabled or removed, or its tokens revoked. Socket-fed pages may make no HTTP
+  // requests for minutes, so this is how they find out. Handled like an expiry.
   useEffect(() => {
     const onRevoked = (payload: unknown) => {
       if (!sessionStorage.getItem("cspc_user")) return;
@@ -271,18 +216,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [endSession]);
 
-  // A REJECTED handshake had no listener at all.
-  //
-  // src/server.js's io.use() rejects with next(new Error("Unauthorized")) or
-  // next(new Error("Session is no longer valid")) — both arrive here as connect_error.
-  // With nobody listening, Socket.IO retried forever in silence: HTTP kept working, so
-  // the dashboard looked fine while every live panel quietly stopped updating. On a
-  // monitoring wall that is indistinguishable from "nothing is happening".
-  //
-  // An auth rejection gets the same treatment as sessionRevoked. Anything else (backend
-  // down, network drop) is left alone deliberately — Socket.IO's own reconnection
-  // handles it, and signing someone out because the LAN blipped would be worse.
-  // See audits/error-handling-report-2026-08-25.md — E-06.
+  // A rejected handshake (io.use() in src/server.js: "Unauthorized" or "Session is no
+  // longer valid") arrives as connect_error. Without a listener, Socket.IO kept retrying
+  // silently while live panels stopped updating. Auth rejections are handled like
+  // sessionRevoked; other errors (backend down, network) are left to Socket.IO's own
+  // reconnect. See audits/error-handling-report-2026-08-25.md (E-06).
   useEffect(() => {
     const AUTH_REJECTIONS = ["Unauthorized", "Session is no longer valid"];
     const onConnectError = (err: Error) => {
@@ -302,11 +240,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [endSession]);
 
-  // Sliding session: the API silently renews our token (X-Renewed-Token header →
-  // client.ts saves it + fires this event) while the user stays active. Bumping this
-  // tick re-runs the proactive-expiry effect below so it re-arms to the NEW token's
-  // later exp, instead of firing at the original login+1h mark and logging out an
-  // active user.
+  // Sliding session: when the API renews our token (client.ts saves it and fires this
+  // event), bump the tick so the expiry timer below re-arms to the new token's expiry.
   const [renewTick, setRenewTick] = useState(0);
   useEffect(() => {
     const onRenewed = () => setRenewTick((n) => n + 1);
@@ -314,24 +249,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("cspc:token-renewed", onRenewed);
   }, []);
 
-  // Proactive auto-logout exactly when the JWT expires, so an idle tab doesn't sit
-  // on a dead token until the next request. Re-runs on login / restore-from-storage /
-  // token renewal, reading exp from the current token.
+  // Log out exactly when the JWT expires, so an idle tab does not keep a dead token.
+  // Re-runs on login, restore and token renewal.
   useEffect(() => {
-    // `idleLogout` is in the condition AND the deps for the same reason it is on the
-    // heartbeat effect below: the session is already gone while the notice is up. Without
-    // it the timeout armed before the idle logout stays pending, and if the token happened
-    // to expire behind the modal it would fire endSession("token lifetime reached") and
-    // overwrite the "idle" reason with the generic one — so the user would be told their
-    // session expired when what actually happened is that they stepped away. Listing it in
-    // the deps is what re-runs the effect and lets the cleanup clear that pending timer.
+    // `idleLogout` is in the condition and deps (like the heartbeat effect): the session is
+    // already gone while the notice shows, and a timer left over from before could
+    // otherwise fire and replace the "idle" reason with "expired".
     if (!user || idleLogout) return;
     const msLeft = msUntilTokenExpiry();
     if (msLeft === null) return;
 
-    // Already dead when we armed. The restore path above now rejects an expired
-    // token before a session is ever built from it, so reaching this means the token
-    // died between restore and here — an unlikely but real window.
+    // Already expired when armed. The restore path rejects expired tokens, so this only
+    // covers a token that expired in between.
     if (msLeft <= 0) {
       endSession("token already expired when armed", { expiredMsAgo: -msLeft });
       return;
@@ -340,18 +269,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(t);
   }, [user, idleLogout, endSession, renewTick]);
 
-  // Activity-based session lifetime — two rules, both keyed on whether the user is
-  // actually WATCHING the dashboard:
-  //   • watching      → keep the session alive. A heartbeat ping triggers the backend's
-  //                     sliding renewal, so even socket-fed pages that make no HTTP
-  //                     calls once loaded — Dashboard, Environment, Server Metrics,
-  //                     Network, MikroTik, UPS — don't expire while on screen.
-  //   • not watching  → the user switched to another tab / minimized / hid the page,
-  //                     so log out after a 15-min idle timeout (PCI-DSS standard)
-  //                     instead of lingering for the full token life.
-  // "Watching" = the tab is visible OR a Picture-in-Picture window is open, so popping
-  // out a live tile and working elsewhere keeps you signed in. The PiP check reads the
-  // browser API directly, so it already works for the pip-widget when that branch merges.
+  // Session lifetime based on whether the user is watching the dashboard:
+  //   • watching     → keep the session alive. A heartbeat request triggers the
+  //                    backend's renewal, so socket-only pages (Dashboard,
+  //                    Environment, Server Metrics, Network, MikroTik, UPS) do not
+  //                    expire while on screen.
+  //   • not watching → another tab, minimized or hidden: log out after 15 minutes
+  //                    idle (PCI-DSS).
+  // "Watching" = the tab is visible or a Picture-in-Picture window is open.
   useEffect(() => {
     if (!user || idleLogout) return; // notice on screen — the session is already gone
 

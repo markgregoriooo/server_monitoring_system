@@ -2,22 +2,11 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 import { GF as gf, STATUS } from "../theme/gf";
 
 /**
- * Catches a render-time exception and shows a recoverable panel instead of a white page.
- *
- * There was no error boundary anywhere in the app. React's default on an uncaught render
- * error is to **unmount the entire tree** — so a single null-dereference in one panel
- * blanked the whole dashboard to a white screen, with the cause visible only in the
- * console. On a monitoring system that is the worst possible failure mode: the operator
- * cannot tell "the app broke" from "everything is fine and quiet", and a room could be on
- * fire behind a blank page.
- *
- * A boundary only catches errors thrown while RENDERING, in lifecycle methods, and in
- * constructors below it. It does **not** catch errors inside event handlers, in `setTimeout`,
- * or in promise rejections — those never unmounted the tree in the first place. It also
- * cannot catch an error thrown by itself or by anything above it, which is why this is
- * mounted inside the providers rather than around them.
- *
- * See audits/error-handling-report-2026-08-25.md — E-05.
+ * Catches a render error and shows a recoverable panel instead of a blank page.
+ * Without it, one error in a panel unmounts the whole app, and a blank screen looks
+ * like "nothing is happening". Only catches errors during rendering, lifecycle
+ * methods and constructors below it (not event handlers, timers or promises).
+ * Mounted inside the providers. See audits/error-handling-report-2026-08-25.md (E-05).
  */
 interface Props {
   children: ReactNode;

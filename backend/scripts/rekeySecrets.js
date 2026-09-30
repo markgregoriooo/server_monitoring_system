@@ -1,52 +1,36 @@
 #!/usr/bin/env node
-// ─── Encryption-key rotation for every reversibly-stored secret ─────────────────
+// ─── Encryption-key rotation for every reversibly stored secret ─────────────────
+// Re-encrypts stored secrets under a new key, e.g. if the old key leaked. Hashes are
+// one-way and not affected.
 //
-// THE GAP THIS CLOSES. Four columns hold AES-256-GCM ciphertext, and until now the
-// documented answer to "how do I change the key?" was: you don't. CLAUDE.md says of
-// MIKROTIK_ENC_KEY, in bold, "NEVER change this once MikroTik credentials are saved",
-// and secretCrypto.js explains why a caller with stored data pins one variable name.
-// Both are accurate descriptions of the code — and together they meant the system had
-// no way to respond to the one event key management exists for: a key being exposed.
-// A key you cannot rotate is a key you must never lose, which is not a security
-// property, it is a hope.
-//
-// What actually needs re-encrypting (everything reversible; the hashes are one-way and
-// are untouched by design):
 //   mikrotik_devices.api_password        RouterOS login          MIKROTIK_ENC_KEY (pinned)
 //   agent_install_keys.key_cipher        AIK- key, re-displayed  SECRET_ENC_KEY → MIKROTIK_ENC_KEY
 //   agent_tokens.approved_token_cipher   AGT- token, re-delivery SECRET_ENC_KEY → MIKROTIK_ENC_KEY
 //   device_network.snmp_community        SNMPv2c community       SECRET_ENC_KEY → MIKROTIK_ENC_KEY
 //
-// ⚠️ mikrotik_devices.api_password is PINNED to MIKROTIK_ENC_KEY by mikrotikCrypto.js,
-// so rotating THAT variable and rotating SECRET_ENC_KEY are two different operations on
-// two different sets of rows. `--suite` selects which, and defaults to both, because the
-// common case — one deployment, both variables holding the same value or only
-// MIKROTIK_ENC_KEY set at all — is the case where doing one and forgetting the other
-// leaves half the database unopenable.
+// api_password always uses MIKROTIK_ENC_KEY, so the two keys are rotated separately.
+// `--suite` picks which; the default is both, so neither is forgotten.
 //
 // USAGE
 //   npm run rekey                                  # report only: what is encrypted, what is not
 //   npm run rekey -- --encrypt-plaintext           # encrypt values still stored in the clear
 //   npm run rekey -- --from-key <64hex> [--suite general|mikrotik|both] [--apply]
 //
-//   Rotation is a DRY RUN unless --apply is passed. The dry run decrypts every row under
-//   the old key and re-encrypts it in memory, so "it would work" is proven against the
-//   real data before a single row is written.
+//   Rotation is a dry run unless --apply is given. The dry run decrypts and
+//   re-encrypts every row in memory, so it proves the rotation works first.
 //
-// ROTATION PROCEDURE (the order matters)
+// ROTATION STEPS (in this order)
 //   1. Generate the new key:
 //        node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-//   2. Back up the database first. This rewrites credential columns in place.
-//   3. Put the NEW key in backend/.env, keep the OLD one to hand.
-//   4. Stop the backend — the pollers decrypt on every cycle and would read rows
-//      mid-rotation under the wrong key.
-//   5. npm run rekey -- --from-key <OLD KEY>            (dry run — read the report)
+//   2. Back up the database.
+//   3. Put the new key in backend/.env and keep the old one.
+//   4. Stop the backend (the pollers decrypt every cycle).
+//   5. npm run rekey -- --from-key <OLD KEY>            (dry run; read the report)
 //   6. npm run rekey -- --from-key <OLD KEY> --apply
-//   7. Start the backend. Nothing needs re-entering; the AGT-/AIK- credentials
-//      themselves are unchanged, only the key they are wrapped under.
+//   7. Start the backend. Nothing needs to be re-entered.
 //
-// The script reads the NEW key from the environment exactly as the application does, so
-// step 5 failing is the check that step 3 was done right.
+// The new key is read from the environment like the app does, so if step 5 fails,
+// check step 3.
 
 import "../config/env.js";
 import db from "../config/mysql.js";
@@ -91,12 +75,8 @@ if (fromKey !== undefined && !/^[0-9a-fA-F]{64}$/.test(fromKey)) {
 }
 
 // ─── Targets ──────────────────────────────────────────────────────────────────
-//
-// `prefixed` marks the one column that carries a format marker. snmp_community was
-// migrated IN PLACE on a live table and so has to tell ciphertext from a legacy
-// plaintext value; the other three were encrypted from the day they existed and hold
-// bare base64. Getting this wrong in either direction corrupts data, so it is a
-// declared property of the target rather than a guess made per row.
+// `prefixed`: snmp_community has a "gcm1:" marker (it was converted in place and may
+// still hold plaintext); the other three are always plain base64 ciphertext.
 const TARGETS = [
   {
     name: "mikrotik_devices.api_password",
@@ -145,9 +125,8 @@ const newSuites = {
   general: createCipherSuite(["SECRET_ENC_KEY", "MIKROTIK_ENC_KEY"]),
 };
 
-// The OLD key is supplied on the command line, so it is one suite regardless of which
-// variable used to hold it. Passed through the environment rather than as a literal
-// because createCipherSuite reads env names by contract.
+// The old key comes from the command line and is passed through the environment,
+// because createCipherSuite reads env var names.
 let oldSuite = null;
 if (fromKey !== undefined) {
   process.env.__REKEY_OLD_KEY = fromKey;
@@ -157,9 +136,8 @@ if (fromKey !== undefined) {
 const strip = (t, v) => (t.prefixed && v.startsWith(PREFIX) ? v.slice(PREFIX.length) : v);
 const wrap = (t, v) => (t.prefixed ? PREFIX + v : v);
 
-// "Is this row already ciphertext?" — by marker where there is one, and otherwise by
-// whether the configured key can actually open it. Trial decryption is the honest test
-// for an unmarked column: GCM authenticates, so a value that decrypts IS ciphertext.
+// Is this row already ciphertext? By its marker where there is one, otherwise by
+// whether the key can decrypt it (GCM authenticates, so a successful decrypt proves it).
 const looksEncrypted = (t, v, suite) => {
   if (t.prefixed) return isEncrypted(v);
   try {
@@ -270,9 +248,8 @@ async function rotate() {
       "\n",
   );
 
-  // Everything is decrypted and re-encrypted in memory FIRST. A rotation that fails
-  // halfway leaves some rows under the old key and some under the new one, and then
-  // neither key opens the whole table — so the failure has to happen before any write.
+  // Decrypt and re-encrypt everything in memory first. A rotation that failed halfway
+  // would leave rows under two keys, so any failure must happen before the first write.
   const planned = [];
   let failures = 0;
 
@@ -347,9 +324,8 @@ async function rotate() {
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
-// Preflight. Without it an unreachable database reports as four identical per-table
-// "skip" lines — which reads as "those tables do not exist", i.e. as a schema problem,
-// and sends the operator to the wrong place entirely.
+// Check the database connection first; otherwise an unreachable database looks like
+// four missing tables.
 async function assertDbReachable() {
   try {
     await db.query("SELECT 1");

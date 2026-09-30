@@ -1,12 +1,8 @@
-// npm run link:check — why is each port alerting, or not?
+// npm run link:check ─ why each port is alerting or not.
 //
-// Interface-down alerting is mostly SILENCE by design: on a 5-port router with three
-// empty sockets, three ports are permanently down and none of it is news. That makes
-// "alerting is broken" and "nothing to alert about" look identical from the dashboard
-// — the same problem `analytics:check` exists for. This prints the live state of every
-// port next to the gate that decided its fate, so the silence is auditable.
-//
-// Read-only: polls the devices, reads network_interfaces, raises nothing, writes nothing.
+// Interface-down alerting is mostly silent (empty sockets are always down), so this
+// prints every port's live state next to the rule that decided it. Read-only: polls
+// the devices and reads network_interfaces, but raises and writes nothing.
 
 import "../config/env.js";
 import db from "../config/mysql.js";

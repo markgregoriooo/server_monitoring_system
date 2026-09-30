@@ -10,14 +10,8 @@ const router = express.Router();
 router.use(authMiddleware);
 
 /**
- * Push the wiring map to the ESP32 and the labels to every dashboard.
- *
- * Both halves matter and they go to different places. The DEVICE only needs to know which
- * ADC pins to read at all — same payload shape as `irConfig`, so the firmware reuses the
- * parser it already has. The BROWSERS need the labels, because an alert that says "MQ2-3" a
- * second after an admin renamed it "Above UPS cabinet" is the stale-dashboard problem
- * `envConfigUpdated` exists to avoid: the person who made the change is on the settings page
- * and is the least likely to notice everyone else is still seeing the old name.
+ * Push the wiring map to the ESP32 (which pins to read, same shape as `irConfig`)
+ * and the labels to every dashboard, so open pages show the new name right away.
  */
 async function pushGasConfig(io) {
   try {
@@ -29,9 +23,8 @@ async function pushGasConfig(io) {
   }
 }
 
-// Both roles can READ: the Environment page needs the labels to draw its lines, and it_staff
-// live on that page. Mutation is admin-only below — asserting that a sensor is wired is a
-// hardware claim, and a wrong one arms a floating ADC pin to raise smoke alarms.
+// Both roles can read (the Environment page needs the labels). Changes are admin-only:
+// enabling an unwired channel would let a floating pin raise smoke alarms.
 router.get(
   "/",
   asyncHandler(async (_req, res) => {

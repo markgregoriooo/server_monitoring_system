@@ -2,18 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { sessionIsLive, sessionRevocationReason } from "../middleware/auth.js";
 
-// ─── The authorization rule ───────────────────────────────────────────────────
-//
-// "Is this token still a live session?" is enforced in THREE places — the HTTP
-// middleware, the Socket.IO handshake, and the revocation sweep that re-checks
-// already-connected sockets. It was three hand-written copies until the error-handling
-// audit (R-03) collapsed them into one predicate; that predicate then had no test.
-//
-// This is the rule that decides whether a disabled account keeps streaming live data, so
-// it gets one. Pure — `middleware/auth.js` imports the mysql POOL but creating a pool
-// opens no connection, so this runs with no database.
-//
-// See audits/testing-report-2026-08-25.md — T-03.
+// ─── Is this token still a live session? ───────────────────────────────────────
+// Used by the HTTP middleware, the Socket.IO handshake and the revocation sweep.
+// auth.js imports the mysql pool, but creating a pool opens no connection.
+// See audits/testing-report-2026-08-25.md (T-03).
 
 const live = { status: "active", token_version: 5 };
 
@@ -47,9 +39,7 @@ test("a stale token_version is rejected as session_revoked", () => {
 });
 
 test("the token_version comparison is STRICT — no type coercion", () => {
-  // A `tv` claim arriving as a string must not satisfy a numeric column. Loose equality
-  // here would let "5" == 5 pass, which is exactly the kind of silent widening that
-  // makes a revocation check stop revoking.
+  // A `tv` claim sent as a string must not match the numeric column ("5" == 5).
   assert.equal(sessionIsLive(live, "5"), false, '"5" must not match 5');
   assert.equal(sessionIsLive({ status: "active", token_version: "5" }, 5), false);
 });

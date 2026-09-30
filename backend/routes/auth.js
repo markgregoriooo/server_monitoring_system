@@ -30,10 +30,9 @@ function getClientInfo(req) {
   };
 }
 
-// POST /api/auth/google — the ONLY login path. Body: { code } (one-time auth code
-// from the custom "CSPC Mail" button's authorization-code flow). The service
-// exchanges it with Google and verifies the ID token, enforces CSPC domains, then
-// logs in (active) or creates a pending registration for admin approval.
+// POST /api/auth/google ─ the only login. Body: { code } from the "CSPC Mail"
+// button's authorization-code flow. The service exchanges it with Google, checks
+// the domain, then signs the user in or creates a pending registration.
 // See services/googleAuthService.js.
 router.post("/google", googleLimiter, async (req, res) => {
   try {
@@ -69,12 +68,9 @@ router.post("/google", googleLimiter, async (req, res) => {
         return res.status(500).json({ error: "Sign-in failed unexpectedly." });
     }
   } catch (error) {
-    // Only a deliberate rejection is the USER's problem. Everything else — the
-    // database down, Google unreachable, missing credentials — is ours, and must
-    // not be dressed up as "sign-in failed": that sends people hunting through
-    // their account settings during an outage (which is exactly what happened).
-    // It also stops raw driver output ("connect ECONNREFUSED 127.0.0.1:3306")
-    // reaching the browser. See utils/httpError.js.
+    // Only a rejection is the user's problem. A database outage or Google being
+    // unreachable is ours and must not be reported as "sign-in failed". This also keeps
+    // raw driver errors out of the browser. See utils/httpError.js.
     if (isClientSafe(error)) {
       return res.status(error.status).json({ error: error.message });
     }
@@ -91,9 +87,7 @@ router.get("/me", authMiddleware, async (req, res) => {
     const user = await authService.getMe(req.user.id);
     res.json({ user });
   } catch (error) {
-    // Same trap as the sign-in route: a blanket 404 here reported a database
-    // outage as "user not found", which reads like a deleted account. Only the
-    // genuine missing-row case is a 404.
+    // Only a missing row is a 404; a database outage must not look like a deleted account.
     if (error?.message === "User not found.") {
       return res.status(404).json({ error: error.message });
     }

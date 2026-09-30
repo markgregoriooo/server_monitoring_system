@@ -4,18 +4,15 @@ DIST    := dist
 PKG     := ./cmd/agent
 LDFLAGS := -s -w
 
-# By DEFAULT the packaged folders carry NO install key: the guides keep their
-# <INSTALL_KEY> placeholder, so what ships is identical to what is in git and the
-# folder holds no secret. That matches how keys are really used — an admin mints and
-# revokes them on the dashboard, which prints the whole install command with the
-# CURRENT key, so a key baked in at build time is stale by the next rollout and makes
-# changing one line of text a 20 MB rebuild.
+# By default the packaged folders contain no install key: the guides keep their
+# <INSTALL_KEY> placeholder, since admins create keys on the dashboard, which prints the
+# full install command with the current key.
 #
-# Pass one only when you want a copy-paste-ready hand-off folder:
+# Pass one only for a ready-to-use hand-off folder:
 #
 #   make package INSTALL_KEY=AIK-...
 #
-# That folder then DOES hold a shared secret — hand it over privately.
+# That folder then contains a secret; hand it over privately.
 INSTALL_KEY ?=
 
 .PHONY: all linux windows arm64 package run fmt vet tidy clean
@@ -31,18 +28,10 @@ windows:
 arm64:
 	GOOS=linux   GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-linux-arm64       $(PKG)
 
-# Assemble the hand-off folders you copy to a USB stick / share with whoever
-# installs on each server: binary + installer + plain-language guide, per OS.
-#
-# These live under dist/ (gitignored) because they contain build output, but they
-# are now BUILT FROM TRACKED SOURCES — previously they were assembled by hand, so
-# a `make clean` or a fresh clone silently lost the RUN-ME guides.
-#
-# installer/windows/ and installer/linux/ hold exactly what ships beside the binary,
-# under the names it ships as — so packaging is "copy the folder, add the binary".
-# Their RUN-ME.txt keeps an <INSTALL_KEY> placeholder so no secret enters git; this
-# step fills in the real key AFTER copying, so only the dist copy carries it. dist/ is
-# gitignored, so that copy cannot be committed — never move one back into installer/.
+# Build the hand-off folders (binary + installer + guide, per OS) to copy onto a USB
+# stick. They go under dist/ (gitignored), built from installer/windows/ and
+# installer/linux/. The RUN-ME.txt in git keeps the <INSTALL_KEY> placeholder; the real
+# key is only filled into the dist copy. Never copy a dist folder back into installer/.
 package: all
 	rm -rf $(DIST)/cspc-agent-windows $(DIST)/cspc-agent-linux
 	mkdir -p $(DIST)/cspc-agent-windows $(DIST)/cspc-agent-linux

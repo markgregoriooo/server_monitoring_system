@@ -5,48 +5,18 @@ import { describeError } from "../utils/httpError.js";
 /**
  * Live-socket session revocation.
  *
- * Sockets authenticate ONCE, at the handshake (`io.use` in src/server.js), and
- * Socket.IO never re-verifies afterwards. So a connection opened with a valid token
- * outlives the session that opened it: disable an account or bump its token_version
- * and every HTTP call starts failing immediately, while the already-open socket
- * keeps streaming live sensor, server and alert data until the connection happens
- * to drop on its own. The user can't *do* anything — every action goes through HTTP
- * — but a revoked account should not still be watching.
+ * Sockets are only authenticated at the handshake (`io.use` in src/server.js), so an
+ * open socket kept streaming after its account was disabled or its tokens revoked.
+ * This sweep re-checks connected browser sockets every SWEEP_MS. A sweep rather than
+ * a push from each place that bumps token_version, so it cannot miss one (or a row
+ * edited by hand). One indexed SELECT per sweep.
  *
- * A periodic re-check rather than a push from each revocation site, on purpose.
- * token_version is bumped in four places today (logout, role change, disable,
- * reset) and nothing stops a fifth being added, or an admin editing the row by
- * hand during an incident. A sweep cannot miss any of them; a push can, silently.
- * The cost is a bounded delay — SWEEP_MS — and one indexed SELECT per sweep, only
- * when browser sockets are actually connected.
+ * The token's own `exp` is not checked: HTTP sessions slide, so an active session
+ * outlives the token its socket opened with.
  *
- * Deliberately NOT checked: the token's own `exp`. HTTP sessions SLIDE — the auth
- * middleware re-issues a token once it passes its half-life — so an actively-used
- * session is legitimately alive long past the exp of the token its socket was
- * opened with. Kicking on exp would black out the live dashboard of a perfectly
- * valid session every hour. Idle expiry is already the client's job (AuthContext's
- * proactive-expiry and away timers), and both disconnect the socket themselves.
- *
- * ⚠️ CHECKED SINCE 2026-08-26: the ABSOLUTE session cap (SESSION_MAX_HOURS). Not
- * checking `exp` was right; not checking the cap either was not, and the two were
- * being conflated. `middleware/auth.js` stops renewing past the cap, so an HTTP
- * session ends within one token lifetime of it — but that mechanism works by simply
- * declining to mint a new token, and a socket does not need new tokens. It
- * authenticated once, at the handshake, and Socket.IO never asks again. So the cap
- * had NO effect here: a connection opened with a valid token kept streaming live
- * sensor, server, UPS and alert data indefinitely, bounded only by the account being
- * disabled or someone bumping token_version.
- *
- * That matters most in exactly the case the cap exists for. CLAUDE.md's reasoning for
- * SESSION_MAX_HOURS is that "a stolen token could be kept alive indefinitely by simply
- * using it" — and a non-browser client holding a stolen token does not have to keep
- * using it at all. It opens one socket and reads the live feed forever, making no HTTP
- * request that could be refused.
- *
- * The bound used is `sessionHardExpirySec` — cap PLUS one token lifetime — not the cap
- * itself. That is the documented worst case ("worst case a session lives this + 1h"),
- * so this can never disconnect a session that HTTP would still be serving; it only
- * closes the window that had no ceiling at all.
+ * The absolute session cap (SESSION_MAX_HOURS) is checked, using
+ * sessionHardExpirySec (cap + one token lifetime). Otherwise a socket could keep
+ * reading live data forever with a stolen token, since it never needs a new token.
  */
 
 // How often connected sockets are re-validated. 30s keeps revocation prompt without
@@ -67,10 +37,9 @@ function browserSockets() {
   return out;
 }
 
-// Tell the client why before cutting it off, so the dashboard can show the sign-in
-// notice instead of silently going stale. `disconnect(true)` closes the underlying
-// connection: socket.io-client does not auto-reconnect from a server-side
-// disconnect, which is what we want — reconnecting would just fail the handshake.
+// Tell the client why, then disconnect, so the dashboard shows the sign-in notice.
+// socket.io-client does not auto-reconnect after a server-side disconnect, which is
+// what we want.
 function kick(socket, reason) {
   socket.emit("sessionRevoked", { reason });
   socket.disconnect(true);
@@ -97,16 +66,9 @@ async function sweep() {
   for (const socket of sockets) {
     const row = live.get(socket.user.id);
 
-    // The SAME predicate the handshake and the HTTP auth middleware enforce — not a
-    // third hand-written copy of it. This is the one caller that needs to know WHICH
-    // condition failed, so it takes the reason rather than the boolean.
-    //
-    // The absolute cap is a SEPARATE question from revocation and is kept separate:
-    // sessionRevocationReason answers "is this account still entitled to a session",
-    // which the HTTP middleware answers with a 401, while the cap answers "has this
-    // session run too long", which the HTTP middleware deliberately answers by
-    // declining to renew rather than by 401-ing. Folding the cap into that predicate
-    // would silently change the HTTP behaviour into a hard mid-session logout.
+    // The same rule as the handshake and the HTTP middleware, returning the reason
+    // because the client is told why. The session cap is checked separately: over HTTP
+    // the cap means "stop renewing", not a 401, so it is not part of this rule.
     const reason =
       sessionRevocationReason(row, socket.user.tv) ??
       (sessionPastHardLimit(socket.user) ? "session_expired" : null);

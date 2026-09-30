@@ -1,22 +1,9 @@
-// ─── Alert-rule validation — PURE, import-free ────────────────────────────────
-//
-// Split out of alertRulesService.clean(), which scored the worst complexity density in
-// the backend: cyclomatic 34 and cognitive 62 in 55 lines, from 18 `if` statements. None
-// of it was twisty logic — it was ONE shape written out seven times, once per field:
-//
-//     present?  -> validate -> assign
-//     absent and not a PATCH?  -> default, or throw
-//
-// The differences between the seven copies were only ever four values, so they are a
-// table now and the shape is written once. Adding a field is a row, not a branch.
-//
-// Import-free on purpose, like snmpUtils / installKeyUtils / historyRange / analyticsMath:
-// `backend/tests/` can then exercise it with no MySQL, no InfluxDB and no .env. That
-// matters here more than most places — this is the ONLY validation gate on alert
-// thresholds, and alerting is rules-only, so a rule that slips through wrong is either a
-// silent alarm or a false one.
-//
-// See audits/code-complexity-report-2026-08-25.md — C-01.
+// ─── Alert-rule validation ─────────────────────────────────────────────────────
+// Moved out of alertRulesService.clean(), where the same present/validate/default
+// steps were written out once per field. Now it is a table of fields. No imports,
+// so backend/tests can run it without MySQL. It is the only validation of alert
+// thresholds, so it is tested closely.
+// See audits/code-complexity-report-2026-08-25.md (C-01).
 
 export const COMPARISONS = [">", "<", ">=", "<="]; // '=' intentionally unsupported (no useful hysteresis)
 export const SEVERITIES = ["info", "warning", "critical"];
@@ -60,9 +47,9 @@ const oneOf = (allowed) => (v) => (allowed.includes(v) ? v : INVALID);
 const boolInt = (v) => (v ? 1 : 0);
 
 /**
- * One row per field: the client key, the column, how to parse it, and what happens when
- * it is absent on a CREATE. `required: true` means "absent on create is an error";
- * otherwise `dflt` is written.
+ * One row per field: the client key, the column, how to parse it, and what to do
+ * when it is missing on create. `required: true` means missing is an error;
+ * otherwise `dflt` is used.
  */
 export const RULE_FIELDS = [
   {
@@ -99,11 +86,8 @@ export const RULE_FIELDS = [
 ];
 
 /**
- * A port-scoped rule needs the device that owns the port.
- *
- * Checked against the MERGED view — what the row will look like after the patch — so a
- * PATCH that sets only one of the two still validates. This is the one genuinely
- * conditional piece and is deliberately kept out of the table.
+ * A port-scoped rule needs the device that owns the port. Checked on the merged
+ * row so a PATCH that sets only one of the two still validates.
  */
 export function checkCrossField(out, existing = null) {
   const finalDevice = out.device_id !== undefined ? out.device_id : existing?.device_id ?? null;
@@ -115,7 +99,7 @@ export function checkCrossField(out, existing = null) {
 }
 
 /**
- * Validate + normalize an incoming rule into its column shape.
+ * Validate and normalise an incoming rule into its column shape.
  *
  * @param data      the client payload (camelCase)
  * @param partial   true for a PUT/PATCH — missing fields are left alone rather than defaulted
@@ -136,26 +120,12 @@ export function cleanRule(data, { partial = false, existing = null } = {}) {
   return checkCrossField(out, existing);
 }
 
-// ─── Severity ordering within one scope ───────────────────────────────────────
-//
-// Every check above validates ONE field of ONE rule. Nothing compared a rule against its
-// siblings, so a scope could hold `temperature warning >= 29` and `temperature critical
-// >= 29` at the same time — and worse, `warning >= 30` with `critical >= 25`.
-//
-// WHY EQUAL IS NOT MERELY UNTIDY. Alerting picks the WORST band a reading breaches
-// (`worstBreach` / `nextBand`). With both rules at 29, every reading that reaches 29
-// satisfies both, critical always outranks warning, and the warning rule can never be
-// the outcome of anything. It is not a warning threshold — it is a row that looks like a
-// setting, appears in the admin table, and changes nothing. Inverted bounds are the same
-// failure with the added twist that the *device* disagrees: firmware evaluates
-// `t >= TEMP_CRITICAL` before `t >= TEMP_WARNING`, so the LED and buzzer would sit on
-// CRITICAL across a span the dashboard still calls a warning.
-//
-// ⚠️ DIRECTION IS NOT ASSUMED. `bandFor` in the frontend is documented as always
-// higher-is-worse, but alert_rules genuinely carries both: `ups_runtime` / `ups_charge`
-// use `<=`, where a LOWER number is worse and `warning 20 / critical 10` is the correct
-// ordering. Hard-coding "critical must be the bigger number" would forbid exactly the
-// rules the UPS page depends on, so the direction is read from `comparison`.
+// ─── Severity order within one scope ───────────────────────────────────────
+// Rules in one scope must be ordered info < warning < critical with different
+// thresholds. At equal thresholds the milder rule can never fire (the worst band
+// wins), and inverted thresholds would also make the ESP32's LED disagree with the
+// dashboard. The direction comes from `comparison`: for ups_runtime/ups_charge
+// (`<=`) a lower number is worse, so warning 20 / critical 10 is correct.
 
 /** Comparisons where a bigger reading is worse. The rest are lower-is-worse. */
 export const HIGHER_IS_WORSE = new Set([">", ">="]);
@@ -168,14 +138,13 @@ const dirOf = (comparison) => (HIGHER_IS_WORSE.has(comparison) ? "up" : "down");
 /**
  * Check one rule against the other rules in its scope.
  *
- * Scope = the exact (device_id, interface_name, metric_name) triple, matching
- * `getEffectiveRules`: a per-device rule set REPLACES the global one wholesale rather
- * than merging with it, so a global `warning 30` and a per-device `critical 25` are two
- * independent ladders and must not be compared with each other.
+ * Scope = the exact (device_id, interface_name, metric_name), as in
+ * getEffectiveRules. A device's rules replace the global ones, so the two are not
+ * compared with each other.
  *
  * @param candidate {{severity, threshold_value, comparison}} the rule as it will be stored
  * @param siblings  other rules in the same scope, SELF EXCLUDED by the caller
- * @returns {string|null} null when the ladder is coherent, otherwise the reason
+ * @returns {string|null} null when the order is fine, otherwise the reason
  */
 export function severityOrderError(candidate, siblings = []) {
   const rank = SEVERITY_RANK[candidate.severity];
@@ -190,9 +159,7 @@ export function severityOrderError(candidate, siblings = []) {
     const otherValue = Number(other.threshold_value);
     if (!Number.isFinite(otherValue)) continue;
 
-    // A scope whose rules disagree about which way is worse cannot be ordered at all,
-    // and silently ordering it by the incoming rule's direction would produce a verdict
-    // that flips depending on which row was edited last.
+    // Rules in one scope that disagree on the direction cannot be ordered.
     if (dirOf(other.comparison) !== dir) {
       return (
         `The ${other.severity} rule for this metric uses "${other.comparison}" while this one uses ` +
@@ -232,18 +199,10 @@ export function severityOrderError(candidate, siblings = []) {
 }
 
 /**
- * Reject a SECOND rule at the same severity in the same scope.
+ * Reject a second rule with the same severity in the same scope.
  *
- * A different fault from severityOrderError with a different fix, so it is a different
- * function — "your two warnings disagree" and "your warning outranks your critical" are
- * not the same message to an admin.
- *
- * WHY IT MATTERS RATHER THAN BEING MERELY UNTIDY. Two `temperature warning` rules in one
- * scope are not additive; one of them is dead. `getRoomThresholds` resolves a severity
- * with `.find()`, which takes whichever row the cache happens to hold first, so the value
- * pushed to the ESP32 as `tempWarn` — and therefore the LED, the buzzer and the reported
- * status — is decided by row order, not by anything the admin chose. Editing the losing
- * row changes nothing at all, and which row loses can shift on the next `reload()`.
+ * Two `temperature warning` rules are not combined: getRoomThresholds takes the
+ * first one it finds, so which value reaches the ESP32 would depend on row order.
  *
  * @param candidate {{severity}} the rule as it will be stored
  * @param siblings  other rules in the same scope, SELF EXCLUDED by the caller

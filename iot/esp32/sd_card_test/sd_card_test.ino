@@ -2,10 +2,10 @@
  * ============================================================================
  *  SD CARD MODULE TEST  —  ESP32 + SPI microSD module
  * ============================================================================
- *  Standalone sketch to verify your microSD module + card are wired and
- *  working BEFORE you flip SD_ENABLED to true in env_monitor_v2.ino.
+ *  Standalone sketch to check the microSD module and card are wired and
+ *  working before relying on the offline buffer in env_monitor_v2.ino.
  *
- *  Uses the SAME pins as the real firmware, so a PASS here means offline
+ *  Uses the same pins as the real firmware, so a pass here means offline
  *  logging will work in the main sketch.
  *
  *  ─── WIRING (SD module  ->  ESP32) ─────────────────────────────────────────
@@ -20,11 +20,11 @@
  *       CS / SS            GPIO 5
  *
  *  ─── HOW TO USE ────────────────────────────────────────────────────────────
- *   1. Format the microSD as FAT32 (4GB cards are FAT32 by default — OK).
+ *   1. Format the microSD as FAT32 (4GB cards are FAT32 by default).
  *   2. Insert the card into the module.
- *   3. Wire it exactly as above.
+ *   3. Wire it as above.
  *   4. Flash this sketch (Board: "ESP32 Dev Module").
- *   5. Open Serial Monitor @ 115200 baud.
+ *   5. Open Serial Monitor at 115200 baud.
  *   6. Read the report. Look for ">>> ALL TESTS PASSED".
  * ============================================================================
  */

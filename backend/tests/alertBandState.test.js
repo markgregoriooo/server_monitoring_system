@@ -93,10 +93,9 @@ test("band tracking still works alongside streaks", () => {
 });
 
 // ─── settle(): the band to act on for one reading ─────────────────────────────
-// Replays the MSI incident of 2026-09-25: memory hovering at 88–96% against the
-// 80% warning / 95% critical rules. Before settle(), a drop from critical into
-// warning closed nothing, so the CRITICAL alert stayed open while the reading said
-// "warning" — for as long as memory never went under 80%.
+// Replays the 2026-09-25 case: memory between 88–96% against 80% warning / 95%
+// critical. A drop from critical to warning used to close nothing, so the critical
+// alert stayed open.
 
 test("settle: critical → warning closes the critical alert after N readings", () => {
   alertBandState.resetDevice(46);

@@ -1,24 +1,13 @@
 import { writeClient, Point } from "../config/influx.js";
 import backupService from "./backupService.js";
 
-// ─── Moved out of handlers/ ───────────────────────────────────────────────────
-//
-// This is a SINK, not a request handler. Nothing routes to it: the SNMP and MikroTik
-// pollers call it with a collected sample, and it writes InfluxDB + the on-site backup
-// and broadcasts to dashboards. It lived in handlers/ alongside genuine inbound request
-// handlers (serverHistoryHandler, sensorHandler), which made every poller look like it
-// depended UPWARD on the handler layer — three of the four layering violations in the
-// backend were this one misplacement.
-// See audits/architecture-report-2026-08-25.md — A-02.
+// Moved from handlers/: this is called by the pollers, not a request handler.
+// See audits/architecture-report-2026-08-25.md (A-02).
 
 // ─── UPS sample → InfluxDB + Socket.IO ────────────────────────────────────────
-//
-// Called by snmpPollerService once per reachable UPS each poll cycle. One
-// `ups_metrics` point per device. All readings are plain gauges (float), except
-// on_battery (boolean — consistent with network_traffic.link_up). A field is only
-// written when the UPS actually reports it (many omit temperature), so the Influx
-// schema isn't pinned to a bogus 0. Never throws — Influx errors log and we still
-// broadcast so the dashboard stays live.
+// Called by the poller once per UPS per cycle: one `ups_metrics` point. Floats except
+// on_battery (boolean). A field is only written when the UPS reports it (many have no
+// temperature). Never throws: if InfluxDB is down it logs and still broadcasts.
 
 // sample = {
 //   batteryChargePct, runtimeRemainingMin, loadPct, inputVoltage, outputVoltage,
@@ -51,39 +40,32 @@ export async function writeUpsSample(io, device, sample) {
     f("battery_voltage", sample.batteryVoltage);
     f("temperature", sample.temperature); // only if the UPS reports it
 
-    // RFC 1628 upsBatteryStatus enum (1 unknown, 2 normal, 3 low, 4 depleted). It
-    // already drives the battery-replace alert but was broadcast only, never stored —
-    // so the one signal that reveals itself over MONTHS (a battery degrading toward
-    // replacement) had no history to chart or report on. intField, not float: it's
-    // an enum, and InfluxDB pins a field's type on first write.
+    // upsBatteryStatus (1 unknown, 2 normal, 3 low, 4 depleted), stored so battery wear
+    // can be charted over months. intField because it is an enum and InfluxDB fixes a
+    // field's type on first write.
     if (sample.batteryStatus != null && Number.isFinite(Number(sample.batteryStatus))) {
       p.intField("battery_status", Math.trunc(Number(sample.batteryStatus)));
       fields++;
     }
 
-    // on_battery is null when the UPS didn't answer upsOutputSource. Boolean(null)
-    // would record "unknown" as "on mains" — a silent false-negative on the most
-    // safety-critical signal here, indistinguishable later from a real mains-OK
-    // reading. Leave the field absent instead, like every other unreported value.
+    // on_battery is null when the UPS did not report upsOutputSource. Leave the field out
+    // instead of storing "on mains".
     if (sample.onBattery != null) {
       p.booleanField("on_battery", Boolean(sample.onBattery));
       fields++;
     }
 
-    // on_bypass — the load on raw mains with the inverter cut out of the path. Kept
-    // as its own field rather than folded into on_battery: they are opposite states
-    // of the same enum (battery = protected but on a clock, bypass = powered but
-    // unprotected) and an outage post-mortem needs to tell them apart. Null-guarded
-    // for the same reason as on_battery.
+    // on_bypass: the load on raw mains with no protection. Separate from on_battery
+    // (battery = protected but limited time; bypass = powered but unprotected).
+    // Null-guarded like on_battery.
     if (sample.onBypass != null) {
       p.booleanField("on_bypass", Boolean(sample.onBypass));
       fields++;
     }
     p.timestamp(ts);
 
-    // A point with tags but no fields is invalid line protocol and would fail the
-    // whole batch. Now that on_battery is conditional, no field is guaranteed — so a
-    // UPS that answered SNMP but reported nothing usable is skipped, not written.
+    // A point with no fields is invalid and would fail the whole write, so a UPS that
+    // reported nothing usable is skipped.
     if (fields > 0) {
       writeClient.writePoint(p);
       await writeClient.flush();

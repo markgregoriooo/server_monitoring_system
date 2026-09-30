@@ -4,23 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// ─── The authentication-failure contract between backend and frontend ─────────
-//
-// `middleware/auth.js` used to answer a failed `jwt.verify` with **403** "Invalid or
-// expired token.", and `api/client.ts` compensated by matching that exact TEXT:
-//
-//     status === 401 || (status === 403 && serverError === "Invalid or expired token.")
-//
-// which coupled two files in different packages by a string literal, with nothing
-// checking they agreed. Rewording the message — a typo fix, dropping the period — would
-// have silently stopped expiry logouts, leaving a dashboard that 401s every request while
-// still looking signed in.
-//
-// Both sides now use **401** for every authentication failure, and the string match is
-// gone. These tests keep it that way: 401 means "re-authenticate", 403 means
-// "authenticated but not permitted", and the two must not be conflated again.
-//
-// See audits/error-handling-report-2026-08-25.md — E-07.
+// ─── Authentication-failure contract between backend and frontend ─────────
+// Every authentication failure is 401 (sign in again); 403 means signed in but not
+// allowed. The frontend used to match the exact 403 message text, so rewording it
+// would have broken expiry logouts. These tests keep the two apart.
+// See audits/error-handling-report-2026-08-25.md (E-07).
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const AUTH_MW = path.join(ROOT, "backend", "middleware", "auth.js");

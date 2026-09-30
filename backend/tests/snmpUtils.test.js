@@ -17,16 +17,14 @@ import {
   isProtected,
 } from "../services/snmpUtils.js";
 
-// Pure-logic tests for the SNMP router/UPS path. No MySQL, no InfluxDB, no .env —
-// snmpUtils.js is import-free on purpose so `npm test` runs anywhere.
+// Tests for the SNMP helpers. No MySQL, InfluxDB or .env needed.
 // Run: cd backend && npm test
 
 // ─── computeUtilizationPct ────────────────────────────────────────────────────
 
 test("utilization uses the busier direction, not the sum (full-duplex)", () => {
-  // 100 Mbit/s link = 12_500_000 bytes/s each way. 60 Mbit/s in AND out at once is
-  // 60% each way — well inside capacity. Summing would read 120% (clamped to 100%)
-  // and false-fire the `link_util >= 95` critical rule.
+  // 100 Mbit/s = 12_500_000 bytes/s each way. 60 Mbit/s in and out is 60% each way;
+  // summing would give 120% and trigger the `link_util >= 95` rule.
   const sixtyMbitInBytes = (60 * 1e6) / 8;
   const pct = computeUtilizationPct({
     dRxBytes: sixtyMbitInBytes,
@@ -188,9 +186,7 @@ test("every enum value maps to a state, and only two mean the load is safe", () 
 });
 
 test("BYPASS is detected — the state that used to read as a healthy UPS", () => {
-  // The regression this exists to prevent. isOnBattery tests battery(5), so
-  // bypass(4) answered false and every downstream check saw a normal UPS: no
-  // alert, green tile, and a rack with zero seconds of runtime behind it.
+  // isOnBattery only checks battery(5), so bypass(4) used to look like a normal UPS.
   const bypass = UPS_OUTPUT_SOURCE.bypass;
   assert.equal(isOnBattery(bypass), false); // still false — that part was never wrong
   assert.equal(isOnBypass(bypass), true); // …but now something catches it

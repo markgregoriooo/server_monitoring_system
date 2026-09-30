@@ -10,14 +10,11 @@ import {
   keyStatus,
 } from "./installKeyUtils.js";
 
-// ─── Agent install keys (DB half) ───────────────────────────────────────────────
-//
-// The format + usability rules live in installKeyUtils.js (pure, tested). This file
-// is the MySQL side: mint, list, revoke, and the enrollment-path lookup.
-//
-// An install key authorises ENROLLMENT ONLY. Revoking one must never touch
-// agent_tokens — the servers it enrolled keep reporting on their own approved_token.
-// See migrations/2026-08-15_agent_install_keys.sql for the full reasoning.
+// ─── Agent install keys (database side) ───────────────────────────────────────────────
+// Format and usability rules are in installKeyUtils.js (tested). This file creates,
+// lists and revokes keys and does the enrollment lookup. A key only allows
+// enrollment; revoking it does not affect enrolled servers unless revokeAgents is
+// set. See migrations/2026-08-15_agent_install_keys.sql.
 
 function err(status, message) {
   const e = new Error(message);
@@ -26,10 +23,9 @@ function err(status, message) {
 }
 
 // ─── Legacy .env fallback ───────────────────────────────────────────────────────
-// AGENT_INSTALL_KEY still works, because a fresh database has no keys AND no admin
-// (the schema seeds neither), so requiring the UI to mint the first key would
-// deadlock a first-time install. It is checked only AFTER the table misses, so a
-// managed key always wins, and its use is logged loudly enough to prompt removal.
+// AGENT_INSTALL_KEY still works, because a fresh database has no keys and no admin
+// to create one. It is only checked after the table has no match, so a managed key
+// always wins, and each use is logged as a warning.
 
 export function legacyEnvKey() {
   return (process.env.AGENT_INSTALL_KEY ?? "").trim();
@@ -56,12 +52,9 @@ function matchesLegacyKey(provided) {
 /**
  * Resolve a key presented at enrollment.
  *
- * Returns { ok: true, keyId } — keyId is null for the legacy .env key, which has no
- * row to attribute the enrollment to — or { ok: false, reason }.
- *
- * `reason` is one of unknown | revoked | expired, so the server log can say WHICH.
- * The HTTP response stays a single generic message: an installer operator who can
- * see "revoked" vs "unknown" learns whether a key exists, which is not their business.
+ * Returns { ok: true, keyId } (keyId is null for the legacy .env key) or
+ * { ok: false, reason }. `reason` is unknown | revoked | expired, for the server
+ * log; the HTTP response stays generic.
  */
 export async function resolveKey(provided) {
   if (looksLikeKey(provided)) {
@@ -74,9 +67,8 @@ export async function resolveKey(provided) {
     );
     const rejection = keyRejection(row);
     if (!rejection) return { ok: true, keyId: row.install_key_id };
-    // A key that exists but is revoked/expired must NOT fall through to the legacy
-    // comparison — it has been explicitly withdrawn, and silently accepting it
-    // because .env happens to hold the same string would defeat the revoke button.
+    // A revoked or expired key must not fall through to the .env comparison, or a
+    // matching .env value would undo the revoke.
     if (row) return { ok: false, reason: rejection };
   }
 
@@ -92,9 +84,8 @@ export async function resolveKey(provided) {
 }
 
 /**
- * Record that a key enrolled an agent. Best-effort and deliberately not awaited by
- * the caller: the counters are for the admin's benefit, and failing to bump one must
- * never fail an enrollment that already succeeded.
+ * Record that a key enrolled an agent. Not awaited by the caller: a failed counter
+ * update must not fail an enrollment that already succeeded.
  */
 export function noteUsed(keyId) {
   if (keyId == null) return;
@@ -126,32 +117,18 @@ function toClient(r, now = new Date()) {
     // Servers enrolled with this key that STILL EXIST — derived per read (see BASE_SELECT).
     // This is what the UI labels "Enrolled", and it falls when a server is removed.
     enrolledCount: Number(r.enrolled_count ?? 0),
-    // Historical tally: how many times this key was ever spent. Only ever goes up, and is
-    // deliberately NOT what "Enrolled" shows — a decommissioned server is still a machine
-    // this key once let in, which is a fact worth keeping, but it is not a current enrolment.
+    // Total times this key was used. Only goes up, so it is not what "Enrolled" shows.
     useCount: Number(r.use_count ?? 0),
-    // Whether the install command can be shown again. False for keys minted before the
-    // key_cipher column existed, or while no encryption key was configured — the UI
-    // hides the button rather than offering one that would fail.
+    // Whether the install command can be shown again. False for keys created before
+    // key_cipher existed or while no encryption key was configured.
     canReveal: Boolean(r.key_cipher),
   };
 }
 
-// `enrolled_count` is DERIVED, never stored. It is the live answer to "how many servers
-// is this key holding up right now", counted from agent_tokens on every read.
-//
-// Do NOT serve this column from `use_count`. That is a monotonic tally bumped by
-// noteUsed() at each enrollment and nothing ever decrements it, so removing a server left
-// the dashboard claiming a key still had enrolments that no longer existed. Deleting a
-// server drops its `devices` row and agent_tokens CASCADEs with it (fk_agent_tokens_devices1),
-// which is why counting the tokens is correct and needs no join back to `devices`.
-//
-// Scoped to status='approved' so this is the SAME population enrolledServers() lists in the
-// revoke dialog — one WHERE clause, so the number in the table and the names in the dialog
-// can never disagree. That also excludes tokens already revoked by a previous revokeAgents,
-// which are cut off and no longer holding anything up.
-//
-// Indexed by idx_agent_tokens_install_key, and the key list is a handful of rows.
+// `enrolled_count` is counted from agent_tokens on every read, not taken from
+// use_count (which never goes down, so it kept counting removed servers). Deleting
+// a server cascades to its token. status='approved' matches what enrolledServers()
+// lists in the revoke dialog. Uses idx_agent_tokens_install_key.
 const BASE_SELECT = `
   SELECT k.*, c.name AS created_by_name, r.name AS revoked_by_name,
          (SELECT COUNT(*)
@@ -174,20 +151,12 @@ export async function list() {
 }
 
 /**
- * Mint a key. The plaintext is returned HERE and nowhere else, ever — the caller
- * hands it to the admin once and only the hash is kept.
- *
- * expiresInDays is optional; null/absent means the key never expires. A bounded
- * rollout key is the safer default habit, but forcing an expiry on an admin who just
- * wants to add one server would be friction for no gain, so it stays opt-in.
+ * Create a key. The plaintext is returned only here, once; only the hash is kept.
+ * expiresInDays is optional; null means it never expires.
  */
 export async function create({ label, expiresInDays = null, userId = null }) {
-  // A label is OPTIONAL. The dashboard stopped asking for one — a key is identified by
-  // its prefix and its dates, which are facts, where a typed label was a second name for
-  // the same thing that could disagree with it. The column stays NOT NULL and still gets
-  // a value because the audit trail names keys by it ("Revoked agent install key …"),
-  // and an empty string there would read as a lost record rather than a deliberate one.
-  // Still accepted from the API so an existing caller (or a future UI) can set one.
+  // The label is optional; the dashboard names keys by prefix and dates. The column
+  // is NOT NULL and the audit log refers to keys by label, so a default is stored.
   const name = String(label ?? "").trim() || `Issued ${new Date().toISOString().slice(0, 10)}`;
   if (name.length > 100) throw err(400, "Label must be 100 characters or fewer.");
 
@@ -202,13 +171,9 @@ export async function create({ label, expiresInDays = null, userId = null }) {
 
   const key = generateKey();
 
-  // Both, and they answer different questions. The HASH is what enrollment matches on —
-  // one indexed lookup, and one-way so a leaked dump reveals nothing. The CIPHER is what
-  // lets an admin re-open the install command later, which a hash can never do.
-  //
-  // Encryption is best-effort: with no key configured this stays NULL and the key simply
-  // isn't re-viewable. Refusing to mint a key over a missing optional convenience would
-  // be the wrong trade — enrollment is the feature, re-display is the nicety.
+  // The hash is what enrollment looks up (one indexed query, one-way). The encrypted
+  // copy lets an admin reopen the install command later. With no encryption key
+  // configured the cipher is NULL and the key just cannot be shown again.
   let cipher = null;
   try {
     if (secretCrypto.isConfigured()) cipher = secretCrypto.encrypt(key);
@@ -228,13 +193,9 @@ export async function create({ label, expiresInDays = null, userId = null }) {
 }
 
 /**
- * The servers this key enrolled that are STILL REPORTING — i.e. what would go dark if
- * the key were revoked with revokeAgents.
- *
- * Scoped to `status = 'approved'` on purpose: a pending enrollment has nothing to cut
- * off, and an already-revoked one is not going to break twice. This is what the revoke
- * dialog lists, because an admin must see the blast radius by NAME before confirming —
- * a count alone tells you how much breaks but not whether the production box is in it.
+ * Servers this key enrolled that are still reporting, i.e. what stops if the key
+ * is revoked with revokeAgents. Only status 'approved': pending ones have nothing
+ * to cut off, revoked ones are already off. Listed by name in the revoke dialog.
  */
 export async function enrolledServers(id) {
   const keyId = Number(id);
@@ -253,28 +214,20 @@ export async function enrolledServers(id) {
 }
 
 /**
- * Revoke a key. Soft — the row stays so the audit trail keeps "this key existed,
- * enrolled 4 servers, and was withdrawn by X on Y". Deleting it would erase exactly
- * the history the feature exists to provide.
+ * Revoke a key. The row is kept so the audit history stays ("this key enrolled 4
+ * servers and was revoked by X").
  *
- * `revokeAgents` also cuts off every server this key enrolled: their agent tokens go to
- * 'revoked', so the next metric POST 403s and the agent deletes its own agent.conf and
- * exits (see agent/cmd/agent/main.go). This is the branch model — one key per office,
- * revoke the key and that office's servers stop reporting.
+ * `revokeAgents` also revokes every server this key enrolled: their next metric
+ * POST gets 403 and the agent removes its agent.conf and exits
+ * (agent/cmd/agent/main.go). One key per office means revoking it stops that
+ * office's servers. It is a separate flag so an admin can retire an old key
+ * without taking servers offline.
  *
- * It is a SEPARATE, opt-in flag rather than an automatic consequence. Both meanings
- * are legitimate — "stop issuing this key" and "de-authorise everything it let in" — and
- * they differ by a whole fleet's worth of monitoring. Making it automatic would mean an
- * admin can never tidy up an old rollout key without taking servers dark, so in practice
- * they would stop revoking keys at all, which defeats the feature. The route makes the
- * caller state which one it means, and the UI names the servers before it happens.
+ * Devices, logs and InfluxDB history are kept; reinstalling with a valid key puts
+ * the machine back on the same device_id.
  *
- * The device rows, their logs and their InfluxDB history are all kept: a revoked machine
- * re-enrols onto the same device_id (agentService.register), so this is reversible by
- * installing again with a live key.
- *
- * Returns null when there is no such key. Idempotent — re-revoking is not an error, and
- * still cuts off any agent that has since enrolled.
+ * Returns null when there is no such key. Revoking again is not an error and still
+ * revokes any agent enrolled since.
  */
 export async function revoke(id, userId = null, { revokeAgents = false } = {}) {
   const keyId = Number(id);
@@ -301,9 +254,8 @@ export async function revoke(id, userId = null, { revokeAgents = false } = {}) {
     if (cutOff.length) {
       const ids = cutOff.map((s) => s.id);
       const marks = ids.map(() => "?").join(",");
-      // 'revoked', not 'rejected': the device row survives, so the machine keeps its id
-      // and history and can re-enrol later. validateToken requires 'approved', so the
-      // agent's very next POST gets a 403 and it shuts itself down.
+      // 'revoked', not 'rejected': the device row stays, so the machine keeps its id and
+      // history. validateToken needs 'approved', so the agent's next POST gets 403.
       await db.query(
         `UPDATE agent_tokens SET status = 'revoked' WHERE install_key_id = ? AND status = 'approved'`,
         [keyId],
@@ -322,15 +274,11 @@ export async function revoke(id, userId = null, { revokeAgents = false } = {}) {
 }
 
 /**
- * Decrypt a key back to plaintext so the admin can re-open its install command.
+ * Decrypt a key so the admin can reopen its install command.
  *
- * Returns { key, label } or null when there is no such key; { unavailable: true } when
- * the row predates key_cipher or no encryption key is configured.
- *
- * The ONLY path that ever returns a key after creation. It is admin-gated and the
- * route audits every call — reading a credential back is precisely the kind of action an
- * audit trail exists for, and it is the difference between "the key is recoverable" and
- * "the key is recoverable and nobody knows who looked".
+ * Returns { key, label }, null when there is no such key, or { unavailable: true }
+ * when the row has no cipher or no encryption key is configured. The only way to
+ * see a key after creation; admin-only and audited by the route.
  */
 export async function reveal(id) {
   const keyId = Number(id);
@@ -351,29 +299,21 @@ export async function reveal(id) {
       revoked: row.revoked_at != null,
     };
   } catch (e) {
-    // GCM authentication failed: the ciphertext was written under a DIFFERENT encryption
-    // key (SECRET_ENC_KEY added or changed after this row was created), or the column was
-    // altered. Not recoverable, and not a server fault — say so plainly.
+    // GCM authentication failed: the row was encrypted with a different key
+    // (SECRET_ENC_KEY changed) or the column was altered. Not recoverable.
     console.error(`[install-keys] cannot decrypt key #${keyId}:`, e.message);
     return { unavailable: true };
   }
 }
 
 /**
- * Hard-delete a key. Only a REVOKED key can be deleted — revoke first, then delete.
+ * Permanently delete a key. Only a revoked key can be deleted, so the risky step
+ * (revoking) is never hidden behind "delete".
  *
- * Two steps rather than one on purpose: revoking is the safety-critical decision (it can
- * take servers down), and folding it into a destructive "delete" would put that decision
- * behind a button whose label says nothing about it.
- *
- * Any enrolments this key made keep working: `agent_tokens.install_key_id` is
- * ON DELETE SET NULL, so those servers simply become unattributed — exactly like the
- * ones enrolled before install keys existed. They can be re-filed under another key by
- * re-running the installer with `-ReEnroll`.
- *
- * This is the one operation that loses history — "this key existed, enrolled 4
- * servers, was revoked by X" goes with the row. The audit entry in `system_logs` is what
- * survives, which is why the route writes one.
+ * Servers it enrolled keep working: agent_tokens.install_key_id is ON DELETE SET
+ * NULL, so they just become unattributed. They can be re-filed under another key
+ * with the installer's `-ReEnroll`. The route writes an audit entry, since the row
+ * itself is gone.
  *
  * Returns null when there is no such key, or { blocked: true } when it is still active.
  */

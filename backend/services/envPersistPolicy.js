@@ -1,36 +1,15 @@
-// WHEN an ESP32 reading is worth STORING. Not when it is worth acting on — every reading
-// is still validated, broadcast live and evaluated against the alert rules at the full 3s
-// cadence. This decides only what reaches InfluxDB and the on-site backup files.
+// When an ESP32 reading is worth storing. Every reading is still validated,
+// broadcast and checked against the alert rules every 3s; this only decides what
+// goes to InfluxDB and the backup files.
 //
-// Why: the ESP32 sends every 3s (LOG_INTERVAL), which is right for the MQ-2 — smoke is a
-// safety signal and detection latency matters — but wrong for the DHT22. That sensor has
-// 0.1°C / 0.1% resolution and ±0.5°C accuracy, and a server room does not move measurably
-// in three seconds, so consecutive temperature samples differ by noise in the last digit or
-// not at all.
+// The 3s rate suits the MQ-2 (smoke needs fast detection) but not the DHT22: the
+// room does not change measurably in 3 seconds, and storing every reading is ~28,800
+// points a day plus as many writes to the SD card.
 //
-// ⚠️ The DHT11 this replaced resolved only 1°C / 1%RH, which made the deadbands below very
-// nearly unreachable: a change small enough to be noise was also too small for the sensor to
-// report, so in practice ANY temperature change it could express forced a store. A DHT22
-// reports that noise, so the deadbands now do real work instead of being a formality —
-// they are what stops a 0.1°C flutter writing a point every 3s, i.e. exactly the regime
-// this policy exists to avoid. Raising the sensor's resolution made the policy MORE load-
-// bearing, not less.
-// At 3s the room stream costs ~28,800 samples/day: ~1.7 servers' worth of writes, and the
-// same number of appends to the micro SD the backup writer lives on, which is the least
-// reliable component in the build.
-//
-// Why report-by-exception and not simply "store temperature every 30s": storing gas-only
-// points between the slow ones would leave most rows with a NULL temperature, and
-// querySensorHistoryHandler aggregates into windows as small as 10s (-30m) / 20s (-1h)
-// with createEmpty:false — windows holding no temperature sample would come back empty and
-// gap the chart. Keeping every STORED point complete means the history path is untouched.
-//
-// So: store on a slow heartbeat, plus immediately whenever something actually happened. A
-// stable room costs one point per 30s; a gas event is still captured within 3s, which is
-// the part that matters. This is the standard SCADA/historian deadband pattern.
-//
-// PURE and import-free, like serverMetricUtils / historyRange / analyticsMath /
-// linkAlertPolicy — so backend/tests can run it with no MySQL, InfluxDB or .env.
+// So: store on a slow heartbeat (30s), plus right away when gas rises, a status
+// changes or temperature/humidity really moves (a deadband, as SCADA historians
+// do). Every stored point keeps all fields, so the history charts need no changes.
+// No imports, so it is unit-tested.
 
 export const DEFAULTS = Object.freeze({
   /** Slow heartbeat: store at least this often even when nothing moves. 0 disables the
@@ -39,10 +18,10 @@ export const DEFAULTS = Object.freeze({
   /** ppm. Above the MQ-2's clean-air noise, well under the seeded 150 ppm warning rule, so
    *  a genuine rise is captured on the 3s tick that first sees it. */
   gasDeadband: 15,
-  /** °C. The DHT22 resolves 0.1°C, so this is a real filter — five resolution steps, above
-   *  the sensor's own jitter and its ±0.5°C accuracy, and far below any room excursion worth
-   *  seeing on a chart. Under the old DHT11 (1°C resolution) this threshold was effectively
-   *  a no-op; do not read it as one now. */
+  /**
+   * °C. The DHT22 reads in 0.1°C steps, so this filters out jitter (above its ±0.5°C
+   * accuracy) while keeping any real change.
+   */
   tempDeadband: 0.5,
   /** %RH. Same reasoning as the temperature deadband: the DHT22 resolves 0.1%RH, so this
    *  filters real jitter rather than sitting below what the sensor can express. */
@@ -73,9 +52,8 @@ const moved = (a, b, deadband) =>
  * @param {object} sample  the reading, plus `at` (ms epoch)
  * @param {object|null} last  the last STORED reading, plus its `at`. null = nothing stored yet
  * @param {object} opts  from resolveOptions()
- * @returns {{persist: boolean, reason: string|null}} `reason` names the gate that fired, so
- *   a log line can say WHY a reading was kept — the same reason `npm run link:check` exists
- *   for link alerts: a policy whose normal outcome is silence is undebuggable without one.
+ * @returns {{persist: boolean, reason: string|null}} `reason` names the check that fired,
+ *   so a log line can say why a reading was kept.
  */
 export function shouldPersist(sample, last, opts = DEFAULTS) {
   if (!sample) return { persist: false, reason: null };
@@ -99,11 +77,8 @@ export function shouldPersist(sample, last, opts = DEFAULTS) {
   // does not is exactly the disagreement two sensors exist to show.
   if (moved(sample.mq2_1_ppm, last.mq2_1_ppm, opts.gasDeadband)) return { persist: true, reason: "gas-1" };
   if (moved(sample.mq2_2_ppm, last.mq2_2_ppm, opts.gasDeadband)) return { persist: true, reason: "gas-2" };
-  // Sensors 3 and 4 have no legacy slot of their own, so they are covered by the worst-channel
-  // aggregate. Without this a rise on a NEWLY ADDED sensor would wait for the 30s heartbeat
-  // instead of being stored on the 3s tick that saw it — and the tick that first sees smoke is
-  // the one worth having. Still judged per-sensor above, because two sensors disagreeing is the
-  // reason there are two.
+  // Sensors 3 and 4 have no legacy field, so the worst-channel value covers them;
+  // otherwise a rise on a new sensor would wait for the 30s heartbeat.
   if (moved(sample.gas_ppm, last.gas_ppm, opts.gasDeadband)) return { persist: true, reason: "gas" };
 
   if (moved(sample.temperature, last.temperature, opts.tempDeadband)) return { persist: true, reason: "temperature" };

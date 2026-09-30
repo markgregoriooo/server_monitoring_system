@@ -3,32 +3,17 @@ import { roleConfig } from "../../data/users";
 import { BRAND } from "../../branding";
 
 // ─── Access denied ────────────────────────────────────────────────────────────
-//
-// Rendered by ProtectedRoute (App.tsx) INSTEAD of a page the signed-in role is
-// not allowed to open. Not a 404 and not a login wall: the person is signed in
-// and the page exists — it is simply not theirs. In practice that is IT Staff
-// reaching User Management or Alert Rules, the only two admin-only pages.
-//
-// It was the last screen still on the pre-Grafana palette: `slate-*` text, a
-// blue gradient button and `rounded-xl`, all three of which CLAUDE.md rules out
-// for new code. Being the one page nobody plans to visit is exactly why it never
-// got updated — and exactly why it is worth updating, since it is only ever seen
-// at a moment of confusion.
-//
-// What it now answers, which "Access Denied" alone did not:
-//   • WHOSE permissions these are — the role is named, so a shared machine or a
-//     forgotten account reads as the cause instead of a bug.
-//   • WHAT to do — go back, or ask a named contact. The old copy said "contact
-//     your administrator" without saying who that is.
+// Shown by ProtectedRoute (App.tsx) instead of a page the user's role may not open (in
+// practice IT Staff opening User Management or Alert Rules). The user is signed in and
+// the page exists; it is just not theirs. Names the role, and says what to do: go back
+// or contact someone.
 export default function Unauthorized({ onBack }: { onBack?: () => void }) {
   const { user } = useAuth();
   const role = user?.role ? roleConfig[user.role as keyof typeof roleConfig] : undefined;
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center">
-      {/* Locked panel, not an emoji. The 🔒 rendered as a colour glyph in the
-          middle of a monospace, single-hue UI — the loudest thing on a screen
-          whose message is "nothing to do here". */}
+      {/* An icon panel instead of the 🔒 emoji, which stood out in the single-colour UI. */}
       <div
         className="mb-5 flex items-center justify-center"
         style={{
@@ -101,9 +86,7 @@ export default function Unauthorized({ onBack }: { onBack?: () => void }) {
           Back to dashboard
         </button>
 
-        {/* Only rendered when there is a real address to offer — a mailto: that
-            goes nowhere is worse than no link, and BRAND.supportEmail is
-            deliberately allowed to be blank. */}
+        {/* Only shown when there is an address; BRAND.supportEmail may be blank. */}
         {BRAND.supportEmail && (
           <a
             href={`mailto:${BRAND.supportEmail}?subject=${encodeURIComponent(

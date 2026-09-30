@@ -1,10 +1,8 @@
 package collector
 
-// ServerMetrics is the JSON contract POSTed to the backend at
-// POST /api/servers/metrics. The snake_case json tags MUST stay in sync
-// with backend/handlers/serverMetricsHandler.js (validation + Influx point).
-// If you add/remove a field here, update that handler and the frontend too.
-// backend/tests/contract.test.js parses THIS file and fails if they drift.
+// ServerMetrics is the JSON posted to POST /api/servers/metrics. The json tags must match
+// backend/handlers/serverMetricsHandler.js; if you add or remove a field, update that
+// handler and the frontend too. backend/tests/contract.test.js checks this file.
 type ServerMetrics struct {
 	CPUPercent    float64 `json:"cpu_percent"`
 	MemUsedMB     float64 `json:"mem_used_mb"`
@@ -18,17 +16,15 @@ type ServerMetrics struct {
 	UptimeSeconds float64 `json:"uptime_seconds"`
 	ProcessCount  int     `json:"process_count"`
 
-	// Every fixed volume on the host. The Disk* fields above stay the ROOT
-	// volume so older backends keep working; this array is what catches a data
-	// volume filling up while the system drive looks healthy. Optional — an
-	// empty array just means no volume could be probed.
+	// Every fixed volume on the host. The Disk* fields above stay the root volume so older
+	// backends keep working; this catches a data volume filling up. Empty means no volume
+	// could be read.
 	Volumes []Volume `json:"volumes,omitempty"`
 }
 
-// Volume is one mounted fixed filesystem. Mount is the identifier the backend
-// tags the time-series with — gopsutil reports it as "C:" on Windows (no trailing
-// separator) and "/" or "/data" on Linux. It must stay stable across samples,
-// since changing it would fork the series into two.
+// Volume is one mounted fixed filesystem. Mount identifies the series in the backend:
+// "C:" on Windows, "/" or "/data" on Linux. It must stay the same across samples, or the
+// series would split in two.
 type Volume struct {
 	Mount   string  `json:"mount"`
 	Fstype  string  `json:"fstype"`
@@ -37,10 +33,9 @@ type Volume struct {
 	Percent float64 `json:"percent"`
 }
 
-// Payload is what actually goes on the wire. Embedding flattens ServerMetrics
-// to the top level, so the metric contract above is unchanged; Host rides along
-// only on the occasional refresh post (see sender/main), which is how static
-// facts (IP, RAM, disk size) stay current instead of freezing at enrollment.
+// Payload is what goes on the wire. Embedding flattens ServerMetrics to the top level,
+// so the contract above is unchanged; Host is only included on the periodic refresh
+// post, which keeps static facts (IP, RAM, disk size) current.
 type Payload struct {
 	ServerMetrics
 
@@ -48,10 +43,9 @@ type Payload struct {
 	// sweep can size the grace period per agent instead of assuming 10s.
 	IntervalSeconds int `json:"interval_seconds,omitempty"`
 
-	// CollectedAt is when the sample was taken (RFC3339). The backend IGNORES it
-	// on the live path — it stamps its own clock, as it does for the ESP32 — and
-	// trusts it only when replaying a buffered sample, which has no other
-	// timestamp. Always set, so any sample can be backfilled if the send fails.
+	// CollectedAt is when the sample was taken (RFC3339). The backend ignores it for live
+	// posts (it uses its own clock) and only uses it when replaying a buffered sample.
+	// Always set, so any sample can be backfilled.
 	CollectedAt string `json:"collected_at,omitempty"`
 
 	Host *HostInfo `json:"host,omitempty"`

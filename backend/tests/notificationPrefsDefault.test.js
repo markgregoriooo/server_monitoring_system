@@ -4,26 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// ─── Alert email is OPT-IN, and it has to stay that way ───────────────────────
-//
-// The bug this guards against already happened once. `raiseAlert` resolved each
-// recipient's email preference with `COALESCE(p.email_enabled, 1)` and nothing ever
-// wrote a `notification_prefs` row until somebody pressed Save on the Settings page —
-// so an account started receiving critical alert email the moment an admin approved it.
-// Before its owner had signed in, before they could reach the toggle that turns it off,
-// and before they had been shown the Privacy Notice that says what we do with their
-// address.
-//
-// It is guarded by a TEST rather than by a comment because of how it fails: silently,
-// and at somebody else's mailbox. Nothing throws, no log line appears, the dashboard is
-// perfect, and the only person who finds out is a staff member wondering why a system
-// they have never opened is emailing them at 3 a.m. Flip any one of the four values
-// below back and the behaviour returns with no other symptom.
-//
-// Source text is parsed, not imported: notificationService reaches config/mysql.js and
-// config/env.js, and `npm test` runs with no MySQL and no .env. Same approach, and the
-// same reason, as agentTokenHash.test.js parsing its migration and contract.test.js
-// parsing the Go collector.
+// ─── Alert email is opt-in ───────────────────────
+// It used to default to on (`COALESCE(p.email_enabled, 1)`), so a newly approved
+// account got critical alert email before its owner had signed in or seen the
+// Privacy Notice. Tested because the failure is silent. Reads the source as text,
+// since notificationService needs MySQL and .env (like agentTokenHash.test.js and
+// contract.test.js).
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const read = (...p) => fs.readFileSync(path.join(__dirname, "..", ...p), "utf8");

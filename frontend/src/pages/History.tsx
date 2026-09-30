@@ -4,16 +4,14 @@ import { socket } from "../socket/socket";
 import { GF as gf, STATUS } from "../theme/gf";
 const { green: GREEN } = STATUS;
 
-// ─── History — two views ──────────────────────────────────────────────────────
-// "Activity": one accountable timeline merged from system_logs + aircon_logs +
-// alerts + device_logs (backend services/historyService.js). Every event is tagged
-// with an ACTOR — Admin / Staff / System — so it's clear who (or what) did it.
+// ─── History, two views ──────────────────────────────────────────────────────
+// "Activity": one timeline from system_logs, aircon_logs, alerts and device_logs
+// (backend services/historyService.js), each event tagged with who did it: Admin,
+// Staff or System.
 //
-// "Environment daily": per-day room conditions from InfluxDB (services/
-// environmentService.js). Deliberately a SUMMARY, not a time-series — live charts
-// still belong on the Environment / Server Detail pages. The two views answer
-// different questions ("who did what" vs "what was the room like") over the same
-// period, which is why they share a page rather than a query.
+// "Environment daily": per-day room conditions from InfluxDB
+// (services/environmentService.js). A summary, not a chart; live charts are on the
+// Environment and Server Detail pages.
 
 // ── Grafana design tokens ──
 
@@ -97,9 +95,7 @@ const DAYS: { label: string; value: number }[] = [
   { label: "14d", value: 14 },
   { label: "30d", value: 30 },
 ];
-// Must stay in step with historyService.CATEGORIES — "reports" and "network" were
-// accepted by the backend and already had catMeta styling, but had no filter pill,
-// so their rows were only reachable via "all".
+// Must match historyService.CATEGORIES.
 const CATEGORIES = ["all", "auth", "users", "alerts", "environment", "aircon", "devices", "reports", "network"];
 const SEVERITIES = ["all", "critical", "warning", "info"];
 const PAGE_SIZE = 50;
@@ -129,12 +125,9 @@ function Pill({ active, color, onClick, children }: {
 }) {
   const c = color ?? gf.accent;
   return (
-    // A filter is a TOGGLE, so the two states get opposite depth: unselected sits
-    // raised on .gf-btn's face and invites a click, selected is pushed INTO the page
-    // with the inset shadow. That reads as "this one is on" without relying on colour
-    // alone, which matters here because the fill colour is the category's, not a
-    // selection colour. Inline styles win over the class, so the active branch keeps
-    // its own face and swaps only the shadow.
+    // Filters are toggles: unselected is raised (.gf-btn), selected is pressed in (inset
+    // shadow), so the state shows without relying on colour (the fill is the category's
+    // colour). The inline style only swaps the shadow for the active one.
     <button
       onClick={onClick}
       className="gf-btn text-[12px] px-2 py-1 capitalize whitespace-nowrap"
@@ -157,10 +150,8 @@ function Tile({ label, value, color }: { label: string; value: number | string; 
   );
 }
 
-// One label/value pair inside a daily card (the phone layout of the Environment
-// daily table). The table's seventh column, Alerts, is deliberately NOT one of these:
-// it moves up beside the date, because it is the one number on the row worth seeing
-// without reading the other six.
+// One label/value pair in a daily card (the phone layout of the daily table). Alerts is
+// shown next to the date instead, as the most important number on the row.
 function DayMetric({ label, value, color }: { label: string; value: string; color: string }) {
   return (
     <div className="min-w-0">
@@ -184,11 +175,8 @@ function Badge({ label, color, subtle }: { label: string; color: string; subtle?
 
 // ─── Component ────────────────────────────────────────────────────────────────
 // ─── Environment daily summary ────────────────────────────────────────────────
-// The second view on this page. Where the Activity tab answers "who did what", this
-// answers "what was the room actually like" — per-UTC-day temperature avg/max/min,
-// humidity, peak gas and that day's environment-alert count, measured from InfluxDB
-// (GET /api/environment/daily). It replaces a mock that served five rows hardcoded to
-// March 2025. Live charts still live on the Environment page; this is the summary.
+// Per UTC day: temperature avg/max/min, humidity, peak gas and the number of
+// environment alerts, from InfluxDB (GET /api/environment/daily).
 
 interface DailyRow {
   date: string;
@@ -286,10 +274,8 @@ function DailySummary() {
         </span>
       </div>
 
-      {/* TWO layouts over one set of rows: cards below `md`, the table from `md` up —
-          seven numeric columns is a sideways scroll on a phone. The three states
-          (loading / InfluxDB error / no rows) are hoisted OUT of the tbody so they are
-          written once for both layouts rather than once per layout. */}
+      {/* Two layouts from the same rows: cards below `md`, the table from `md` up. The loading,
+         error and empty states are written once for both. */}
       <div className="rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
         {loading ? (
           <div className="px-3 py-10 text-center" style={{ color: gf.textMuted }}>Loading…</div>
@@ -425,10 +411,9 @@ export default function History() {
     return () => { cancelled = true; };
   }, [days, rangeMode, customStart, customEnd, category, severity, actor, search, page, reloadKey]);
 
-  // realtime — auto-update while on the first page (don't yank the viewport while
-  // someone is paging or reading older entries). Socket events give instant
-  // updates for the activity they broadcast; a short poll is the catch-all for
-  // events that don't push to browsers (login/logout, alert-rule changes, etc.).
+  // Live updates while on the first page (so reading older pages is not disturbed).
+  // Socket events cover what they broadcast; a short poll catches the rest (login/logout,
+  // alert rule changes, etc.).
   const live = page === 1;
   const liveRef = useRef(live);
   liveRef.current = live;
@@ -555,12 +540,8 @@ export default function History() {
         )}
       </div>
 
-      {/* Filter pills — STACK into one group per row on a phone.
-          Side by side, each group wraps independently: Category's eight pills take three
-          lines, and the vertical divider that was meant to separate it from Severity ends up
-          floating beside the middle of that block while the "Severity" label starts halfway
-          along a line. Three labelled rows instead, and the dividers go — they exist to
-          separate things sitting on ONE line, which below `sm` they never are. */}
+      {/* Filter pills: one labelled group per row on a phone (Category, Severity, Actor), with
+         no dividers; side by side they wrapped into a jumble. */}
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-x-3 gap-y-2">
         <div className="flex flex-wrap items-center gap-1 w-full sm:w-auto">
           <span className="text-[10px] tracking-widest uppercase mr-0.5 w-full sm:w-auto" style={{ color: gf.textMuted }}>Category</span>
@@ -617,11 +598,8 @@ export default function History() {
         )}
       </div>
 
-      {/* Activity timeline — TWO layouts, one list. Six columns with the message
-          truncated at 420px is already tight on a laptop; on a phone the message and
-          the source are off the right edge entirely. Cards below `md`, table from `md`
-          up, and the row EXPANDS on tap in both — states hoisted out of the tbody so
-          they are written once. */}
+      {/* Activity timeline in two layouts: cards below `md`, the table from `md` up. Rows expand
+         on tap in both. States are written once. */}
       <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${gf.border}` }}>
         {loading ? (
           <div className="px-3 py-8 text-center" style={{ color: gf.textDim }}>Loading…</div>
@@ -658,9 +636,7 @@ export default function History() {
                   <span className="ml-auto flex-shrink-0"><Badge label={cm.label} color={cm.color} subtle /></span>
                 </div>
 
-                {/* Two lines collapsed, all of it once tapped — the same expand the table
-                    row has. On a phone this is the one column that cannot be read any
-                    other way, so it gets two lines rather than the table's single. */}
+                {/* Two lines when collapsed, everything after a tap, like the table row. */}
                 <div className={open ? "break-words" : "line-clamp-2"}>{e.message}</div>
 
                 <div className="flex items-center gap-2 text-[11px] min-w-0">

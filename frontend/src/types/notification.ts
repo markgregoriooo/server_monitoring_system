@@ -1,13 +1,7 @@
 /**
- * Notification shapes, owned by neither the context nor its helpers.
- *
- * These lived in `context/NotificationContext.tsx`, which imports `routeFor` from
- * `components/notifications/notificationUtils.ts` — while that file imported these
- * types back. A cycle, harmless only because the type direction used `import type`
- * and TypeScript erases it. Promote that to a value import and it becomes a real
- * circular dependency that fails at module-init time in a production build.
- *
- * See audits/code-complexity-report-2026-08-25.md — C-14.
+ * Notification types, kept here to avoid a cycle between NotificationContext and
+ * notificationUtils (which each imported from the other).
+ * See audits/code-complexity-report-2026-08-25.md (C-14).
  */
 
 export type Severity = "info" | "warning" | "critical";

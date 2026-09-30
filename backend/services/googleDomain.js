@@ -1,32 +1,19 @@
-// PURE helpers for the Google sign-in domain gate. Used by googleAuthService.js.
-//
-// This is the single check standing between an arbitrary Google account and a
-// session on this system, so it lives in one small file you can read end to end
-// rather than buried in the OAuth flow.
-//
-// Deliberately DEPENDENCY-FREE (no env, no mysql, no google-auth-library): it can
-// be imported and exercised without starting a database.
-//
-// If you ever change isAllowedDomain, keep it an EXACT match. Rewriting it as
-// `email.endsWith(domain)` looks equivalent and is not — it would admit
-// "attacker@notcspc.edu.ph", and nothing would appear to break.
+// Helpers for the sign-in domain check, used by googleAuthService.js. No imports,
+// so it can be tested without a database. Keep isAllowedDomain an exact match:
+// `email.endsWith(domain)` would also let in "attacker@notcspc.edu.ph".
 
 const DEFAULT_ALLOWED_DOMAINS = "cspc.edu.ph,my.cspc.edu.ph";
 
-// The domain part of an email, lowercased. Returns "" for anything unusable
-// (non-string, no "@"), and "" can never match an allow-list entry — so
-// malformed input fails CLOSED rather than slipping through.
-// lastIndexOf, not indexOf: only the final "@" separates local-part from domain.
+// The domain of an email, lowercased. Returns "" for bad input, which never matches,
+// so malformed input is refused. Uses lastIndexOf because only the last "@" counts.
 function domainOf(email) {
   if (typeof email !== "string") return "";
   const at = email.lastIndexOf("@");
   return at === -1 ? "" : email.slice(at + 1).trim().toLowerCase();
 }
 
-// Parse GOOGLE_ALLOWED_DOMAINS into a list. A missing OR BLANK value falls back
-// to the CSPC default — matching how server.js treats WEB_ORIGIN. (A bare
-// `GOOGLE_ALLOWED_DOMAINS=` line in .env used to produce an EMPTY list, which
-// silently locked out every account, since `??` only replaces undefined.)
+// Parse GOOGLE_ALLOWED_DOMAINS into a list. Missing or blank falls back to the CSPC
+// default, so an empty `GOOGLE_ALLOWED_DOMAINS=` line cannot lock everyone out.
 function parseAllowedDomains(raw) {
   const value = String(raw ?? "").trim() || DEFAULT_ALLOWED_DOMAINS;
   return value

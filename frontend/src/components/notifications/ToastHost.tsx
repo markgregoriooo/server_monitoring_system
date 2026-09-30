@@ -7,9 +7,8 @@ import { SEVERITY_COLOR, routeFor, deviceLabel } from "./notificationUtils";
 const TOAST_MS = 6000;   // auto-dismiss after 6s
 const MAX_VISIBLE = 4;   // cap the stack so a burst doesn't fill the screen
 
-// Renders transient corner toasts for live notifications. Subscribes to the
-// context's live stream (not the socket directly), so there's a single source of
-// truth for incoming events.
+// Corner toasts for live notifications. Subscribes to the context's live stream,
+// not the socket directly.
 export default function ToastHost() {
   const { subscribe, markRead } = useNotifications();
   const navigate = useNavigate();

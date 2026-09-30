@@ -25,11 +25,9 @@ export const handleConnection = (io, socket) => {
     airconService.getDeviceIRConfig()
       .then(cfg => socket.emit("acConfig", cfg))
       .catch(err => console.error("[acConfig push error]", err));
-    // Which MQ-2 channels are actually wired. Same one-boolean-per-channel shape as
-    // `irConfig`, so the firmware reuses the parser it already has rather than learning a
-    // second. An unwired ADC pin floats and reads NOISE, not zero, so a channel stays unread
-    // until an admin asserts the hardware exists — the same reason enabledChannels[] starts
-    // false for unwired IR pins. Re-pushed on change; see routes/gasSensors.js.
+    // Which MQ-2 channels are wired, in the same shape as `irConfig`. An unwired ADC
+    // pin floats and reads noise, so a channel is only read once an admin enables it.
+    // Re-pushed on change (routes/gasSensors.js).
     gasSensorService.getDeviceConfig()
       .then(cfg => socket.emit("gasConfig", cfg))
       .catch(err => console.error("[gasConfig push error]", err));
@@ -49,10 +47,8 @@ const registerEvents = (io, socket) => {
     handleChangeRange(socket, range);
   });
 
-  /* ESP32 device only — which ADC pin each gas channel sits on (sent on every connect).
-     The device is the only thing that knows this, so it tells us rather than the dashboard
-     holding a second copy of MQ2_PINS[] that goes stale the day the board is re-pinned.
-     A reload() follows because the cached rows carry `gpio`, and the map only just arrived. */
+  /* ESP32 only: the ADC pin of each gas channel, sent on every connect. Only the
+     device knows this. reload() follows because the cached rows carry `gpio`. */
   socket.on("gasSensorMap", async (data) => {
     if (!socket.isDevice) return;
     try {
@@ -91,10 +87,8 @@ const registerEvents = (io, socket) => {
     }
   });
 
-  // ESP32 device only — result of a clean-air (Ro) calibration. Forwarded to browsers so
-  // the Recalibrate button can report whether the new baseline was accepted, instead of
-  // being fire-and-forget. `ok:false` means the device measured an out-of-range value and
-  // kept its previous baseline.
+  // ESP32 only: result of a clean-air (Ro) calibration, forwarded to browsers.
+  // ok:false means the value was out of range and the old baseline was kept.
   socket.on("gasCalibrated", (data) => {
     if (!socket.isDevice) return;
     console.log("[CAL] ESP32 reported:", data);
@@ -104,21 +98,15 @@ const registerEvents = (io, socket) => {
   // ESP32 device only — live sensor data
   socket.on("sensorData", (data) => {
     if (!socket.isDevice) return;
-    // `mq2_1_ppm` / `mq2_2_ppm` are still SENT and still handled — they are what a backend
-    // that has not been updated reads, and the only shape pre-cutover history is stored in.
-    // They are just not worth PRINTING: `gas_ppm` already carries every channel, so logging
-    // both shapes shows the same two numbers twice and invites the reader to wonder which is
-    // authoritative (it is the array). Dropped from the line only, never from the payload.
+    // mq2_1_ppm / mq2_2_ppm are still sent for older backends and history; they are
+    // left out of the log line only because gas_ppm already has every channel.
     const { mq2_1_ppm, mq2_2_ppm, ...shown } = data ?? {};
     console.log("sensorData received:", shown);
     handleSensorData(socket, data);
   });
 
-  // ESP32 device only — replay of readings buffered to the micro SD during an outage.
-  // Deliberately NOT logged per row: a replay is a burst (a two-hour outage is ~240
-  // rows arriving back to back), and dumping each one buries the rest of the log at
-  // exactly the moment someone is reading it to find out what happened. The handler
-  // logs one summary line per burst instead.
+  // ESP32 only: readings buffered on the SD card during an outage. Not logged per
+  // row (a replay can be hundreds of rows); the handler logs one summary line.
   socket.on("offlineData", (data) => {
     if (!socket.isDevice) return;
     handleOfflineData(socket, data);
@@ -126,19 +114,15 @@ const registerEvents = (io, socket) => {
 
   socket.on("disconnect", () => {
     console.log("Client disconnected:", socket.id);
-    // The ESP32 dropping is immediate proof the room is unmonitored — flip it offline
-    // now rather than waiting out the staleness window. No-op while another device
-    // socket is still in the room (see esp32Monitor.markDisconnected).
+    // The ESP32 disconnecting means the room is unmonitored, so mark it offline now.
+    // No-op while another device socket is still connected.
     if (socket.isDevice) esp32Monitor.markDisconnected(io, socket.id);
   });
 };
 
 const handleChangeRange = (socket, range) => {
-  // Deliberately NOT de-duplicated against the last requested range. The socket outlives
-  // page navigation, so a "same range as last time" check silently dropped the request a
-  // freshly-mounted page makes to fill its chart — leave Environment and come back, or
-  // open the Dashboard after Environment, and the history never arrived. The pages emit
-  // this once on mount and once per range change, so answering every time is cheap.
+  // Not de-duplicated: the socket outlives page navigation, so a newly mounted page
+  // must get its history even if the range is the same as last time.
   socket.lastRange = range;
   console.log("Range changed:", range);
   try {
@@ -148,20 +132,10 @@ const handleChangeRange = (socket, range) => {
   }
 };
 
-// ─── Async socket handlers must not be able to kill the process ───────────────
-//
-// Socket.IO does not await a handler and has nowhere to send a rejection, so an async
-// handler invoked fire-and-forget leaks an unhandled rejection — and Node 22 terminates
-// the process on one (verified: exit code 1). `sensorData` arrives every ~3 s from the
-// ESP32, so a single transient DB or InfluxDB blip inside it would have taken the whole
-// backend down, stopping every alarm in the system.
-//
-// src/server.js now has a process-level net that logs and exits deliberately. This is
-// the layer that stops it getting that far: one bad reading is logged and dropped, and
-// the next one three seconds later is handled normally. Losing one sample is the correct
-// trade for a telemetry stream; losing the backend is not.
-//
-// See audits/error-handling-report-2026-08-25.md — E-03.
+// ─── Async socket handlers must not crash the process ────────────────────────
+// Socket.IO does not await handlers, and Node 22 exits on an unhandled rejection.
+// One DB or InfluxDB error inside `sensorData` would stop the whole backend. This
+// logs and drops the failed event instead. See audits/error-handling-report-2026-08-25.md (E-03).
 const guard = (name, fn) => (socket, payload) => {
   try {
     const r = fn(socket, payload);

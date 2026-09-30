@@ -29,29 +29,18 @@ const rangePayload = (r: RangeValue) =>
   r.kind === "preset" ? r.preset : { start: r.start, stop: r.stop };
 
 // ─── Gas sensor recalibration ─────────────────────────────────────────────────
-// The MQ-2 needs a "clean air" reference (Ro) that differs per sensor and per room.
-// It used to require editing RO_CLEAN_AIR_* in the firmware and reflashing on every
-// move; the ESP32 now measures and stores it itself, and this button asks it to
-// re-measure. Admin-only, confirmed, because the device records whatever it smells
-// AT THAT MOMENT as clean — calibrating in poor air makes it under-report smoke.
+// The MQ-2 needs a clean-air reference (Ro) per sensor and room. The ESP32 measures and
+// stores it; this button asks it to measure again. Admin-only and confirmed, because the
+// device treats the current air as clean; calibrating in smoky air makes it
+// under-report smoke.
 
 type CalibResult = { ok: boolean; msg: string };
 
 /**
- * The button and its result render in TWO PLACES, so the state lives in a hook.
- *
- * ⚠️ Why they had to be separated. The toolbar holding the button is
- * `flex-nowrap overflow-x-auto justify-end` on a phone, and a result chip inside it made
- * that row wider than the viewport. Under `justify-content: flex-end` the surplus
- * overflows to the LEFT of the scroll origin — which no browser lets you scroll back to —
- * so the message, and sometimes the button beside it, was pushed off-screen and was
- * unreachable rather than merely clipped. Capping the chip at `45vw`/`60vw` and shortening
- * its text only moved the cliff: the range picker alone is most of a 360px row.
- *
- * So the button stays in the toolbar and the result gets its own full-width line beneath
- * it, on every screen size. One render site, no width to fight over, and the whole
- * sentence fits on one line at 360px — which also means the mobile/desktop text split
- * this used to carry is gone, and the numbers can never be the part that gets dropped.
+ * The button and its result are shown in two places, so the state is in a hook. On a
+ * phone the toolbar scrolls sideways and is right-aligned, and a result inside it
+ * overflowed to the left where it could not be scrolled to. So the button stays in the
+ * toolbar and the result gets its own full-width line below, on every screen size.
  */
 function useGasRecalibration() {
   const { user } = useAuth();
@@ -117,9 +106,8 @@ function RecalibrateGasButton({ busy, run }: { busy: boolean; run: () => void })
       className="gf-btn text-[13px] px-2 sm:px-2.5 py-1 inline-flex items-center gap-1.5"
       style={{ color: "var(--gf-text-muted)" }}
     >
-      {/* Spins while busy. On desktop the label already says "Calibrating…"; on a phone
-          that label is gone, so without this a press would look like nothing happened —
-          and a calibration takes seconds, not milliseconds. */}
+      {/* Spins while busy; on a phone the "Calibrating…" label is hidden, and calibration
+         takes a few seconds. */}
       <svg
         width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"
         className={`shrink-0 ${busy ? "animate-spin motion-reduce:animate-none" : ""}`}
@@ -139,9 +127,8 @@ function RecalibrateGasButton({ busy, run }: { busy: boolean; run: () => void })
 }
 
 /**
- * Result half: a full-width line under the toolbar. `role="status"` because it is the only
- * confirmation the press did anything — the button's label is an icon on a phone — so a
- * screen reader has to announce it without the focus having moved.
+ * Result: a full-width line under the toolbar. `role="status"` so screen readers
+ * announce it (on a phone the button is only an icon).
  */
 function GasCalibrationNotice({ result }: { result: CalibResult }) {
   const tone = result.ok ? "#73BF69" : "#F2495C";
@@ -158,9 +145,9 @@ function GasCalibrationNotice({ result }: { result: CalibResult }) {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-// The device's three-band vocabulary, shared with the colour helpers. Every value that
-// reaches these types has been through `normalizeStatus`, so the legacy DANGER spelling
-// held by pre-2026-08-15 InfluxDB tags is already folded into CRITICAL.
+// The device's three bands, shared with the colour helpers. Values pass through
+// `normalizeStatus` first, so the old DANGER spelling in pre-2026-08-15 InfluxDB tags is
+// already CRITICAL.
 type AlertLevel     = EnvStatus;
 type TempLevel      = TempStatus;
 
@@ -197,9 +184,8 @@ interface HistoryData {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// DANGER is no longer a band the device reports (see normalizeStatus) — the key is kept
-// only so a status that somehow skipped normalisation still resolves to a red rather than
-// to `undefined`, which these maps would render as no colour at all.
+// DANGER is no longer reported (see normalizeStatus); kept only so an unnormalised value
+// still shows red instead of no colour.
 const STATUS_COLOR: Record<string, string> = {
   NORMAL:   "#73BF69",
   TOO_COLD: "#5794F2",
@@ -212,41 +198,27 @@ const STATUS_COLOR: Record<string, string> = {
 // colour Chart.js falls back to before per-segment zone colours resolve.
 const TEMP_SERIES = "#F59E0B";
 
-// IDENTITY colours for the series that share a chart with another. Humidity sits beside
-// temperature; the two MQ-2 lines sit beside each other. Each holds its own hue while
-// within the alert rules and turns orange/red only where it breached them (`alertTint`) —
-// if every normal series went green, each of these charts would be drawing one line twice.
-// The stat TILES have no such neighbour and use the full green/orange/red band colour.
+// Own colours for series that share a chart: humidity beside temperature, and the MQ-2
+// lines beside each other. Each keeps its colour while within the rules and turns
+// orange/red only where it breached them (`alertTint`). The stat tiles use full
+// green/orange/red.
 const HUM_SERIES  = "#38BDF8";
 const MQ1_SERIES  = "#A78BFA";
 const MQ2_SERIES  = "#F472B6";
-/* One identity hue per gas sensor, indexed by channel-1.
-   Each sensor KEEPS its own colour while clean and only turns orange/red on breach
-   (`alertTint`). Painting them all green when clean would merge them into one indistinct
-   band for the majority of the time the chart is on screen — and watching two sensors
-   DISAGREE is the entire reason for having more than one.
-   Channels 3 and 4 continue away from violet/pink rather than near them: amber and teal sit
-   far from both on the wheel, and far from the orange/red a breach turns them. */
+/* One colour per gas sensor, indexed by channel-1. Each keeps its colour while clean and
+   only turns orange/red on a breach, so different sensors can be told apart. Channels 3
+   and 4 are amber and teal, far from violet/pink and from the breach colours. */
 const GAS_SERIES = [MQ1_SERIES, MQ2_SERIES, "#FBBF24", "#2DD4BF"] as const;
 // The modulo makes this total for any channel, so a 5th sensor on a second ESP32 wraps
 // round to violet rather than rendering colourless.
 const gasSeriesColor = (channel: number): string =>
   GAS_SERIES[(channel - 1) % GAS_SERIES.length]!;
 
-/* Which gas channels a history payload actually CARRIES, unioned with the ones the sensor
-   config already knows about.
-
-   ⚠️ Read from the DATA, never from the config alone. `useGasSensors` fetches over HTTP
-   while `sensorHistory` arrives on an already-open socket, so on a client-side navigation
-   into this page the history wins that race and `gasChannelsRef` is still empty — the gas
-   series came back `{}` and then rebuilt itself one live point every 3 s, against labels
-   that were already a full window long. Chart.js pairs data[i] with labels[i] on a category
-   axis, so the short series drew across the LEFT of the axis and the smoke line lagged its
-   own x-axis. A reload appeared to "fix" it only because a cold socket delays the history
-   long enough for the fetch to land first, which is why it looked intermittent.
-
-   Ingest now waits on nothing async; `gasChannels` still decides what is DRAWN, so a
-   channel an admin has not confirmed is wired is still not charted. */
+/* Which gas channels a history payload contains, plus those the sensor config knows.
+   Read from the data, not only the config: the config loads over HTTP while history
+   arrives on the open socket, and if history won that race the gas series came back
+   empty and then grew one point at a time against a full row of labels. `gasChannels`
+   still decides what is drawn, so unconfirmed channels are not charted. */
 function channelsIn(history: HistoryData[], known: number[]): number[] {
   const out = new Set<number>(known);
   for (const r of history) {
@@ -268,9 +240,8 @@ const STATUS_BG: Record<string, string> = {
   CRITICAL: "rgba(224,47,68,0.20)",
 };
 
-// ─── Grafana palette — values come from CSS vars set on the root div ──────────
-// GF references are consumed by all sub-components; the actual light/dark
-// values are injected by the Environment root element based on isDark.
+// ─── Grafana palette ──────────
+// GF values are CSS variables set on the Environment root element for light or dark.
 
 const GF = {
   bg:          "var(--gf-bg)",
@@ -321,14 +292,8 @@ function splitLabel(raw: string, isMobile = false): string[] {
 // ─── Chart helpers ────────────────────────────────────────────────────────────
 
 /**
- * Takes ONE options object, not seven positional arguments.
- *
- * It used to be called as
- *   makeCombinedOptions(isDark, isMobile, minTempY, maxTempY, minHumY, maxHumY, colors)
- * — four adjacent numbers with identical types. Transposing any two of them is silently
- * wrong: the chart renders with the wrong axis bounds and nothing errors. Two adjacent
- * booleans had the same problem. Named fields make a transposition impossible.
- * See audits/naming-readability-report-2026-08-25.md — N-01.
+ * Takes one options object instead of seven positional arguments (four adjacent numbers
+ * could be swapped without any error). See audits/naming-readability-report-2026-08-25.md (N-01).
  */
 function makeCombinedOptions({
   isDark,
@@ -345,11 +310,11 @@ function makeCombinedOptions({
   maxTemp: number;
   minHum: number;
   maxHum: number;
-  /** Colours resolved from live data by the component, since this builder sits outside it.
-   *  `tempAxis`/`humAxis` are each series' colour RIGHT NOW (a multi-coloured line needs an
-   *  axis that still matches some part of it); `at` resolves the colour of one hovered
-   *  point, for the tooltip's swatch — Chart.js would otherwise draw it from the dataset's
-   *  static `borderColor`, which here is only the pre-first-reading fallback. */
+  /**
+   * Colours from live data, since this builder sits outside the component. `tempAxis` /
+   * `humAxis` are each series' current colour; `at` gives the colour of a hovered point
+   * for the tooltip swatch (Chart.js would otherwise use the static fallback `borderColor`).
+   */
   colors: {
     tempAxis: string;
     humAxis: string;
@@ -400,11 +365,8 @@ function makeCombinedOptions({
                   : timeColor)) as unknown as string,
           font: { size: isMobile ? 8 : 9, family: "monospace" },
           maxTicksLimit: isMobile ? 4 : 7, maxRotation: 0,
-          // `value` is the DATA index on a category scale. `index` is only the position
-          // among the ticks Chart.js decided to DRAW (0…maxTicksLimit-1), so passing it to
-          // getLabelForValue labelled all seven ticks from the first seven samples — which
-          // is why a tick could read "Jun" while the tooltip for that same point read
-          // "Jul", and why the months appeared to jump around.
+          // `value` is the data index on a category scale; `index` is only the position among the
+          // ticks Chart.js draws. Using `index` labelled ticks with the wrong dates.
           callback: function(value, index, ticks): string[] {
             const dataIndex = typeof value === "number" ? value : (ticks[index]?.value ?? index);
             const raw = (this.getLabelForValue as (i: number) => string)(dataIndex);
@@ -441,10 +403,11 @@ function makeSmokeOptions({
   isMobile: boolean;
   minPPM: number;
   maxPPM: number;
-  /** DATASET INDEX → what to call that sensor. Index, not channel: the chart only draws the
-   *  fitted channels, so with 1 and 3 wired dataset 1 is channel 3. Resolved by the caller,
-   *  which owns the channel list. Passed in rather than read from a module constant because
-   *  the name lives in MySQL and an admin can rename it while this page is open. */
+  /**
+   * Dataset index → sensor name. By index, not channel: only fitted channels are drawn,
+   * so with 1 and 3 wired, dataset 1 is channel 3. Passed in, since names come from MySQL
+   * and can be renamed while the page is open.
+   */
   labelFor: (datasetIndex: number) => string;
   /** `ppmAxis` = the WORSE of the two MQ-2 sensors, since one axis serves both lines.
    *  `at` resolves one hovered point's colour for the tooltip swatch — see makeCombinedOptions. */
@@ -498,11 +461,8 @@ function makeSmokeOptions({
                   : timeColor)) as unknown as string,
           font: { size: isMobile ? 8 : 9, family: "monospace" },
           maxTicksLimit: isMobile ? 4 : 7, maxRotation: 0,
-          // `value` is the DATA index on a category scale. `index` is only the position
-          // among the ticks Chart.js decided to DRAW (0…maxTicksLimit-1), so passing it to
-          // getLabelForValue labelled all seven ticks from the first seven samples — which
-          // is why a tick could read "Jun" while the tooltip for that same point read
-          // "Jul", and why the months appeared to jump around.
+          // `value` is the data index on a category scale; `index` is only the position among the
+          // ticks Chart.js draws. Using `index` labelled ticks with the wrong dates.
           callback: function(value, index, ticks): string[] {
             const dataIndex = typeof value === "number" ? value : (ticks[index]?.value ?? index);
             const raw = (this.getLabelForValue as (i: number) => string)(dataIndex);
@@ -640,11 +600,8 @@ function GaugeArc({ value, unit, pct, color, isDark }: {
   );
 }
 
-// Light moving-average so live raw readings render as a smooth, flowing curve
-// (matching the aggregated Server Detail charts). Window of 5 ≈ ~15s of samples.
-// Null-aware: a missing reading STAYS missing rather than being averaged away. Feeding
-// it through as 0 (which is what `?? 0` upstream used to do) draws a plunge to zero that
-// never happened — and on temperature, 0 °C is both impossible and alarming.
+// Light moving average (window of 5, about 15s) for a smooth curve, like the Server
+// Detail charts. Missing readings stay missing instead of being averaged in as 0.
 function smooth(data: (number | null)[], window = 5): (number | null)[] {
   if (data.length <= 2) return data;
   return data.map((v, i) => {
@@ -656,9 +613,8 @@ function smooth(data: (number | null)[], window = 5): (number | null)[] {
   });
 }
 
-// Drop the missing readings. For the stat tiles and sparklines, which state a single
-// number or draw a 40px line — neither can show a hole, and both would be wrong if a
-// missing reading counted as 0 in a min/avg.
+// Drop missing readings for the stat tiles and sparklines, which cannot show a gap and
+// would be wrong if a missing reading counted as 0.
 const nums = (a: (number | null)[]): number[] => a.filter((v): v is number => v != null);
 
 // ─── Sparkline ────────────────────────────────────────────────────────────────
@@ -792,18 +748,17 @@ function StatePanel({
 
 // ─── GraphPanel (Grafana Graph style) ─────────────────────────────────────────
 
-// `toolbar` (the Reset zoom button) and `overlay` (the zoom selection bar) were dropped
-// with the zoom feature — nothing supplied them any more, and keeping optional slots for a
-// feature that no longer exists just invites someone to wire them back up.
+// The zoom toolbar and overlay slots were removed with the zoom feature.
 function GraphPanel({
   title, legend, children, action,
 }: {
   title: string;
   legend: React.ReactNode;
   children: React.ReactNode;
-  /** Optional control in the panel header, beside the live dot — used by the smoke panel for
-   *  "Add smoke sensor". Kept as a slot rather than a prop per button so a second panel that
-   *  needs one does not mean touching this signature again. */
+  /**
+   * Optional control in the panel header, next to the live dot (e.g. "Add smoke sensor" on
+   * the smoke panel).
+   */
   action?: React.ReactNode;
 }) {
   return (
@@ -948,15 +903,12 @@ export default function Environment() {
   const { labelFor: gasLabelFor, sensors: gasSensorRows } = useGasSensors();
   const gasSensors = gasSensorRows;
   const [showAddGas, setShowAddGas] = useState(false);
-  // "Has the ESP32 told us its pin map." Derived rather than tracked off `esp32Status`,
-  // because the thing the modal actually needs is the GPIO numbers — and they are absent for
-  // exactly one reason: the device has not connected since the backend started. A separate
-  // liveness flag could disagree with the data on screen; this cannot.
+  // Whether the ESP32 has sent its pin map: taken from the data itself (the GPIO numbers),
+  // so it can never disagree with what is shown.
   const gasPinsKnown = gasSensors.some((g) => g.gpio != null);
   const [labels,   setLabels]   = useState<string[]>([]);
-  // The points' real timestamps. Both charts plot the same instants, so one array serves
-  // them. The axis LABELS are formatted for reading and cannot be parsed back into times
-  // ("14:20" has no date), and finding an outage needs the actual instants.
+  // The points' real timestamps (one array for both charts). The axis labels cannot be
+  // parsed back into times, and finding outages needs the real times.
   const [times,    setTimes]    = useState<number[]>([]);
   const [temps,    setTemps]    = useState<(number | null)[]>([]);
   const [hums,     setHums]     = useState<(number | null)[]>([]);
@@ -967,9 +919,8 @@ export default function Environment() {
   /* Gas is per CHANNEL now, not a fixed pair. Keyed by channel so adding a sensor is one
      more key rather than one more pair of useState calls — the whole point of the change. */
   const [gasSeries,  setGasSeries]  = useState<Record<number, (number | null)[]>>({});
-  // The socket handlers below are registered once, so they cannot close over `gasChannels`
-  // — a sensor added mid-session would never appear until a reload. Same ref pattern the
-  // page already uses for the range span (`envSpanRef`).
+  // The socket handlers are registered once, so they read `gasChannels` through a ref;
+  // otherwise a sensor added mid-session would not appear until a reload.
   const gasChannelsRef = useRef<number[]>([]);
   const [liveGasCh,  setLiveGasCh]  = useState<Record<number, number>>({});
   // The channels to actually DRAW: the ones an admin has confirmed are wired, in order.
@@ -990,12 +941,10 @@ export default function Environment() {
   const [liveTempStatus,        setLiveTempStatus]        = useState<TempLevel>("NORMAL");
   const [liveEnvironmentStatus, setLiveEnvironmentStatus] = useState<AlertLevel>("NORMAL");
 
-  // Room-level alert thresholds (`alert_rules`) — temperature, humidity and both MQ-2
-  // sensors colour against these, changing at exactly the point the system raises an
-  // alert. This is the same source as `liveTempStatus` in the System Status panel (the
-  // firmware computes that from the very thresholds `envConfig` pushes it), so the tile
-  // and the status row now agree instead of answering with different numbers. Follows an
-  // admin's Alert Rules edits live.
+  // Room alert thresholds (`alert_rules`); temperature, humidity and the MQ-2 sensors are
+  // coloured by these. The System Status panel's `liveTempStatus` comes from the firmware
+  // using the same thresholds (sent via `envConfig`), so the two agree. Follows Alert
+  // Rules edits live.
   const thresholds = useRoomThresholds();
   // Each series' colour right now, for the places where ONE colour has to stand for the
   // whole line: the chart's area fill, its axis and its legend swatch.
@@ -1003,9 +952,8 @@ export default function Environment() {
   const liveHumColor = alertTint(liveHum, thresholds.humWarn, thresholds.humCrit, HUM_SERIES, HUM_SERIES);
   const livePPM1Color = alertTint(livePPM1, thresholds.gasWarn, thresholds.gasCrit, MQ1_SERIES, MQ1_SERIES);
   const livePPM2Color = alertTint(livePPM2, thresholds.gasWarn, thresholds.gasCrit, MQ2_SERIES, MQ2_SERIES);
-  // The smoke chart's single ppm axis serves both sensors, so it takes the HIGHER reading's
-  // band — over-stating one sensor is safe, under-stating the room is not. It falls back to
-  // MQ2-1's violet while both are clean, since a "normal" band has no colour of its own here.
+  // The smoke chart's one ppm axis uses the higher sensor's band. Violet (MQ2-1) while both
+  // are clean.
   const ppmAxisColor = alertTint(
     typeof livePPM1 === "number" && typeof livePPM2 === "number" ? Math.max(livePPM1, livePPM2)
       : typeof livePPM1 === "number" ? livePPM1
@@ -1013,9 +961,8 @@ export default function Environment() {
     thresholds.gasWarn, thresholds.gasCrit, MQ1_SERIES, MQ1_SERIES,
   );
 
-  // Colour bundles handed to the module-level options builders. Memoised because the
-  // builders are themselves memoised on identity — a fresh object every render would
-  // rebuild both charts' options several times a second.
+  // Colour sets passed to the options builders, memoised so the charts are not rebuilt on
+  // every render.
   const combinedColors = useMemo(() => ({
     tempAxis: liveTempColor,
     humAxis: liveHumColor,
@@ -1033,16 +980,12 @@ export default function Environment() {
         datasetIndex === 0 ? MQ1_SERIES : MQ2_SERIES),
   }), [ppmAxisColor, thresholds]);
 
-  // Is the ESP32 actually reporting? Without this every reading below is the LAST one
-  // received, with nothing to say how old it is — a dead sensor renders exactly like a
-  // stable room. Seeded from REST (the socket only fires on a transition, which may
-  // never come while the page is open) and then kept live by `esp32Status`.
+  // Is the ESP32 reporting? Without this a dead sensor looks like a stable room. Loaded
+  // over REST (the socket only reports changes), then kept current by `esp32Status`.
   const [sensorOnline,   setSensorOnline]   = useState<boolean | null>(null);
   const [sensorLastSeen, setSensorLastSeen] = useState<string | null>(null);
 
-  // One RangeValue instead of the old range / customRange / customLabel / showCustom
-  // quartet — the shared picker owns the preset-vs-custom distinction and its own
-  // popover, so none of that has to be tracked here any more.
+  // One RangeValue; the shared picker handles presets vs custom ranges.
   const [range, setRange] = useState<RangeValue>(DEFAULT_RANGE);
   const [isDark,      setIsDark]      = useState(() => document.documentElement.classList.contains("dark"));
   const [isMobile,    setIsMobile]    = useState(() => window.matchMedia("(max-width: 640px)").matches);
@@ -1086,10 +1029,8 @@ export default function Environment() {
     };
     socket.on("esp32Status", onStatus);
 
-    // `esp32Status` only fires on a TRANSITION, so a client that was disconnected or
-    // backgrounded when it fired never learns — and the banner silently stays wrong
-    // until a manual refresh. Re-pull the authoritative state whenever we could have
-    // missed one: on (re)connect, and when the tab regains focus.
+    // `esp32Status` only fires on a change, so a client that was disconnected or in the
+    // background may have missed it. Re-check on (re)connect and when the tab regains focus.
     socket.on("connect", resync);
     const onVisible = () => { if (document.visibilityState === "visible") resync(); };
     document.addEventListener("visibilitychange", onVisible);
@@ -1112,8 +1053,8 @@ export default function Environment() {
       setHums(history.map(r => r.humidity     ?? null));
       setSmokeLabels(lbls);
       /* One array per channel. `r.gas` is the per-sensor series; the legacy pair is the
-         fallback, and it is the ONLY gas that exists for windows older than the cutover —
-         so a range spanning it draws continuously instead of starting mid-chart. */
+         fallback and the only gas data for older periods, so a range spanning both is drawn
+         continuously. */
       const channels = channelsIn(history, gasChannelsRef.current);
       const byCh: Record<number, (number | null)[]> = {};
       for (const ch of channels) {
@@ -1166,10 +1107,8 @@ export default function Environment() {
       setLiveGasCh(liveByCh);
       setGasSeries((prev) => {
         const next: Record<number, (number | null)[]> = {};
-        /* A channel appearing mid-session — a sensor just enabled, or a config that landed
-           after the history — is padded to the length its siblings already have. Appending
-           to an empty array would start it one point long against a full window of labels,
-           which is the same misalignment channelsIn exists to prevent. */
+        /* A channel that appears mid-session is padded to its siblings' length, so it lines up
+           with the labels. */
         const len = Math.max(0, ...Object.values(prev).map((a) => a.length));
         const chans = new Set<number>([
           ...Object.keys(prev).map(Number),
@@ -1209,9 +1148,8 @@ export default function Environment() {
 
   // ── Derived ────────────────────────────────────────────────────────────────
 
-  // Every figure below is computed over the readings that EXIST. A missing reading used
-  // to arrive here as 0, which dragged the average down and made the minimum 0 °C — a
-  // number the room has never been at and the sensor cannot report.
+  // Stats are computed over readings that exist; a missing reading used to count as 0 and
+  // pull the average and minimum down.
   const tempNums = nums(temps);
   const humNums  = nums(hums);
   const ppm1Nums = nums(ppm1s);
@@ -1237,9 +1175,7 @@ export default function Environment() {
   const tempGaugePct = typeof liveTemp === "number" ? (liveTemp - 15) / 25 : 0;
   const humGaugePct  = typeof liveHum  === "number" ? (liveHum  - 30) / 70 : 0;
 
-  // Memoized so the chart only receives new props when data actually changes — every
-  // live-stat re-render would otherwise produce new object references and make
-  // react-chartjs-2 call chart.update() on both charts several times a second.
+  // Memoised so the charts only get new props when the data changes.
   const combinedOpts = useMemo(
     () => makeCombinedOptions({
       isDark, isMobile,
@@ -1259,10 +1195,8 @@ export default function Environment() {
     [isDark, isMobile, minSmokeY, maxSmokeY, smokeColors, gasLabelFor, gasChannels],
   );
 
-  // Both charts break their lines wherever the ESP32 stopped reporting, so a dropout is a
-  // visible hole with a start and an end rather than one straight segment drawn across
-  // it. Smoothing runs FIRST, on the dense arrays: `smooth()` averages a sliding window
-  // and would smear a null across its neighbours.
+  // Both charts break their lines where the ESP32 stopped reporting, so an outage is a
+  // visible gap. Smoothing runs first on the full arrays (it would spread a null).
   const envGaps = useMemo(
     () => withGaps(times, labels, [smooth(temps), smooth(hums)]),
     [times, labels, temps, hums],
@@ -1279,10 +1213,8 @@ export default function Environment() {
     datasets: [
       {
         label: "Temperature", data: envGaps.series[0]!, yAxisID: "yTemp",
-        // Each SEGMENT takes the alert band of the point it ends on, so the line is blue
-        // where the room was too cold and red where it breached critical. History keeps
-        // its own colours — repainting the whole line by the newest reading would have
-        // made claims about the past that were not true. `borderColor` is the fallback.
+        // Each segment takes the alert band of the point it ends on, so the line keeps its past
+        // colours. `borderColor` is the fallback.
         borderColor: TEMP_SERIES,
         segment: {
           borderColor: (ctx) => temperatureColor(ctx.p1.parsed.y, thresholds, TEMP_SERIES),
@@ -1297,9 +1229,8 @@ export default function Environment() {
       },
       {
         label: "Humidity", data: envGaps.series[1]!, yAxisID: "yHum",
-        // Holds its own blue while within the `humidity` rules, orange/red per segment
-        // where it breached them. It shares this chart with temperature, so going green
-        // when normal would draw the same line twice.
+        // Own blue while within the `humidity` rules, orange/red where it breached them (it shares
+        // the chart with temperature).
         borderColor: HUM_SERIES,
         segment: {
           borderColor: (ctx) =>
@@ -1318,15 +1249,10 @@ export default function Environment() {
   const smokeData: ChartData<"line"> = useMemo(() => ({
     labels: smokeGaps.labels,
     datasets: [
-      // Each sensor keeps its OWN hue while clean — MQ2-1 violet, MQ2-2 pink — and turns
-      // orange/red per segment where it breached the `gas` rules (`alertTint`).
-      //
-      // That identity is what lets you watch the two disagree, which is the whole point of
-      // having two. Painting both green when clean merged them into one indistinct band
-      // for the majority of the time the chart is on screen. They DO converge on the
-      // same red if both go critical at once; the legend labels and values separate them
-      // there, and a `borderDash` on MQ2-2 is the fix if that case ever needs to be read at
-      // a glance.
+      // Each sensor keeps its own colour while clean (MQ2-1 violet, MQ2-2 pink) and turns
+      // orange/red where it breached the `gas` rules (`alertTint`), so the sensors can be told
+      // apart. If both are critical at once they share the same red; the legend separates
+      // them, and a `borderDash` on MQ2-2 would fix it if needed.
       ...gasChannels.map((ch, i) => {
         const hue = gasSeriesColor(ch);
         const live = liveGasCh[ch];
@@ -1383,20 +1309,15 @@ export default function Environment() {
     >
 
       {/* ── Toolbar (range picker) — page title comes from the global Header ── */}
-      {/* Scrolls sideways on a phone instead of wrapping. Wrapping put Recalibrate on
-          its own row above the range buttons, which reads as two unrelated toolbars and
-          costs a second row of vertical space on the screen that has least of it. The
-          children are held at their natural width (`shrink-0`) or the range buttons
-          squash into unreadable slivers before the row ever scrolls. */}
+      {/* Scrolls sideways on a phone instead of wrapping onto two rows. Children keep their
+         natural width (`shrink-0`) so the range buttons are not squashed. */}
       <div className="flex items-center justify-end px-4 py-2.5 gap-3 flex-nowrap overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
         style={{ background: GF.header, borderBottom: `1px solid ${GF.panelBorder}` }}>
         {recal.isAdmin && (
           <div className="shrink-0"><RecalibrateGasButton busy={recal.busy} run={recal.run} /></div>
         )}
-        {/* Same shared picker the Server Metrics / detail pages use, on its DEFAULT
-            variant so the control — and the custom-range popover in particular — is
-            identical everywhere. No refresh button: `sensorData` streams in live every
-            ~3s, so the view is never stale enough to need one. */}
+        {/* The same shared range picker as the other pages, default style. No refresh button:
+           readings arrive live every ~3s. */}
         <div className="shrink-0"><RangePicker value={range} onChange={setRange} /></div>
       </div>
 
@@ -1404,10 +1325,8 @@ export default function Environment() {
       {recal.isAdmin && recal.result && <GasCalibrationNotice result={recal.result} />}
 
       {/* ── Sensor-offline banner ──────────────────────────────────────────────
-          Everything below renders the LAST reading received. When the ESP32 stops
-          reporting those numbers freeze, and without this banner a dead sensor is
-          indistinguishable from a calm, stable room — the single most dangerous
-          failure mode on this page. */}
+         Everything below shows the last reading received. When the ESP32 stops reporting,
+         this banner is what tells a dead sensor apart from a calm room. */}
       {sensorOnline === false && (
         <div
           className="mx-4 mt-3 flex items-start gap-3 px-4 py-3"
@@ -1438,20 +1357,16 @@ export default function Environment() {
       <div className="flex flex-col gap-3 p-4">
 
         {/* Row 1: Stat panels + Status */}
-        {/* Temperature + Humidity + one tile per fitted sensor + the state panel.
-            `auto-fit` + a min width rather than a fixed column count: the number of tiles is
-            DATA now, and `lg:grid-cols-5` was right for exactly two sensors — at three it
-            left a ragged orphan on its own row, at four it left two. This reflows for any
-            count at any width, and the 190px floor is what stops four sensors squeezing every
-            tile past readable instead of wrapping, which is the better failure. */}
+        {/* Temperature, humidity, one tile per fitted sensor, and the state panel. `auto-fit`
+           with a 190px minimum instead of a fixed column count, since the number of tiles
+           depends on how many sensors are fitted. */}
         <div
           className="grid gap-3"
           style={{ gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))" }}
         >
-          {/* Coloured by the `temperature` ALERT RULES (utils/envThresholds.ts), so the
-              gauge, the sparkline and the MAX/AVG/MIN row all read blue / green / orange /
-              red with the room rather than sitting on one fixed amber — and they change at
-              the same instant the alert fires. The band is named beside the dot. */}
+          {/* Coloured by the `temperature` alert rules (utils/envThresholds.ts): gauge, sparkline
+             and MAX/AVG/MIN all change colour with the room, at the moment the alert fires. The
+             band is named beside the dot. */}
           <StatPanel
             title="Temperature"
             value={typeof liveTemp === "number" ? liveTemp.toFixed(1) : liveTemp}
@@ -1463,10 +1378,8 @@ export default function Environment() {
             min={minTemp  !== "--" ? `${minTemp}°`  : "--"}
             isDark={isDark}
           />
-          {/* Keeps its own blue while within the `humidity` rules (seeded ≥60 warning,
-              ≥70 critical), orange/red once past them — the tile and the chart line
-              therefore always show the same colour for the same reading. The band is
-              named beside the dot, so "normal" is still stated outright. */}
+          {/* Own blue while within the `humidity` rules (seeded ≥60 warning, ≥70 critical),
+             orange/red past them, matching the chart line. The band is named beside the dot. */}
           <StatPanel
             title="Humidity"
             value={typeof liveHum === "number" ? liveHum.toFixed(1) : liveHum}
@@ -1479,12 +1392,8 @@ export default function Environment() {
             min={minHum  !== "--" ? `${minHum}%`  : "--"}
             isDark={isDark}
           />
-          {/* One tile PER FITTED SENSOR, titled by location. These are where somebody reads
-              MAX/AVG/MIN for one sensor, and a channel number says nothing about which part
-              of the room those figures describe.
-              Each keeps its own identity hue while clean — matching its line on the chart
-              below — and turns orange/red against the same global `gas` rules the alerting
-              uses, so a tile going orange and the alert arriving in the bell are one event. */}
+          {/* One tile per fitted sensor, titled by location. Each keeps its own colour while clean
+             (matching its chart line) and turns orange/red by the same `gas` rules the alerts use. */}
           {gasChannels.map((ch) => {
             const hue = gasSeriesColor(ch);
             const live = liveGasCh[ch];
@@ -1561,10 +1470,8 @@ export default function Environment() {
           }
           legend={
             <>
-              {/* One entry per FITTED sensor, labelled by location and coloured to match its
-                  line. Two sensors are only worth having if they sit in different places, and
-                  at that point the channel number is the least useful thing to print.
-                  Falls back to MQ2-<n> for anything unnamed. */}
+              {/* One legend entry per fitted sensor, labelled by location and coloured like its line.
+                 Falls back to MQ2-<n> when unnamed. */}
               {gasChannels.map((ch) => {
                 const hue = gasSeriesColor(ch);
                 const v = liveGasCh[ch];
@@ -1581,10 +1488,7 @@ export default function Environment() {
             </>
           }
           >
-          {/* Threshold legend. Reads the LIVE `gas` rules — it used to print "150" and
-              "300" as literals, so editing the rule left the caption stating numbers the
-              chart was no longer using. A missing rule prints nothing rather than a
-              number that is not in force. */}
+          {/* Threshold legend from the live `gas` rules. A missing rule prints nothing. */}
           <div className="flex gap-5 px-4 pt-2 text-[11px] font-mono">
             {thresholds.gasWarn != null && (
               <span className="flex items-center gap-1.5">

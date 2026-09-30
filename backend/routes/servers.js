@@ -12,25 +12,13 @@ import { audit, clientInfo } from "../services/auditService.js";
 
 const router = express.Router();
 
-// Agent metric ingestion gets TWO limiters, because one cannot do both jobs.
-//
-// This used to be a single IP-keyed limiter at 1000/15min, described as "generous
-// headroom even for several agents behind one NAT IP". The arithmetic says otherwise:
-// an agent at the default `-interval 10` posts 6/min = 90 per window, so the budget
-// ran out at ~11 agents sharing a public IP. Past that, agents 429 and metrics are
-// dropped SILENTLY — it looks like servers randomly stopping, not like a limit.
-//
-//   OUTER (metricsIpLimiter)  keyed by IP, runs BEFORE agentAuth. The only thing between
-//                             an unauthenticated flood and the token lookup, because the
-//                             global browser limiter deliberately skips this path
-//                             (src/server.js). Sized for the WHOLE fleet, since every
-//                             agent behind the campus NAT shares one IP.
-//   INNER (metricsAgentLimiter) keyed by DEVICE, runs AFTER agentAuth. The real quota:
-//                             one misconfigured agent hammering the endpoint is throttled
-//                             on its own without taking the rest of the fleet with it.
-//
-// Both tiers are needed. Device-keying alone would leave the pre-auth path unlimited;
-// IP-keying alone is the bug above.
+// Agent metric posts get two limiters:
+//   metricsIpLimiter     by IP, before agentAuth. Protects the token lookup from
+//                        unauthenticated floods; sized for the whole fleet behind
+//                        the campus NAT.
+//   metricsAgentLimiter  by device, after agentAuth. One misbehaving agent is
+//                        throttled without affecting the others.
+// A single IP limiter ran out at about 11 agents behind one IP.
 const AGENT_IP_MAX = Number(process.env.AGENT_RATE_IP_MAX) || 5000; // ≈55 agents @ 10s
 const AGENT_DEVICE_MAX = Number(process.env.AGENT_RATE_MAX) || 300; // one agent @ ≥3s
 
@@ -51,15 +39,8 @@ const metricsAgentLimiter = rateLimit({
   max: AGENT_DEVICE_MAX,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  // Runs after agentAuthMiddleware, so req.device is set. It cannot be absent here —
-  // an unauthenticated request never reaches this middleware — but fall back to the IP
-  // rather than to a single shared `undefined` bucket if the order is ever changed.
-  // The IP fallback goes through ipKeyGenerator, never raw req.ip. A raw IPv6 address
-  // is one address out of a /64 the same host owns, so an attacker could rotate through
-  // them for unlimited budget — the exact hazard CLAUDE.md documents for the global
-  // limiter. express-rate-limit detects the raw form and warned about it at every boot
-  // (ERR_ERL_KEY_GEN_IPV6). Unreachable in practice (agentAuthMiddleware runs first), but
-  // an unreachable branch is exactly where this kind of thing survives a refactor.
+  // Runs after agentAuthMiddleware, so req.device is set. Falls back to the IP (via
+  // ipKeyGenerator, never raw req.ip) in case the middleware order ever changes.
   keyGenerator: (req) =>
     req.device?.device_id != null
       ? `agent:${req.device.device_id}`
@@ -78,9 +59,8 @@ const metricsAgentLimiter = rateLimit({
 router.post("/metrics", metricsIpLimiter, agentAuthMiddleware, metricsAgentLimiter, serverMetricsHandler);
 
 // ── POST /api/servers/metrics/batch ─ backfill of samples buffered during an
-// outage (agent bearer token). History only: writes InfluxDB + the on-site backup,
-// never touches status or alerting. Shares the metric limiter — a reconnecting
-// fleet sends a burst of these, and one batch replaces up to 60 live posts.
+// outage (agent token). History only: InfluxDB and the backup, no status or
+// alerts. Shares the metric limiter; one batch replaces up to 60 posts.
 router.post(
   "/metrics/batch",
   metricsIpLimiter,
@@ -90,11 +70,8 @@ router.post(
 );
 
 // ── Heartbeat + shutdown notice (agent bearer token) ───────────────────────────
-// A heartbeat is sent every 2s, so it cannot share the metric limiters: the device
-// budget above (300/15min) is one post per 3s, and the IP budget is sized for metric
-// posts from the whole fleet. Own limiters, sized for beats: per device one every
-// ~0.75s (leaves room for a burst after a stall), per IP enough for ~70 agents behind
-// one NAT address. Still bounded, so a leaked token cannot hammer the token lookup.
+// Heartbeats come every 2s, so they have their own limiters instead of the metric
+// ones: per device about one every 0.75s, per IP enough for ~70 agents behind a NAT.
 const BEAT_DEVICE_MAX = Number(process.env.AGENT_BEAT_RATE_MAX) || 1200;
 const BEAT_IP_MAX = Number(process.env.AGENT_BEAT_RATE_IP_MAX) || 30000;
 
@@ -132,9 +109,8 @@ router.post("/heartbeat", beatIpLimiter, agentAuthMiddleware, beatAgentLimiter, 
 });
 
 // ── POST /api/servers/shutdown ─ the agent is going away. Body: { reason } ─────
-// reason: "shutdown" (the OS is shutting down / restarting) or "stopped" (only the
-// agent was stopped). Takes the server offline and raises a CRITICAL alert at once,
-// instead of waiting for the heartbeat to go quiet.
+// "shutdown" (the OS is shutting down or restarting) or "stopped" (only the agent).
+// Marks the server offline and raises a critical alert right away.
 router.post("/shutdown", beatIpLimiter, agentAuthMiddleware, beatAgentLimiter, async (req, res, next) => {
   try {
     const { rows, alert } = await agentService.recordShutdown(req.device.device_id, req.body?.reason);
@@ -172,9 +148,8 @@ router.get("/:id/logs", authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/servers/:id/maintenance ─ park/unpark a server (admin) ──────────
-// Planned downtime: while parked, the offline sweep skips this server, threshold
-// alerting is suppressed and a heartbeat won't flip its status — so a scheduled
-// reboot doesn't page everyone. Body: { enabled: boolean }.
+// While parked the offline sweep skips it, threshold alerts are off and heartbeats
+// do not change its status, so a planned reboot does not alert. Body: { enabled }.
 router.post("/:id/maintenance", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -216,10 +191,9 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── PATCH /api/servers/:id ─ rename a server / set display label (admin) ──────
-// Sets devices.display_name (the friendly label); a blank value clears it so the
-// UI falls back to the real hostname. Leaves device_name (the hostname) untouched.
-// Broadcasts serverRenamed so every dashboard updates the label live.
+// ── PATCH /api/servers/:id ─ set the display name (admin) ─────────────────────
+// Sets devices.display_name; blank clears it and the hostname is shown again.
+// Broadcasts serverRenamed so every dashboard updates.
 router.patch("/:id", authMiddleware, requireRole("admin"), async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid server id." });

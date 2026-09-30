@@ -5,10 +5,8 @@ import { initials, avatarUrl } from "../../utils/format";
 import { STATUS } from "../../theme/gf";
 const { red: RED } = STATUS;
 
-// Login is Google-only, and googleAuthService re-syncs name + photo (and the email,
-// on a Google-side rename) from the ID token on EVERY sign-in. Editing those here
-// would therefore last exactly until the next login, so they are shown read-only.
-// `username` is ours alone — Google never touches it — so it stays editable.
+// Name, photo (and email) come from Google and are re-synced at every sign-in, so
+// they are read-only here. Only `username` is editable.
 interface ProfileForm {
   username: string;
 }

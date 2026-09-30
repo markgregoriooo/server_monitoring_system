@@ -7,15 +7,10 @@ import {
   isAllowedDomain,
 } from "../services/googleDomain.js";
 
-// ─── The sign-in gate ─────────────────────────────────────────────────────────
-//
-// This module is the single check standing between an arbitrary Google account and a
-// session on this system, and it had NO test. It is pure and dependency-free, so there
-// was never a reason for that — see audits/testing-report-2026-08-25.md — T-03.
-//
-// The cases below are written from the hazards the source itself calls out: the
-// endsWith() look-alike, the subdomain, the blank env var that silently locked everyone
-// out, and the multiple-@ address.
+// ─── Sign-in domain check ─────────────────────────────────────────────────────
+// This is the check between any Google account and a session here. Cases cover the
+// endsWith() look-alike, subdomains, the blank env var and addresses with several @.
+// See audits/testing-report-2026-08-25.md (T-03).
 
 test("domainOf returns the lowercased part after the LAST @", () => {
   assert.equal(domainOf("mark@cspc.edu.ph"), "cspc.edu.ph");

@@ -1,12 +1,10 @@
--- Per-user customizable PiP (pop-out) live-widget layout.
+-- Per-user layout for the pop-out (PiP) live widget.
 --
--- The dashboard's floating Picture-in-Picture widget shows a set of "tiles" the user
--- picks and orders in the Settings → Customize Widget builder. The layout is just an
--- ordered list of tile ids (e.g. ["env.temp","alerts.count",...]) stored as JSON.
---
--- One row per user; a missing row means "use the default layout", which the backend
--- supplies (widgetPrefsService.DEFAULT_LAYOUT). Mirrors notification_prefs. The server
--- validates ids against its allow-list on write, so unknown/edited ids never persist.
+-- The widget shows tiles the user picks and orders in Settings → Customize Widget,
+-- stored as an ordered JSON list of tile ids (e.g. ["env.temp","alerts.count",...]).
+-- One row per user; no row means the default layout
+-- (widgetPrefsService.DEFAULT_LAYOUT). The server checks ids against its allow-list
+-- on write.
 
 CREATE TABLE IF NOT EXISTS `widget_prefs` (
   `user_id`     INT NOT NULL,

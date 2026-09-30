@@ -34,14 +34,10 @@ router.get("/", authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── POST /api/ups/test ─ probe an address BEFORE registering it (admin) ───────
-//
-// Declared before every `/:id` route so a literal path can never be parsed as an id.
-// Nothing is persisted. `expect: "ups"` makes the verdict strict in the way this form
-// needs: an address that answers ping, or answers SNMP without implementing UPS-MIB, is
-// a FAILURE here even though the identical result would pass on the Add router form. A
-// UPS has no ping-only mode — pinging a battery only proves its management card has
-// power. See services/deviceProbeVerdict.js.
+// ── POST /api/ups/test ─ test an address before registering it (admin) ───────
+// Declared before the /:id routes. Saves nothing. `expect: "ups"` means ping alone,
+// or SNMP without UPS-MIB, fails here: a UPS has no ping-only mode.
+// See services/deviceProbeVerdict.js.
 router.post("/test", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     res.json(
@@ -63,14 +59,9 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res, next) =>
     const device = await snmpPollerService.addUpsDevice(req.body || {});
     // Broadcast so other open dashboards insert it live (reuses the metrics merge).
     req.app.get("io")?.emit("upsMetrics", { ups: device });
-    /* Poll it once, RIGHT NOW, without waiting for the next cycle. Fire-and-forget on
-       purpose: the response must not be held behind an SNMP timeout (up to several seconds
-       on a wrong IP), and the result arrives on its own through the same `upsMetrics`
-       broadcast the poller already uses. So the panel fills in a second or two rather than
-       up to a minute, and a wrong IP/community/port shows as Offline immediately instead of
-       being indistinguishable from "the poller has not got round to it yet".
-       The interval itself is untouched — see pollDeviceNow.
-       Its verdict now also goes back to the admin who did this — see reportFirstPoll. */
+    /* Poll once right away instead of waiting for the next cycle. Not awaited, so the
+       response is not held up by an SNMP timeout; the result comes through the usual
+       `upsMetrics` broadcast. The admin is told the outcome (reportFirstPoll). */
     reportFirstPoll(req, device);
     res.status(201).json({ device });
   } catch (err) {

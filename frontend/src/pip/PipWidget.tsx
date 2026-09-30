@@ -3,9 +3,9 @@ import { useWidgetLayout } from "./useWidgetLayout";
 import { resolveTile } from "./tiles/catalog";
 import type { TileDef } from "./tiles/catalog";
 
-// Renders a layout (an ordered list of tile ids) into an auto-flow 2-col grid. Unknown
-// ids are skipped so an old/edited layout never breaks. With no prop it renders the
-// user's saved layout (useWidgetLayout); the Settings builder passes a draft for preview.
+// Renders a layout (an ordered list of tile ids) in a two-column grid. Unknown ids are
+// skipped. Without a prop it shows the user's saved layout (useWidgetLayout); the
+// Settings builder passes a draft for the preview.
 export default function PipWidget({ layout }: { layout?: string[] }) {
   const { connected } = useLiveSummary();
   const { layout: saved } = useWidgetLayout();

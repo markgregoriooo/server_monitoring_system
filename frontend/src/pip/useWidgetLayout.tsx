@@ -4,10 +4,9 @@ import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
 import { DEFAULT_LAYOUT, resolveTile } from "./tiles/catalog";
 
-// The user's widget layout, shared so the PiP window AND the Settings builder read the
-// same state — a save reflects in the open window live. Backend is the source of truth
-// (GET/PUT /api/widget-layout); localStorage caches it for an instant first paint, then
-// the server reconciles. Mirrors the notification-prefs pattern.
+// The user's widget layout, shared by the PiP window and the Settings builder, so a save
+// shows in the open window right away. The backend holds it (GET/PUT
+// /api/widget-layout); localStorage caches it for the first paint.
 
 const CACHE_KEY = "cspc_pip_layout";
 
@@ -28,10 +27,8 @@ function writeCache(layout: string[]) {
     /* private mode / quota — non-fatal */
   }
 }
-// Drop ids this build no longer ships (forward/backward compatible).
-// MUST use resolveTile, not the static TILE_BY_ID map: parameterised per-device ids
-// ("ups.device:7") are absent from that map by design, so matching on it would silently
-// delete every pinned-device tile from the user's own saved layout.
+// Drop ids this build does not know. Uses resolveTile, not TILE_BY_ID, since per-device
+// ids ("ups.device:7") are not in that map and would otherwise be deleted.
 const known = (layout: string[]) => layout.filter((id) => !!resolveTile(id));
 
 interface WidgetLayoutCtx {

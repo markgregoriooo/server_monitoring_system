@@ -12,9 +12,8 @@ import {
   validateSample,
 } from "../services/serverMetricUtils.js";
 
-// Build the InfluxDB points for one sample. Shared by the live POST and the
-// backfill batch so a buffered sample lands in exactly the same shape as a live
-// one — only its timestamp differs.
+// Build the InfluxDB points for one sample. Used by the live POST and the backfill
+// batch, so both have the same shape.
 function writeSamplePoints(device, data, volumes, timestamp) {
   writeClient.writePoint(
     new Point("server_metrics")
@@ -101,10 +100,8 @@ export async function serverMetricsHandler(req, res) {
   // ---- On-site backup copy (independent of InfluxDB) ----
   backupService.record("server", backupPayload(device, data, volumes));
 
-  // ---- Occasional host-info refresh (the agent attaches `host` hourly) ----
-  // Without this, static facts freeze at enrollment: a DHCP lease change would
-  // leave a stale IP on screen forever, and a RAM upgrade would make the
-  // "Mem used GB" figure — which divides by memory_total_mb — quietly wrong.
+  // ---- Host-info refresh (the agent attaches `host` hourly) ----
+  // Keeps IP, RAM and other static facts current after enrollment.
   if (data.host && typeof data.host === "object" && !Array.isArray(data.host)) {
     try {
       await agentService.refreshHostInfo(device.device_id, data.host);
@@ -137,18 +134,16 @@ export async function serverMetricsHandler(req, res) {
     volumes,
   });
 
-  // ---- Device event log: online transition + threshold crossings (device_logs) ----
-  // Skipped entirely during a maintenance window — the operator took this box
-  // down on purpose, so neither the log nor the bell should fire for it.
+  // ---- Device log: online transition + threshold crossings (device_logs) ----
+  // Skipped during maintenance.
   try {
     const io = req.app.get("io");
     const events = [];
     if (cameOnline) {
       events.push(await logDevice(device.device_id, "info", "Server came online"));
 
-      // Symmetric to the offline-sweep alert: notify on a (re)connect. Covers both a
-      // reconnect (offline→online) and a brand-new server's first report (approve()
-      // leaves it offline until it actually reports).
+      // Notify when a server comes back online, or reports for the first time after
+      // approval (approve() leaves it offline until then).
       const name = device.display_name?.trim() || device.device_name || `Server ${device.device_id}`;
       // Close the open "offline" incident first so the Alerts page + badge clear.
       await alertsService.autoResolveMetric(device.device_id, "offline");
@@ -159,9 +154,8 @@ export async function serverMetricsHandler(req, res) {
         message: `${name} is online`,
         severity: "info",
       });
-      // "Online" is a point-in-time event, not an open incident — resolve it right
-      // away so it stays in the bell feed + Alerts history without inflating the
-      // open-alert badge (only the real "offline" condition should count as open).
+      // "Online" is an event, not an open problem, so resolve it right away: it stays in
+      // the feed and history without adding to the open-alert count.
       await alertsService.autoResolveMetric(device.device_id, "online");
     }
     // Also skipped inside the hold after a shutdown notice: a box on its way down
@@ -186,9 +180,8 @@ export async function serverMetricsHandler(req, res) {
     req.app.get("io")?.emit("serverMetrics", {
       server: {
         id: device.device_id,
-        // Effective label for the UI (admin display name else hostname). The
-        // InfluxDB tag above stays the real hostname so the time-series isn't
-        // re-keyed when a server is renamed.
+        // Name for the UI (display name, else hostname). The InfluxDB tag stays the
+        // hostname so renaming does not split the series.
         name: device.display_name?.trim() || device.device_name,
         ip: device.ip_address,
         location: device.location,
@@ -221,14 +214,12 @@ export async function serverMetricsHandler(req, res) {
 // this bound is what keeps a batch inside express.json()'s 100kb default.
 const MAX_BATCH = 60;
 
-// POST /api/servers/metrics/batch — backfill of samples the agent buffered while
-// the backend was unreachable. agentAuthMiddleware has set req.device.
+// POST /api/servers/metrics/batch ─ backfill of samples the agent buffered while
+// the backend was unreachable (req.device is set by agentAuthMiddleware).
 //
-// This is HISTORY ONLY, and deliberately narrower than the live path: it writes
-// InfluxDB + the on-site backup and nothing else. No heartbeat, no status change,
-// no threshold evaluation, no broadcast — alerting on an hours-old CPU spike
-// would page someone for a condition that has long since passed, and letting a
-// backlog mark a server "Online" would resurrect a host that is still down.
+// History only: InfluxDB and the on-site backup. No heartbeat, status change,
+// alerts or broadcast, so an old spike does not raise an alert and a backlog does
+// not mark a down server Online.
 export async function serverMetricsBatchHandler(req, res) {
   const device = req.device;
   const samples = req.body?.samples;

@@ -58,9 +58,8 @@ const RATE_WINDOW_MIN = Number(process.env.RATE_LIMIT_WINDOW_MIN) || 15;
 const RATE_MAX = Number(process.env.RATE_LIMIT_MAX) || 3000;
 const RATE_IPV6_SUBNET = 56;
 
-// The IP fallback must go through `ipKeyGenerator`, not `req.ip`. Returning a raw IP
-// silently discards the ipv6Subnet setting below, and an attacker with any IPv6 /64 could
-// then rotate addresses for unlimited budget — which is the whole reason that option is set.
+// Use ipKeyGenerator, not req.ip: a raw IP ignores the ipv6Subnet setting and any
+// IPv6 /64 could rotate addresses for unlimited requests.
 function userOrIpKey(req) {
   const header = req.headers["authorization"];
   if (header?.startsWith("Bearer ")) {
@@ -80,9 +79,8 @@ const globalLimiter = rateLimit({
   standardHeaders: "draft-8",
   legacyHeaders: false,
   keyGenerator: userOrIpKey,
-  // Agent traffic has its own limiters in routes/servers.js. The heartbeat alone is a
-  // post every 2s per server — through the global IP budget it would exhaust it for
-  // everyone behind the same address (the campus NAT, or the tunnel) within minutes.
+  // Agent traffic has its own limiters in routes/servers.js. A heartbeat every 2s per
+  // server would use up the shared IP budget for everyone behind the campus NAT.
   skip: (req) =>
     req.method === "POST" &&
     (req.path.startsWith("/api/servers/metrics") ||
@@ -133,52 +131,31 @@ app.use(securityHeaders());
 app.use(cors({ origin: CORS_ORIGIN, exposedHeaders: ["X-Renewed-Token"] }));
 
 
-// `.trim() ||` rather than `??`: nullish coalescing only catches an ABSENT
-// variable, and the common case is a PRESENT but empty one — `TRUST_PROXY=`
-// sitting in a .env copied from .env.example. That empty string failed the
-// digit test below and reached Express as a string, which it reads as a list
-// of trusted IPs, so proxy-addr threw `invalid IP address:` and the process
-// died at boot, over and over, before it served a single request. Documented
-// as "blank = 2" all along; now that is also what it does.
+// `.trim() ||` instead of `??` so an empty TRUST_PROXY= also falls back to 2. An
+// empty string reached Express as a list of IPs and crashed the backend at boot.
 const TRUST_PROXY = (process.env.TRUST_PROXY ?? "").trim() || "2";
 app.set("trust proxy", /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_PROXY);
 const TRUST_PROXY_HOPS = /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : 0;
 
 app.use(globalLimiter);
 
-// Explicit request-body cap. This was `express.json()` — which does apply a 100kb
-// default, but an INHERITED default is not a decision: nothing recorded that the
-// batch endpoint's 60-sample cap has to keep fitting inside it, so the two limits
-// could drift apart in a release note. Stated here, and referenced from the batch
-// handler's MAX_BATCH. No `express.urlencoded` is mounted on purpose — every client
-// (dashboard, Go agent, ESP32) speaks JSON, so a form parser would be attack surface
-// with no consumer.
+// Request body limit. The batch endpoint's MAX_BATCH is sized to fit inside it.
+// No urlencoded parser: every client sends JSON.
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "100kb" }));
 
-// ─── Handshake attempt budget ─────────────────────────────────────────────────
-//
-// The global Express limiter CANNOT see this path: Socket.IO answers /socket.io/ on
-// the HTTP server directly and the Express app is never invoked, so the one endpoint
-// that accepts DEVICE_SECRET had no attempt limit while every HTTP credential path
-// had one. Counts REJECTED handshakes only — see services/handshakeLimiter.js for
-// why a plain connection cap would lock out the whole campus instead.
-// See audits/api-infra-security-2026-08-25.md — A-04.
+// ─── Handshake attempt limit ─────────────────────────────────────────────────
+// The Express limiter never sees /socket.io/, so failed Socket.IO handshakes are
+// counted here. Only rejections count; see services/handshakeLimiter.js.
+// See audits/api-infra-security-2026-08-25.md (A-04).
 const HANDSHAKE_MAX_FAILURES = Number(process.env.SOCKET_HANDSHAKE_MAX_FAILURES) || 50;
 const handshakeLimiter = createHandshakeLimiter({
   windowMs: 15 * 60 * 1000,
   maxFailures: HANDSHAKE_MAX_FAILURES,
 });
 
-// Constant-time equality against DEVICE_SECRET.
-//
-// `timingSafeEqual` throws when the two buffers differ in length, so the length is
-// compared first — which means length itself is still not constant-time. That is
-// unavoidable without hashing both sides, and is not the part worth protecting:
-// config/env.js enforces a 24-character floor, so the length is a known property of the
-// deployment rather than a secret. What this removes is the byte-by-byte prefix oracle.
-//
-// Returns false when the variable is unset, preserving the previous `secret && …`
-// behaviour: no configured secret means no device can authenticate.
+// Constant-time comparison against DEVICE_SECRET. timingSafeEqual throws on a length
+// mismatch, so lengths are compared first (the length is not secret; env.js enforces
+// at least 24). Returns false when no secret is configured.
 function matchesDeviceSecret(provided) {
   const expected = process.env.DEVICE_SECRET;
   if (!expected || typeof provided !== "string") return false;
@@ -212,27 +189,16 @@ io.use(async (socket, next) => {
     }
     return next(new Error(message));
   };
-  // F-04: keep the shared secret out of the URL — a query string is written verbatim
-  // into proxy and access logs, a header and a frame body are not. Three sources, in
-  // descending preference:
-  //   auth payload   — browsers and any Socket.IO v3+ client
-  //   x-device-key   — the ESP32, which speaks EIO3 and so has no `auth` payload
-  //   query string   — DEPRECATED, only reached by firmware predating 2026-08-16.
-  // Drop the query fallback once every ESP32 in the field has been reflashed; until
-  // then removing it would silently strand an un-updated box.
+  // Device key sources, in order: the auth payload, the x-device-key header (the ESP32,
+  // which has no auth payload), and the query string. The query string ends up in
+  // access logs and is deprecated; remove it once every ESP32 has been reflashed.
   const deviceKey =
     socket.handshake.auth?.deviceKey ??
     socket.handshake.headers?.["x-device-key"] ??
     socket.handshake.query?.deviceKey;
 
-  // ESP32 device authentication via shared secret.
-  //
-  // Compared in constant time. `===` on a secret leaks its length and a prefix through
-  // timing — the same reason installKeyService.matchesLegacyKey has always used
-  // timingSafeEqual for the very same class of value, and the two comparisons should
-  // not disagree about how careful to be. The handshake limiter makes the attack
-  // expensive rather than impossible; this makes it uninformative. Lengths are checked
-  // first because timingSafeEqual THROWS on a length mismatch.
+  // ESP32 authentication with the shared secret, compared in constant time. The
+  // handshake limiter makes guessing expensive; this makes it give nothing away.
   if (deviceKey) {
     if (matchesDeviceSecret(deviceKey)) {
       socket.isDevice = true;
@@ -253,13 +219,8 @@ io.use(async (socket, next) => {
     if (!sessionIsLive(await fetchSessionRow(decoded.id), decoded.tv)) {
       return reject("Session is no longer valid", "revoked/disabled session");
     }
-    // Refuse a session that has already outlived its absolute ceiling. jwt.verify has
-    // only established that THIS TOKEN is unexpired; a token minted just under the cap
-    // is still signature-valid for an hour afterwards, and without this check it could
-    // open a fresh long-lived socket during that window — re-arming the very thing the
-    // sweep was just taught to close. Checked here as well as in the sweep so the
-    // connection is never established, rather than established and dropped up to
-    // SOCKET_REVOKE_SWEEP_MS later.
+    // Refuse a session that is past its absolute cap. A token issued just before the cap
+    // is still valid for an hour, and must not be able to open a new socket.
     if (sessionPastHardLimit(decoded)) {
       return reject("Session is no longer valid", "session past its absolute age cap");
     }
@@ -270,9 +231,7 @@ io.use(async (socket, next) => {
     handshakeLimiter.recordSuccess(peer);
     next();
   } catch (err) {
-    // Same reasoning as middleware/auth.js: the client gets a bare "Invalid token",
-    // the log gets the actual cause. A rejected handshake surfaces in the browser as
-    // an opaque 403 on /socket.io/, which says nothing about why.
+    // The client just gets "Invalid token"; the log gets the real cause.
     console.warn(
       `[AUTH] socket handshake rejected from ${peer} — ${err.name}: ${describeError(err)}`,
     );
@@ -283,14 +242,12 @@ io.use(async (socket, next) => {
 // expose io so routes can emit to the ESP32
 app.set("io", io);
 
-// Live-socket session revocation. `io.use` above authenticates ONCE, at the
-// handshake, and never re-checks — so without this a socket opened with a valid
-// token keeps streaming after the account is disabled or its tokens revoked.
+// Re-checks open sockets. io.use only authenticates at the handshake, so without
+// this a socket keeps streaming after the account is disabled or revoked.
 socketSessions.init(io);
 
-// Hand the notification service the live Socket.IO server once, so any trigger
-// (offline sweep, threshold checks, …) can raise + push notifications without
-// threading `io` through every call.
+// Give the notification service the Socket.IO server once, so any trigger can raise
+// and push notifications without passing `io` around.
 notificationService.init(io);
 alertsService.init(io); // so acknowledge/resolve + auto-resolve can broadcast alertUpdated
 // Threshold bands live in memory. Start them from the alerts that are still open, or an
@@ -304,13 +261,9 @@ esp32Monitor.init(io).catch((e) =>
   console.error("[ESP32] liveness init failed:", e.message),
 );
 
-// On-site backup writer — mirrors every ingested sample (env/server/router/UPS) to
-// rotating NDJSON files on BACKUP_DIR (a micro SD / USB drive on the backend, or a
-// local folder). An independent copy that survives a DB wipe + a power outage.
+// On-site backup: every ingested sample is also written to NDJSON files in BACKUP_DIR.
 backupService.init();
-// Which MQ-2 channels are wired and what each is called. Loaded once and cached: it is read
-// on EVERY 3s reading to resolve labels and gate ingest, and a per-reading SELECT would put
-// the smoke path in front of the same 10-connection pool the pollers and dashboard share.
+// Gas channel config (wired / label), cached because it is read on every reading.
 gasSensorService.init();
 
 // Warm the configurable-threshold cache so the first metric POST evaluates against
@@ -352,24 +305,16 @@ app.use((_req, res) => {
 app.use((err, req, res, _next) => {
   const status = err.status || 500;
 
-  // Log the FULL error server-side regardless — that is where the detail belongs.
-  // 4xx are expected (bad input, wrong role) so they log at warn without a stack;
-  // 5xx are not, and the stack is the whole point.
+  // Always log the full error. 4xx are expected and log without a stack; 5xx log the stack.
   if (status >= 500) {
     console.error(`[ERR] ${status} ${req.method} ${req.originalUrl}`, err);
   } else {
     console.warn(`[ERR] ${status} ${req.method} ${req.originalUrl} — ${describeError(err)}`);
   }
 
-  // WHICH messages cross the wire.
-  //
-  // Two ways an error can be safe to show: a 4xx status (validation, not found, wrong
-  // role — the message was written for a user), or an explicit `expose: true`, which is
-  // how a DELIBERATE 5xx says "this text is for the operator". Gating on the status range
-  // ALONE swallowed exactly those: `ServiceUnavailable` and reportService's
-  // "Email is not configured on this server (SMTP_USER / SMTP_PASS)." both reached the
-  // admin as a bare "Internal Server Error", which is the opposite of their purpose.
-  // See audits/solid-report-2026-08-25.md — L-01.
+  // Send the message to the client for a 4xx or when the error is marked
+  // `expose: true` (e.g. "Email is not configured on this server").
+  // See audits/solid-report-2026-08-25.md (L-01).
   const showMessage = err.expose === true || (status >= 400 && status < 500);
   const body = showMessage
     ? { error: err.message, message: err.message }
@@ -380,15 +325,8 @@ app.use((err, req, res, _next) => {
 
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
-//
-// Owned here, at the composition root, rather than by whichever service happened to
-// register a signal handler first. backupService used to do it and called
-// process.exit(0) straight after its flush, so server.close() never ran and in-flight
-// responses were cut mid-write.
-//
-// Order matters. The on-site backup is the thing that must survive a power event, and a
-// UPS low-battery SIGTERM gives seconds, not minutes — so the SYNCHRONOUS flush goes
-// first, before anything that can block. Everything after it is best-effort.
+// A UPS low-battery SIGTERM gives only seconds, so the synchronous backup flush runs
+// first. Everything after it is best-effort.
 let shuttingDown = false;
 function shutdown(sig) {
   if (shuttingDown) return; // a second Ctrl+C must not re-enter
@@ -409,9 +347,8 @@ function shutdown(sig) {
     process.exit(0);
   });
 
-  // 3. Hard cap. A held-open socket (an idle keep-alive, a long poll) would otherwise
-  //    keep server.close() pending forever — and on a dying UPS there is no forever.
-  //    unref() so this timer alone never keeps the process alive.
+  // 3. Hard cap: an idle keep-alive socket could keep server.close() waiting forever.
+  //    unref() so the timer alone does not keep the process alive.
   setTimeout(() => {
     console.warn("[shutdown] close timed out — exiting anyway");
     process.exit(0);
@@ -421,20 +358,9 @@ process.once("SIGINT", () => shutdown("SIGINT"));
 process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 // ─── Process-level safety net ─────────────────────────────────────────────────
-//
-// Node 22 terminates the process on an unhandled rejection (the default has been
-// `--unhandled-rejections=throw` since Node 15). Verified on this machine: a
-// fire-and-forget async call that rejects exits with code 1.
-//
-// That matters because several hot paths ARE fire-and-forget by design — the socket
-// handlers (`sensorData` arrives every ~3s from the ESP32), the report builder, and the
-// audit writes. Any one of them rejecting used to take the whole backend down, which on
-// a monitoring system means the alarms stop with it.
-//
-// These handlers do NOT swallow the error. They make sure it is written down — with the
-// context needed to find it — before the process goes. Restart is left to the process
-// supervisor, which is the right owner: a process that keeps running after an unknown
-// exception is in an unknown state.
+// Node 22 exits on an unhandled rejection. Several paths are fire-and-forget
+// (socket handlers, report builds, audit writes), so make sure the error is logged
+// with context before the process exits. The service manager restarts it.
 process.on("unhandledRejection", (reason, promise) => {
   console.error("[FATAL] Unhandled promise rejection — the process will exit.");
   console.error("  reason:", reason instanceof Error ? reason.stack : reason);
@@ -455,20 +381,10 @@ process.on("uncaughtException", (err, origin) => {
 const PORT = process.env.PORT || 3000;
 
 // ─── HTTP server timeouts ─────────────────────────────────────────────────────
-//
-// Node's defaults were in force: requestTimeout 300 s, headersTimeout 60 s,
-// keepAliveTimeout 5 s. Two problems with that here.
-//
-// 1. A request held open for FIVE MINUTES occupies a socket and, if it is mid-query, a
-//    MySQL pool connection — of which there are only 10, shared by the pollers, the
-//    agent POSTs and every dashboard request (see S-03). Nothing this API does
-//    legitimately takes minutes: reports are built asynchronously and answered 202.
-//
-// 2. keepAliveTimeout must be LONGER than the reverse proxy's. nginx defaults to
-//    75 s; with Node closing an idle connection at 5 s, nginx can hand a request to a
-//    socket Node is closing and return a 502 the logs cannot explain. The deployment
-//    puts this behind a proxy (deployment-guide.md), so the ordering matters.
-//    headersTimeout must exceed keepAliveTimeout or Node warns and clamps.
+// Node's 300s request timeout could hold a socket and a DB connection for minutes;
+// nothing here should take that long (reports are built in the background).
+// keepAliveTimeout must be longer than the proxy's (nginx: 75s), or nginx can reuse
+// a socket Node is closing and return a 502. headersTimeout must exceed keepAliveTimeout.
 server.requestTimeout = Number(process.env.HTTP_REQUEST_TIMEOUT_MS) || 60_000;
 server.headersTimeout = Number(process.env.HTTP_HEADERS_TIMEOUT_MS) || 90_000;
 server.keepAliveTimeout = Number(process.env.HTTP_KEEPALIVE_TIMEOUT_MS) || 80_000;
@@ -477,16 +393,9 @@ server.keepAliveTimeout = Number(process.env.HTTP_KEEPALIVE_TIMEOUT_MS) || 80_00
     console.log(`Server running on port ${PORT} (0.0.0.0 — all interfaces)`);
   });
 
-// Offline sweep — agents POST every ~10s and refresh last_seen; nothing else marks
-// a server offline when its agent stops. Every 15s, flip stale approved servers to
-// 'offline' and push the change live to dashboards (+ a device log). Without this
-// the UI would keep showing a dead server as "Online" indefinitely.
-// 5s, not 15s. This interval is PURE LATENCY on top of the heartbeat window: the
-// window decides when a server counts as gone, and then the sweep decides how long
-// after that anybody hears about it. At 15s a 30s window could take 45s to surface,
-// a third of the delay being nothing but the gap between two ticks of a query that
-// costs one indexed lookup. See services/reachabilitySweep.js for the other half —
-// a host that stops answering ICMP no longer waits for the window at all.
+// Offline sweep: flips approved servers whose agent stopped posting to 'offline'
+// and pushes it to the dashboards. Runs every 5s because the interval adds directly
+// to how late an outage is reported. See also services/reachabilitySweep.js.
 const OFFLINE_SWEEP_MS = 5_000;
 setInterval(async () => {
   try {
@@ -498,11 +407,9 @@ setInterval(async () => {
   }
 }, OFFLINE_SWEEP_MS);
 
-// Heartbeat sweep — agents send an empty heartbeat every 2s, so a server that
-// dies is noticed after SERVER_HEARTBEAT_TIMEOUT_SEC (6s) instead of the 30s metric
-// window above. Every second, because this interval is pure latency on top of that
-// timeout, and the check itself is an in-memory map scan — no query unless something
-// actually went quiet. Older agents never heartbeat and stay on the sweep above.
+// Heartbeat sweep: agents send an empty heartbeat every 2s, so a dead server is
+// noticed after SERVER_HEARTBEAT_TIMEOUT_SEC (6s). An in-memory check, run every
+// second. Older agents without heartbeats rely on the sweep above.
 const HEARTBEAT_SWEEP_MS = 1_000;
 let heartbeatSweeping = false;
 setInterval(async () => {
@@ -517,30 +424,22 @@ setInterval(async () => {
   }
 }, HEARTBEAT_SWEEP_MS);
 
-// Fast offline detection: one ICMP echo per online device every few seconds, which
-// can only mark a device DOWN (recovery stays with the full poll that owns it). This
-// is what makes an outage surface in seconds instead of at the next SNMP walk.
+// Fast offline detection: one ping per online device every few seconds. It only
+// marks devices down; recovery is left to the full poll.
 reachabilitySweep.init(io);
 
-// Fast UPS power watch: output source + battery status every 5s, and an immediate full
-// poll the moment either changes — so mains failing is reported in seconds, not at the
-// next 60s poll. See services/upsPowerWatch.js.
+// Fast UPS power watch: checks output source and battery status every 5s and runs a
+// full poll as soon as either changes. See services/upsPowerWatch.js.
 upsPowerWatch.init(io);
 
-// ESP32 liveness sweep — the environment sensor's equivalent of the offline sweep
-// above. The ESP32 has no `devices` row (so last_seen can't cover it) and pushes
-// `sensorData` every ~3s; this flips it Offline once those stop, raising a room-level
-// alert so a dead sensor can't masquerade as a calm room. Recovery is handled by the
-// reading itself (esp32Monitor.markSeen), not here, so it's instant.
+// ESP32 liveness: the ESP32 has no devices row, so this flips it offline and raises
+// a room alert once readings stop. Recovery happens on the next reading.
 const ESP32_SWEEP_MS = 10_000;
 setInterval(() => esp32Monitor.sweep(), ESP32_SWEEP_MS);
 
-// Predictive alerting — turn the forecasts into real alerts. Without this the analytics
-// is pull-only: a disk projected to fill in three days reaches nobody unless someone has
-// the Analytics page open. Runs on its own (slow) cadence because each pass is several
-// Flux queries over weeks of history, and a multi-week regression does not move between
-// two agent posts. First run is delayed so MySQL/InfluxDB are warm and a restart doesn't
-// stampede the DB. See services/analyticsAlerts.js.
+// Predictive alerting: turns forecasts into real alerts. Runs slowly because each pass
+// queries weeks of history; the first run is delayed so the databases are warm.
+// See services/analyticsAlerts.js.
 const ANALYTICS_ALERT_INTERVAL_MS =
   (Number(process.env.ANALYTICS_ALERT_INTERVAL_H) || 6) * 60 * 60 * 1000;
 const ANALYTICS_ALERT_DELAY_MS = 60_000;
@@ -557,9 +456,8 @@ setTimeout(() => {
   setInterval(runAnalyticsAlerts, ANALYTICS_ALERT_INTERVAL_MS);
 }, ANALYTICS_ALERT_DELAY_MS);
 
-// Notification retention — purge alerts (and, via cascade, their per-user feed
-// rows) older than NOTIFY_RETENTION_DAYS so the tables don't grow unbounded.
-// Runs at startup and daily.
+// Alert retention: purge alerts (and their per-user feed rows) older than
+// NOTIFY_RETENTION_DAYS. Runs at startup and daily.
 const RETENTION_DAYS = Number(process.env.NOTIFY_RETENTION_DAYS) || 30;
 const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const runNotificationPurge = async () => {
@@ -573,10 +471,8 @@ const runNotificationPurge = async () => {
 runNotificationPurge();
 setInterval(runNotificationPurge, PURGE_INTERVAL_MS);
 
-// Report retention — reports write a CSV + PDF to BACKUP_DIR-adjacent local disk
-// (backend/reports/), so without this they accumulate on the SD/USB drive forever.
-// Purges the row AND both files. Default is longer than the alerts one: a report is
-// something a person deliberately generated. Same startup + daily cadence.
+// Report retention: deletes old report rows and their CSV/PDF files
+// (REPORT_RETENTION_DAYS). Runs at startup and daily.
 const REPORT_RETENTION_DAYS = Number(process.env.REPORT_RETENTION_DAYS) || 90;
 const runReportPurge = async () => {
   try {
@@ -603,11 +499,8 @@ const runDeviceLogPurge = async () => {
 runDeviceLogPurge();
 setInterval(runDeviceLogPurge, PURGE_INTERVAL_MS);
 
-// Audit-trail retention — system_logs is the table with ip_address + user_agent in
-// it, i.e. the most personal data the schema holds, and it was the one table with
-// no purge at all. The Privacy Notice commits to a retention period; this is what
-// makes that commitment true. Longer default than alerts/reports on purpose: an
-// audit trail is what you go looking for months after an incident.
+// Audit log retention: system_logs holds IP addresses and user agents. The Privacy
+// Notice promises a retention period (SYSTEM_LOG_RETENTION_DAYS); this enforces it.
 const SYSTEM_LOG_RETENTION_DAYS = Number(process.env.SYSTEM_LOG_RETENTION_DAYS) || 365;
 const runAuditPurge = async () => {
   try {
@@ -620,18 +513,15 @@ const runAuditPurge = async () => {
 runAuditPurge();
 setInterval(runAuditPurge, PURGE_INTERVAL_MS);
 
-// SNMP poller — pulls metrics from routers (IF-MIB) + UPS units (UPS-MIB) on a
-// timer (the pull mirror of the push-based Go agents). Self-gating: pollAll loads
-// the router/ups devices each cycle and is a near-no-op (one empty SELECT) until
-// such a device is registered, so this is harmless when none exist yet.
+// SNMP poller for routers (IF-MIB) and UPS units (UPS-MIB). Does almost nothing until
+// such a device is registered.
 const SNMP_POLL_INTERVAL_MS = Number(process.env.SNMP_POLL_INTERVAL_MS) || 60_000;
 setInterval(() => {
   snmpPollerService.pollAll(io).catch((err) => console.error("[SNMP_POLLER] error:", err));
 }, SNMP_POLL_INTERVAL_MS);
 
-// MikroTik poller — pulls metrics from the one campus router over the RouterOS API
-// (data source B; pull mirror of the Go agents). Same self-gating as the SNMP poller:
-// a near-no-op (one SELECT) until a device_type='mikrotik' row with credentials exists.
+// MikroTik poller over the RouterOS API. Does almost nothing until a MikroTik with
+// credentials is registered.
 const MIKROTIK_POLL_INTERVAL_MS = Number(process.env.MIKROTIK_POLL_INTERVAL_MS) || 30_000;
 setInterval(() => {
   mikrotikPollerService.pollAll(io).catch((err) => console.error("[MIKROTIK_POLLER] error:", err));

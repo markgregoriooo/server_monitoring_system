@@ -17,10 +17,10 @@ interface SidebarProps {
   onClose: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  /** Bumped by AppShell when the header's avatar is clicked. A COUNTER rather than a
-   *  boolean: a boolean would need resetting to false before it could fire again, so
-   *  clicking the avatar, closing the modal and clicking again would do nothing the second
-   *  time. Every increment is a fresh request. */
+  /**
+   * Increased by AppShell when the header avatar is clicked. A counter, so each click
+   * opens the modal again without resetting anything.
+   */
   openProfileSignal?: number;
 }
 
@@ -129,12 +129,9 @@ const Icons: Record<string, React.ReactNode> = {
 };
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
-// Thirteen flat entries was too long a list to scan. Dashboard and Settings stay
-// pinned (top / bottom); everything else lives in a collapsible group.
-//
-// Groups collapse by DEFAULT — the whole point is a short sidebar — but the group
-// owning the current route auto-expands, and open/closed state persists, so the
-// sections you actually use stay open across sessions.
+// Dashboard and Settings are pinned top and bottom; everything else is in collapsible
+// groups. Groups start collapsed, the group for the current page opens automatically,
+// and open/closed state is remembered.
 
 const NAV_DASHBOARD: NavItem =
   { id: "dashboard", label: "Dashboard", path: "/", icon: Icons["dashboard"] };
@@ -197,10 +194,8 @@ function readOpenGroups(): Record<string, boolean> {
 export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollapse, openProfileSignal }: SidebarProps) {
   const { user, logout } = useAuth();
   const { openAlertCount, pendingAgentCount, pendingUserCount } = useNotifications();
-  /* The modal is owned HERE, but the header's avatar must open the same one — two
-     instances would be two copies of the form, each able to save a different username. So
-     the header raises a counter in AppShell and this watches it, rather than either side
-     lifting the whole modal out. */
+  /* The modal lives here, but the header avatar opens the same one (one instance, one
+     form). The header bumps a counter in AppShell and this watches it. */
   const [profileOpen, setProfileOpen] = useState(false);
   useEffect(() => {
     if (openProfileSignal) setProfileOpen(true);
@@ -236,9 +231,7 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
     [groups, location.pathname],
   );
 
-  // Open the active group, but never auto-CLOSE the others: collapsing a section the
-  // user just opened because they navigated elsewhere is the annoying part of
-  // accordion sidebars. Sections they use simply accumulate as open.
+  // Open the current group, but never close the others automatically.
   useEffect(() => {
     if (!activeGroupId) return;
     setOpenGroups(prev => (prev[activeGroupId] ? prev : { ...prev, [activeGroupId]: true }));
@@ -266,9 +259,8 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
     return null;
   };
 
-  // Roll a group's child badges up onto its header. Without this, collapsing a group
-  // would HIDE an open-alert count — the one thing the sidebar must never hide.
-  // Red wins over accent so a real alert is never disguised as a pending approval.
+  // Show a group's child badges on its header, so collapsing a group never hides an
+  // open-alert count. Red wins over accent.
   const groupBadge = (items: NavItem[]): BadgeSpec | null => {
     const badges = items.map(i => badgeFor(i.id)).filter((b): b is BadgeSpec => b !== null);
     if (badges.length === 0) return null;
@@ -281,10 +273,8 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
 
   return (
     <>
-      {/* Phone / tablet backdrop. `touch-none` is load-bearing: without it a drag that
-          STARTS on the backdrop chains to the document and rubber-bands the page behind an
-          open drawer, which reads as the dashboard scrolling itself. The matching freeze of
-          the real scroll container lives on <main> in App.tsx. */}
+      {/* Phone/tablet backdrop. `touch-none` stops a drag on the backdrop from scrolling the
+         page behind the drawer. The matching scroll lock is on <main> in App.tsx. */}
       {mobileOpen && (
         <div
           className="fixed inset-0 bg-black/70 z-20 lg:hidden touch-none"
@@ -292,11 +282,9 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
         />
       )}
 
-      {/* Width is per breakpoint, not one number for every screen. Below lg this is an
-          OVERLAY, so it is sized to be read — 280px on a phone, 320px from sm up — while the
-          desktop rail stays 208px because that one permanently subtracts from the page.
-          Deliberately short of full width: the visible strip of backdrop is what says the
-          drawer is temporary, and it is also the tap target that closes it. */}
+      {/* Width per breakpoint. Below lg it is an overlay (280px on a phone, 320px from sm);
+         the desktop rail stays 208px. Not full width, so the backdrop strip shows it is
+         temporary and can be tapped to close. */}
       <aside
         className={`
           fixed lg:static inset-y-0 left-0 z-30
@@ -308,9 +296,8 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
         `}
         style={{
           background:  "var(--gf-sidebar)",
-          // .gf-rail supplies the seam edge + drop shadow, so the rail reads as its
-          // own plane. Dropped while collapsed — a 0-width rail casting a shadow is
-          // just a dark stripe down the page.
+          // .gf-rail adds the edge and shadow; dropped while collapsed so a 0-width rail does
+          // not draw a dark stripe.
           ...(collapsed ? { borderRight: "none" } : {}),
           fontFamily:  "'JetBrains Mono', monospace",
         }}
@@ -428,11 +415,7 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
         </nav>
 
         {/* ── Bottom: user ── */}
-        {/* NOTE: a labelled "Theme" row sat at the top of this block. Moved to the
-            topbar (components/layout/Header.tsx) on 2026-08-28 — a display preference
-            below the navigation was unreachable whenever the rail was collapsed or the
-            viewport was a phone, while every other chrome-level control (the live
-            widget, the bell) already lived in that bar. */}
+        {/* The Theme row moved to the topbar (components/layout/Header.tsx) on 2026-08-28. */}
         <div style={{ borderTop: "1px solid var(--gf-panel-border)" }}>
           {/* User */}
           {user && (
@@ -466,12 +449,8 @@ export default function Sidebar({ mobileOpen, onClose, collapsed, onToggleCollap
                 </div>
               </button>
 
-              {/* This button's look is now the shared .gf-btn-quiet (index.css) — the
-                  inline styles and JS mouse handlers it used to carry are gone. They
-                  also disagreed with themselves: the initial background was
-                  --gf-hover but mouseLeave reset it to transparent, so the button
-                  quietly changed appearance after the first hover and never changed
-                  back. CSS :hover has no such state to get wrong. */}
+              {/* Styled by the shared .gf-btn-quiet class (index.css) instead of inline styles and
+                 mouse handlers. */}
               <button onClick={logout}
                 className="gf-btn-quiet w-full py-1.5 text-[12px] tracking-wider">
                 Sign Out
@@ -516,11 +495,7 @@ function NavRow({
   indented?: boolean;
 }) {
   return (
-    // Hover and active depth live in CSS (.gf-nav / .gf-nav-active in index.css).
-    // The previous version drove hover from onMouseEnter/onMouseLeave and decided
-    // "am I the active row?" by string-matching the inline background — which broke
-    // the moment the active style stopped being a plain colour, and could never
-    // express :active at all.
+    // Hover and active styles are in CSS (.gf-nav / .gf-nav-active in index.css).
     <NavLink
       to={item.path}
       end={item.path === "/"}

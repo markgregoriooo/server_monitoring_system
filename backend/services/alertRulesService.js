@@ -3,26 +3,21 @@ import db from "../config/mysql.js";
 import { cleanRule, ruleError, COMPARISONS, SEVERITIES, scopeConflictError } from "./alertRuleValidation.js";
 
 // ─── Configurable alert thresholds (alert_rules) ────────────────────────────────
-// Replaces the old hardcoded 80/90 (server) and firmware-mirrored env thresholds.
+// Scope (see the alert_rules table in v13_cspc-ictu-monitoring-system.sql):
+//   * device_id = NULL  → global default (every server / the room)
+//   * device_id = <id>  → per-device override
+// getEffectiveRules() returns the device's rules if it has any, else the global ones.
+// No matching active rule = no alert. v13 seeds the global defaults.
 //
-// Scope model (see the `alert_rules` table in v13_cspc-ictu-monitoring-system.sql):
-//   * device_id = NULL  → GLOBAL default rule (every server / the room)
-//   * device_id = <id>  → PER-SERVER override
-//   getEffectiveRules() returns the device-specific rules if any exist, else global.
-//
-// Fallback model: RULES-ONLY. A metric with no matching active rule raises nothing
-// (worstBreach → null → band "normal"). The migration seeds the global defaults so
-// this never means a silent system out of the box.
-//
-// metric_name convention (must match the trigger sites):
+// metric_name must match the trigger sites:
 //   server:      'cpu', 'mem', 'disk'   (agentService.checkThresholds)
 //   environment: 'temperature', 'gas', 'humidity'  (sensorHandler, device_id NULL)
 
 const SEV_RANK = { normal: 0, info: 1, warning: 2, critical: 3 };
 
 // ─── In-memory cache ────────────────────────────────────────────────────────────
-// Rules are read on every metric POST (~10s per host) + every sensor reading, so we
-// cache all active rules and reload only when they change (startup + any mutation).
+// Rules are read on every metric POST and sensor reading, so active rules are
+// cached and reloaded on startup and after every change.
 let _cache = null; // Map<"<deviceId|g>:<metric>", rule[]> | null when not yet loaded
 
 // Cache key. `interface_name` is only ever set for per-port metrics (link_util /
@@ -50,15 +45,12 @@ async function ensureLoaded() {
   if (!_cache) await reload();
 }
 
-// Active rules that apply to (deviceId, metricName [, interfaceName]), most specific
-// first. The FIRST level that matches wins outright — levels are not merged, which
-// matches how the per-device vs global fallback already behaved.
-//
-//   1. this device + this port   ← only for per-port metrics (link_util / link_errors)
+// Active rules for (deviceId, metricName [, interfaceName]). The first level that
+// has rules wins; levels are not merged:
+//   1. this device + this port   (only link_util / link_errors)
 //   2. this device, any port
 //   3. global default
-//
-// Empty array = no rule = silent (rules-only model).
+// Empty array = no rule = no alert.
 async function getEffectiveRules(deviceId, metricName, interfaceName = null) {
   await ensureLoaded();
   if (deviceId != null && interfaceName) {
@@ -94,10 +86,9 @@ function worstBreach(rules, value) {
   return worst;
 }
 
-// Hysteresis: a value must fall back past a rule's threshold by this fraction (on the
-// safe side) before that band clears. Unit-agnostic (5% of the threshold) so it works
-// for cpu %, temperature °C and gas ppm alike. Stops device_logs churn when a value
-// flaps at a boundary; notification spam is separately handled by the DB cooldown.
+// Hysteresis: a value must drop back past the threshold by 5% of it before the
+// band clears, so a value sitting at the boundary does not flap. Repeated
+// notifications are also limited by the DB cooldown.
 const HYST_FRACTION = 0.05;
 function clears(rule, value) {
   const t = Number(rule.threshold_value);
@@ -111,10 +102,9 @@ function clears(rule, value) {
   }
 }
 
-// Decide a metric's new severity band, hysteresis-aware. Escalations apply instantly;
-// de-escalations are held until the value clears the previous band's threshold by the
-// margin. Returns { band, rule } — `rule` is the breached rule (for stamping
-// alerts.alert_rule_id) and is non-null only when escalating.
+// New severity band for a metric. Going up is immediate; going down waits until
+// the value clears the previous threshold by the margin. Returns { band, rule };
+// `rule` (for alerts.alert_rule_id) is set only when escalating.
 function nextBand(rules, value, prevBand = "normal") {
   const breach = worstBreach(rules, value);
   const target = breach ? breach.severity : "normal";
@@ -124,10 +114,9 @@ function nextBand(rules, value, prevBand = "normal") {
   return { band: target, rule: breach };
 }
 
-// Room-level (global, device_id NULL) thresholds in the shape the ESP32 firmware
-// consumes via the "envConfig" socket event. This is what keeps the device's LED +
-// buzzer + reported status in sync with the dashboard's alert thresholds. Null
-// (no rule) fields are omitted so the firmware keeps its compiled default for them.
+// Room-level (global) thresholds in the shape the ESP32 expects in "envConfig", so
+// its LED, buzzer and status match the dashboard. Fields with no rule are left out
+// and the firmware keeps its compiled default.
 async function getRoomThresholds() {
   await ensureLoaded();
   const pick = (metric, severity) => {
@@ -147,24 +136,15 @@ async function getRoomThresholds() {
 }
 
 // ─── CRUD (admin-only routes) ───────────────────────────────────────────────────
-// Validation lives in ./alertRuleValidation.js — pure and import-free, so
-// backend/tests can exercise the only gate on alert thresholds with no MySQL. It was
-// 55 lines of one repeated shape here (cyclomatic 34, cognitive 62); it is a field
-// table there. Behaviour is unchanged — the two were differential-tested across 297
-// input combinations before the swap. See audits/code-complexity-report-2026-08-25.md — C-01.
+// Validation is in ./alertRuleValidation.js (no imports, so it is unit-tested).
+// See audits/code-complexity-report-2026-08-25.md (C-01).
 const clean = cleanRule;
 const err = ruleError;
 
-// ─── Severity-ladder guard ─────────────────────────────────────────────────────
-//
-// The ordering rule itself is pure and lives in alertRuleValidation.severityOrderError;
-// this is only the part that needs the database — finding the rules it has to be
-// compared against.
-//
-// Scope is matched with `<=>` (MySQL/MariaDB null-safe equality), not `=`. A global rule
-// has device_id NULL and `NULL = NULL` is NULL, never true — so with plain `=` the guard
-// would silently find no siblings for exactly the global temperature/gas/humidity rules
-// this was written for, and pass everything.
+// ─── Severity order check ─────────────────────────────────────────────────────
+// The rule itself is alertRuleValidation.severityOrderError; this finds the rules
+// to compare against. Scope uses `<=>` (null-safe) because a global rule has
+// device_id NULL, and `NULL = NULL` is never true.
 async function siblingsInScope(deviceId, interfaceName, metricName, excludeId = 0) {
   const [rows] = await db.query(
     `SELECT alert_rule_id, severity, threshold_value, comparison, is_active
@@ -186,11 +166,9 @@ async function assertSeverityOrder(row, excludeId = 0) {
   if (reason) throw err(400, reason);
 }
 
-// Only these three fields can break the ladder. A payload that touches none of them —
-// the activate/pause toggle is the one that matters — skips the check entirely, so an
-// admin can always still pause a rule in a scope that is ALREADY inconsistent (legacy
-// data, or a row edited straight in SQL). Blocking that would trap someone with no way
-// to fix the very rules the guard is complaining about.
+// Only these three fields can break the order. A change that touches none of them
+// (such as pausing a rule) skips the check, so an admin can still pause rules in a
+// scope that is already inconsistent.
 const LADDER_FIELDS = ["threshold_value", "comparison", "severity"];
 const touchesLadder = (f) => LADDER_FIELDS.some((k) => f[k] !== undefined);
 
@@ -251,11 +229,9 @@ async function create(data, userId = null) {
   } catch (e) {
     if (e.code === "ER_NO_REFERENCED_ROW_2" || e.code === "ER_NO_REFERENCED_ROW")
       throw err(400, "deviceId does not match an existing device.");
-    // The uniqueness index (migration 2026-08-26_alert_rule_scope_uniqueness.sql) is the
-    // backstop behind assertSeverityOrder above. Reaching it means either two admins saved
-    // at once — the check and the write are not one transaction — or a code path that
-    // skipped the check. Either way the driver's raw text names an internal index, so
-    // translate it into the same sentence the pre-check would have given.
+    // The unique index (2026-08-26_alert_rule_scope_uniqueness.sql) catches what the
+    // check above misses, e.g. two admins saving at once. Turn the driver's index-name
+    // error into the same message the check gives.
     if (e.code === "ER_DUP_ENTRY")
       throw err(400, "A rule already exists for this metric at this severity and scope. Edit that rule instead of adding a second one.");
     throw e;
@@ -277,9 +253,8 @@ async function update(id, data, userId = null) {
   const f = clean(data, { partial: true, existing: current });
   if (Object.keys(f).length === 0) throw err(400, "No valid fields to update.");
 
-  // Validate the MERGED row — what this rule will BE after the patch — not the payload.
-  // A PATCH that sends only `thresholdValue` still has to be judged against its own
-  // severity and comparison, and both of those live on the existing row.
+  // Validate the rule as it will be after the patch, since severity and comparison
+  // may only be on the existing row.
   if (touchesLadder(f)) {
     await assertSeverityOrder(
       {
@@ -304,11 +279,9 @@ async function update(id, data, userId = null) {
   } catch (e) {
     if (e.code === "ER_NO_REFERENCED_ROW_2" || e.code === "ER_NO_REFERENCED_ROW")
       throw err(400, "deviceId does not match an existing device.");
-    // The uniqueness index (migration 2026-08-26_alert_rule_scope_uniqueness.sql) is the
-    // backstop behind assertSeverityOrder above. Reaching it means either two admins saved
-    // at once — the check and the write are not one transaction — or a code path that
-    // skipped the check. Either way the driver's raw text names an internal index, so
-    // translate it into the same sentence the pre-check would have given.
+    // The unique index (2026-08-26_alert_rule_scope_uniqueness.sql) catches what the
+    // check above misses, e.g. two admins saving at once. Turn the driver's index-name
+    // error into the same message the check gives.
     if (e.code === "ER_DUP_ENTRY")
       throw err(400, "A rule already exists for this metric at this severity and scope. Edit that rule instead of adding a second one.");
     throw e;

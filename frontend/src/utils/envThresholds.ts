@@ -1,21 +1,10 @@
-// Temperature, humidity and gas colour, driven by the room-level ALERT RULES
-// (`alert_rules`, global `device_id = NULL`) — the same numbers the ESP32 gets as
-// `envConfig` and the same ones notificationService raises alerts against. A reading turns
-// orange at the moment the system starts calling it a warning, and red at the moment it
-// calls it critical. One rule change moves the alert, the device's LED and the dashboard
-// together.
+// Temperature, humidity and gas colours from the room alert rules (`alert_rules`, global
+// `device_id = NULL`), the same numbers sent to the ESP32 as `envConfig` and used for
+// alerts. A reading turns orange when the warning fires and red when the critical does,
+// so one rule change moves the alert, the device LED and the dashboard together.
 //
-// This replaces per-page copies of the numbers. Dashboard.tsx carried its own
-// `GAS_WARN = 150` / `GAS_CRIT = 300` under a comment asking whoever retuned the rules to
-// retune the constants as well — an unenforceable promise, and invisible to the admin
-// actually editing Alert Rules. Now there is one source and the pages read it.
-//
-// NOTE: `utils/tempZone.ts` also resolves a temperature to a colour, but against the
-// AUTO-COOLING zones. That module is now the AirConditioner page's alone — that page is
-// about the cooling zones and labels them outright. Every other page colours temperature
-// from the alert rules, here.
-//
-// Import-free on purpose, like utils/tempZone.ts.
+// `utils/tempZone.ts` colours temperature by the auto-cooling zones, but only on the
+// AirConditioner page; every other page uses the alert rules here. No imports.
 
 /** The `envConfig` shape. Every field is optional: alerting is RULES-ONLY, so a metric
  *  with no rule has no threshold and correctly never colours. */
@@ -28,10 +17,10 @@ export interface RoomThresholds {
   humCrit?: number;
 }
 
-/** The values seeded in `v13_cspc-ictu-monitoring-system.sql`. Used ONLY until the real
- *  rules load — not as a substitute for them. They exist so a tile is never briefly green
- *  under 500 ppm of smoke while the first request is in flight, and so a failed request
- *  degrades to the shipped thresholds rather than to "everything is fine". */
+/**
+ * The values seeded in `v13_cspc-ictu-monitoring-system.sql`, used only until the real
+ * rules load (or if loading fails), so a smoke reading is never shown green meanwhile.
+ */
 export const ROOM_THRESHOLD_FALLBACK: RoomThresholds = {
   tempWarn: 27,
   tempCrit: 32,
@@ -43,35 +32,26 @@ export const ROOM_THRESHOLD_FALLBACK: RoomThresholds = {
 
 export type EnvBand = "normal" | "warning" | "critical";
 
-/** The status strings the ESP32 reports in `smoke_status` / `environment_status` — the
- *  same three severities as `alert_rules`, upper-cased. `temp_status` adds TOO_COLD, which
- *  is not a severity but a separate axis (there is no `alert_rules` rule behind it). */
+/**
+ * Statuses the ESP32 reports in `smoke_status` / `environment_status`: the three
+ * alert_rules severities in upper case. `temp_status` adds TOO_COLD, which has no rule.
+ */
 export type EnvStatus = "NORMAL" | "WARNING" | "CRITICAL";
 export type TempStatus = "TOO_COLD" | EnvStatus;
 
-/** Firmware before 2026-08-15 named the top band DANGER on `smoke_status` and
- *  `environment_status`, and carried a fourth, middle DANGER band on `temp_status`.
- *
- * Those strings are InfluxDB **TAGS**, so every point written before the change keeps
- *  them — this is not a migration window that eventually closes, it is how history reads
- *  forever. Any range that reaches back past the reflash returns both spellings, and the
- *  most recent history row seeds the live tiles on page load.
- *
- *  Normalising on the way in is what keeps that a one-line concern: downstream comparisons
- *  only ever see the three-value vocabulary, so a missed `=== "DANGER"` can't paint a
- *  smoke reading green. */
+/**
+ * Firmware before 2026-08-15 used DANGER as the top band (and a middle DANGER band on
+ * `temp_status`). These are InfluxDB tags, so old history keeps them. Normalising here
+ * means everything downstream only sees the three current values.
+ */
 export function normalizeStatus(s: string | null | undefined): string | null {
   if (s == null) return null;
   return s === "DANGER" ? "CRITICAL" : s;
 }
 
-// The status palette from CLAUDE.md, shared with utils/tempZone.ts so "orange means
-// warning" holds across every panel in the app.
-//
-// `critical` is #E02F44, the palette's CRITICAL — not #F2495C, which is DANGER. Beyond
-// being the documented colour, the deeper red is what makes a breach visible on the smoke
-// chart: MQ2-2's identity pink is #F472B6, near enough to #F2495C that the line hardly
-// changed at the exact moment it most needed to.
+// Status colours from CLAUDE.md, shared with utils/tempZone.ts. `critical` is #E02F44
+// (CRITICAL), not #F2495C (DANGER), which is also too close to MQ2-2's pink (#F472B6)
+// to show a breach.
 const BAND_COLOR: Record<EnvBand, string> = {
   normal:   "#73BF69",
   warning:  "#FF780A",
@@ -87,27 +67,19 @@ const BAND_LABEL: Record<EnvBand, string> = {
 /** Fallback for "--" — no reading yet, or the ESP32 has stopped reporting. */
 const MUTED = "#6B7280";
 
-/** Which band a value falls in, given a warning and a critical bound.
+/**
+ * Which band a value is in, given warning and critical bounds.
  *
- *  Always HIGHER-IS-WORSE (`>=`) — the comparison every seeded `temperature`, `gas` and
- *  `humidity` rule uses, the one the firmware applies (`t >= TEMP_WARNING`), and the one
- *  `alertRulesService.compare` evaluates the same rows with server-side.
+ * Always higher-is-worse (`>=`), like every seeded temperature, gas and humidity rule,
+ * the firmware (`t >= TEMP_WARNING`) and alertRulesService.compare. The direction is not
+ * guessed from the numbers: an earlier version did, and setting a low critical value to
+ * test a rule scrambled every band. A lower-is-worse room rule would need
+ * `alert_rules.comparison` passed through getRoomThresholds(), which is also the ESP32's
+ * `envConfig` format.
  *
- * It previously INFERRED the direction from the bounds: `crit < warn` was read as
- *  "lower is worse" and flipped both comparisons. That inference was wrong in the exact
- *  situation it mattered — TESTING a rule. To make a clean room show critical you have to
- *  drop the critical threshold below the live reading, which leaves it under the untouched
- *  warning threshold; the metric silently became lower-is-worse and every band came out
- *  scrambled (10 ppm with crit=5, warn=150 reported WARNING, because `10 <= 150` matched
- *  first). Direction is a property of the RULE, not something to guess from two numbers.
- *
- *  A lower-is-worse environment rule would need `alert_rules.comparison` plumbed through
- *  `getRoomThresholds()`, which is deliberately not done here: that function's flat shape
- *  is also the `envConfig` payload the ESP32 parses, and widening it means touching
- *  firmware.
- *
- *  Critical is tested first so the worse band wins when both bounds are crossed. A missing
- *  bound cannot be crossed, matching the rules-only alerting model: no rule, no colour. */
+ * Critical is checked first so the worse band wins. A missing bound is never crossed
+ * (no rule, no colour).
+ */
 export function bandFor(
   value: number,
   warn?: number,
@@ -140,19 +112,11 @@ function labelFor(
 }
 
 /**
- * Colour for a series that SHARES A CHART with another: it keeps its own identity hue
- * while normal, and takes the alarm colour once a threshold is crossed.
- *
- * Why this exists. Panels can all be green when nothing is wrong — they sit apart and a
- * colour is the whole message. Lines cannot: humidity shares an axis pair with
- * temperature, and the two MQ-2 lines share the smoke chart with each other. If every
- * normal series went green, a chart's two lines would be the same colour exactly when it
- * is being read most casually, and telling them apart is a chart's basic job.
- *
- * So on a shared canvas a line stays recognisably itself until there is something to
- * shout about, then it shouts. Temperature's line is the exception and is fully
- * zone-coloured (utils/tempZone.ts) — it is one series per axis, so nothing collides, and
- * its blue/green carry meaning of their own.
+ * Colour for a series that shares a chart with another: its own colour while normal,
+ * the alarm colour once a threshold is crossed. Otherwise two normal lines on one chart
+ * (humidity with temperature, or the two MQ-2 lines) would both be green. Temperature's
+ * line uses the full band colours instead (temperatureColor), since it has an axis to
+ * itself.
  */
 export function alertTint(
   v: number | string | null | undefined,
@@ -167,14 +131,10 @@ export function alertTint(
 }
 
 /**
- * Temperature has a band the others do not: TOO COLD, below which the room is over-cooled.
- *
- * There is no `alert_rules` row for it — the rules only describe the hot side (seeded
- * `>= 27` warning, `>= 32` critical) — and the firmware says why: `TEMP_COLD` is the one
- * threshold `envConfig` does not overwrite, so the device keeps its compiled 22 °C and
- * lights its LED blue there. This mirrors that constant so the dashboard and the box on
- * the wall call the same room too cold. Change one and change the other
- * (`iot/esp32/env_monitor_v2.ino`, `TEMP_COLD`).
+ * Temperature also has TOO COLD. There is no alert rule for it (the rules only cover
+ * the hot side, seeded >= 27 warning, >= 32 critical); the firmware keeps its compiled
+ * TEMP_COLD of 22 °C (not changed by `envConfig`) and shows blue there. This mirrors it;
+ * change both together (`iot/esp32/env_monitor_v2/env_monitor_v2.ino`, `TEMP_COLD`).
  */
 export const TEMP_COLD_BELOW = 22;
 
@@ -194,9 +154,10 @@ const TEMP_BAND_LABEL: Record<TempBand, string> = {
   critical: "CRITICAL",
 };
 
-/** Which band a temperature falls in: the `temperature` alert rules on the hot side, the
- *  firmware's cold constant on the other. Hot wins if they ever overlap — a room that is
- *  somehow both is a misconfiguration, and the hot end is the one that damages hardware. */
+/**
+ * Which band a temperature is in: the alert rules on the hot side, the firmware's cold
+ * limit on the other. Hot wins if they ever overlap.
+ */
 export function tempBand(
   t: number,
   th: RoomThresholds = ROOM_THRESHOLD_FALLBACK,
@@ -226,10 +187,10 @@ export function temperatureLabel(
   return TEMP_BAND_LABEL[tempBand(t, th)];
 }
 
-/** `#RRGGBB` → `rgba(r,g,b,alpha)`. Chart area fills are built from a band colour at a low
- *  alpha, and Chart.js gradients need real rgba stops rather than `#RRGGBBAA`. Returns the
- *  input unchanged if it is not a 6-digit hex, so a CSS variable degrades instead of
- *  throwing. */
+/**
+ * `#RRGGBB` → `rgba(r,g,b,alpha)` for chart fills (Chart.js gradients need rgba stops).
+ * Anything that is not a 6-digit hex is returned unchanged.
+ */
 export function withAlpha(hex: string, alpha: number): string {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
   if (!m) return hex;

@@ -5,27 +5,14 @@ import { STATUS } from "../../theme/gf";
 const { green: GREEN, orange: ORANGE, critical: RED } = STATUS;
 
 /**
- * The hero set-piece: a miniature of the real dashboard, drawn in code.
+ * The hero: a small copy of the real dashboard, drawn in code rather than a
+ * screenshot, so it animates, follows the theme toggle, stays sharp and shows no
+ * real hostnames or IPs on a public page.
  *
- * Not a screenshot, for four reasons that all matter on THIS page:
- *   - it animates, and a still image of a chart says nothing a paragraph doesn't;
- *   - it follows the theme toggle sitting directly above it;
- *   - it stays sharp at any size and costs a few KB on a page served before login;
- *   - it contains no real hostnames, IPs or staff, and this page is public.
- *
- * The chart SCROLLS. It plots itself once on arrival, then every couple of
- * seconds a new sample arrives at the right edge and the whole series slides
- * left by exactly one step — the same thing a live Grafana panel does. A chart
- * that draws once and then freezes is a picture of a chart; this is a picture of
- * monitoring.
- *
- * The colours are the product's own: CPU and memory are ServerFocus's exact
- * series hexes, and the status tints are the Status Colors table. Someone who
- * signs in should recognise what they were just looking at.
- *
- * The numbers are SHAPE, not data. They are a bounded random walk seeded from a
- * hand-drawn opening, wired to nothing, so nothing here can go stale or claim
- * something untrue about a live system.
+ * The chart scrolls like a live panel: a new point arrives at the right every couple
+ * of seconds and the series slides left by one step. Colours match the product
+ * (ServerFocus's series colours and the status colours). The numbers are a random
+ * walk, not real data.
  */
 
 // ServerFocus's series identities: the same hue means the same metric here as there.
@@ -36,9 +23,8 @@ const W = 560;
 const H = 180;
 
 /**
- * One more point than fits. The extra sample lives just off the right edge; the
- * series slides left by one step to bring it in, then the arrays shift and the
- * transform resets. That is what makes the motion continuous rather than a jump.
+ * One more point than fits: the extra point sits just off the right edge, the series
+ * slides left to bring it in, then the arrays shift and the transform resets.
  */
 const VISIBLE = 44;
 const P = VISIBLE + 2;
@@ -48,8 +34,7 @@ const TICK_MS = 2000;
 const xAt = (i: number) => i * STEP_X;
 const yAt = (v: number) => H - 8 - (v / 100) * (H - 22);
 
-// Deliberately lumpy openings: real CPU has noise, a spike and a recovery, and a
-// clean sine wave is the clearest single tell that a chart is decorative.
+// Uneven starting values with a spike and recovery, like real CPU.
 const CPU_SEED = [
   38, 41, 36, 44, 39, 47, 43, 52, 46, 44, 58, 71, 66, 54, 49, 45, 42, 48, 44, 51,
   47, 43, 40, 46, 42, 39, 45, 63, 78, 84, 72, 61, 54, 49, 52, 46, 43, 48, 44, 41,
@@ -100,15 +85,8 @@ const ROWS: { name: string; tone: string; label: string }[] = [
 ];
 
 /**
- * `compact` drops the DEVICES column and the forecast alert, leaving the four
- * tiles and the chart.
- *
- * On a phone the mock is scaled to ~360px of design width, which puts the device
- * rows at roughly 6px of rendered text and the forecast sub-line under 5px —
- * present, unreadable, and adding height to a first screen that already carries a
- * long institution name, a headline, a paragraph and two calls to action. Cutting
- * them keeps the two parts that still read at that size and still say "this is a
- * monitoring dashboard", which is the mock's entire job here.
+ * `compact` drops the DEVICES column and the forecast alert, leaving the four tiles
+ * and the chart. On a phone that text would be only 5-6px high.
  */
 export default function HeroDashboard({ compact = false }: { compact?: boolean }) {
   const { ref, inView } = useInView<HTMLDivElement>({ threshold: 0.2 });
@@ -154,10 +132,8 @@ export default function HeroDashboard({ compact = false }: { compact?: boolean }
     const cleanups: Array<() => void> = [];
     let cancelled = false;
 
-    // ── 1. The lines plot themselves, left to right ───────────────────────
-    // strokeDashoffset over the measured path length, rather than anime's
-    // drawable helper: getTotalLength is exact, and this cannot be thrown off
-    // by how the path happens to be constructed.
+    // ── 1. The lines draw themselves left to right ───────────────────────
+    // strokeDashoffset over the measured path length (getTotalLength is exact).
     [
       { node: cpu, delay: 120 },
       { node: mem, delay: 260 },
@@ -172,9 +148,8 @@ export default function HeroDashboard({ compact = false }: { compact?: boolean }
         duration: DUR.plot,
         delay,
         ease: EASE.glide,
-        // The dash pattern has to go before the series starts scrolling —
-        // otherwise the next `d` update is measured against the OLD path length
-        // and the line renders half drawn.
+        // Remove the dash pattern before the series starts scrolling, or the next update is
+        // measured against the old path length and the line shows half drawn.
         onComplete: () => {
           node.style.strokeDasharray = "none";
           node.style.strokeDashoffset = "0";
@@ -195,9 +170,8 @@ export default function HeroDashboard({ compact = false }: { compact?: boolean }
     }
 
     // ── 2. Tiles count up ─────────────────────────────────────────────────
-    // Animating a plain object and writing textContent, rather than driving
-    // React state: four tiles at 60fps would be ~240 re-renders a second for
-    // digits nothing else depends on.
+    // Writes textContent from an animated object instead of React state, to avoid
+    // constant re-renders.
     TILES.forEach((t, i) => {
       const node = tileRefs.current[t.key];
       if (!node) return;
@@ -213,11 +187,9 @@ export default function HeroDashboard({ compact = false }: { compact?: boolean }
       });
     });
 
-    // ── 3. Then it runs, like a live panel ────────────────────────────────
-    // Each tick slides the whole series left by exactly one step while a new
-    // sample arrives at the right edge. Self-scheduling from onComplete rather
-    // than setInterval: an interval would keep firing if a frame budget slipped
-    // and stack overlapping transforms on the same element.
+    // ── 3. Then it keeps running like a live panel ────────────────────────────────
+    // Each tick slides the series left one step while a new point arrives at the right.
+    // Scheduled from onComplete rather than setInterval, so ticks never overlap.
     const cpuVals = [...CPU_SEED];
     const memVals = [...MEM_SEED];
 
@@ -266,9 +238,8 @@ export default function HeroDashboard({ compact = false }: { compact?: boolean }
     const startScroll = window.setTimeout(tick, DUR.plot + 400);
     cleanups.push(() => window.clearTimeout(startScroll));
 
-    // ── 4. The two tiles the chart does not feed ──────────────────────────
-    // Small drift only: a hero that visibly rewrites itself pulls the eye off
-    // the copy beside it, and this has to survive being on screen for minutes.
+    // ── 4. The two tiles the chart does not drive ──────────────────────────
+    // Small drift only, so they do not pull attention from the text.
     const drift = window.setInterval(() => {
       (["room", "ups"] as const).forEach((key) => {
         const t = tileFor(key);

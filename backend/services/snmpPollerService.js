@@ -29,30 +29,19 @@ import {
 import { describeError } from "../utils/httpError.js";
 import { writeCommunity, readCommunity } from "./communityCrypto.js";
 
-// ─── SNMP poller: routers (IF-MIB) + UPS (UPS-MIB), pull-based ─────────────────
+// ─── SNMP poller: routers (IF-MIB) + UPS (UPS-MIB) ─────────────────
+// Instead of agents pushing metrics, this polls each device over SNMP on a timer
+// (server.js calls pollAll() on an interval). Polling is the heartbeat, so each cycle
+// sets devices.status directly.
 //
-// The mirror image of the Go-agent pipeline: instead of agents PUSHing metrics,
-// this service PULLs them by polling each device over SNMP on a timer. One service
-// covers both classes — only the OID set differs. server.js drives pollAll() on an
-// interval (like the offline sweep). Because polling IS the heartbeat, there's no
-// separate offline sweep: each cycle directly knows whether a device answered, and
-// flips devices.status accordingly.
+// Two modes for a router, depending on whether it has a community (see loadDevices):
 //
-// Two collection modes for a router, decided per device by whether it has a
-// community string (see loadDevices):
+//   SNMP  full read: interfaces, traffic counters, link state, uptime. Ping runs
+//         alongside for latency and packet loss, which SNMP cannot show.
+//   PING  ICMP only: reachable, latency, loss. For ISP-owned equipment that does
+//         not answer SNMP.
 //
-//   SNMP  — the full read: interfaces, traffic counters, link state, uptime.
-//           ICMP runs alongside it and adds latency/packet loss, which SNMP cannot
-//           express: an SNMP walk either answers or times out, so a link that is up
-//           but dropping 40% of packets looks perfectly healthy until it finally
-//           flips to a flat Offline.
-//   PING  — ICMP only: reachable, latency, loss. The design doc's "universal
-//           fallback" (§4), and the only way to monitor ISP-owned CPE, which is
-//           locked down and will not answer SNMP at all.
-//
-// A UPS is always SNMP — communication_type must be snmp/network, and pinging a UPS
-// would tell you its management card has power while saying nothing about the
-// battery, which is the entire reason the device is monitored.
+// A UPS always uses SNMP; a ping only proves the management card has power.
 
 const SNMP_TIMEOUT_MS = 5000;
 const SNMP_RETRIES = 1;
@@ -62,24 +51,17 @@ const SNMP_RETRIES = 1;
 // Previous per-interface byte counters, for utilization_pct (rate ÷ link speed).
 // key `${deviceId}:${ifIndex}` -> { rxBytes(BigInt), txBytes(BigInt), t(ms) }
 const prevIface = new Map();
-// Latest live values per device, so GET /api/network and GET /api/ups render
-// current numbers immediately (mirrors agentService.latestMetrics for servers).
-// Resets on restart, repopulates on the next poll cycle.
+// Latest values per device, so GET /api/network and GET /api/ups show numbers right
+// away (like agentService.latestMetrics). Refilled on the next poll after a restart.
 const latestNetwork = new Map(); // id -> shaped router summary
 const latestUps = new Map(); // id -> shaped UPS summary
 
-// ─── Tombstones: devices deleted while a poll was IN FLIGHT ────────────────────
-//
-// An SNMP walk takes up to SNMP_TIMEOUT_MS x (SNMP_RETRIES + 1), and takes the FULL
-// budget precisely when the device is misconfigured — which is the one most likely to be
-// deleted. Delete it in that window and the in-flight poll still completes: it writes a
-// router_metrics / ups_metrics point for a device that no longer exists, and broadcasts
-// `networkMetrics`/`upsMetrics` for it. The dashboard treats an id it does not know as a
-// NEW device and appends it, so the row the admin just deleted reappears.
-//
-// `removeDevice` records the id; `setReachable` and the three sample writes consult it.
-// Time-bounded so the map cannot grow for the life of the process. Mirrors the identical
-// guard in mikrotikPollerService.
+// ─── Devices deleted while a poll is running ────────────────────
+// An SNMP walk can take SNMP_TIMEOUT_MS x (SNMP_RETRIES + 1), and a misconfigured
+// device (the likeliest to be deleted) always takes that long. Without this, the
+// running poll would write a point for the deleted device and broadcast it, and the
+// dashboard would add the row back. removeDevice records the id for a few minutes;
+// setReachable and the sample writes check it. Same as mikrotikPollerService.
 const removedAt = new Map(); // id -> ms timestamp of the DELETE
 const TOMBSTONE_MS = 5 * 60 * 1000;
 function markRemoved(id) {
@@ -104,17 +86,9 @@ const firstValue = (m) => {
   const k = Object.keys(m)[0];
   return k === undefined ? null : m[k];
 };
-// Build the SNMP session parameters for a device.
-//
-// ⚠️ NO DEFAULT COMMUNITY. This read `d.community || "public"`, which silently
-// substituted the best-known default credential in existence for a missing one. It was
-// unreachable in practice — loadDevices() filters a UPS without a community out
-// entirely, and pollRouter() sends a router without one down the ICMP path before it
-// gets here — but that is exactly what makes a fallback dangerous: it is invisible
-// until the invariant it depends on changes, and then the poller starts probing a
-// production device with a guessed credential and reports the result as monitoring.
-// Fail loudly instead, so a bug upstream surfaces as a bug rather than as a device
-// that mysteriously answers (or does not).
+// SNMP session settings for a device. No default community: guessing "public" for a
+// missing one would quietly probe a real device with a guessed credential. Throw
+// instead so an upstream bug shows up.
 const connFor = (d) => {
   const community = typeof d.community === "string" ? d.community.trim() : "";
   if (!community) {
@@ -135,9 +109,8 @@ const connFor = (d) => {
 
 // ─── Collectors (pure SNMP → sample; no DB, no Influx — unit-testable) ──────────
 
-// Poll one router/switch and return a shaped network sample. Computes
-// utilization_pct from the delta vs the previous cycle's counters. Throws on a
-// transport failure (unreachable) — the caller treats that as "offline".
+// Poll one router and return a network sample, with utilization_pct from the change
+// since the last cycle. Throws when unreachable; the caller marks it offline.
 export async function collectRouter(deviceId, conn, labels = {}) {
   const session = client.openSession(conn);
   try {
@@ -146,11 +119,8 @@ export async function collectRouter(deviceId, conn, labels = {}) {
     // Walk the IF-MIB columns we need (sequential — one UDP session).
     const names = await client.walkColumn(session, IF_OID.ifName);
     const oper = await client.walkColumn(session, IF_OID.ifOperStatus);
-    // ifAdminStatus is what the operator CONFIGURED. A port shut down on purpose
-    // reports operStatus=down like an unplugged one, and alerting on that is how a
-    // deliberately-disabled port became the noisiest thing on the dashboard.
-    // Optional: some agents omit the column, and a missing value must read as
-    // "enabled" so a sparse agent can't silence a genuine link failure.
+    // ifAdminStatus is what the operator configured, so a port shut down on purpose is
+    // not reported like an unplugged one. Optional: a missing value counts as enabled.
     const admin = await client.walkColumn(session, IF_OID.ifAdminStatus).catch(() => ({}));
     const hcIn = await client.walkColumn(session, IF_OID.ifHCInOctets);
     const hcOut = await client.walkColumn(session, IF_OID.ifHCOutOctets);
@@ -169,15 +139,8 @@ export async function collectRouter(deviceId, conn, labels = {}) {
       const adminUp = admin[idx] == null || Number(admin[idx]) !== IF_ADMIN_STATUS.down;
       const speedMbps = Number(speed[idx] ?? 0);
 
-      // utilization_pct from the per-interface delta vs the previous cycle.
-      //
-      // Ethernet links are FULL-DUPLEX: rx and tx each get the full link speed, so
-      // the busier DIRECTION is the saturation measure — not their sum. Summing them
-      // reports a 100 Mbit/s link carrying 60 Mbit/s each way as 120% (clamped to
-      // 100%) when neither direction is above 60%, which false-fires `link_util`.
-      // This matches the LibreNMS/Cacti convention of graphing in/out separately and
-      // alerting on the worse one. (Half-duplex would want the sum, but IF-MIB
-      // duplex state isn't collected and modern switched gear is full-duplex.)
+      // utilization_pct from the change since the last cycle, using the busier direction
+      // (full-duplex), not rx + tx. See snmpUtils.computeUtilizationPct.
       let utilizationPct = null;
       const key = `${deviceId}:${idx}`;
       const prev = prevIface.get(key);
@@ -198,9 +161,8 @@ export async function collectRouter(deviceId, conn, labels = {}) {
         txBytes,
         rxErrors: Number(inErr[idx] ?? 0),
         txErrors: Number(outErr[idx] ?? 0),
-        // ifHighSpeed (Mbit/s). Carried through to the UI so a port can show its
-        // negotiated speed — a 1 Gb link sitting at 10 Mb is a duplex/cable fault
-        // that a utilization % alone hides completely. 0 = unknown, sent as null.
+        // ifHighSpeed (Mbit/s), shown in the UI: a 1 Gb port running at 10 Mb is a
+        // cable/duplex problem that utilization alone hides. 0 = unknown, sent as null.
         speedMbps: speedMbps > 0 ? speedMbps : null,
         linkUp,
         adminUp,
@@ -242,9 +204,8 @@ export async function collectUps(conn) {
     const outV = await client.walkColumn(session, UPS_OID.upsOutputVoltage);
     const load = await client.walkColumn(session, UPS_OID.upsOutputPercentLoad);
 
-    // Every reading is range-checked against UPS_BOUNDS (RFC 1628 where it states a
-    // range, physical plausibility where it doesn't) — out of range means a firmware
-    // sentinel, not a measurement, and becomes null. See snmpUtils.inRange.
+    // Every reading is checked against UPS_BOUNDS; out of range is a firmware
+    // placeholder, not a measurement, and becomes null. See snmpUtils.inRange.
     const B = UPS_BOUNDS;
     const battV = inRange(s[UPS_OID.upsBatteryVoltage], ...B.batteryVoltageDeci);
     const src = s[UPS_OID.upsOutputSource];
@@ -257,9 +218,7 @@ export async function collectUps(conn) {
       outputVoltage: inRange(firstValue(outV), ...B.voltage),
       batteryVoltage: battV == null ? null : battV / 10, // RFC 1628: 0.1 V DC units
       onBattery: src == null ? null : isOnBattery(src),
-      // Where the load is actually fed from. `onBattery` alone cannot express
-      // BYPASS — the load on raw mains with the inverter and battery cut out of the
-      // path — which reported false here and read as a healthy UPS. See
+      // Where the load is powered from. `onBattery` alone cannot show bypass. See
       // snmpUtils.upsOutputState.
       onBypass: src == null ? null : isOnBypass(src),
       outputState: src == null ? null : upsOutputState(src),
@@ -273,18 +232,12 @@ export async function collectUps(conn) {
 
 // ─── DB reads ──────────────────────────────────────────────────────────────────
 
-// Load the routers + UPS to poll, with their connection details, and tag each with
-// the mode it will be collected in.
+// Load the routers and UPS units to poll, and tag each with its mode.
 //
-// A ROUTER needs only an IP: with a community it is polled over SNMP, without one
-// it falls back to ICMP (`pingOnly`). It used to need both, which silently dropped
-// every router that cannot run SNMP — and at CSPC that is the ISP-owned PLDT CPE,
-// i.e. the only non-MikroTik router on site (see router-ups-client-answers.md §3).
-// The feature had no device left to show.
+// A router only needs an IP: with a community it is polled over SNMP, without one by
+// ping (`pingOnly`), which is how ISP-owned equipment is monitored.
 //
-// A UPS still needs an IP + community + communication_type snmp/network. There is
-// no ping fallback for one: a UPS that answers a ping tells you its management card
-// has power, which is not what anybody is monitoring a battery for.
+// A UPS needs an IP, a community and communication_type snmp/network.
 async function loadDevices() {
   const [rows] = await db.query(
     `SELECT d.device_id AS id, d.device_name AS name, d.ip_address AS ip,
@@ -306,18 +259,11 @@ async function loadDevices() {
     .map((r) => ({ ...r, pingOnly: r.type === "router" && !r.community }));
 }
 
-// Record the interfaces this poll discovered. Nothing used to write this table, so
-// `location_label` could never be set for a dashboard-registered router — the admin
-// had no list of port names to label in the first place. Now each poll upserts what
-// the device actually reports, which both populates that list and keeps is_active
-// current as ports are patched in and out.
-//
-// Deliberately preserves location_label on conflict: the label is human-authored and
-// must survive every re-poll. Needs the unique key from
-// the UNIQUE(device_id, interface_name) key that ships in v13_cspc-ictu-monitoring-system.sql —
-// without it ON DUPLICATE KEY
-// never matches and this would append a row per interface per cycle, so the whole
-// thing is skipped (and warned once) when the key is missing.
+// Record the interfaces this poll found, so the admin has a list of ports to label
+// and is_active stays current. location_label is kept on conflict (it is typed by a
+// person). Needs the UNIQUE(device_id, interface_name) key from
+// v13_cspc-ictu-monitoring-system.sql; without it, this is skipped with a warning
+// instead of adding a row per interface per cycle.
 let ifaceUpsertBroken = false;
 async function syncInterfaces(deviceId, interfaces) {
   if (ifaceUpsertBroken || !interfaces?.length) return;
@@ -347,9 +293,8 @@ async function syncInterfaces(deviceId, interfaces) {
   }
 }
 
-// Set the human label for one discovered interface (admin, from the router detail
-// page). Returns false when that device/interface pair isn't one we've discovered —
-// callers turn that into a 404 rather than silently creating an orphan row.
+// Set the label for one discovered interface. Returns false when that device/port
+// was never discovered (the caller returns 404).
 async function setInterfaceLabel(deviceId, interfaceName, label) {
   const id = Number(deviceId);
   if (!Number.isInteger(id)) throw badRequest("Invalid device id.");
@@ -379,17 +324,11 @@ const typeLabel = (d) => (d.type === "ups" ? "UPS" : "Router");
 // status event so the page updates live. Reachability comes straight from the poll.
 async function setReachable(io, d, online) {
   const id = Number(d.id);
-  // Deleted mid-poll — see the tombstone note above. Everything below writes the device
-  // row, the device log, the alert state or the browsers, all of which would resurrect a
-  // device an admin has removed.
+  // Deleted while polling (see above): skip everything below so the device is not
+  // brought back.
   if (isRemoved(id)) return;
-  // Keep the live cache in step with reachability so the list endpoint reflects
-  // an offline device immediately (the success path caches richer data below).
-  // Both branches PRESERVE the last successful readings and only overlay the down
-  // state: replacing the router entry wholesale (interfaces: []) rendered an offline
-  // router with no interfaces at all, discarding exactly the context an operator
-  // needs to see what was connected when it dropped. The UPS branch already did
-  // this; the two are now consistent.
+  // Update the live cache with the reachability, keeping the last readings (including
+  // interfaces) so an offline router still shows what was connected.
   if (!online) {
     if (d.type === "ups") {
       latestUps.set(id, { ...(latestUps.get(id) ?? {}), status: "Offline" });
@@ -410,9 +349,7 @@ async function setReachable(io, d, online) {
   } catch (err) {
     console.error("[SNMP_POLLER] status update error:", describeError(err));
   }
-  // Name the protocol that actually fell silent. "no SNMP response" on a ping-only
-  // router describes a poll that was never attempted, and sends whoever reads the log
-  // off to check a community string the device does not have.
+  // Name the protocol that went silent: "no SNMP response" is wrong for a ping-only router.
   const silent = d.pingOnly ? "no ICMP reply" : "no SNMP response";
   const log = await logDevice(
     d.id,
@@ -431,31 +368,20 @@ async function setReachable(io, d, online) {
 }
 
 // --- Threshold + event alerting -------------------------------------------------
-// Router (link utilization + interface-down) and UPS (charge/runtime/load + on-battery)
-// alerting now lives in deviceAlerts.js: each metric is evaluated against the
-// configurable alert_rules (alertRulesService) and raised through the real notification
-// pipeline (bell/email/Alerts page), shared with the MikroTik poller. This replaced the
-// old hardcoded per-condition checks that used to live here.
+// Router and UPS alerting is in deviceAlerts.js, checked against alert_rules and
+// shared with the MikroTik poller.
 
 // --- Per-device poll ------------------------------------------------------------
 
-// A router with no community string: ICMP is the entire sample. No interfaces, no
-// uptime, no traffic — just whether it answers, how fast, and how much it drops.
-//
-// Unlike the SNMP path this writes the sample even when the device is DOWN. Total
-// loss is a measurement, not an error: `reachable` and `packet_loss_pct` are the
-// only two things a no-SNMP router ever gives us, so dropping the point during an
-// outage would blank the chart at exactly the moment it is worth reading. (The SNMP
-// path has no equivalent — an SNMP timeout yields no partial sample to write.)
+// A router with no community: ping is the whole sample (reachable, latency, loss).
+// Unlike SNMP, the sample is written even when the device is down; those fields are
+// all a ping-only router has, so skipping them would blank the chart during an outage.
 async function pollRouterByPing(io, d) {
   const icmp = await icmpPing.ping(d.ip);
 
-  // A BROKEN PROBE IS NOT AN OUTAGE. If ICMP could not be attempted at all — no `ping`
-  // binary, or the account cannot open a raw socket (systemd's NoNewPrivileges blocks
-  // the setuid/cap_net_raw it needs) — then `reachable:false` is not a measurement, it
-  // is the absence of one. Writing it would mark every ping-only router Offline and
-  // alert on all of them simultaneously: a fleet-wide outage that exists only in the
-  // monitoring. icmpPing has already logged the cause once.
+  // If ping itself could not run (no binary, or no permission, e.g. systemd's
+  // NoNewPrivileges), reachable:false is not a measurement. Writing it would mark
+  // every ping-only router offline at once. icmpPing has already logged why.
   // See audits/logging-monitoring-2026-08-25.md and ops/systemd/README.md.
   if (icmp.probeError) return;
 
@@ -475,13 +401,10 @@ async function pollRouterByPing(io, d) {
   await setReachable(io, d, icmp.reachable);
   if (isRemoved(d.id)) return;
   await writeNetworkSample(io, d, sample);
-  // Safe with an empty sample: cpu/mem/clients are null → NaN and bail, and the
-  // per-interface loop doesn't run. The alert that matters here — the device going
-  // unreachable — is already raised by setReachable → deviceAlerts.checkReachability.
-  //
-  // ⚠️ latency and loss are NOT null on a dead host — icmpPing returns `packetLossPct: 100`
-  // — so this used to raise a second critical, "Packet loss 100%", alongside every outage.
-  // checkRouter now gates those two on `sample.reachable`; see the note there.
+  // Safe with an empty sample: cpu/mem/clients are null and skipped, and there are no
+  // interfaces. The unreachable alert comes from setReachable. Latency and loss are
+  // not null on a down host (loss is 100%), so checkRouter only checks them while the
+  // device answers.
   await deviceAlerts.checkRouter(io, d, sample);
 
   latestNetwork.set(Number(d.id), {
@@ -503,23 +426,19 @@ async function pollRouter(io, d) {
   if (d.pingOnly) return pollRouterByPing(io, d);
 
   const labels = await loadInterfaceLabels(d.id);
-  // Started before the SNMP walk so the two overlap rather than adding their
-  // latencies together. icmpPing.ping never rejects, so this promise is always safe
-  // to await later — including on the SNMP failure path below.
+  // Started before the SNMP walk so the two overlap. icmpPing.ping never rejects, so
+  // awaiting it later is safe, including on the failure path.
   const icmpPromise = icmpPing.ping(d.ip);
 
   let sample;
   try {
     sample = await collectRouter(d.id, connFor(d), labels); // throws if unreachable
   } catch (err) {
-    // Say WHICH of the two failures this is. "Request timed out" alone cannot
-    // distinguish a dead router from a live one with the wrong community string or a
-    // blocked UDP 161 — and those need opposite fixes. §9 of the design doc sends the
-    // operator to run snmpwalk by hand precisely because the log couldn't tell them.
+    // Say which failure it is: a dead router, or a live one with a wrong community or
+    // blocked UDP 161. They need different fixes.
     const icmp = await icmpPromise;
-    // With ICMP unavailable, the combined verdict below would read "SNMP failed AND the
-    // host is unreachable" — the second half being an artefact of the broken probe, not
-    // a finding. Fall back to reporting only what was actually observed.
+    // If ping could not run, report only the SNMP failure; "host unreachable" would come
+    // from the broken probe, not the device.
     if (icmp.probeError) {
       console.warn(
         `[SNMP_POLLER] ${d.name ?? d.ip}: SNMP failed and ICMP is unavailable ` +
@@ -532,9 +451,7 @@ async function pollRouter(io, d) {
     throw err;
   }
 
-  // Latency and packet loss are what SNMP cannot express. An SNMP walk either
-  // answers or times out, so a link that is up but dropping 40% of packets reads as
-  // perfectly healthy right until it flips to a flat Offline.
+  // Latency and packet loss: a link that is up but losing packets looks healthy to SNMP.
   const icmp = await icmpPromise;
   sample.latencyMs = icmp.latencyMs;
   sample.packetLossPct = icmp.packetLossPct;
@@ -550,11 +467,8 @@ async function pollRouter(io, d) {
     mode: "snmp",
     latencyMs: sample.latencyMs,
     packetLossPct: sample.packetLossPct,
-    // sysDescr/sysName were polled every cycle and thrown away. They're the only
-    // vendor/model/hostname the standard MIBs give us — the router equivalent of the
-    // server path's server_specs — so carry them through to the list + detail views.
-    // Cache-only (no schema column exists for a router's model); they repopulate on
-    // the first poll after a restart, same as every other live value here.
+    // sysDescr/sysName (vendor/model/hostname) shown in the list and detail views. Cached
+    // only, since there is no column for them; refilled on the first poll after a restart.
     descr: sample.descr ?? null,
     sysName: sample.sysName ?? null,
     uptimeSeconds: sample.uptimeSeconds,
@@ -594,10 +508,8 @@ async function pollUps(io, d) {
     onBattery: sample.onBattery,
     onBypass: sample.onBypass,
     outputState: sample.outputState,
-    // RFC 1628 upsBatteryStatus (2 normal, 3 low, 4 depleted). Already drives the
-    // battery-replace alert and the broadcast; cached here too so the list endpoint
-    // can surface battery HEALTH, which is distinct from charge level — a battery at
-    // 100% charge can still report "replace".
+    // upsBatteryStatus (2 normal, 3 low, 4 depleted), cached so the list can show
+    // battery health, which is separate from charge level.
     batteryStatus: sample.batteryStatus,
     temperature: sample.temperature,
   });
@@ -617,11 +529,8 @@ async function pollAll(io) {
         if (d.type === "router") await pollRouter(io, d);
         else if (d.type === "ups") await pollUps(io, d);
       } catch (err) {
-        // Unreachable / SNMP error for this device — mark offline, keep going.
-        // The reason is logged, not swallowed: "Request timed out" (device down or
-        // firewalled), "Unknown community" (wrong credential) and a genuine bug in
-        // the collector all previously looked identical from outside — every one just
-        // showed up as a device silently sitting Offline with no way to tell which.
+        // Unreachable or SNMP error for this device: log the reason, mark it offline and
+        // continue. The reason tells "timed out" from "unknown community" from a bug.
         console.error(`[SNMP_POLLER] ${d.type} "${d.name}" (${d.ip}) poll failed:`, describeError(err));
         await setReachable(io, d, false);
       }
@@ -634,33 +543,17 @@ async function pollAll(io) {
 }
 
 /**
- * Poll ONE device right now, out of band, then leave the interval alone.
+ * Poll one device right now, without waiting for the next cycle (up to
+ * SNMP_POLL_INTERVAL_MS). Gives quick feedback after Add instead of a minute of an
+ * empty panel.
  *
- * The poller is data-driven, so a newly registered device was always picked up "within one
- * cycle" — but one cycle is up to SNMP_POLL_INTERVAL_MS (60s by default). From the admin's
- * side that is a minute of an empty panel with no way to tell a slow poller from a wrong IP,
- * a wrong community or a typo'd port. The feedback you want from Add is "it answered", and
- * you want it while you are still looking at the form.
+ * The interval is not reset, so adding several devices does not delay the others. It
+ * runs alongside a cycle (`polling` is not checked); a device polled twice in a row
+ * just gives a small counter change, which the rate math handles.
  *
- * ⚠️ Deliberately NOT a reset of the interval, and not a rescheduled first tick: the cadence
- * is a property of the fleet, not of whichever device was added last, and restarting the
- * timer on every registration would let someone adding six devices push every OTHER device's
- * poll back by six intervals.
- *
- * Runs ALONGSIDE a cycle rather than waiting for one (`polling` is not consulted): the guard
- * exists to stop overlapping full sweeps, and blocking here would reintroduce exactly the
- * wait this removes. A device polled twice in quick succession just produces a small counter
- * delta, which the rate maths already handles.
- *
- * Never throws — callers fire-and-forget it so the HTTP response is not held behind an SNMP
- * timeout, and an unhandled rejection from a background probe would take the process down.
- *
- * Returns `{ ok, reason }` rather than a bare boolean so the caller can TELL SOMEBODY. The
- * failure used to go to the server console alone, which meant an admin who mistyped a
- * community watched a card stay Offline with no way to distinguish that from a device that
- * is simply down. `reason` is the message the console line carries, and routes/network.js
- * forwards it to the admin who did the registering. See deviceProbe.js for the pre-flight
- * check that stops most of these from being created in the first place.
+ * Never throws; callers do not wait so the HTTP response is not held up. Returns
+ * `{ ok, reason }`, which routes/network.js sends to the admin who added the device.
+ * See deviceProbe.js for the check before a device is created.
  */
 export async function pollDeviceNow(io, deviceId) {
   const id = Number(deviceId);
@@ -671,18 +564,13 @@ export async function pollDeviceNow(io, deviceId) {
       if (d.type === "router") await pollRouter(io, d);
       else if (d.type === "ups") await pollUps(io, d);
 
-      // ⚠️ NOT every failure throws. `pollRouter` rethrows a failed SNMP walk, but
-      // `pollRouterByPing` does not — a ping-only router that answers nothing is a
-      // legitimate MEASUREMENT (reachable:false), written and broadcast like any other.
-      // Reading "did not throw" as success therefore reported a router registered on a
-      // wrong IP as "answering ping". The live cache is the one thing every path sets,
-      // including the ones that handle their own failure, so the verdict is read there.
+      // Not every failure throws: pollRouterByPing records an unreachable ping-only router
+      // as a normal result. So the result is read from the live cache, which every path
+      // sets.
       const live = d.type === "ups" ? latestUps.get(id) : latestNetwork.get(id);
       if (live?.status === "Online") return { ok: true, reason: null };
       if (!live) {
-        // pollRouterByPing returns early without writing when ICMP could not be RUN at
-        // all (no `ping` binary, or the account cannot execute it). That is the absence
-        // of an observation, not an outage, and must not be reported as one.
+        // pollRouterByPing writes nothing when ping could not run at all; that is not an outage.
         return { ok: false, reason: "the ICMP probe could not be run on the backend host — see the server log" };
       }
       return {
@@ -690,9 +578,8 @@ export async function pollDeviceNow(io, deviceId) {
         reason: d.pingOnly ? "no ICMP reply" : "no response",
       };
     } catch (err) {
-      // Same treatment as inside pollAll: name the reason, mark it offline, move on. A
-      // device that does not answer its very first poll is the most useful thing this can
-      // report — it usually means the IP, port or community is wrong.
+      // Same as pollAll: log the reason, mark offline, continue. A device that fails its
+      // first poll usually has a wrong IP, port or community.
       const reason = describeError(err);
       console.error(`[SNMP_POLLER] first poll of ${d.type} "${d.name}" (${d.ip}) failed:`, reason);
       await setReachable(io, d, false);
@@ -707,14 +594,9 @@ export async function pollDeviceNow(io, deviceId) {
 
 // ─── Dashboard reads (GET /api/network, /api/ups) ───────────────────────────────
 
-// All routers + their latest live values (status, interfaces, uptime).
-//
-// `mode` tells the UI which kind of device it is looking at: 'snmp' gets the full
-// read, 'ping' gets reachability, latency and loss and nothing else. Both are
-// monitored — the field used to be `monitored: Boolean(community)`, which labelled
-// a ping-only router "not yet pollable" back when that was true. It no longer is,
-// and a page that renders an empty interface table for a device that will never
-// report interfaces reads as broken rather than as a different kind of device.
+// All routers with their latest values (status, interfaces, uptime). `mode` tells
+// the UI what kind of device it is: 'snmp' has the full read, 'ping' only
+// reachability, latency and loss.
 async function getNetworkDevices() {
   const [rows] = await db.query(
     `SELECT d.device_id AS id, d.device_name AS name, d.ip_address AS ip,
@@ -791,41 +673,24 @@ async function getUpsDevices() {
   });
 }
 
-// ─── Device registration (add / remove) — admin, from the dashboard ─────────────
-//
-// The poller is data-driven: loadDevices() runs every cycle, so a device added here
-// starts being polled within one interval (≤ SNMP_POLL_INTERVAL_MS) with NO restart.
-// These replace the old hand-written seed SQL, so the
-// dashboard's "Add router / Add UPS" replaces hand-writing SQL.
-//
-// A community string is REQUIRED for a UPS and OPTIONAL for a router: leaving it
-// blank registers the router for ICMP monitoring instead. It used to be required for
-// both, which meant the form refused the one device class the fallback exists for —
-// an ISP-owned CPE that will never hand out a community string.
+// ─── Device registration (add / remove), admin, from the dashboard ─────────────
+// loadDevices() runs every cycle, so a new device is polled within one interval
+// (≤ SNMP_POLL_INTERVAL_MS) without a restart. A community is required for a UPS
+// and optional for a router (blank = ICMP monitoring).
 
 const trimOrNull = (v) => {
   const s = v == null ? "" : String(v).trim();
   return s === "" ? null : s;
 };
 
-// Reject a device whose SNMP endpoint is already registered. The identity of an
-// endpoint is (ip, port, community) — NOT the IP alone: one host can legitimately
-// expose several SNMP contexts on different communities, which is exactly what the
-// dev simulator does (router and UPS both answer on 127.0.0.1:1161, told apart by
-// community). An exact triple match is unambiguously a double-registration, which
-// would poll the box twice and split its history across two device_id-tagged series.
-// A PING-ONLY device has no community, so its endpoint identity collapses to the IP
-// alone — there is no second ICMP context to tell two entries at one address apart.
-// `= NULL` is never true in SQL, so this needs its own branch: without it the guard
-// silently matched nothing and every re-submit of the add form created another
-// duplicate router.
-// ⚠️ The community half of the comparison happens in JS, not in SQL, and has to.
-// `snmp_community` is now AES-256-GCM ciphertext with a random IV (communityCrypto.js),
-// so the same string encrypts to a different value every time and `n.snmp_community = ?`
-// would match nothing — turning this guard into a no-op and letting every re-submit of
-// the add form create another duplicate router, which is the precise bug the `= NULL`
-// branch below was written to fix. So the query narrows on (ip, port) — indexed, and a
-// handful of rows at this scale — and the credential is compared after decryption.
+// Reject a device whose SNMP endpoint is already registered. An endpoint is
+// (ip, port, community), not just the IP: one host can answer on several communities
+// (the dev simulator does). A ping-only device has no community, so its identity is
+// the IP alone; `= NULL` is never true in SQL, so it has its own branch.
+//
+// The community is compared in JS after decryption: it is stored as AES-GCM with a
+// random IV, so `snmp_community = ?` would never match. The query narrows on
+// (ip, port) first.
 async function assertEndpointFree(conn, ip, snmpPort, community) {
   const [rows] = community
     ? await conn.query(
@@ -856,12 +721,8 @@ async function assertEndpointFree(conn, ip, snmpPort, community) {
   }
 }
 
-// Validate the fields shared by both device classes, or throw a 400.
-//
-// `communityRequired` is false for a ROUTER, where a blank community is a real
-// choice — it registers the device for ICMP monitoring instead. It stays true for a
-// UPS: there is no ping fallback for a battery, so a UPS without a community would
-// be a row that can never report the values it exists to report.
+// Validate the fields both device types share, or throw a 400. `communityRequired`
+// is false for a router (blank means ICMP monitoring) and true for a UPS.
 function parseCommon(input, { communityRequired = true } = {}) {
   const name = String(input?.name ?? "").trim();
   const ip = String(input?.ip ?? "").trim();
@@ -880,9 +741,8 @@ function parseCommon(input, { communityRequired = true } = {}) {
   };
 }
 
-// Register a router/switch: devices (type router) + its device_network row, in one
-// transaction. Returns the row shaped exactly like a getNetworkDevices() item so the
-// caller can broadcast/return it directly.
+// Register a router: the devices row (type router) and its device_network row, in
+// one transaction. Returns it in the same shape as a getNetworkDevices() item.
 async function addNetworkDevice(input) {
   // A blank community is allowed here and means "monitor this one by ping".
   const { name, ip, community, location, snmpPort } = parseCommon(input, { communityRequired: false });
@@ -938,9 +798,9 @@ async function addNetworkDevice(input) {
   }
 }
 
-// Register a UPS: devices (type ups) + device_network + ups_details, in one
-// transaction. communication_type must be snmp/network (the poller only reads those).
-// Returns the row shaped like a getUpsDevices() item.
+// Register a UPS: devices (type ups), device_network and ups_details, in one
+// transaction. communication_type must be snmp/network. Returns it in the same
+// shape as a getUpsDevices() item.
 async function addUpsDevice(input) {
   const { name, ip, community, location, snmpPort } = parseCommon(input);
   const commType = ["snmp", "network"].includes(input?.commType) ? input.commType : "snmp";
@@ -1001,10 +861,10 @@ async function addUpsDevice(input) {
   }
 }
 
-// Decommission a router/UPS: delete the devices row (device_network / ups_details /
-// network_interfaces cascade via their FKs). Also drops this device's in-memory poll
-// state so a later id reuse can't inherit stale counters/bands. Returns false if no
-// such device of that type. InfluxDB history is left intact.
+// Remove a router/UPS: deleting the devices row cascades to device_network,
+// ups_details and network_interfaces. Also clears the in-memory poll state so a
+// reused id starts clean. Returns false if there is no such device. InfluxDB history
+// is kept.
 async function removeDevice(id, type) {
   const deviceId = Number(id);
   if (!Number.isInteger(deviceId)) throw badRequest("Invalid device id.");
@@ -1038,9 +898,8 @@ export default {
   pollAll,
   pollDeviceNow,
   getLiveUps,
-  // Exported for services/reachabilitySweep.js, which decides WHEN a device is
-  // unreachable on a fast ICMP cadence but must not reimplement what that MEANS —
-  // the device row, the log line, the socket event and the alert all live here.
+  // Exported for services/reachabilitySweep.js, which decides when a device is
+  // unreachable; the status change itself (row, log, socket event, alert) stays here.
   setReachable,
   collectRouter,
   collectUps,

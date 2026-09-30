@@ -6,19 +6,15 @@ import { BRAND } from "../../branding";
 import PolicyDocument from "./PolicyDocument";
 
 /**
- * Public /privacy page — deliberately reachable WITHOUT a session.
- *
- * A privacy notice you can only read after signing in and agreeing to it is not a
- * notice. This route is registered ahead of the auth redirect in App.tsx for that
- * reason; see the comment there.
+ * Public /privacy page, reachable without signing in. Registered before the auth
+ * redirect in App.tsx.
  */
 export default function PrivacyTerms() {
   const { theme, toggleTheme } = useTheme();
   const [version, setVersion] = useState<string>("");
 
-  // The version in force comes from the backend, so it can never drift from the
-  // value that gets written into an acceptance record. If the API is unreachable
-  // the document still renders in full — only the stamp is omitted.
+  // The version comes from the backend, so it matches what acceptances record. If the API
+  // is unreachable the document still shows, without the version stamp.
   useEffect(() => {
     let alive = true;
     void api.policyVersion().then((r) => {

@@ -14,20 +14,15 @@ import (
 	"cspc-ictu/agent/internal/logger"
 )
 
-// ErrUnauthorized means the backend rejected the agent's token with HTTP 403 —
-// i.e. this server was removed/deauthorized. Retrying won't help; the caller
-// can treat repeated occurrences as "I've been decommissioned".
+// ErrUnauthorized means the backend rejected the agent's token with 403, i.e. this
+// server was removed. Retrying will not help.
 var ErrUnauthorized = errors.New("agent token rejected by backend (403)")
 
 const (
-	// maxSpool bounds the in-memory backlog kept while the backend is unreachable
-	// — 240 samples is ~40 min at the default 10s cadence. Oldest are dropped
-	// first: recent history is what anyone actually looks at after an outage.
-	//
-	// In memory ON PURPOSE, not on disk. The realistic outage is "backend down for
-	// maintenance", which the agent survives; an agent restart is a separate event
-	// and writing a spool file would put unbounded churn on the flash of every
-	// monitored host to cover it.
+	// maxSpool limits the in-memory backlog kept while the backend is unreachable: 240
+	// samples is ~40 minutes at the default 10s. The oldest are dropped first.
+	// In memory, not on disk: the common case is the backend being down for a while, which
+	// the agent survives; writing a spool file would add constant disk writes on every host.
 	maxSpool = 240
 
 	// maxBatch must match MAX_BATCH in backend/handlers/serverMetricsHandler.js —
@@ -41,9 +36,8 @@ type Sender struct {
 	apiURL string
 	token  string
 	client *http.Client
-	// quick carries the heartbeat and the shutdown notice. Both are only worth
-	// anything if they arrive NOW: a heartbeat that takes 10s to land has already
-	// been declared missing, and a shutdown notice has seconds before the OS kills us.
+	// quick carries the heartbeat and the shutdown notice, which are only useful if they
+	// arrive right away.
 	quick *http.Client
 	spool []collector.Payload
 }
@@ -58,9 +52,8 @@ func New(apiURL, token string) *Sender {
 	}
 }
 
-// Heartbeat tells the backend this server is still alive. Empty body, one attempt:
-// the next beat is two seconds away, so retrying would only pile requests up behind
-// a slow link. Returns ErrUnauthorized on a 403 like Send.
+// Heartbeat tells the backend this server is still alive. Empty body, one attempt (the
+// next beat is two seconds away). Returns ErrUnauthorized on a 403, like Send.
 func (s *Sender) Heartbeat() error {
 	status, err := s.postWith(s.quick, s.apiURL+"/api/servers/heartbeat", nil)
 	if status == http.StatusForbidden {
@@ -69,10 +62,10 @@ func (s *Sender) Heartbeat() error {
 	return err
 }
 
-// NotifyShutdown tells the backend this server is going away, so it raises the
-// alert immediately instead of waiting for the heartbeat to go quiet. reason is
-// "shutdown" (the OS is shutting down or restarting) or "stopped" (only the agent).
-// Best-effort by nature — if it does not arrive, the missed heartbeats still do.
+// NotifyShutdown tells the backend this server is going away, so the alert is raised
+// right away instead of after missed heartbeats. reason is "shutdown" (the OS is
+// shutting down or restarting) or "stopped" (only the agent). Best-effort; missed
+// heartbeats still catch it.
 func (s *Sender) NotifyShutdown(reason string) error {
 	body, _ := json.Marshal(map[string]string{"reason": reason})
 	_, err := s.postWith(s.quick, s.apiURL+"/api/servers/shutdown", body)
@@ -93,9 +86,8 @@ func (s *Sender) buffer(p collector.Payload) {
 	s.spool = append(s.spool, p)
 }
 
-// flushSpool replays buffered samples oldest-first, in chunks. Stops at the first
-// failed chunk and keeps everything still unsent, so a flaky link makes progress
-// instead of losing the backlog. Returns ErrUnauthorized if the token is revoked.
+// flushSpool sends buffered samples oldest first, in chunks. Stops at the first failed
+// chunk and keeps what is unsent. Returns ErrUnauthorized if the token is revoked.
 func (s *Sender) flushSpool() error {
 	url := s.apiURL + "/api/servers/metrics/batch"
 
@@ -129,18 +121,15 @@ func (s *Sender) flushSpool() error {
 	return nil
 }
 
-// Send POSTs metrics with up to 3 attempts and exponential backoff. It never
-// crashes on a backend outage — it buffers the sample, logs, and gives up until
-// the next cycle. Returns ErrUnauthorized immediately on a 403 (no point retrying
-// a revoked token), nil on success, or a generic error after exhausting retries.
+// Send POSTs metrics with up to 3 attempts and exponential backoff. It never crashes on a
+// backend outage: it buffers the sample, logs, and waits for the next cycle. Returns
+// ErrUnauthorized right away on a 403, nil on success, or an error after the retries.
 //
-// A sample that fails to send is spooled and replayed once the backend is back,
-// so an outage leaves a gap in the dashboard's LIVE view but not in the stored
-// history. The fresh sample goes FIRST and the backlog drains after it: that POST
-// is what proves the link is back, and it drives the live status/alerts, so it
-// must not wait behind up to four backfill batches. Arrival order doesn't affect
-// history — each buffered sample carries its own collected_at, and InfluxDB
-// orders points by timestamp, not by when they were written.
+// A sample that fails is buffered and replayed when the backend is back, so an outage
+// leaves a gap in the live view but not in the stored history. The new sample is sent
+// first and the backlog after it, since that post confirms the link and drives live
+// status and alerts. Order does not matter for history: each buffered sample has its
+// own collected_at.
 func (s *Sender) Send(p collector.Payload) error {
 	body, err := json.Marshal(p)
 	if err != nil {

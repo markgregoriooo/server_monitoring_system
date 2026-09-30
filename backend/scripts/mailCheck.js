@@ -1,15 +1,11 @@
 import "../config/env.js";
 import emailService from "../services/emailService.js";
 
-// Standalone SMTP check — `npm run mail:check [recipient@example.com]`.
+// SMTP check ─ `npm run mail:check [recipient@example.com]`.
 //
-// Without an argument it only connects + authenticates (nothing is sent). With a
-// recipient it also sends one real test alert, which is the only way to prove the
-// whole path end to end: auth, From acceptance, and actual delivery.
-//
-// Run this after changing SMTP_* / MAIL_FROM so a wrong App Password shows up here
-// instead of silently swallowing the first real alert (raiseAlert treats email as
-// best-effort and never surfaces the failure to the UI).
+// Without an argument it only connects and signs in (nothing is sent). With a
+// recipient it also sends one test alert, which checks sign-in, the From address and
+// delivery. Run it after changing SMTP_* / MAIL_FROM; real alert email fails silently.
 
 const recipient = process.argv[2];
 

@@ -3,16 +3,14 @@ import { createPortal } from "react-dom";
 import { usePip } from "./PipContext";
 import PipWidget from "./PipWidget";
 
-// Shell-level owner of the PiP window's content — the sibling of ToastHost. When a
-// window is open it portals the widget into pipWindow.document.body, so the content
-// stays inside the main React tree (live socket/contexts) while rendering in another
-// window. It renders PipWidget, which reads the user's saved layout.
+// Renders the widget into the PiP window (next to ToastHost in the shell). It portals
+// into pipWindow.document.body, so the content stays in the main React tree (live
+// socket and contexts) while showing in the other window.
 export default function PipHost() {
   const { pipWindow } = usePip();
 
-  // Click-through: clicking anywhere in the floating widget brings the main app window
-  // forward ("jump back"). Uses a NATIVE listener, not React onClick — React 18 event
-  // delegation doesn't reach a portal in a separate document. See pip-widget.md §9.
+  // Clicking anywhere in the widget brings the main window forward. A native listener,
+  // since React events do not reach a portal in another document. See pip-widget.md §9.
   useEffect(() => {
     if (!pipWindow) return;
     const onClick = () => {

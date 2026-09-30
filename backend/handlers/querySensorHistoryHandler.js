@@ -5,12 +5,10 @@ const VALID_QUICK_RANGES = new Set([
   "-30m", "-1h", "-3h", "-6h", "-12h", "-24h", "-2d", "-7d", "-30d",
 ]);
 
-// No window may be SMALLER than the store cadence in services/envPersistPolicy.js
-// (ENV_PERSIST_INTERVAL_MS, 30s default). A stable room now yields one point per 30s, so a
-// 10s or 20s window would mostly contain nothing, and `createEmpty: false` drops empty
-// windows — the chart would come back with two thirds of its points missing. -30m and -1h
-// were 10s/20s when every 3s reading was stored; they are now 30s/1m. Raising the store
-// interval means raising these to match.
+// No window may be smaller than the store interval in services/envPersistPolicy.js
+// (ENV_PERSIST_INTERVAL_MS, 30s). A stable room stores one point per 30s, and empty
+// windows are dropped, so a smaller window would leave most points missing. Raise
+// these if the store interval is raised.
 const WINDOW_MAP = {
   "-30m": "30s", "-1h": "1m",  "-3h":  "1m",  "-6h": "2m",
   "-12h": "5m",  "-24h": "10m", "-2d": "20m", "-7d": "1h", "-30d": "3h",
@@ -39,24 +37,10 @@ export function sendSensorHistory(socket, range = "-1h") {
   }
 
   // ── Numeric fields query (aggregated) ─────────────────────────────
-  //
-  // `group(columns: ["_field"])` is load-bearing and must stay BEFORE aggregateWindow.
-  // sensor_environment is written with three TAGS (smoke_status / temp_status /
-  // environment_status — see handlers/sensorHandler.js), so they sit in the Flux group key
-  // and split the result into one table per status COMBINATION. Two things went wrong:
-  //
-  //   1. Ordering. `sort()` orders rows within each table, never across them, and
-  //      queryRows streams table by table — so the rows arrived Jul→Aug, then Jul→Aug
-  //      again for the next combination. On a 30-day range the room crosses status bands
-  //      often enough that the x-axis read "Jul, Aug, Jul, Aug, Jul". Short ranges looked
-  //      fine only because the statuses rarely change within an hour (one table).
-  //   2. Wrong means. `fn: mean` was averaging each status subgroup separately, producing
-  //      several partial means at the SAME _time, of which the map below kept whichever
-  //      streamed last. The plotted value was the mean of an arbitrary subset of the
-  //      window rather than of the window.
-  //
-  // Grouping by `_field` alone collapses the tags, so each field is one continuous series:
-  // one mean per window over all of it, one table out of pivot, and a global sort.
+  // Keep `group(columns: ["_field"])` before aggregateWindow. The three status tags
+  // split the result into one table per status combination, which broke the time
+  // order on long ranges and averaged each subgroup separately. Grouping by field
+  // gives one continuous series per field.
   const numericQuery = `
     from(bucket: "${bucket}")
       |> range(${safeRangeClause})
@@ -75,18 +59,10 @@ export function sendSensorHistory(socket, range = "-1h") {
   `;
 
   /* ── Per-sensor gas (`sensor_gas`, one series per channel) ──────────────────────────
-     A THIRD query rather than more fields on the first, because these points carry a
-     `channel` TAG: pivoting them into the numeric query would either collapse the channels
-     together or split every row by channel, and the numeric query's `group(["_field"])` is
-     load-bearing for exactly the opposite reason (see the note above it).
-
-     Grouped by channel so each sensor is its own continuous series, and left as a per-row
-     `gas` object rather than flattened into gas_1/gas_2/... fields: the number of sensors is
-     data now, and a fixed set of field names is the thing this whole change was undoing.
-
-     ⚠️ The legacy mq2_1_ppm/mq2_2_ppm fields STAY in the numeric query. They are the only
-     gas history that exists from before the cutover, so dropping them would blank every
-     chart older than today. A row carries whichever it has; the client prefers `gas`. */
+     A separate query because these points carry a `channel` tag. Grouped by channel,
+     and returned as a per-row `gas` object since the number of sensors can change.
+     The legacy mq2_1_ppm/mq2_2_ppm fields stay in the numeric query because older
+     history only has those. The client prefers `gas`. */
   const gasQuery = `
     from(bucket: "${bucket}")
       |> range(${safeRangeClause})
@@ -149,9 +125,8 @@ export function sendSensorHistory(socket, range = "-1h") {
             next(row, tableMeta) {
               const d = tableMeta.toObject(row);
               const entry = numericMap.get(d._time);
-              // Only attach to windows the numeric query already produced. A gas point with
-              // no matching environment row would be a row with no temperature, humidity or
-              // status — which the chart would draw as a gap in everything else.
+              // Only attach gas to windows the numeric query returned; otherwise the row would
+              // have no temperature or humidity and show as a gap.
               if (!entry || d._value == null) return;
               (entry.gas ??= {})[String(d.channel)] = d._value;
             },
@@ -168,11 +143,8 @@ export function sendSensorHistory(socket, range = "-1h") {
   });
 
   function emitHistory() {
-    // Belt and braces on the Flux `sort` above: this array's order is really the
-    // MAP'S INSERTION order, which is whatever order rows streamed in. The chart
-    // plots it as given — a category axis, so it draws points in array order and
-    // cannot re-sort them — and every consumer reads "latest" as the last element.
-    // Sorting here means neither depends on how Flux happens to table the result.
+    // Sort by time here as well: the array order is the map's insertion order, and the
+    // chart plots points in array order.
     const history = Array.from(numericMap.values())
       .sort((a, b) => new Date(a.time) - new Date(b.time));
     console.log("[HISTORY] Sent:", history.length, "records");

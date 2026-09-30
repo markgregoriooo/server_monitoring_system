@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // ── Document Picture-in-Picture ────────────────────────────────────────────────
-// Chromium-only (Chrome/Edge 116+) and not yet in TS's DOM lib, so we declare the
-// slice of the API we touch. This is the "Google Meet pop-out" API — a real,
-// always-on-top window with its own (initially blank) document. We render React
-// into it via createPortal (see PipHost), so it stays in the main app's React tree
-// and keeps live socket/context access. The only thing that doesn't cross the
-// document boundary is CSS — so on open we clone the stylesheets + theme class.
+// Chromium only (Chrome/Edge 116+) and not in TypeScript's DOM types yet, so the parts
+// we use are declared here. It opens an always-on-top window with its own document. We
+// render into it with createPortal (see PipHost), so it keeps the app's live state.
+// CSS does not carry over, so on open the stylesheets and theme class are copied.
 
 interface DocumentPiPOptions {
   width?: number;
@@ -34,9 +32,8 @@ export interface PictureInPicture {
   close: () => void;
 }
 
-// Clone every <style> / <link rel="stylesheet"> from the main document into the PiP
-// document, in order. All our theming is CSS custom props on :root (--gf-*) +
-// Tailwind utilities, so this makes the whole design system work inside the widget.
+// Copy every <style> / <link rel="stylesheet"> into the PiP document, in order. The
+// theme is CSS variables (--gf-*) plus Tailwind, so this makes it all work in the widget.
 function cloneStyles(win: Window) {
   const nodes = document.querySelectorAll('style, link[rel="stylesheet"]');
   nodes.forEach((node) => win.document.head.appendChild(node.cloneNode(true)));

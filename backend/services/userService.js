@@ -1,14 +1,12 @@
 import db from "../config/mysql.js";
-// Statusless throws defaulted to 500, which the central handler refuses to describe to
-// the client — so "Email already exists." reached the user as "Server error. Please try
-// again later." See audits/error-handling-report-2026-08-25.md — E-04.
+// A throw without a status became a 500, so "Email already exists." reached the user
+// as "Server error". See audits/error-handling-report-2026-08-25.md (E-04).
 import { badRequest, notFound, conflict } from "../utils/httpError.js";
 import { PREF_DEFAULTS } from "./notificationService.js";
 
-// ─── Role & status vocabularies ───────────────────────────────────────────────
-// `validRoles` was written out three times and `validStatuses` twice — and the two
-// status lists DIFFER. That looked like a copy that had drifted; it is not, and naming
-// them is how that stops being ambiguous. See audits/code-duplication-report-2026-08-25.md — R-15.
+// ─── Role & status values ───────────────────────────────────────────────
+// The two status lists are different on purpose (see below).
+// See audits/code-duplication-report-2026-08-25.md (R-15).
 
 /** Every role a user row may hold. */
 export const ROLES = Object.freeze(["admin", "it_staff"]);
@@ -16,36 +14,23 @@ export const ROLES = Object.freeze(["admin", "it_staff"]);
 /** Every state a user row may hold. */
 export const USER_STATUSES = Object.freeze(["pending", "active", "inactive", "rejected"]);
 
-/** The subset an admin may TOGGLE between — deliberately narrower than USER_STATUSES.
- *  `pending` and `rejected` are outcomes of the approval flow, reached by approving or
- *  rejecting a registration, never by flipping a switch on an existing account. */
+/**
+ * The statuses an admin can switch between. `pending` and `rejected` only come from
+ * approving or rejecting a registration.
+ */
 export const TOGGLEABLE_STATUSES = Object.freeze(["active", "inactive"]);
 
-// ─── Last-admin invariant (best practice) ─────────────────────────────────────
-// The system must always retain at least one ACTIVE admin. These helpers back the
-// server-side guard so removing/disabling/demoting the final admin is rejected even
-// via a direct API call (the UI button-hiding is only a convenience on top).
+// ─── Keep at least one active admin ─────────────────────────────────────
+// Removing, disabling or demoting the last admin is refused on the server, even
+// through a direct API call (the UI hiding the button is only a convenience).
 
-// Count active admins OTHER than `excludeId`.
-// ─── The last-admin guard, made atomic ────────────────────────────────────────
-//
-// Counting admins and then writing is a check-then-act race. Two admins demoting,
-// disabling or deleting *each other* at the same moment each read "1 other admin
-// exists", each passed the guard, and both writes landed — leaving ZERO admins.
-//
-// That is not a recoverable state from inside the app: no admin means nobody can
-// approve a registration or promote anyone, and the documented way out is editing
-// MySQL by hand (deployment-guide.md §4.3). Rare, but the cost of losing the race is
-// the whole administrative surface of the system.
-//
-// `FOR UPDATE` is what actually fixes it — not the count. It takes write locks on the
-// surviving admin rows, so a second transaction attempting the same demotion BLOCKS
-// until the first commits, then re-reads and correctly sees zero. A plain SELECT in
-// REPEATABLE READ would happily give both transactions the same stale snapshot, which
-// is precisely how the bug worked.
-//
-// Callers pass their own connection so the guard and the write share one transaction;
-// a guard in a different transaction from its write is the same race with extra steps.
+// Count active admins other than `excludeId`.
+// ─── The last-admin check, done atomically ────────────────────────────────────────
+// Two admins demoting or deleting each other at the same moment could both see "one
+// other admin exists" and leave zero admins, which can only be fixed in MySQL.
+// `FOR UPDATE` locks the remaining admin rows, so the second transaction waits for the
+// first and then sees the real count. Callers pass their own connection so the check
+// and the write are one transaction.
 async function assertNotLastAdmin(conn, excludeId) {
   const [[row]] = await conn.query(
     `SELECT COUNT(*) AS n FROM users
@@ -129,14 +114,10 @@ const userService = {
     return rows[0] ?? null;
   },
 
-  // Refresh the profile facts Google owns, on every sign-in. Without this they
-  // freeze at registration: lh3.googleusercontent.com photo URLs rotate (so
-  // avatars quietly 404 over months) and a name change never reaches the UI.
-  //
-  // `email` is only passed when the user was matched by google_sub AND Google's
-  // address differs — i.e. a genuine rename of an existing account. It is skipped
-  // if another row already holds that address, since users.email is UNIQUE and a
-  // duplicate-key error here would turn a valid login into a 500.
+  // Refresh the profile fields Google owns on every sign-in (photo URLs change, names
+  // change). `email` is only passed when the user was matched by google_sub and Google's
+  // address changed (a real rename). It is skipped if another row already has that
+  // address, since users.email is UNIQUE.
   async syncGoogleProfile(userId, { name, picture = null, email = null } = {}) {
     let nextEmail = null;
     if (email) {
@@ -201,21 +182,10 @@ const userService = {
       [name, username, normEmail, googleSub, picture, avatar],
     );
 
-    // Write this account's notification preferences NOW, rather than leaving the row
-    // absent until the first time somebody presses Save on the Settings page.
-    //
-    // An absent row means the EMAIL channel is decided by whatever fallback
-    // notificationService happens to carry, and for most of this system's life that
-    // fallback was ON: an account began receiving critical alert email the moment an
-    // admin approved it, which is before its owner has signed in once, seen a dashboard,
-    // or been shown the Privacy Notice. Recording the decision here means a later change
-    // to that fallback cannot silently re-subscribe people who never asked.
-    //
-    // Best-effort on purpose, and this is one of the few best-effort writes that is
-    // genuinely safe to lose: the fallback now agrees with what this row would say
-    // (PREF_DEFAULTS), so losing it leaves the account quiet rather than loud. Failing a
-    // registration over a preferences row would lock somebody out of the system to
-    // protect a default they already have.
+    // Save this account's notification preferences now instead of relying on a fallback,
+    // so email stays off until the person turns it on (a later change to the fallback
+    // cannot subscribe them). Best-effort: the fallback matches this row, so losing it
+    // changes nothing, and a registration should not fail over it.
     try {
       await db.query(
         `INSERT INTO notification_prefs (user_id, email_enabled, popup_enabled)
@@ -276,10 +246,9 @@ const userService = {
     return row;
   },
 
-  // Admin: reject a pending registration. The row is KEPT (status='rejected') for
-  // the audit trail and blocks future sign-in. To undo, set the account back to
-  // 'active' from User Management (the Enable action / the edit modal) — deleting
-  // the row is not required, and would throw the audit trail away with it.
+  // Admin: reject a pending registration. The row is kept (status='rejected') for the
+  // audit trail and blocks sign-in. To undo, set the account back to 'active' in User
+  // Management.
   async rejectUser(id) {
     const [[user]] = await db.query("SELECT status FROM users WHERE user_id = ? LIMIT 1", [id]);
     if (!user) throw notFound("User not found.");
@@ -289,28 +258,12 @@ const userService = {
     return true;
   },
 
-  // ─── createUser / changeOwnPassword REMOVED (2026-08-25) ────────────────────
-  //
-  // Both were password code with no login path behind them. Sign-in has been
-  // Google-only since the password login was deleted, so nothing reads
-  // `users.hash_password` — every row has it NULL, which also made
-  // `changeOwnPassword` throw on `bcrypt.compare(input, null)` and answer 500 for
-  // every user who could reach it. Neither had a caller in the frontend.
-  //
-  // Deleted rather than left dormant: an authentication code path that nobody calls,
-  // nobody tests and nobody reads is where a real vulnerability goes unnoticed. The
-  // `bcryptjs` dependency went with them. `users.hash_password` stays as a nullable,
-  // all-NULL column — dropping it is a migration with no security value, since there
-  // is nothing in it. See audits/auth-flow-security-2026-08-25.md — AF-03.
+  // createUser and changeOwnPassword were removed on 2026-08-25: sign-in is Google-only,
+  // so nothing reads users.hash_password (all NULL). bcryptjs went with them.
+  // See audits/auth-flow-security-2026-08-25.md (AF-03).
 
-  // UPDATE USER -admin — username / role / status only.
-  //
-  // `name` and `email` are deliberately NOT updatable: Google owns them and
-  // syncGoogleProfile() rewrites them on the user's next sign-in, so an admin's edit
-  // would silently revert. Email is also the identity key the Google login matches on.
-  // They are passed through COALESCE below purely so a caller omitting them can never
-  // blank the columns (the previous version wrote every field unconditionally, so a
-  // missing `name` would have stored NULL).
+  // Admin update of a user: username, role and status only. Name and email come from
+  // Google and are re-synced at sign-in; COALESCE keeps an omitted field unchanged.
   async updateUser(id, data) {
     const { username, role, status } = data;
 
@@ -399,9 +352,8 @@ const userService = {
       needsLastAdminGuard = true;
     }
 
-    // F-02: disabling an account revokes its live token immediately.
-    // Guard + write share ONE transaction: two concurrent disables would otherwise
-    // both pass a separate count and leave the system with no admins.
+    // Disabling an account revokes its token right away. The last-admin check and the
+    // write are one transaction.
     await inTransaction(async (conn) => {
       if (needsLastAdminGuard) {
         const [[target]] = await conn.query(
@@ -457,9 +409,8 @@ const userService = {
       throw notFound("User not found.");
     }
 
-    // Never delete the last active admin — the system would be left with no admins,
-    // and no way back except editing MySQL by hand. Guard and write share ONE
-    // transaction so two concurrent deletes cannot both pass. See assertNotLastAdmin.
+    // Never delete the last active admin. The check and the delete are one transaction.
+    // See assertNotLastAdmin.
     const target = rows[0];
     return await inTransaction(async (conn) => {
       if (target.role === "admin" && target.status === "active") {
@@ -469,14 +420,8 @@ const userService = {
     });
   },
 
-  // UPDATE OWN PROFILE — USERNAME ONLY.
-  //
-  // name / email / profile_image are owned by GOOGLE. googleAuthService calls
-  // syncGoogleProfile() on every sign-in, so anything written here would be
-  // overwritten at the next login — the change would appear to "work", then
-  // silently revert. email is also the account's identity key, so letting a user
-  // edit it could point their row at someone else's address entirely.
-  // `username` is ours alone and Google never touches it.
+  // Update own profile: username only. Name, email and photo come from Google and are
+  // overwritten at every sign-in; email is also how the account is matched.
   async updateOwnProfile(userId, { username }) {
     const [rows] = await db.query("SELECT * FROM users WHERE user_id = ?", [
       userId,

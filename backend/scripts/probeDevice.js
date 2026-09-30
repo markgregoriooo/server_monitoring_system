@@ -2,24 +2,11 @@ import { probe } from "../services/deviceProbe.js";
 import { PROBE_CODE } from "../services/deviceProbeVerdict.js";
 
 // ─── npm run probe -- <ip> [community] [port] ─────────────────────────────────
-//
-// Answers the one question you must settle before registering ANY device:
-// "can this box be monitored, and how?"
-//
-// It is the `snmpwalk` step from router-ups-monitoring.md §9 — except snmpwalk is
-// a net-snmp CLI tool that does not ship with Windows, which is what every dev on
-// this project is using. This runs the SAME code the poller runs (services/
-// snmpClient.js + services/icmpPing.js) against one address and prints the verdict,
-// so there is nothing to install and no second implementation to drift.
-//
-// Since 2026-09-21 the measuring and the verdict both live in services/deviceProbe.js
-// + services/deviceProbeVerdict.js, because the dashboard's **Test connection** button
-// on the Add router / Add UPS forms asks exactly this question and must not answer it
-// differently. This file is now the PRESENTATION of that probe and nothing else.
-//
-// Deliberately touches NO database and NO InfluxDB: the chain imports only snmpClient
-// (net-snmp + the pure snmpUtils) and icmpPing, so it runs before anything is
-// configured — which is exactly when you need it.
+// "Can this device be monitored, and how?" Run it before registering a device.
+// Replaces the `snmpwalk` step in router-ups-monitoring.md §9 (snmpwalk does not come
+// with Windows). Uses services/deviceProbe.js and deviceProbeVerdict.js, the same code
+// as the Test connection button, so both give the same answer. No database or
+// InfluxDB needed.
 //
 //   cd backend
 //   npm run probe -- 192.168.1.1              # is my router SNMP or ping-only?
@@ -48,18 +35,15 @@ ${C.bold}Usage:${C.reset} npm run probe -- <ip> [community] [port]
   process.exit(1);
 }
 
-// The CLI defaults the community to "public" where the FORM deliberately does not: here
-// you are exploring an unknown address, there a blank community is an explicit choice to
-// register the device for ICMP monitoring. See deviceProbe.probe().
+// The CLI defaults the community to "public"; the form does not, because there a blank
+// community means ICMP monitoring. See deviceProbe.probe().
 const community = communityArg || "public";
 const port = Number(portArg) || 161;
 
 console.log(`\n${C.bold}Probing ${C.cyan}${ipArg}${C.reset}${C.bold}${C.reset}  ${dim(`(SNMP community "${community}", UDP ${port})`)}\n`);
 
-// `expect: "router"` only steers the wording of the verdict line; every MIB is asked
-// and reported regardless, which is the whole point of an exploratory probe. The UPS
-// case is still called out below off `ups.isUps`, not off what was expected.
-// 4 echoes rather than the form's 2 — nobody is watching a spinner here.
+// `expect: "router"` only affects the verdict wording; every MIB is still checked and
+// reported. 4 pings rather than the form's 2.
 const r = await probe(ipArg, { community, port, expect: "router", pingCount: 4 });
 
 if (!r.ok) {
@@ -124,9 +108,8 @@ if (r.snmp.answered) {
 }
 
 // ── Verdict ───────────────────────────────────────────────────────────────────
-// The point of the whole script: say what to DO, not just what was seen. The decision
-// itself is deviceProbeVerdict.verdictFor — the same one the Add form shows — so this
-// block only chooses the colour and appends the concrete form fields to type in.
+// Says what to do next. The decision is deviceProbeVerdict.verdictFor (same as the
+// Add form); this only picks the colour and adds the form fields to fill in.
 console.log(`\n${C.bold}Verdict${C.reset}`);
 
 const v = r.verdict;

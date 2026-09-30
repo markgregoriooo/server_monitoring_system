@@ -9,13 +9,9 @@ import {
   scopeConflictError,
 } from "../services/alertRuleValidation.js";
 
-// Characterisation tests for the alert-rule gate. Written to pin the behaviour of the
-// original alertRulesService.clean() BEFORE it was turned into a spec table, so the
-// refactor could be proven not to change what gets accepted or rejected.
-//
-// This is the only validation standing between a client payload and `alert_rules`, and
-// alerting is rules-only: a rule that slips through wrong is a silent alarm or a false
-// one. See audits/code-complexity-report-2026-08-25.md — C-01.
+// Tests for the alert-rule validation, written against the original
+// alertRulesService.clean() before it became a table, to prove the rewrite accepts
+// and rejects the same input. See audits/code-complexity-report-2026-08-25.md (C-01).
 
 const VALID = {
   metricName: "cpu",
@@ -90,7 +86,7 @@ test("comparison and severity are closed vocabularies", () => {
   for (const sev of SEVERITIES) {
     assert.equal(cleanRule({ ...VALID, severity: sev }).severity, sev);
   }
-  // '=' is deliberately unsupported — it gives no useful hysteresis.
+  // '=' is not supported; it cannot have hysteresis.
   assert.throws(() => cleanRule({ ...VALID, comparison: "=" }), (e) => e.status === 400);
   assert.throws(() => cleanRule({ ...VALID, severity: "fatal" }), (e) => e.status === 400);
 });
@@ -129,13 +125,9 @@ test("cross-field validation sees the MERGED row on a patch", () => {
   );
 });
 
-// ─── Severity ordering within one scope ───────────────────────────────────────
-//
-// Every test above validates ONE rule in isolation, which is exactly the gap this
-// closes: nothing compared a rule against its siblings, so `temperature warning >= 29`
-// and `temperature critical >= 29` could both exist. At equal thresholds the warning
-// rule is unreachable — worstBreach always returns the more severe band — so it is a
-// row that looks like a setting and changes nothing.
+// ─── Severity order within one scope ───────────────────────────────────────
+// Rules must not share a threshold: at equal thresholds the warning rule can never
+// fire, because the more severe band always wins.
 
 const up = (severity, v) => ({ severity, threshold_value: v, comparison: ">=" });
 const down = (severity, v) => ({ severity, threshold_value: v, comparison: "<=" });
@@ -160,9 +152,8 @@ test("higher-is-worse: critical must exceed warning", () => {
 });
 
 test("lower-is-worse: critical must fall below warning", () => {
-  // ⚠️ The reason direction is read from `comparison` instead of assumed. ups_runtime /
-  // ups_charge use `<=`, where warning 20 / critical 10 is the CORRECT ladder — a
-  // hard-coded "critical is the bigger number" would forbid the UPS rules outright.
+  // The direction comes from `comparison`: for ups_runtime / ups_charge (`<=`),
+  // warning 20 / critical 10 is correct.
   assert.equal(severityOrderError(down("warning", 20), [down("critical", 10)]), null);
   const why = severityOrderError(down("warning", 5), [down("critical", 10)]);
   assert.match(why, /must be LOWER/);
@@ -193,19 +184,16 @@ test("same-severity siblings are not an ordering fault", () => {
 });
 
 test("unparseable siblings and candidates are skipped, not crashed on", () => {
-  // The field parsers reject these first; this only proves the ordering check cannot be
-  // the thing that throws, since it runs on already-validated input in production but on
-  // whatever the caller passes in a test.
+  // The field parsers reject these first; this only checks the order check itself does
+  // not throw on bad input.
   assert.equal(severityOrderError({ severity: "nope", threshold_value: 1, comparison: ">=" }, [up("critical", 2)]), null);
   assert.equal(severityOrderError(up("warning", 30), [{ severity: "critical", threshold_value: "abc", comparison: ">=" }]), null);
 });
 
 // ─── Duplicate severity within one scope ──────────────────────────────────────
-//
-// A different fault from the ladder, with a different fix. Two `temperature warning`
-// rules are not additive — `getRoomThresholds` resolves a severity with `.find()`, so the
-// value pushed to the ESP32 is decided by row order and editing the losing row changes
-// nothing. Backed by a DB uniqueness index too (2026-08-26_alert_rule_scope_uniqueness.sql).
+// Two `temperature warning` rules are not combined; getRoomThresholds takes the first
+// it finds. Also enforced by a DB unique index
+// (2026-08-26_alert_rule_scope_uniqueness.sql).
 
 test("a second rule at the same severity is rejected", () => {
   const why = duplicateSeverityError(up("warning", 28), [up("warning", 30)]);
@@ -225,9 +213,8 @@ test("the duplicate message names the existing threshold, so it can be found", (
 });
 
 test("scopeConflictError reports the duplicate BEFORE the ladder", () => {
-  // A duplicate is the more actionable of the two: while two warning rules exist, any
-  // ladder complaint is about a row that may not even be the one in force. Ordering the
-  // messages this way means fixing what the admin is told to fix resolves the next one.
+  // The duplicate message comes first: until the duplicate is fixed, an order complaint
+  // may be about a row that is not even in use.
   const siblings = [up("warning", 30), up("critical", 35)];
   const why = scopeConflictError(up("warning", 99), siblings);
   assert.match(why, /already exists/, "duplicate should win over the ladder complaint");

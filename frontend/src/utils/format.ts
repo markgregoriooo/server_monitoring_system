@@ -1,6 +1,5 @@
-// Shared formatting helpers — extracted from duplicated definitions across the app.
-// See audits/code-duplication-report.md (D-04, D-06) and the 2026-08-25 re-audit
-// (R-04: formatUptime had FIVE copies, fmtDateTime four, and two of them disagreed).
+// Shared formatting helpers. See audits/code-duplication-report.md (D-04, D-06) and the
+// 2026-08-25 re-audit (R-04).
 
 
 /** Two-letter uppercase initials from a name, e.g. "Mark Angelo" → "MA". */
@@ -8,19 +7,12 @@ export function initials(name: string): string {
   return name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
 }
 
-/** Resolve a stored `profile_image` to a usable <img> src, or null (→ show initials).
- *
- *  ABSOLUTE urls only — every live avatar is a Google photo
- *  (https://lh3.googleusercontent.com/…), re-synced from the ID token on EVERY
- *  sign-in by `googleAuthService`.
- *
- *  A server-relative `/uploads/…` value now returns null and the caller falls back to
- *  initials. That path served the deleted avatar-upload feature, whose reader
- *  (`app.use("/uploads", express.static(...))`) was an unauthenticated read of real
- *  staff photos and has been removed — see audits/api-infra-security-2026-08-25.md
- *  A-02. Building a URL to a route that no longer exists would render a broken image;
- *  initials are the correct degradation, and only a row that has never completed a
- *  Google sign-in can still hold one. */
+/**
+ * Turn a stored `profile_image` into an <img> src, or null (show initials). Absolute
+ * URLs only: every avatar is a Google photo, re-synced at each sign-in. An old
+ * `/uploads/…` value returns null, since that route was removed (see
+ * audits/api-infra-security-2026-08-25.md A-02).
+ */
 export function avatarUrl(profileImage?: string | null): string | null {
   if (!profileImage) return null;
   return /^https?:\/\//i.test(profileImage) ? profileImage : null;
@@ -32,16 +24,10 @@ export function manilaTime(d: Date = new Date()): string {
 }
 
 /**
- * Network throughput from BYTES per second, scaled to a unit that can show it.
- *
- * A fixed unit cannot: expressed in MB/s, a router moving 40 KB/s reads "0.00 MB/s"
- * while the auto-scaled chart beside it plots a perfectly visible line — the number
- * says idle and the picture says busy, and the number is the one people believe.
- *
- * Reported in BITS per second (hence ×8) because that is the unit link speeds are sold
- * and configured in, so "8 Mb/s" is directly comparable to a port's negotiated 100 Mb/s.
- * Same function the router and MikroTik detail pages have always used — shared here so a
- * given router reads identically on the Dashboard and on its own page.
+ * Network throughput from bytes per second, in a unit that suits the value, so a quiet
+ * link does not read "0.00 MB/s". Shown in bits per second (x8), the unit link speeds
+ * use, so "8 Mb/s" compares directly with a 100 Mb/s port. Used by the Dashboard and the
+ * router/MikroTik pages.
  */
 export function formatBps(bytesPerSec: number | null | undefined): string {
   if (bytesPerSec == null || !Number.isFinite(bytesPerSec)) return "—";
@@ -54,13 +40,7 @@ export function formatBps(bytesPerSec: number | null | undefined): string {
 
 // ─── Time ─────────────────────────────────────────────────────────────────────
 
-/**
- * Where a chart's x-axis stops being "times today" and starts needing DATES.
- *
- * Was declared in four separate files — twice as `48 * 3600` and twice as
- * `86400 * 2`. Identical numbers, but two spellings of one rule is how the pages
- * drift apart the first time someone tunes one of them.
- */
+/** The range length after which a chart's x-axis shows dates. */
 export const MULTI_DAY_SEC = 48 * 3600;
 
 /** A chart tick: clock time within a short window, month+day+hour across a long one. */
@@ -84,13 +64,9 @@ export function fmtDateTime(iso: string): string {
 }
 
 /**
- * Uptime in the largest two units that still say something: "12d 4h", "4h 09m", "09m".
- *
- * This existed in FIVE places — MikrotikMonitoring, NetworkMonitoring,
- * MikrotikDetail, NetworkDetail, and `backend/services/serverMetricUtils.js`. The
- * frontend four agreed; the backend one has no null branch because it is only ever
- * handed a number. Kept separate on purpose: that module is deliberately import-free
- * so `backend/tests/` runs with no MySQL/InfluxDB. Change one, check the other.
+ * Uptime in the two largest useful units: "12d 4h", "4h 09m", "09m". The backend has
+ * its own copy in serverMetricUtils.js (which must stay import-free for the tests), so
+ * change both together.
  */
 export function formatUptime(sec: number | null | undefined): string {
   if (sec == null || !Number.isFinite(sec)) return "—";
@@ -114,14 +90,9 @@ export function formatSpeed(mbps: number | null | undefined): string | null {
 }
 
 /**
- * MB/s between two cumulative counter samples.
- *
- * Only the SERVER path needs this: `server_metrics` stores raw counters, so the rate
- * exists only as a difference. The network endpoint derives its rate server-side
- * (`derivative(nonNegative: true)`) and returns bytes/sec directly.
- *
- * Math.max clamps a counter reset — an agent restart or host reboot — to 0 rather than
- * graphing a large negative spike.
+ * MB/s between two cumulative counter samples. Only the server panel needs this; the
+ * network endpoint already returns bytes/sec. Math.max turns a counter reset (restart,
+ * reboot) into 0 instead of a big negative spike.
  */
 export function rateMBs(curr: number | null, prev: number | null, currT: string, prevT: string): number {
   if (curr == null || prev == null) return 0;

@@ -6,9 +6,8 @@ import { useWidgetLayout } from "./useWidgetLayout";
 import { useLiveSummary } from "./LiveSummaryContext";
 import { estimateWidgetSize, WIDGET_WIDTH } from "./tiles/catalog";
 
-// One PiP window instance shared across the app: the Header button opens/closes it,
-// PipHost portals the widget into it. Both read this context so there's a single
-// source of truth (mirrors how the app shares Auth/Notification state).
+// One PiP window shared across the app: the Header button opens and closes it, PipHost
+// renders the widget into it.
 const PipContext = createContext<PictureInPicture | null>(null);
 
 export function PipProvider({ children }: { children: ReactNode }) {
@@ -18,16 +17,10 @@ export function PipProvider({ children }: { children: ReactNode }) {
   const { layout } = useWidgetLayout();
   const { servers, upsList, routers } = useLiveSummary();
 
-  // Size the window to fit the layout instead of always opening at 340x300 and making
-  // the user scroll a glance surface. requestWindow only accepts an INITIAL size, so
-  // this is computed per open() call rather than tracked reactively.
-  //
-  // Stays SYNCHRONOUS up to pip.open: requestWindow has to be the first thing awaited
-  // or the user gesture is spent and the browser refuses the window. estimateWidgetSize
-  // is pure arithmetic, so nothing here yields.
-  //
-  // An explicit width/height from the caller still wins — spreading opts last keeps
-  // this an inferred default, not an override.
+  // Size the window to fit the layout instead of a fixed 340x300. requestWindow only
+  // takes an initial size, so it is worked out on each open(). Must stay synchronous up to
+  // pip.open (requestWindow has to be the first await, or the click no longer counts as a
+  // user gesture). A width/height passed by the caller still wins.
   const open = useCallback(
     (opts?: { width?: number; height?: number }) => {
       const size = estimateWidgetSize(layout, {

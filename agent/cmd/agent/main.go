@@ -1,21 +1,16 @@
 // Command agent is the CSPC-ICTU server monitoring agent.
 //
 //	cspc-agent --register -api-url URL -install-key KEY       # enroll, wait for approval,
-//	                                                          # then START sending metrics
+//	                                                          # then start sending metrics
 //	cspc-agent -conf agent.conf                               # already enrolled: just run
 //	cspc-agent --register-only -api-url URL -install-key KEY  # enroll and exit (installers)
 //	cspc-agent --notify-shutdown [-reason shutdown]           # tell the backend we are going
 //	                                                          # down, then exit (Windows task)
 //
-// The install key is passed with the -install-key flag:
-//
-//	cspc-agent --register -api-url URL -install-key AIK-...
-//
-// With --register the agent enrolls (if not already), blocks until an admin
-// approves it, writes agent.conf, and then continues straight into the metric
-// loop — no second command needed. It collects system metrics with gopsutil and
-// POSTs them to POST /api/servers/metrics on a fixed interval, and never crashes
-// on a backend outage — the sender retries and continues.
+// With --register the agent enrolls (if not already), waits until an admin approves
+// it, writes agent.conf and goes straight into the metric loop. It collects metrics
+// with gopsutil and POSTs them to /api/servers/metrics on a fixed interval. A backend
+// outage never crashes it; the sender retries and carries on.
 package main
 
 import (
@@ -34,25 +29,20 @@ import (
 	"cspc-ictu/agent/internal/sender"
 )
 
-// Stays 1.0.0 until the system is actually deployed — nothing is in the field
-// yet, so there is no released version to distinguish this build from. Bump it on
-// the first change made AFTER go-live, so the dashboard's "outdated agent" flag
-// (which compares each agent against the newest version in the fleet) has
-// something meaningful to compare.
+// Stays 1.0.0 until the system is deployed. Bump it on the first change after go-live,
+// so the dashboard's "outdated agent" check (against the newest version in the fleet)
+// has something to compare.
 const agentVersion = "1.0.0"
 
-// heartbeatEvery is the liveness cadence, deliberately separate from the metric
-// interval. A metric post is a full collection and a stored point, so it cannot be
-// sent fast enough to double as a liveness signal; this is an empty POST. The backend
-// declares a server offline after three missed beats (SERVER_HEARTBEAT_TIMEOUT_SEC,
-// 6s), so this constant and that one move together.
+// heartbeatEvery is the liveness interval, separate from the metric interval (a metric
+// post is too heavy to send this often; a heartbeat is an empty POST). The backend marks
+// a server offline after three missed beats (SERVER_HEARTBEAT_TIMEOUT_SEC, 6s), so change
+// both together.
 const heartbeatEvery = 2 * time.Second
 
-// hostRefreshEvery is how often the agent re-sends its static host facts (IP,
-// RAM, disk size, kernel, agent version). Enrollment is otherwise the ONLY time
-// they are sent, so without this a DHCP lease change or a RAM upgrade would
-// never reach the dashboard. Hourly is negligible next to the 10s metric
-// cadence, and matters because these probes shell out to PowerShell on Windows.
+// hostRefreshEvery is how often the agent re-sends its static host facts (IP, RAM, disk
+// size, kernel, agent version), so changes after enrollment reach the dashboard. Hourly,
+// since on Windows these probes run PowerShell.
 const hostRefreshEvery = time.Hour
 
 func main() {
@@ -69,10 +59,10 @@ func main() {
 
 	cfg, err := config.Load(*confPath)
 
-	// One-shot notice, run by the Windows installer's shutdown-event task (Event 1074 —
-	// logged the moment a shutdown or restart is initiated, while the network is still
-	// up). A separate process because the scheduled-task agent is not reliably told the
-	// machine is going down. No retries: there is no time for them.
+	// One-shot notice, run by the Windows installer's shutdown task (Event 1074, logged as
+	// soon as a shutdown or restart starts, while the network is still up). A separate
+	// process because the scheduled-task agent is not reliably told the machine is going
+	// down. No retries; there is no time.
 	if *notifyShutdown {
 		if err != nil {
 			logger.Errorf("%v", err)
@@ -119,9 +109,8 @@ func main() {
 	go runHeartbeat(s)
 	go notifyOnSignal(s)
 
-	// runMetricLoop returns as soon as the backend rejects our token (403) —
-	// i.e. an admin removed this server. Delete the now-useless agent.conf so a
-	// later `--register` enrolls fresh, then exit.
+	// runMetricLoop returns when the backend rejects our token (403), meaning an admin
+	// removed this server. Delete agent.conf so a later `--register` enrolls fresh, then exit.
 	runMetricLoop(s, cfg.IntervalSeconds)
 
 	logger.Errorf("removed by the server (token revoked); deleting %s and exiting. "+
@@ -131,9 +120,8 @@ func main() {
 }
 
 // runHeartbeat sends an empty "still alive" every heartbeatEvery until the process
-// exits. Failures are logged on the TRANSITION only — a backend outage would otherwise
-// print a line every two seconds for as long as it lasts. A 403 is left to the metric
-// loop, which owns the decision to delete agent.conf and exit.
+// exits. Failures are logged only when the state changes, not every two seconds. A 403
+// is left to the metric loop, which decides to delete agent.conf and exit.
 func runHeartbeat(s *sender.Sender) {
 	ticker := time.NewTicker(heartbeatEvery)
 	defer ticker.Stop()
@@ -152,12 +140,10 @@ func runHeartbeat(s *sender.Sender) {
 }
 
 // notifyOnSignal sends the shutdown notice when the OS asks the agent to stop, then
-// exits. On Linux that is systemd's SIGTERM, both on `systemctl stop` and at system
-// shutdown (the unit is ordered after network-online.target, so it is stopped while
-// the network is still up). On Windows Go delivers the console shutdown/logoff/close
-// events as SIGTERM; the installer's Event 1074 task covers the case where a
-// scheduled-task process is never told. Sending twice is harmless — the backend
-// only acts on the first notice.
+// exits. On Linux that is systemd's SIGTERM (on `systemctl stop` and at shutdown; the
+// unit is ordered after network-online.target, so the network is still up). On Windows
+// Go delivers console shutdown/logoff/close as SIGTERM; the Event 1074 task covers the
+// case where a scheduled-task process is not told. Sending twice is harmless.
 func notifyOnSignal(s *sender.Sender) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
@@ -171,16 +157,15 @@ func notifyOnSignal(s *sender.Sender) {
 	os.Exit(0)
 }
 
-// runMetricLoop collects and sends on the configured interval until the backend
-// rejects our token (403) — meaning this server was removed — then returns. A
-// transient outage is a network error (not 403), so it won't end the loop.
+// runMetricLoop collects and sends on the configured interval until the backend rejects
+// our token (403), then returns. A network outage is not a 403, so it keeps going.
 func runMetricLoop(s *sender.Sender, intervalSec int) {
 	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 	defer ticker.Stop()
 
-	// Zero value means the FIRST post carries host info, so restarting an agent
-	// re-syncs facts immediately. Only advanced on a successful send, so a failed
-	// refresh is retried on the next cycle rather than skipped for an hour.
+	// Zero value means the first post includes host info, so a restarted agent re-syncs
+	// right away. Only advanced after a successful send, so a failed refresh is retried
+	// next cycle.
 	var lastHost time.Time
 
 	revoked := func() bool {

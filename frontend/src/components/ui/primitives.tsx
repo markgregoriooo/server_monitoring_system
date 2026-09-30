@@ -2,22 +2,12 @@ import React from "react";
 import { GF as gf, STATUS } from "../../theme/gf";
 
 /**
- * The small building blocks the monitoring pages share.
+ * Small building blocks shared by the monitoring pages (GhostButton, Stat, StatPanel,
+ * Field, Meta, PortChip, Th), which used to be copied across pages.
+ * See audits/code-duplication-report-2026-08-25.md (R-09).
  *
- * Each of these was copy-pasted across three or four pages, character-identical after
- * whitespace normalisation — `GhostButton` four times, `Stat`, `StatPanel`, `Field` and
- * `Meta` three times each, `PortChip` and `Th` twice. That is ~140 redundant lines, but
- * the reason to consolidate is not the line count: a button that renders differently on
- * the UPS page than on the router page is the kind of drift nobody notices until a
- * reviewer sees both screens side by side.
- *
- * See audits/code-duplication-report-2026-08-25.md — R-09.
- *
- * `Panel` is deliberately NOT here. It has eleven definitions across nine pages, but
- * only two pairs are identical — the rest differ in real ways (`subtitle`, `action`,
- * `bodyStyle`, `noPad`, optional vs required `title`). One `Panel` with eight optional
- * props would be worse than three honest ones, so those stay local until someone decides
- * what the shared contract actually is.
+ * `Panel` is not here: its copies differ in real ways (`subtitle`, `action`,
+ * `bodyStyle`, `noPad`, optional `title`), so they stay local for now.
  */
 
 const { red: RED } = STATUS;
@@ -44,11 +34,8 @@ export function GhostButton({
 }
 
 /**
- * A single headline figure with a status dot.
- *
- * `minHeight` is the only thing that ever differed between the copies: the detail pages
- * used 84 and the monitoring pages 88. Defaulted to 84 with a prop, so both callers keep
- * the spacing they had rather than one silently shifting.
+ * A single headline figure with a status dot. `minHeight` defaults to 84 (the
+ * monitoring pages pass 88).
  */
 export function Stat({
   label,

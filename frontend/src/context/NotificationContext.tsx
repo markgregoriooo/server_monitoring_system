@@ -17,9 +17,9 @@ import { fireDesktopNotification } from "../utils/browserNotify.js";
 import { playNotificationSound } from "../utils/notificationSound.js";
 import type { AppNotification, Severity } from "../types/notification";
 
-// Shapes moved to ../types/notification: this file imports routeFor from
-// notificationUtils, which needs these types — owning them here made a cycle.
-// Re-exported so the existing `from "../context/NotificationContext"` imports resolve.
+// Types moved to ../types/notification (this file imports routeFor from
+// notificationUtils, which needs them, which made a cycle). Re-exported so existing
+// imports from here still work.
 export type { Severity, AppNotification } from "../types/notification";
 
 type IncomingListener = (n: AppNotification) => void;
@@ -104,9 +104,8 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     refreshPending();
   }, [user, refresh, refreshAlertCount, refreshPending]);
 
-  // Declared ABOVE the live-feed effect on purpose: that effect's dependency array
-  // names it, and a dep array is built during render — a `const` declared further down
-  // would still be in its temporal dead zone and throw on the very first render.
+  // Declared above the live-feed effect, which lists it as a dependency; a const
+  // declared further down would not exist yet on the first render.
   const markRead = useCallback(async (ids: number[]) => {
     if (!ids.length) return;
     const idSet = new Set(ids);
@@ -125,13 +124,9 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       setUnreadCount((c) => c + 1);
       refreshAlertCount(); // a new alert is unresolved → bump the sidebar badge
       playNotificationSound(); // chime (if not muted)
-      // OS popup (if granted + tab hidden). Clicking it focuses the dashboard, marks
-      // the item read and opens the device's page — the same gesture as the toast.
-      // The device goes in the BODY here, unlike the toast and the bell which have a
-      // line of their own for it. An OS popup only gets a title and a body, so a
-      // notification that named the device nowhere was the one surface you could read
-      // without learning WHICH machine it was about — and it is the surface you see
-      // when the dashboard is not even open.
+      // OS popup (if allowed and the tab is hidden). Clicking it focuses the dashboard,
+      // marks the item read and opens the device's page, like the toast. The device name
+      // goes in the body, since an OS popup only has a title and body.
       fireDesktopNotification({
         title: n.title,
         message: deviceLabel(n) ? `${n.message} — ${deviceLabel(n)}` : n.message,
@@ -172,7 +167,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       refreshAlertCount();
     };
     const onReconnect = () => { refresh(); refreshAlertCount(); refreshPending(); };
-    // Pending-approval queues change → update the nav badges (admin only; no-op otherwise).
+    // Pending approvals changed → update the nav badges (admin only).
     // agentApproved/agentPending fire on agent register/approve/reject;
     // userApproved/userPending on user self-register/approve/reject.
     const onPendingChanged = () => refreshPending();

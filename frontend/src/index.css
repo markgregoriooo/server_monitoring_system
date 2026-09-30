@@ -10,23 +10,16 @@
   --gf-bg:            #111217;
   --gf-panel:         #181B1F;
 
-  /* The page background as raw R,G,B CHANNELS — a hex token cannot be made
-     translucent, and the scrim over the login fold's cover photograph needs a
-     different alpha at every gradient stop.
-     ⚠️ It MUST track the theme. The hero copy is `--gf-text-primary`, which flips from
-     light to dark with the theme — a scrim fixed dark would leave dark text on a dark
-     wash the moment someone switches to light mode. Matches --gf-bg so the photo fades
-     into the section below it rather than ending on a seam. */
+  /* The page background as R,G,B channels, so the overlay on the login cover photo can use
+     a different alpha at each gradient stop. Follows the theme (the hero text flips from
+     light to dark), and matches --gf-bg so the photo fades into the next section. */
   --gf-bg-rgb: 17, 18, 23;
   --gf-panel-border:  rgba(255,255,255,0.07);
   --gf-header:        #1a1d23;
   --gf-sidebar:       #111217;
   --gf-divider:       rgba(255,255,255,0.07);
-  /* Text greys are WCAG-AA (>=4.5:1) against BOTH --gf-bg and --gf-panel. The
-     original muted/dim (#6B7280 / #4B5563) measured 3.57:1 and 2.29:1 here, so
-     secondary labels were washed out and dim text was effectively decorative.
-     Raising them costs some of the "faint" look — text that reads at 2.3:1 cannot
-     be made legible without moving it closer to the primary tone. */
+  /* Text greys meet WCAG AA (>=4.5:1) against both --gf-bg and --gf-panel. The original
+     muted/dim (#6B7280 / #4B5563) were only 3.57:1 and 2.29:1. */
   --gf-text-primary:  #D9D9D9;  /* 12.24:1 on panel */
   --gf-text-muted:    #9BA2AD;  /*  6.72:1 on panel (was 3.57:1) */
   --gf-text-dim:      #8E95A0;  /*  5.72:1 on panel (was 2.29:1) */
@@ -34,41 +27,31 @@
   --gf-hover-strong:  rgba(255,255,255,0.10);
   --gf-accent:        #5794F2;
   --gf-accent-dim:    rgba(87,148,242,0.12);
-  /* Accent safe to put on TEXT. Same colour as --gf-accent on dark; the light
-     override darkens it, because #5794F2 measures only 2.76:1 on the light page
-     background — fine for a fill or a stroke, unreadable as a 11px label. Use
-     --gf-accent for surfaces and graphics, --gf-accent-text for type. */
+  /* Accent for text. Same as --gf-accent in dark mode; darker in light mode, where #5794F2
+     is only 2.76:1 on the page. Use --gf-accent for surfaces and graphics,
+     --gf-accent-text for text. */
   --gf-accent-text:   #5794F2;  /* 6.40:1 on bg */
 
   /* ── Hero backdrop telemetry lines ────────────────────────────────────────
-     The two drifting sparklines behind the fold (components/landing/HeroBackdrop).
-     ALPHA IS BAKED INTO THE COLOUR rather than set as a separate `opacity`, because
-     the two have to move together: the same alpha that reads as a whisper on a near
-     black page is invisible on a near white one, so a token that carried only the hue
-     would still need a second theme-aware number beside it.
-
-     These were hardcoded `#5794F2` and `#73BF69` with fixed opacities — tuned on dark
-     and unchanged by the theme toggle, which is why the fold looked empty in light
-     mode. Light uses the darker accent (the same #1F62E0 as --gf-accent-text, since
-     --gf-accent measures 2.76:1 there) and a deeper green, both at higher alpha. */
+     The two drifting lines behind the first screen (components/landing/HeroBackdrop). The
+     alpha is part of the colour, since the right amount differs per theme. Light mode uses
+     the darker accent (#1F62E0, as --gf-accent-text) and a deeper green at higher alpha. */
   --gf-hero-line-a:   rgba(87,148,242,0.22);
   --gf-hero-area-a:   rgba(87,148,242,0.05);
   --gf-hero-line-b:   rgba(115,191,105,0.16);
   --gf-seg-empty:     rgba(255,255,255,0.06);
   --gf-scroll-bg:     rgba(0,0,0,0.25);
   --gf-scrollbar:     rgba(255,255,255,0.10);
-  /* Frosted topbar. A translucent take on --gf-bg — backdrop-filter blurs what
-     is BEHIND an element, so the element still needs its own see-through fill
-     or there is nothing for the blur to tint. */
+  /* Frosted topbar: a translucent --gf-bg, since backdrop-filter needs a see-through fill
+     to tint. */
   --gf-glass:         rgba(17, 18, 23, 0.72);
   --gf-glass-border:  rgba(255, 255, 255, 0.10);
   /* elevation for floating panels (dropdowns/toasts) — on dark, a faint light ring
      makes the edge readable against the dark page; plus a soft drop shadow for depth */
   --gf-shadow: 0 8px 28px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.14);
 
-  /* Raised button surface (.gf-btn). A flat tinted rectangle doesn't read as
-     pressable, so the face sits ABOVE the panel tone and carries a top sheen +
-     drop shadow; pressing inverts that to an inset shadow. */
+  /* Raised button surface (.gf-btn): the face sits above the panel with a top sheen and
+     drop shadow; pressing switches to an inset shadow. */
   --gf-btn-face:         #24272D;
   --gf-btn-face-hover:   #2C3037;
   --gf-btn-border:       rgba(255,255,255,0.13);
@@ -97,12 +80,9 @@
   --gf-header:        #F4F5F5;
   --gf-sidebar:       #FFFFFF;
   --gf-divider:       rgba(0,0,0,0.08);
-  /* Measured against the PAGE bg (#F4F5F5), which is the harder of the two
-     surfaces — passing there means it also passes on white panels.
-     AA (4.5:1) is the FLOOR here, not the target. This UI sets secondary text at
-     10-13px in JetBrains Mono, whose strokes are thin at that size, and light mode
-     is what gets used on a projector or a sunlit screen — grey that merely clears
-     AA still reads as washed out there. Hence the headroom on muted/dim. */
+  /* Measured against the page background (#F4F5F5), the harder of the two surfaces. AA
+     (4.5:1) is the minimum; muted/dim have extra contrast because thin 10-13px mono text
+     still looks washed out on a projector or in sunlight. */
   --gf-text-primary:  #1F2937;  /* 13.44:1 on bg */
   --gf-text-muted:    #3F4753;  /*  8.59:1 on bg (was 5.63:1, and 4.43:1 before that) */
   --gf-text-dim:      #4E5666;  /*  6.75:1 on bg (was 4.91:1, and 2.32:1 before that) */
@@ -207,15 +187,9 @@
     box-shadow: none;
   }
 
-  /* Quiet control — the Sign Out treatment, now shared.
-     Same DEPTH as .gf-btn (identical shadow token, same 1px press) but no raised
-     face and no sheen. .gf-btn lifts a control up off the panel, which is right
-     for a toolbar where buttons sit next to each other and need to read as a row
-     of keys; in the sidebar rail the same treatment makes every secondary control
-     shout over the nav it sits beside. This keeps the affordance and drops the
-     volume. Replaces the inline styles + JS mouse handlers Sign Out used to
-     carry — :hover and :active belong in CSS, and a class is the only way four
-     buttons can be guaranteed to match. */
+  /* Quiet control (Sign Out and similar). Same shadow and press as .gf-btn but no raised
+     face or sheen, so secondary controls in the sidebar do not compete with the nav.
+     Hover and press are in CSS, shared by every button using it. */
   .gf-btn-quiet {
     background-color: transparent;
     border: 1px solid var(--gf-panel-border);
@@ -244,24 +218,16 @@
     box-shadow: none;
   }
 
-  /* Destructive icon action. The chrome stays the same neutral raised face as any
-     other button — a solid red control invites the misclick as much as it warns
-     against it — and only the GLYPH turns danger-coloured on hover. Matches the
-     --gf-danger token's own note: destructive LABEL only. */
+  /* Destructive icon action: same neutral face as other buttons; only the glyph turns
+     danger-coloured on hover. */
   .gf-btn-danger:hover:not(:disabled) {
     color: var(--gf-danger);
     border-color: var(--gf-danger);
   }
 
   /* ── Sidebar ──────────────────────────────────────────────────────────────
-     The rail was a flat panel of flat rows: the only cue for "you are here" was
-     a 2px accent bar and a faint tint, which disappears on a bright screen and
-     is invisible to anyone who can't rely on the blue.
-
-     Same language as the rest of the UI: the RAIL is a recessed surface, and the
-     ACTIVE row is a raised key sitting in it. Depth carries the state, colour
-     only reinforces it. In CSS rather than inline styles because it depends on
-     :hover — which is also what lets the JS mouse handlers this replaces go away. */
+     The rail is a recessed surface and the active row is a raised key in it, so the
+     current page shows by depth, with colour as a second cue. In CSS because it uses :hover. */
   .gf-rail {
     /* Inner edge highlight + a shadow along the seam, so the rail reads as a
        separate plane from the page rather than a differently-coloured rectangle. */
@@ -281,9 +247,8 @@
   .gf-nav:active {
     transform: translateY(1px);
   }
-  /* Active row: the same raised face as a button, plus the accent edge kept as a
-     second, redundant cue. Overrides :hover so hovering the current page doesn't
-     flatten it back down. */
+  /* Active row: the same raised face as a button, plus the accent edge. Overrides :hover
+     so the current page does not flatten on hover. */
   .gf-nav-active,
   .gf-nav-active:hover {
     background-color: var(--gf-btn-face);
@@ -308,10 +273,9 @@
     color: var(--gf-text-primary);
   }
 
-  /* Depth ONLY — no face, no border, no colour. For buttons that already carry their
-     own background (accent CTAs, coloured confirms): they keep exactly the colour they
-     had and just gain the lift + press. Use this instead of .gf-btn when the button is
-     already styled and you only want it to feel pressable. */
+  /* Depth only (no face, border or colour), for buttons that already have their own
+     background (accent buttons, coloured confirms). Use instead of .gf-btn when the
+     button is already styled. */
   .gf-raise {
     box-shadow: var(--gf-btn-shadow);
     transition: box-shadow .12s ease, transform .06s ease, filter .12s ease;
@@ -344,15 +308,12 @@
   .gf-btn-primary:focus-visible { outline: 2px solid var(--gf-accent); outline-offset: 2px; }
   .gf-btn-primary:disabled { opacity: .5; cursor: default; transform: none; box-shadow: none; filter: none; }
 
-  /* Square icon button (header bell, toolbar icons). Deliberately LIGHTER than
-     .gf-btn — a bare tint and hairline border rather than a raised face — because a
-     40px topbar full of embossed chrome reads as heavy. It still behaves like a
-     control: it has a box, it lifts on hover, and it presses on click. */
+  /* Square icon button (header bell, toolbar icons). Lighter than .gf-btn (a tint and
+     hairline border, no raised face), so the 40px topbar does not look heavy. Still lifts
+     on hover and presses on click. */
   .gf-icon-btn {
-    /* No `display` here on purpose: these buttons carry responsive display classes
-       (lg:hidden, hidden lg:flex) and a display declared in the same layer would
-       fight them, showing the sidebar-collapse arrow on mobile. Callers set their
-       own display; align/justify below are inert until one of them makes it flex. */
+    /* No `display` here: these buttons use responsive display classes (lg:hidden, hidden
+       lg:flex), and a display in the same layer would override them. Callers set display. */
     align-items: center;
     justify-content: center;
     width: 28px;
@@ -382,51 +343,22 @@
   }
 }
 
-/* The landing hero's minimum height.
-   A class rather than an inline style because this needs a FALLBACK, and a style
-   object cannot hold two values for one property.
+/* Minimum height of the landing hero. A class, because it needs a fallback value, which
+   an inline style cannot hold.
 
-   `100svh` is the small-viewport height — the height with the mobile browser's
-   URL bar VISIBLE. Plain `100vh` on a phone measures the tallest possible
-   viewport, so a full-height section is taller than what you can actually see
-   and the bottom of it sits under the browser chrome until you scroll. Anything
-   without svh support keeps the old behaviour rather than losing the floor.
+   `100svh` is the height with the mobile address bar visible; plain `100vh` on a phone
+   is taller than what you can see. Browsers without svh use the 100vh line.
 
-   ⚠️ This is a FLOOR, not a height — the hero grows past it whenever its content
-   needs more room.
-
-   The floor differs by width because the same number cannot serve both cases:
-
-   PHONE — a full screen. The hero IS the first impression, and letting the figures
-   strip peek above the fold splits attention between the headline and four numbers
-   before either has been read. One screen, then a scroll. `box-sizing: border-box`
-   means the `paddingTop: NAV_H` the section carries is INSIDE this, so the result is
-   exactly one viewport rather than one plus a topbar.
-
-   DESKTOP — the same full screen, since 2026-08-28.
-   It was 66vh for a while, on the reasoning that with the old dashboard mock gone the
-   copy column no longer filled a screen and `items-center` would leave a blank band
-   above the heading. Two things changed that: the fold now carries a cover photograph,
-   which wants the whole viewport rather than a band of it, and a partial height made the
-   section's size depend on how many lines the copy happened to occupy — so editing a
-   headline visibly resized the page. A full viewport is stable against copy changes,
-   which is the property that matters more than the leftover space. */
+   A minimum, not a fixed height: the hero grows if its content needs more room. One full
+   screen on both phone and desktop (since 2026-08-28), so the size does not change when
+   the text changes. `box-sizing: border-box` keeps the NAV_H top padding inside it. */
 .hero-fold { min-height: 100vh; }
 @supports (min-height: 100svh) {
   .hero-fold { min-height: 100svh; }
 }
 
-/* NOTE: a `min-width: 640px` override used to cut the fold to 66vh (briefly 76vh) on
-   anything wider than a phone. Removed 2026-08-28 — the base rule above now applies at
-   every width, so the fold is a FULL viewport on desktop as well.
-   The partial height was a hedge from when the hero carried a three-line institution
-   headline and a dashboard mock; at 66vh the section ended mid-screen and read as a
-   short band rather than as a fold. It also made the height content-dependent on short
-   laptops, so removing a line of copy visibly shrank the section — which is exactly the
-   coupling a full-viewport fold does not have.
-   `100svh` is what makes this correct on mobile: `vh` there is the LARGEST viewport,
-   measured with the browser chrome retracted, so a 100vh hero is taller than the visible
-   area on first paint and its bottom sits under the address bar. */
+/* The desktop override that cut the hero to 66vh was removed on 2026-08-28; the rule
+   above applies at every width. */
 
 /* Toast entrance (used by ToastHost via animate-[fadeIn_…]) */
 @keyframes fadeIn {
@@ -434,12 +366,9 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Landing walkthrough: the dwell bar under the active chapter, counting down to
-   the auto-advance. CSS rather than anime.js because its duration differs per
-   chapter and it restarts on every pick — a keyframe with a duration set inline
-   handles both by construction, where a JS animation would need tearing down and
-   rebuilding each time. The element carries a `key`, so React remounts it and
-   the animation restarts from zero. */
+/* Walkthrough progress bar under the active chapter, counting down to auto-advance. CSS
+   with the duration set inline, since it differs per chapter and restarts on every pick.
+   The element has a `key`, so React remounts it and the animation restarts. */
 @keyframes landingDwell {
   from { width: 0%; }
   to   { width: 100%; }

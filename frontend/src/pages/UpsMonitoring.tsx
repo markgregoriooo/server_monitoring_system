@@ -12,9 +12,8 @@ import type { DeviceFirstPoll } from "../api/api";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── UPS list page ────────────────────────────────────────────────────────────
-// Fleet list (one card per UPS, with "View"); clicking through swaps in UpsDetail.
-// Same shape as NetworkMonitoring ↔ NetworkDetail and MikrotikMonitoring ↔
-// MikrotikDetail. Types live in UpsDetail.tsx — imported here, never the reverse.
+// One row per UPS with "View", which opens UpsDetail in place, like the network and
+// MikroTik pages. Types are in UpsDetail.tsx.
 
 // ─── Grafana tokens ───────────────────────────────────────────────────────────
 
@@ -43,11 +42,8 @@ interface UpsForm {
   serialNumber: string;
 }
 
-// Blank, not pre-filled — same reasoning as the Add MikroTik form: a real value in a field
-// is not a suggestion, it is text the admin has to delete before typing their own, every
-// time. The suggestion lives on as a placeholder instead, and parseCommon falls back to
-// "CSPC-ICTU Server Room" when the field is left empty, so the same value reaches the DB
-// either way.
+// Empty field with a placeholder rather than a value to delete. parseCommon uses
+// "CSPC-ICTU Server Room" when it is left empty.
 const EMPTY_UPS_FORM: UpsForm = {
   name: "",
   ip: "",
@@ -189,10 +185,8 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
         <span className="ml-auto">{fmt(u.runtimeRemainingMin, " min")} left</span>
       </div>
 
-      {/* Output-source banner. Bypass gets its own wording rather than being folded
-          into "on battery": the two are opposite problems. On battery means powered
-          and protected, with a clock running. On bypass means powered and NOT
-          protected, with no clock at all — so it must not read as the milder case. */}
+      {/* Power source banner. Bypass has its own wording: on battery is powered and protected
+         with limited time; on bypass is powered with no protection at all. */}
       {onBypass && (
         <div className="px-3 py-1.5 text-[13px] font-medium" style={{ background: "rgba(242,73,92,0.12)", color: RED }}>
            ON BYPASS — load on raw mains, no battery protection
@@ -240,11 +234,9 @@ function UpsCard({ u, onView, isAdmin, confirming, onAskRemove, onCancelRemove, 
   );
 }
 
-// One labelled fact in the drawer's summary strip. Bare values like "APC Smart-UPS"
-// or a lone health word only read if you already know which field is which.
+// One labelled value in the drawer's summary strip, so each value says what it is.
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
-// The bars and voltages that used to fill every card, shown only for the unit you
-// actually clicked. Same max-height slide as ServerMetrics' drawer.
+// The bars and voltages for the clicked UPS only. Same max-height slide as ServerMetrics.
 function UpsDrawerRow({ u, isOpen, colSpan }: { u: UpsDevice; isOpen: boolean; colSpan: number }) {
   const charge = u.batteryChargePct ?? 0;
   const load = u.loadPct ?? 0;
@@ -342,9 +334,9 @@ export default function UpsMonitoring() {
   const probe = useProbe();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Deep-link from a notification: /ups?device=<id> opens that UPS's detail once the
-  // list has loaded, then drops the param (so Back returns to the list and a refresh
-  // doesn't re-trigger). Same contract as ServerMetrics — see routeFor.
+  // Deep link from a notification: /ups?device=<id> opens that UPS once the list loads,
+  // then removes the parameter (so Back returns to the list). Same as ServerMetrics;
+  // see routeFor.
   useEffect(() => {
     const deviceParam = searchParams.get("device");
     if (!deviceParam) return;
@@ -371,9 +363,8 @@ export default function UpsMonitoring() {
     probe.reset();
   };
 
-  // Stricter than the router probe: an address that answers ping, or answers SNMP
-  // without UPS-MIB, FAILS here. A UPS has no ping-only mode — pinging a battery only
-  // proves its management card has power. See services/deviceProbeVerdict.js.
+  // Stricter than the router test: ping alone, or SNMP without UPS-MIB, fails here. See
+  // services/deviceProbeVerdict.js.
   const test = async () => {
     if (!form.ip.trim()) return setFormError("Enter an IP address to test.");
     setFormError("");
@@ -473,9 +464,8 @@ export default function UpsMonitoring() {
       setDevices((prev) => prev.filter((d) => d.id !== id));
       setDetailId((prev) => (prev === id ? null : prev));
     };
-    // How the just-registered UPS's FIRST poll went — sent only to the admin who
-    // registered it. Until this existed, a wrong community produced a card that said
-    // Offline and a reason that reached the server console and nobody else.
+    // How the new UPS's first poll went, sent only to the admin who added it, so a wrong
+    // community shows on screen instead of only in the server log.
     const onFirstPoll = (d: DeviceFirstPoll) => {
       if (d?.kind !== "ups") return; // routers and the MikroTik have their own pages
       if (d.ok) {
@@ -565,9 +555,7 @@ export default function UpsMonitoring() {
       {/* Stat row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
         <StatPanel label="UPS Units" value={`${online}/${total}`} color={onlineColor} sub="online" />
-        {/* One tile for "where is the load being fed from". Bypass takes the slot
-            when present: it is rarer and more urgent, and two near-identical tiles
-            would be read as one. */}
+        {/* One tile for the power source. Bypass takes the slot when present (rarer and more urgent). */}
         {onBypassCount > 0 ? (
           <StatPanel label="On Bypass" value={String(onBypassCount)} color={RED} sub="unprotected" />
         ) : (
@@ -610,10 +598,8 @@ export default function UpsMonitoring() {
           </div>
         </Panel>
       ) : (
-        /* Wide list + expandable drawer, matching the Server Metrics front page. The
-           three-up card grid gave every UPS a full block of bars and voltages, so with
-           several units the one that mattered — the one on battery — was no more
-           prominent than the rest. In a table it's a row you can scan to. */
+        /* A full-width list with expandable rows, like the Server Metrics page, so a UPS on
+           battery stands out as a row instead of being one card among many. */
         <Panel
           title="UPS units"
           noPad

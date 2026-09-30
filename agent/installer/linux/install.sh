@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Linux installer — installs the CSPC-ICTU monitoring agent as a systemd service.
-# Run the matching binary (cspc-agent-linux-amd64 / -arm64) from the same folder.
+# Linux installer: installs the CSPC-ICTU monitoring agent as a systemd service.
+# Run it with the matching binary (cspc-agent-linux-amd64 / -arm64) in the same folder.
 #
 # Usage: sudo bash install.sh <API_URL> <INSTALL_KEY> [--re-enroll]
-#   e.g. sudo bash install.sh https://monitoring.cspc-ictu.stream AIK-...
+#   e.g. sudo bash install.sh https://datacenter.cspc.edu.ph AIK-...
 #
 # Get the key from the dashboard: Server Metrics -> Agent install keys -> + New key.
 #
-# --re-enroll discards the existing agent.conf and registers again. Needed when moving a
-# machine onto a different install key (e.g. off the legacy .env key, or to another
-# branch's key) — a plain re-run does NOT re-register, because agent.conf already exists.
+# --re-enroll removes the existing agent.conf and registers again, e.g. to move the
+# machine to a different install key. A plain re-run does not re-register while
+# agent.conf exists.
 set -euo pipefail
 
 API_URL="${1:-}"
@@ -40,10 +40,9 @@ fi
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$BINARY_SRC" "$INSTALL_DIR/cspc-agent"
 
-# Installs made before the 2026-08-18 rename put the binary at $INSTALL_DIR/go-agent and
-# pointed the unit at it. The unit is rewritten below, so dropping the old file here just
-# stops a dead binary sitting in the install directory. agent.conf is untouched, so the
-# machine keeps its enrolment, its device id and its history.
+# Installs before the 2026-08-18 rename used $INSTALL_DIR/go-agent. The unit is
+# rewritten below, so remove the old binary. agent.conf is kept, so the machine keeps
+# its enrollment, device id and history.
 rm -f "$INSTALL_DIR/go-agent"
 
 # --re-enroll: drop the existing enrollment so the key below is actually presented.
@@ -57,15 +56,13 @@ if [[ ! -f "$CONF" ]]; then
   echo "Registering with backend; waiting for admin approval (Ctrl-C to abort)..."
   "$INSTALL_DIR/cspc-agent" --register-only -api-url "$API_URL" -install-key "$INSTALL_KEY" -conf "$CONF"
 else
-  # Say so LOUDLY. The install key is a required argument, so silently ignoring it reads
-  # as "the key was applied" — which is how a machine ends up still attributed to an old
-  # key (or to none at all) while the operator believes they moved it onto the new one.
+  # Warn clearly: the key is ignored here, and the operator may think it was applied.
   echo "NOTE: $CONF already exists - this machine is ALREADY ENROLLED." >&2
   echo "NOTE: the install key you passed was NOT used. The enrolment is unchanged, so this" >&2
   echo "      server stays attributed to whatever key first enrolled it (possibly this one)." >&2
-  # A machine that is still approved keeps its approval and its AGT- token through a
-  # re-enroll — it is only re-filed under the new key. One whose key was revoked comes
-  # back as pending and does need approving again.
+  # An approved machine keeps its approval and AGT- token through a re-enroll; it is only
+  # moved to the new key. One whose key was revoked comes back as pending and needs
+  # approving again.
   echo "      Only if you meant to MOVE it onto a different key, re-run with --re-enroll." >&2
 fi
 

@@ -9,32 +9,21 @@ import { resolveThresholds, offsiteSeverity } from "./offsiteStaleness.js";
 import { BACKEND_ROOT } from "../config/env.js";
 
 // ─── On-site backup writer ────────────────────────────────────────────────────
-//
 // Appends every ingested sample (environment, servers, routers/MikroTik, UPS) to
-// rotating NDJSON files on a configurable path — the "backup storage" the panel
-// requires (a micro SD / USB drive mounted on the backend, or just a local folder).
+// NDJSON files on BACKUP_DIR (a micro SD / USB drive, or a local folder). It is a
+// second copy, separate from InfluxDB/MySQL, that survives a database wipe or a
+// power cut. Not the live source of data.
 //
-// WHY: this is an INDEPENDENT second copy of the data, separate from InfluxDB/MySQL,
-// so it survives (a) a DB corruption/wipe and (b) a power outage — the files are
-// non-volatile and outlive the blackout, so the record of the outage is still there
-// when power returns. It is NOT the live source of truth; it's the safety copy.
+// Writes are buffered and flushed every few seconds (default 5s) to limit SD wear,
+// plus a synchronous flush on shutdown. Worst-case loss on a hard power cut is one
+// flush interval.
 //
-// DURABILITY vs FLASH WEAR: writes are BUFFERED and flushed on a timer (default 5s)
-// to spare micro-SD write endurance, PLUS a synchronous flush on shutdown (a UPS
-// low-battery-triggered SIGTERM, or Ctrl+C) so the last buffered samples aren't lost.
-// Worst-case loss on a hard cut = one flush window.
+// One file per stream per day: `env-2026-07-03.ndjson`, `server-…`, `network-…`
+// (SNMP and MikroTik, told apart by device_type), `ups-…`. One JSON object per line.
 //
-// FORMAT: one file per stream per day → `env-2026-07-03.ndjson`, `server-…`,
-// `network-…` (both non-MikroTik + MikroTik, distinguished by device_type), `ups-…`.
-// One JSON object per line — append-only, robust to partial writes, trivial to replay.
-//
-// Never throws: a backup failure must never break metric ingestion.
-//
-// HEALTH + INTEGRITY: a silently-failing backup is worse than none. Repeated flush
-// failures raise a `backup` alert on the normal bell/email pipeline and auto-resolve on
-// recovery. A daily SHA-256 manifest of "sealed" (past-day, immutable) files detects
-// silent corruption — a later re-hash that differs = card rot → `backup_integrity` alert.
-// The manifest is `sha256sum -c`-compatible.
+// Never throws. Repeated flush failures raise a `backup` alert that resolves on
+// recovery, and a daily SHA-256 manifest of finished files catches silent
+// corruption (`backup_integrity` alert). The manifest works with `sha256sum -c`.
 
 const ENABLED = (process.env.BACKUP_ENABLED ?? "true").toLowerCase() !== "false";
 const BACKUP_DIR =
@@ -57,9 +46,8 @@ const { warnHours: OFFSITE_MAX_AGE_HOURS, critHours: OFFSITE_CRITICAL_HOURS } = 
   process.env.BACKUP_OFFSITE_MAX_AGE_HOURS,
   process.env.BACKUP_OFFSITE_CRITICAL_HOURS,
 );
-// Re-announce a still-stale backup at most once a day. The check runs every 6h and the
-// global 30-min NOTIFY_COOLDOWN_MIN would otherwise post a fresh alert (and, once
-// critical, a fresh EMAIL) on every one of them for a condition that moves in days.
+// Re-announce a stale offsite backup at most once a day. The check runs every 6h,
+// and the 30-minute default cooldown would send an alert (and email) every time.
 const OFFSITE_COOLDOWN_MIN = 24 * 60;
 const OFFSITE_MARKER =
   (process.env.BACKUP_OFFSITE_MARKER ?? "").trim() || path.join(BACKUP_DIR, ".last_offsite_sync");
@@ -103,10 +91,9 @@ function record(stream, payload) {
   }
 }
 
-// Async flush (timer-driven). Drains the buffer to disk; re-queues on failure so a
-// transient I/O error (card busy) retries next tick instead of dropping rows. Tracks
-// consecutive failures so a genuinely failing drive raises a health alert (and clears
-// it on recovery). A per-file cap bounds memory if the drive is gone for a long time.
+// Timer flush. On failure the rows go back in the buffer and are retried next tick.
+// Counts consecutive failures to raise and clear the health alert. A per-file cap
+// limits memory if the drive is gone for a long time.
 async function flush() {
   if (buffer.size === 0) return;
   const pending = new Map(buffer);
@@ -143,9 +130,8 @@ async function flush() {
 }
 
 // ─── Backup-health alerting ───────────────────────────────────────────────────
-// A backup that silently stops writing is worse than none, so surface it on the same
-// bell/email pipeline as every other alert. Fired fire-and-forget (raiseAlert de-dups
-// while the alert is open, so this never spams). deviceId null = a system-level alert.
+// Raised through the normal alert pipeline, not awaited (raiseAlert de-dups while
+// the alert is open). deviceId null = system alert.
 function reportUnhealthy(detail) {
   notificationService
     .raiseAlert({
@@ -194,12 +180,10 @@ async function purgeOld() {
   }
 }
 
-// ─── Integrity: SHA-256 manifest for rot detection ────────────────────────────
-// A "sealed" file is one whose day-stamp has passed → it's never appended to again, so
-// its bytes are immutable. We hash each sealed file once (the known-good hash) into a
-// manifest; a later re-hash that differs means the bytes changed on disk with no writer
-// touching them = silent corruption (card rot). Manifest lines are `<hash>  <filename>`
-// so `sha256sum -c checksums.sha256` verifies the whole card from a shell.
+// ─── Integrity: SHA-256 manifest ────────────────────────────
+// A file from a past day is never written again, so its hash is recorded once.
+// A later hash that differs means the bytes changed on disk (card corruption).
+// Lines are `<hash>  <filename>` so `sha256sum -c checksums.sha256` works.
 
 function sha256File(absPath) {
   return new Promise((resolve, reject) => {
@@ -262,10 +246,8 @@ async function updateChecksums() {
     try {
       hash = await sha256File(path.join(BACKUP_DIR, name));
     } catch (err) {
-      // This is the ROT DETECTOR. Silently skipping a file it cannot read means the
-      // one file most likely to be damaged is the one excluded from the integrity check —
-      // an unreadable backup would pass "no rot detected" simply by not being looked at.
-      // See audits/error-flow-report-2026-08-25.md — F-04.
+      // Do not skip unreadable files: an unreadable file is the most likely to be damaged.
+      // See audits/error-flow-report-2026-08-25.md (F-04).
       console.error(
         `[BACKUP] cannot checksum ${name}: ${err.message} — EXCLUDED from the integrity ` +
           `manifest. An unreadable backup file is exactly what this check exists to catch.`,
@@ -305,12 +287,10 @@ async function dailyMaintenance() {
   await updateChecksums();
 }
 
-// Offsite-sync health. The standalone rclone job (ops/offsite-backup) writes OFFSITE_MARKER
-// with an ISO timestamp on each successful cloud upload. If that stamp is missing or older
-// than OFFSITE_MAX_AGE_HOURS, the "1 offsite" copy of 3-2-1 has stalled → warn; older
-// than OFFSITE_CRITICAL_HOURS → critical, which is what reaches email. Opt-in
-// (BACKUP_OFFSITE_ENABLED) so it never false-fires before cloud sync is configured. Reads
-// ONLY a local file, so the backend keeps zero runtime dependency on the cloud.
+// Offsite sync health. The rclone job (ops/offsite-backup) writes OFFSITE_MARKER
+// after each successful upload. Older than OFFSITE_MAX_AGE_HOURS → warning; older
+// than OFFSITE_CRITICAL_HOURS → critical (emailed). Opt-in with
+// BACKUP_OFFSITE_ENABLED. Only reads a local file.
 async function checkOffsite() {
   if (!OFFSITE_ENABLED) return;
   let stampMs = null;
@@ -325,9 +305,8 @@ async function checkOffsite() {
     critHours: OFFSITE_CRITICAL_HOURS,
   });
   if (severity !== "ok") {
-    // The log's folder is named, not BACKUP_DIR: under Docker that is /app/backups, a
-    // path that exists only inside the container and would send someone looking on the
-    // host for a directory that is not there.
+    // Log the folder name, not BACKUP_DIR: under Docker that is /app/backups, which
+    // does not exist on the host.
     const message =
       stampMs == null
         ? "No successful offsite (cloud) backup has ever been recorded — the rclone sync job " +
@@ -370,13 +349,9 @@ function init() {
   if (started) return;
   started = true;
 
-  // Do NOT print the reassuring "on-site backup → …" line when the directory could
-  // not be created. It used to print unconditionally, one line BELOW the error — so a
-  // detached backup drive produced a boot log that said "cannot create dir" and then
-  // immediately "on-site backup → D:/backups", and the second line is the one people
-  // read. The backup that exists specifically to survive a DB wipe plus a power cut can
-  // be completely non-functional while the log looks healthy.
-  // See audits/error-handling-report-2026-08-25.md — E-13.
+  // Only print "on-site backup → …" when the folder was created; otherwise the
+  // reassuring line would appear right after the error.
+  // See audits/error-handling-report-2026-08-25.md (E-13).
   try {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     dirReady = true;
@@ -414,19 +389,13 @@ function init() {
     offsiteTimer.unref?.();
   }
 
-  // Flush the last buffered samples on shutdown.
+  // Flush the remaining buffer on shutdown.
   //
-  // This module no longer handles SIGINT/SIGTERM itself. It used to — and the flush
-  // was right — but it also called process.exit(0) immediately after, which meant a
-  // BACKUP WRITER decided when the whole process died: server.close() never ran,
-  // in-flight HTTP responses were cut mid-write, and any other service that later
-  // registered a signal handler could be killed before it finished. Shutdown is now
-  // owned by src/server.js, the composition root, which calls flushSync() FIRST and
-  // then closes everything else. See audits/error-handling-report-2026-08-25.md — E-10.
-  //
-  // The 'exit' listener stays as the last-resort net: Node does NOT emit 'exit' for an
-  // unhandled signal, but it DOES on a normal event-loop exit and on the
-  // uncaughtException path in src/server.js.
+  // Signals are handled in src/server.js, which calls flushSync() first and then
+  // closes everything else. This module used to call process.exit(0) itself, which
+  // cut off in-flight responses. See audits/error-handling-report-2026-08-25.md (E-10).
+  // The 'exit' listener is a last resort for a normal exit and the uncaughtException
+  // path.
   process.on("exit", flushSync);
 }
 

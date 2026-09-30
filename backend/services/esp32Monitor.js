@@ -3,20 +3,12 @@ import notificationService from "./notificationService.js";
 import alertsService from "./alertsService.js";
 import { describeError } from "../utils/httpError.js";
 
-// ─── ESP32 liveness (the environment sensor's heartbeat) ─────────────────────────
-// The ESP32 pushes `sensorData` every ~3s. Nothing else proves it is alive, and it is
-// NOT a `devices` row, so the Go-agent offline sweep (which works off
-// devices.last_seen) can't cover it. Without this, a dead sensor and a stable room
-// look identical on the dashboard: the last reading just sits there, green, forever.
-//
-// Severity is `critical` on purpose (as is a server going offline): the ESP32 is the
-// ONLY source of temperature / smoke / humidity — losing it blinds the room entirely,
-// which is the thing this system exists to watch. `critical` is also the default
-// NOTIFY_EMAIL_MIN_SEVERITY, so a blind spot actually reaches someone instead of only
-// bumping the bell.
-//
-// The alert is room-level (`device_id = NULL`), matching how sensorHandler raises
-// temperature/gas/humidity, and it auto-resolves the moment a reading arrives.
+// ─── ESP32 liveness ─────────────────────────
+// The ESP32 sends `sensorData` every ~3s and has no devices row, so the server
+// offline sweep cannot see it. Without this a dead sensor looks like a calm room.
+// Critical, because it is the only source of temperature, smoke and humidity, and
+// critical is what gets emailed by default. Room-level (device_id NULL);
+// auto-resolves on the next reading.
 
 const ALERT_TYPE = "esp32_offline";
 
@@ -40,11 +32,9 @@ export function getStatus() {
   };
 }
 
-// Raising the offline alert. Shared by the live transition and the restart path so an
-// "offline" shown in the UI is ALWAYS backed by a real row in `alerts` — a banner with
-// no bell entry and nothing on the Alerts page reads as broken alerting.
-// raiseAlert's de-dup is scoped to OPEN alerts, so calling this again while one is
-// already open (e.g. the backend restarts repeatedly) is a no-op rather than a flood.
+// Raise the offline alert. Shared by the live change and the startup path, so an
+// "offline" in the UI always has a matching alert. raiseAlert de-dups open alerts,
+// so repeated restarts do not flood.
 async function raiseOfflineAlert(lastIso) {
   await notificationService.raiseAlert({
     deviceId: null, // room-level: the ESP32 has no `devices` row
@@ -85,9 +75,8 @@ export function markSeen() {
   if (online !== true) void setOnline(true);
 }
 
-// An explicit disconnect is faster evidence than waiting out the staleness window, but
-// only when NO device socket remains — several ESP32s may share the "devices" room, and
-// one dropping doesn't blind the room.
+// A disconnect is quicker evidence than waiting for the timeout, but only if no
+// other device socket is still connected.
 export function markDisconnected(io, socketId) {
   const room = io?.sockets?.adapter?.rooms?.get("devices");
   const remaining = room ? [...room].filter((id) => id !== socketId).length : 0;
@@ -100,21 +89,12 @@ export function sweep() {
   if (online === true && isStale()) void setOnline(false);
 }
 
-// Seed `lastSeen` from the newest point already in InfluxDB so liveness survives a
-// backend restart:
-//   • data is fresh   → online, and a LATER stop raises the alert (restart-proof)
-//   • data is stale   → offline, AND we raise the alert: the room really is unmonitored
-//     right now, so it belongs on the bell and the Alerts page. (De-dup is scoped to
-//     open alerts, so a restart loop doesn't flood.)
-//   • no data at all  → offline silently. Nothing has ever reported, so there is no
-//     outage to report — this is a fresh install or a dev box with no hardware.
-//
-// The query is awaited, so a live reading can land WHILE it is in flight. That live
-// reading is strictly better evidence than anything historical, so it wins and the seed
-// result is discarded. Without this guard the seed clobbered `lastSeen` and forced the
-// sensor Offline moments after it had correctly come Online — and because that
-// assignment bypassed setOnline(), it did so with NO alert: a banner saying "offline"
-// with nothing behind it on the bell or the Alerts page.
+// Set `lastSeen` from the newest point in InfluxDB so liveness survives a restart:
+//   • fresh data → online; a later stop raises the alert
+//   • stale data → offline, and raise the alert (the room is unmonitored now)
+//   • no data    → offline without an alert (new install, nothing ever reported)
+// If a live reading arrives while the query runs, it wins and the query result is
+// ignored; otherwise the sensor would be set offline right after coming online.
 export async function seed() {
   const startedAt = Date.now();
   const flux = `

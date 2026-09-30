@@ -7,30 +7,19 @@ import { api } from "../../api/api";
 import { startAlarm, stopAlarm, isAudioBlocked } from "../../utils/criticalAlarm";
 
 /**
- * The CRITICAL alert takeover — a blocking, centred, loud interruption for the one severity
- * that means somebody has to move now.
- *
- * Why this exists alongside the bell, the toast and the email: every one of those is passive.
- * A toast auto-dismisses after six seconds, the bell is a number in a corner, and email is
- * read when it is read. For smoke in a server room that is not good enough — the client asked
- * for something in the shape of an NDRRMC emergency broadcast, and the defining property of
- * one is that you cannot carry on until you have dealt with it.
- *
- * Scope is deliberately `critical` ONLY. Extending it to warnings would train everybody to
- * click it away without reading, which is precisely how a real alarm gets missed.
+ * The critical alert takeover: a blocking, centred, loud interruption for alerts that
+ * need someone to act now. The bell, toast and email can all be missed; this works
+ * like an emergency broadcast. Critical only, so people do not learn to click it away.
  *
  * ── Lifecycle ────────────────────────────────────────────────────────────────────────────
- * Raised by two paths, because either alone leaves a hole:
- *   • LIVE   — the `notification` socket event, via the context's subscribe()
- *   • ON LOAD — a scan of the existing feed for critical alerts still `active`
- * The second is what covers a wall display that refreshed mid-incident, and the staff member
- * who opens the dashboard *because* they got the email. An alarm only the already-open tab
- * ever sees is a weak alarm.
+ * Raised two ways:
+ *   • live    : the `notification` socket event, via the context's subscribe()
+ *   • on load : a scan of the feed for critical alerts still `active`
+ * The second covers a wall display that refreshed during an incident, or someone who
+ * opens the dashboard because of the email.
  *
- * Closing is ACKNOWLEDGE, which writes `alerts.acknowledged_by` and is visible to everyone on
- * the Alerts page. Silence is separate and does not close: killing the noise and taking
- * ownership of an incident are different acts, and fusing them would mean the only way to
- * stop a siren is to claim something you have not looked at yet.
+ * Closing means Acknowledge, which sets `alerts.acknowledged_by` for everyone to see.
+ * Silence only stops the sound; muting the alarm and taking ownership are separate.
  */
 
 const CRITICAL_RECHECK_MS = 30_000; // re-arm the scheduled sweep well before it expires
@@ -49,9 +38,8 @@ export default function CriticalAlertModal() {
   const [error, setError] = useState<string | null>(null);
   const [blocked, setBlocked] = useState(false);
 
-  // Everything this component has already queued or closed, so neither the live event nor the
-  // on-load scan can raise the same incident twice. Keyed by alertId (the shared incident),
-  // NOT the per-user notification id.
+  // Alerts already queued or closed, so neither path raises the same one twice. Keyed
+  // by alertId (the shared alert), not the per-user notification id.
   const handledRef = useRef<Set<number>>(new Set());
 
   const current = queue[0] ?? null;
@@ -70,9 +58,9 @@ export default function CriticalAlertModal() {
   // ── Path 1: live events ────────────────────────────────────────────────────────────────
   useEffect(() => subscribe(enqueue), [subscribe, enqueue]);
 
-  // ── Path 2: whatever was already open when this mounted ────────────────────────────────
-  // Runs on every `items` change rather than once: the feed is fetched asynchronously, so at
-  // first mount it is usually still empty. enqueue()'s own dedupe makes the repeat harmless.
+  // ── Path 2: alerts already open when this mounted ────────────────────────────────
+  // Runs on every `items` change, since the feed loads asynchronously; enqueue() skips
+  // duplicates.
   useEffect(() => {
     for (const n of items) {
       if (n.severity === "critical" && (n.status ?? "active") === "active") enqueue(n);
@@ -80,9 +68,8 @@ export default function CriticalAlertModal() {
   }, [items, enqueue]);
 
   // ── Someone else acknowledged or resolved it ───────────────────────────────────────────
-  // `items` is kept live by the context's `alertUpdated` listener, so a colleague acting from
-  // the Alerts page — or an auto-resolve when the metric recovers — takes the modal down here
-  // too. Without this, a recovered incident would keep a siren running in an empty office.
+  // `items` is updated by the context's `alertUpdated` listener, so an acknowledge from
+  // another user or an auto-resolve also closes the modal here and stops the siren.
   useEffect(() => {
     setQueue((prev) =>
       prev.filter((q) => {
@@ -135,12 +122,9 @@ export default function CriticalAlertModal() {
     setSilenced(false);
   }, [current, busy, markRead]);
 
-  /* Navigating alone was useless: this is a blocking overlay, so the page it opened was
-     behind the very dialog that opened it. Collapsing to the bar is what makes the button mean
-     anything — and the alternative, removing it, would have left Acknowledge as the only way
-     to reach the data, i.e. you must take ownership of an incident before you are allowed to
-     look at what it is. Nothing is dismissed here: the alarm keeps sounding, the queue keeps
-     its place, and the bar cannot be closed except by acknowledging. */
+  /* The modal blocks the page, so "view" collapses it to the bar instead of opening the
+     page behind it. Nothing is dismissed: the alarm keeps sounding and the bar stays
+     until someone acknowledges. */
   const viewDetails = useCallback(() => {
     if (!current) return;
     navigate(routeFor(current));
@@ -156,10 +140,9 @@ export default function CriticalAlertModal() {
   if (!current) return null;
 
   /* ── Collapsed ───────────────────────────────────────────────────────────────────────────
-     A persistent bar rather than a dismissal. It pins to the TOP because the 40px Header is
-     a breadcrumb, not navigation — the Sidebar owns that — so covering it costs nothing,
-     while a bottom bar would sit under the toast stack. There is no close button on purpose:
-     the only exits are Acknowledge and somebody else resolving it. */
+     A bar pinned to the top (the header there is only a breadcrumb; a bottom bar would
+     cover the toasts). No close button: it goes away on acknowledge or when someone
+     else resolves the alert. */
   if (minimized) {
     return (
       <div
@@ -239,8 +222,7 @@ export default function CriticalAlertModal() {
       aria-describedby="critical-alert-message"
       className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
       style={{
-        // Deliberately opaque enough to blank the dashboard behind it. A translucent scrim
-        // would leave the charts readable and invite people to keep working around the alarm.
+        // Opaque enough to hide the dashboard, so people do not keep working around the alarm.
         background: "rgba(8, 9, 12, 0.92)",
         fontFamily: "'JetBrains Mono', monospace",
       }}
@@ -311,9 +293,8 @@ export default function CriticalAlertModal() {
           </dl>
 
           {blocked && (
-            // Said out loud rather than swallowed: a screen that looks like it is sounding an
-            // alarm, on a machine whose browser has blocked audio, is worse than one that
-            // admits it is silent.
+            // Tell the user when the browser has blocked sound, instead of looking like an alarm
+            // that is sounding.
             <button
               onClick={() => {
                 startAlarm();
@@ -332,9 +313,7 @@ export default function CriticalAlertModal() {
             </p>
           )}
 
-          {/* Acknowledge goes full-width and FIRST-in-reach on a phone. With `ml-auto`
-              alone it wrapped onto its own row anyway, but right-aligned and detached from
-              the two it belongs beside. */}
+          {/* On a phone, Acknowledge goes full width and first. */}
           <div className="mt-5 flex flex-wrap gap-2">
             <button
               onClick={() => setSilenced(true)}

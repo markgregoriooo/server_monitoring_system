@@ -3,24 +3,19 @@ import { api } from "../../api/api";
 
 type Severity = "info" | "warning" | "critical";
 
-// Per-user email notification preferences (persisted in notification_prefs).
-// Only the email controls are surfaced — they're the ones enforced server-side
-// (the in-app bell/toast/sound are controlled live from the bell panel).
+// Per-user email notification preferences (notification_prefs). Only the email
+// settings are here; bell, toast and sound are controlled from the bell panel.
 export default function NotificationPreferences() {
-  // Both defaults below are FALSE to match the server's PREF_DEFAULTS. Alert email is
-  // opt-in (notificationService.PREF_DEFAULTS), so a toggle that renders "on" before the
-  // fetch lands, or when the fetch fails, tells a new user they are subscribed when they
-  // are not — and the one thing they might do about it is switch it off, which saves the
-  // value they already had and leaves them subscribed to nothing while believing they
-  // just unsubscribed. Wrong in the direction that is hardest to notice.
+  // Both defaults are false, matching the server's PREF_DEFAULTS (email is opt-in).
+  // A toggle showing "on" before the fetch finishes would tell a new user they are
+  // subscribed when they are not.
   const [emailEnabled, setEmailEnabled] = useState(false);
   const [minSeverity, setMinSeverity] = useState<Severity>("critical");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  // What the server currently holds. The button compares the live controls against
-  // this so it can show whether there is anything left to save — otherwise it stays
-  // blue and clickable after a save and gives no signal either way.
+  // What the server has now; the button compares the controls with this to show
+  // whether there is anything to save.
   const [baseline, setBaseline] = useState<{ emailEnabled: boolean; minSeverity: Severity } | null>(null);
 
   const dirty =
@@ -124,9 +119,8 @@ export default function NotificationPreferences() {
             </select>
           </div>
 
-          {/* Four states, each with its own colour so the button always says whether
-              there is unsaved work: green just after a save, blue when there are
-              changes to write, and muted + disabled when the form matches the server. */}
+          {/* The button shows the state: green just after saving, blue when there are changes,
+             muted and disabled when nothing has changed. */}
           <button
             onClick={save}
             disabled={saving || !dirty}

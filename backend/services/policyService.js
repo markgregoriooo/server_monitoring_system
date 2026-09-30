@@ -5,22 +5,14 @@ import { notFound } from "../utils/httpError.js";
 /**
  * Privacy Notice & Terms of Use acceptance.
  *
- * The document itself lives in the frontend (pages/legal/PrivacyTerms.tsx) — it is
- * prose, and git history is its version trail. This service owns the two things
- * that must be server-side to mean anything: the CURRENT version, and the record
- * of who accepted it.
- *
- * Why the version is a constant here and not a column: the acceptance gate has to
- * compare "what you accepted" against "what is in force", and the second half has
- * to come from somewhere the user cannot influence. A row in a table an admin can
- * edit would let the gate be silenced by accident.
+ * The text is in the frontend (pages/legal/PrivacyTerms.tsx). This service holds the
+ * current version and the record of who accepted it. The version is a constant, not
+ * a table row, so the gate cannot be switched off by editing data.
  */
 
-// Bump this whenever the notice's SUBSTANCE changes — new data collected, a new
-// recipient, a different retention period. Every user is then prompted once more,
-// because their stored policy_version no longer matches. Do NOT bump it for typo
-// fixes: a re-prompt that says nothing new trains people to click through.
-// Date-based so "which text did they agree to" is answerable from the git log.
+// Bump this when the notice's content changes (new data collected, new recipient,
+// different retention). Everyone is then asked again. Do not bump it for typo
+// fixes. Date-based so the matching text can be found in git.
 const POLICY_VERSION = "2026-08-11";
 
 const policyService = {
@@ -41,16 +33,10 @@ const policyService = {
   },
 
   /**
-   * Record acceptance of the version currently in force.
-   *
-   * The version written is ALWAYS the server's constant, never a value from the
-   * request body — a client that could name its own version could claim to have
-   * accepted a document that was never shown to it.
-   *
-   * Unlike most audit writes in this codebase, this one is NOT best-effort: the
-   * audit row IS the evidence. If it cannot be written we would be storing
-   * "accepted" with nothing to back it up, so the whole thing is one transaction
-   * and a failure leaves the user un-accepted and re-prompted.
+   * Record acceptance of the current version. The version always comes from the
+   * server, never from the request. The audit row is the evidence, so unlike other
+   * audit writes this one is not best-effort: both writes are one transaction, and a
+   * failure leaves the user un-accepted.
    */
   async accept(userId, { ip = null, userAgent = null } = {}) {
     const [rows] = await db.query(
@@ -93,9 +79,8 @@ const policyService = {
   },
 
   /**
-   * Clear every stored acceptance — forces the whole organisation to re-accept on
-   * their next page load. Not exposed over HTTP on purpose; it is here so a future
-   * migration that bumps POLICY_VERSION has a documented way to reset alongside it.
+   * Clear every stored acceptance so everyone accepts again at their next page load.
+   * Not exposed over HTTP; for a future migration that bumps POLICY_VERSION.
    */
   async resetAll() {
     const [res] = await db.query(

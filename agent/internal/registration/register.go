@@ -1,6 +1,6 @@
-// Package registration performs the first-run handshake: register with the
-// backend using the shared install key, poll until an admin approves, then
-// write agent.conf with the permanent device token.
+// Package registration does the first-run handshake: register with the backend using
+// the install key, poll until an admin approves, then write agent.conf with the
+// permanent device token.
 package registration
 
 import (
@@ -58,9 +58,8 @@ func Run(apiURL, installKey, confPath, agentVersion string, interval int) error 
 	}
 	logger.Infof("registered as device_id=%d — waiting for admin approval...", reg.DeviceID)
 
-	// The pending token goes in the BODY, not a query string: it is exchanged for the
-	// permanent token, and a URL is written verbatim into proxy/access logs on every
-	// one of these 10-second polls.
+	// The pending token goes in the body, not the query string: it is exchanged for the
+	// permanent token, and URLs end up in access logs on every 10-second poll.
 	statusURL := apiURL + "/api/agents/status"
 	statusBody, _ := json.Marshal(statusRequest{PendingToken: reg.PendingToken})
 

@@ -10,12 +10,9 @@ import { logSafe } from "../utils/logSafe.js";
 
 const router = express.Router();
 
-// Enrollment is now the only route that accepts a credential which is not a JWT and
-// not an agent token, and there can be SEVERAL valid install keys rather than the one
-// constant there used to be. The global limiter (500/15min) is sized for a dashboard
-// loading panels, not for guarding a credential, so this path gets its own tighter
-// budget. Generous enough for a real rollout — nobody installs 30 agents from one
-// machine in 15 minutes — and it also caps how fast a wrong key can be retried.
+// Enrollment takes an install key, which is a credential, so it gets a tighter
+// limit than the global one. Still enough for a real rollout, and it slows down
+// guessing.
 const enrollLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
@@ -27,15 +24,8 @@ const enrollLimiter = rateLimit({
   },
 });
 
-// The approval-polling endpoint had NO limiter at all — it was the one unauthenticated
-// route in this file without one. It exchanges a pending token for the permanent AGT-
-// credential, so it deserves a budget even though the token is now 192 bits of CSPRNG
-// (unguessable) and stored only as a hash.
-//
-// Sized for POLLING, not for a credential guess: registration.Run polls every 10 s while
-// it waits for an admin, so one agent costs ~90 requests per window, and several machines
-// can be enrolling from behind the same campus NAT at once. 600 is roughly six agents
-// polling continuously for a full window — generous for real use, and still a bound.
+// Rate limit for approval polling. The agent polls every 10s while it waits, so one
+// agent uses ~90 requests per window; 600 allows several agents behind one NAT.
 const statusLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: Number(process.env.AGENT_STATUS_RATE_MAX) || 600,
@@ -50,9 +40,9 @@ const statusLimiter = rateLimit({
 
 // ── POST /api/agents/register ─ first-run enrollment (install key, no JWT) ─────
 router.post("/register", enrollLimiter, async (req, res, next) => {
-  // Keys live in `agent_install_keys` (admin-managed, revocable). AGENT_INSTALL_KEY in
-  // .env still works as a deprecated bootstrap fallback — a fresh database has neither
-  // a key nor an admin to mint one. See services/installKeyService.js.
+  // Keys live in `agent_install_keys` (managed by admins, revocable). AGENT_INSTALL_KEY
+  // in .env still works as a deprecated fallback for a fresh database with no admin
+  // yet. See services/installKeyService.js.
   let resolved;
   try {
     resolved = await installKeyService.resolveKey(req.body?.install_key);
@@ -60,9 +50,8 @@ router.post("/register", enrollLimiter, async (req, res, next) => {
     return next(err);
   }
   if (!resolved.ok) {
-    // The log names WHICH failure; the response does not. An installer operator
-    // learning "revoked" vs "unknown" would learn whether a key exists at all, but
-    // the admin reading this log needs to know whether to re-issue or extend.
+    // The log says which check failed (unknown / revoked / expired); the response does
+    // not, so a caller cannot probe which keys exist.
     console.warn(
       `[install-keys] enrollment refused (${resolved.reason}) from ${req.ip} ` +
         `host="${logSafe(req.body?.hostname ?? "?", 60)}"`,
@@ -76,8 +65,7 @@ router.post("/register", enrollLimiter, async (req, res, next) => {
     // The key id is stored on the enrollment (agent_tokens.install_key_id), which is
     // what lets an admin later revoke a key AND the servers it let in.
     const { pendingToken, deviceId, reused } = await agentService.register(req.body, resolved.keyId);
-    // Best-effort counter, deliberately not awaited — the enrollment has already
-    // succeeded and a failed bump must not turn that into an error.
+    // Not awaited: enrollment already succeeded, a failed counter update must not fail it.
     installKeyService.noteUsed(resolved.keyId);
     const io = req.app.get("io");
     // Tell open dashboards a pending agent appeared so admins see it live.
@@ -101,15 +89,9 @@ router.post("/register", enrollLimiter, async (req, res, next) => {
 });
 
 // ── POST /api/agents/status ─ agent polls for approval (pending token, no JWT) ─
-// POST, not GET, and the token is read from the BODY. The pending token is a
-// credential — it is exchanged here for the permanent `AGT-…` token — and a query
-// string is written verbatim into proxy and access logs. The agent polls this every
-// 10s while it waits for an admin, so the GET version wrote that credential into the
-// logs dozens of times per enrollment, where anyone with log access could replay it
-// and collect the permanent token. A body is not logged.
-// No extra rate limiter: the token is 24 random bytes (192 bits, agentService.register),
-// so there is nothing to guess, and `enrollLimiter`'s budget would cut off a legitimate
-// agent polling every 10s well before an admin got round to approving it.
+// POST with the token in the body: the pending token is exchanged here for the
+// permanent AGT- token, and a query string would end up in access logs. No extra
+// limiter beyond statusLimiter: the token is 192 random bits.
 router.post("/status", statusLimiter, async (req, res, next) => {
   const token = req.body?.pending_token;
   if (!token) return res.status(400).json({ error: "pending_token is required." });
@@ -127,8 +109,6 @@ router.post("/status", statusLimiter, async (req, res, next) => {
 });
 
 // ── Install keys (admin) ──────────────────────────────────────────────────────
-// Declared before the `/:id/...` routes below purely for readability — these paths
-// are literal, so Express would not confuse them either way.
 
 // GET /api/agents/install-keys ─ list keys (never the plaintext, which is gone)
 router.get("/install-keys", authMiddleware, requireRole("admin"), async (req, res, next) => {
@@ -163,10 +143,8 @@ router.post("/install-keys", authMiddleware, requireRole("admin"), async (req, r
   }
 });
 
-// GET /api/agents/install-keys/:id/reveal ─ the plaintext key again, for re-opening the
-// install command. The only endpoint that ever returns a key after creation, so it is
-// admin-gated AND audited: with keys recoverable, "who looked at this credential" is the
-// question the audit trail has to be able to answer.
+// GET /api/agents/install-keys/:id/reveal ─ show the key again so the install
+// command can be reopened. Admin-only and audited.
 router.get("/install-keys/:id/reveal", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     const result = await installKeyService.reveal(req.params.id);
@@ -189,9 +167,8 @@ router.get("/install-keys/:id/reveal", authMiddleware, requireRole("admin"), asy
   }
 });
 
-// GET /api/agents/install-keys/:id/servers ─ which servers this key enrolled and are
-// still reporting. The revoke dialog shows these BY NAME before doing anything: a count
-// tells an admin how much breaks, but not whether the production box is in the list.
+// GET /api/agents/install-keys/:id/servers ─ servers this key enrolled that are
+// still reporting, listed by name in the revoke dialog.
 router.get("/install-keys/:id/servers", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     res.json({ servers: await installKeyService.enrolledServers(req.params.id) });
@@ -203,16 +180,12 @@ router.get("/install-keys/:id/servers", authMiddleware, requireRole("admin"), as
 // POST /api/agents/install-keys/:id/revoke ─ withdraw a key.
 //
 // Body: { revokeAgents?: boolean }
-//   false / omitted → block NEW enrolments only; every server already reporting is
-//                     untouched (it runs on its own AGT- token, not on this key).
-//   true            → also de-authorise the servers this key enrolled: their tokens go
-//                     to 'revoked', the next metric POST 403s, and each agent deletes
-//                     its own agent.conf and exits. Reversible by re-installing with a
-//                     live key — the device row, its logs and its history are kept, and
-//                     the machine re-enrols onto the same device_id.
-//
-// Opt-in rather than automatic: "stop issuing this key" and "de-authorise its whole
-// fleet" are both legitimate, and they differ by a lot of monitoring going dark.
+//   false / omitted → only blocks new enrollments; enrolled servers keep working
+//                     (they use their own AGT- token).
+//   true            → also revokes the servers this key enrolled: their next POST
+//                     gets 403 and the agent removes its agent.conf and exits. The
+//                     device, its logs and history are kept; re-installing with a
+//                     valid key brings it back on the same device_id.
 router.post("/install-keys/:id/revoke", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     const revokeAgents = req.body?.revokeAgents === true;
@@ -255,12 +228,8 @@ router.post("/install-keys/:id/revoke", authMiddleware, requireRole("admin"), as
   }
 });
 
-// DELETE /api/agents/install-keys/:id ─ remove a REVOKED key from the list.
-//
-// Revoke first, then delete: revoking is the decision that can take servers down, and
-// hiding it behind a "delete" button would put that consequence behind a label that
-// says nothing about it. Servers this key enrolled keep running and simply become
-// unattributed (the FK is ON DELETE SET NULL).
+// DELETE /api/agents/install-keys/:id ─ remove a revoked key from the list.
+// Must be revoked first. Servers it enrolled keep running (the FK is ON DELETE SET NULL).
 router.delete("/install-keys/:id", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     const result = await installKeyService.remove(req.params.id);

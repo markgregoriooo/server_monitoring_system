@@ -1,18 +1,6 @@
-// PURE, import-free: what a probe's MEASUREMENTS mean, and what to do about them.
-//
-// Split from deviceProbe.js (the I/O half) the same way pingOutput is split from
-// icmpPing and snmpUtils from snmpClient — so the decision an admin sees in the Add
-// form can be tested without a network, a device or a .env.
-//
-// The problem this exists for: registering a router or a UPS with a wrong IP, a wrong
-// community or a blocked UDP 161 used to be SILENT. The device was created, the first
-// poll failed into the server console, and the row went Offline — which is also what a
-// perfectly healthy device that simply has not been polled yet looks like. So an admin
-// sat waiting for a card to fill that never would.
-//
-// The verdict is deliberately phrased as an INSTRUCTION ("register with a blank
-// community"), not as a reading ("snmpAnswered: false"). The reading is already on
-// screen; what the operator cannot derive from it is which of four things to go change.
+// What a probe's measurements mean and what to do next. No imports, so the verdict
+// shown on the Add form is unit-tested. Worded as an instruction ("register with a
+// blank community") rather than a reading, since the readings are already shown.
 
 /** Probe outcomes, most capable first. `code` is stable — the UI keys copy off it. */
 export const PROBE_CODE = {
@@ -24,11 +12,8 @@ export const PROBE_CODE = {
 };
 
 /**
- * Fold the four independent measurements into one outcome.
- *
- * Each MIB is asked independently on purpose — a device may implement any subset, and
- * conflating "SNMP answered" with "the system group had contents" is what once made the
- * dev UPS (UPS-MIB only, empty MIB-II) look unmonitorable. See deviceProbe.js.
+ * Combine the four measurements into one outcome. Each MIB is checked separately
+ * because a device may implement any subset.
  */
 export function classify({ icmpReachable, snmpAnswered, ifCount = 0, isUps = false } = {}) {
   if (isUps) return PROBE_CODE.UPS;
@@ -48,10 +33,8 @@ const NOTHING_ANSWERED = {
     "explaining why.",
 };
 
-// A UPS has no ping fallback and never will: pinging a battery tells you its management
-// card has power, which is the one fact about a UPS that is never in doubt once you can
-// reach it at all. So every non-UPS outcome is a refusal here, and each names the thing
-// to go and check rather than restating the measurement.
+// A UPS has no ping-only mode (a ping only proves the management card has power),
+// so every non-UPS outcome is a failure here, and each says what to check.
 function upsVerdict(code, { communityGiven }) {
   switch (code) {
     case PROBE_CODE.UPS:
@@ -91,10 +74,8 @@ function upsVerdict(code, { communityGiven }) {
   }
 }
 
-// A router, unlike a UPS, has a legitimate second mode: no community at all, monitored
-// by ICMP. That is the only way to watch ISP-owned CPE, so `ping_only` is a SUCCESS here
-// when the admin left the community blank — and a failure when they did not, because
-// then they asked for SNMP and did not get it.
+// A router can be monitored by ping alone (for ISP-owned equipment), so `ping_only`
+// passes when the community was left blank and fails when SNMP was asked for.
 function routerVerdict(code, { communityGiven }) {
   switch (code) {
     case PROBE_CODE.SNMP_ROUTER:
@@ -153,9 +134,8 @@ function routerVerdict(code, { communityGiven }) {
  * @param {object} ctx { expect: 'router'|'ups', communityGiven: boolean }
  * @returns {{ code: string, ok: boolean, registerAs: string|null, title: string, detail: string }}
  *
- * `ok` is answered RELATIVE TO WHAT WAS ASKED FOR, which is why `expect` is required: a
- * bare ICMP reply is a pass for a router registered with no community and a failure for
- * the same address typed into the UPS form.
+ * `ok` depends on what is being registered, so `expect` is required: a bare ping
+ * reply passes for a router with no community and fails on the UPS form.
  */
 export function verdictFor(m = {}, { expect = "router", communityGiven = false } = {}) {
   const code = classify(m);

@@ -24,31 +24,14 @@ router.get("/", authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── GET /api/aircon/channels — REMOVED 2026-08-25 ────────────────────────────
-//
-// It was the only UNAUTHENTICATED route in this file, labelled "ESP32 boot-time config
-// fetch", and **nothing called it**: not the firmware (grep of env_monitor_v2.ino finds
-// no such request — the ESP32 receives its channel map as the `irConfig` socket event,
-// on a connection already authenticated with DEVICE_SECRET) and not the dashboard
-// (which reads the same data from `GET /api/aircon/`, behind a JWT).
-//
-// So it served no client while disclosing the room's AC inventory — how many units
-// exist, their IR channel numbers and whether each is currently on — to anyone who
-// could reach port 3000. Low value to an attacker, but it is exactly the shape of the
-// `/uploads` finding: a reader left behind after its consumer went away.
-//
-// If a future firmware really does need an HTTP bootstrap, give it the device-secret
-// check the socket handshake uses; do not restore an open one.
-// See audits/authorization-review-2026-08-25.md — AZ-01.
+// GET /api/aircon/channels was removed on 2026-08-25: it was unauthenticated and
+// unused (the ESP32 gets the same data as the `irConfig` socket event). If firmware
+// ever needs an HTTP bootstrap, protect it with the device secret.
+// See audits/authorization-review-2026-08-25.md (AZ-01).
 
-// Push the auto-cooling IR zone thresholds to the ESP32 (its getIRZone() boundaries) so
-// changing WHEN IR fires needs no reflash — mirrors envConfig in routes/alertRules.js.
-//
-// Device-only on purpose: no browser page colours anything by these boundaries. The
-// AirConditioner page reads them over REST and already re-renders from its own save, and
-// the Dashboard/Environment pages colour temperature by the ALERT RULES instead (see
-// GET /api/environment/thresholds + `envConfigUpdated`). A broadcast with no listener is
-// just a promise to keep something in sync that nothing is reading.
+// Push the auto-cooling zone thresholds to the ESP32 (acConfig) so changing when IR
+// fires needs no reflash. Sent to the device only: the dashboards colour temperature
+// by the alert rules, not by these.
 async function pushACConfig(io) {
   if (!io) return;
   try {
@@ -85,12 +68,8 @@ router.post("/", authMiddleware, requireRole("admin", "it_staff"), async (req, r
   
   if (!name?.trim())                    return res.status(400).json({ error: "name is required" });
   const ch = parseInt(ir_channel);
-  // The limit comes from the DEVICE, not from a constant here. The ESP32 reports its pin
-  // pool on every connect (sendChannelMap → airconService.setChannelMap), so adding an AC
-  // unit is wiring plus registering — no code edit, which is what a hardcoded cap forced.
-  //
-  // Falls back to AIRCON_MAX_IR_CHANNELS (blank = 2, today's wired pair) only while the
-  // ESP32 has never connected, so a cold backend can still be configured.
+  // The channel limit comes from the ESP32, which reports its pins on connect. Falls
+  // back to AIRCON_MAX_IR_CHANNELS (default 2) until the ESP32 has connected once.
   const maxChannels = airconService.getChannelMap().length
     || Number(process.env.AIRCON_MAX_IR_CHANNELS)
     || 2;
@@ -105,9 +84,7 @@ router.post("/", authMiddleware, requireRole("admin", "it_staff"), async (req, r
     });
     await pushIRConfig(req.app.get("io"));
 
-    // Registering a unit ARMS an IR channel — from here the ESP32 fires captured codes at
-    // real hardware on every zone change. Toggling that same unit on and off was already
-    // recorded (aircon_logs); the act that put it under automatic control was not.
+    // Adding a unit puts its IR channel under automatic control, so record it in the audit log.
     audit({
       userId: req.user.id,
       module: "aircon",
@@ -134,9 +111,8 @@ router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, nex
     if (!removed) return res.status(404).json({ error: "Unit not found" });
     await pushIRConfig(req.app.get("io"));
 
-    // The mirror of the add: this disarms the channel, and cooling silently stops being
-    // controlled. Named from the row read before the DELETE — after it there is nothing
-    // left to identify, and a bare id is not something anyone can act on later.
+    // Removing a unit stops IR control for it. The name is read before the DELETE so
+    // the audit entry can say which unit it was.
     audit({
       userId: req.user.id,
       module: "aircon",
@@ -156,18 +132,9 @@ router.patch("/:id/toggle", authMiddleware, requireRole("admin", "it_staff"), as
   try {
     const io = req.app.get("io");
 
-    // ⚠️ Checked BEFORE anything is written.
-    //
-    // The IR signal is a Socket.IO emit into the `devices` room, and an emit into an
-    // empty room is silently discarded — no error, no return value. So with the ESP32
-    // absent this route used to flip `aircon_state.is_on`, stamp "Manually turned ON by
-    // <user>" into `aircon_logs`, tell every dashboard the unit was on, and send the IR
-    // precisely nowhere. Nothing physical happened, and the record said otherwise — in
-    // the very table the Aircon Activity report is built from.
-    //
-    // Refusing is the honest answer: a unit nobody can command should not appear to have
-    // been commanded. `calibrate-gas` in routes/environment.js has always worked this
-    // way; both now share one check so they cannot drift.
+    // Check the ESP32 is connected before writing anything. An emit into an empty room
+    // is silently dropped, and we must not log "turned ON" when no IR was sent. Same
+    // check as calibrate-gas (sockets/deviceRoom.js).
     if (!isDeviceConnected(io)) {
       return res.status(409).json({ error: NO_DEVICE_MESSAGE });
     }
@@ -203,9 +170,7 @@ router.patch("/:id/toggle", authMiddleware, requireRole("admin", "it_staff"), as
 });
 
 // ── PATCH /api/aircon/:id/name ────────────────────────────────────────────────
-// Rename a unit. Gated like add/toggle (admin + it_staff) rather than delete
-// (admin-only): a rename is a label change, not a destructive one — and whoever can
-// create a unit with a name should be able to correct it.
+// Rename a unit. Admin + it_staff, like add/toggle; renaming is not destructive.
 router.patch("/:id/name", authMiddleware, requireRole("admin", "it_staff"), async (req, res, next) => {
   try {
     const result = await airconService.rename(
@@ -227,19 +192,10 @@ router.patch("/:id/name", authMiddleware, requireRole("admin", "it_staff"), asyn
   }
 });
 
-// ── REMOVED: PATCH /:id/mode and PATCH /:id/temp ──────────────────────────────
-// Both were unreachable — nothing in the dashboard ever called them. They also
-// couldn't have worked: the firmware has no per-degree or per-mode IR codes, so they
-// only wrote to MySQL, and `applyAutoIR` overwrites set_temperature on every unit
-// that is ON at the next zone change anyway. A manual setting would have been
-// silently discarded minutes later.
-//
-// Mode / Set Temp / Fan are READ-ONLY status on the card — what auto-cooling chose.
-// The one real manual control is the on/off toggle above, which does fire IR and
-// which applyAutoIR deliberately respects (a unit switched off stays off).
-//
-// If manual override is ever wanted it needs more than these routes: captured codes
-// per temperature AND a per-unit "manual" mode that suspends auto-cooling for that
-// unit, with a rule for when auto resumes.
+// PATCH /:id/mode and PATCH /:id/temp were removed: nothing called them, and the
+// firmware has no per-degree IR codes, so they only changed the database (and
+// applyAutoIR would overwrite it at the next zone change). Mode, set temp and fan
+// are read-only status. Manual override would need captured codes per temperature
+// and a per-unit manual mode that pauses auto-cooling.
 
 export default router;

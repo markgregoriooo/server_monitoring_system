@@ -1,19 +1,12 @@
 /**
- * Shared motion primitives for the landing page.
+ * Shared motion helpers for the landing page.
  *
- * Two layers, on purpose:
+ *   - CSS transitions (`Reveal`) for most of the page: headings, text, cards.
+ *   - anime.js for the data visuals, where the animation shows what the product does
+ *     (a line plotting itself, packets moving, a forecast extending).
  *
- *   - CSS transitions (`Reveal`) carry the bulk of the page — headings, copy,
- *     cards. They cost nothing, cannot fail, and their failure mode is "already
- *     visible", which is the state we want anyway.
- *   - anime.js is reserved for the DATA visuals, where the choreography IS the
- *     message: a line that plots itself left to right, dots that travel the
- *     direction data actually travels, a forecast that extends past the last
- *     reading. Fading a chart in says nothing about the product; drawing it says
- *     what the product does.
- *
- * Everything is gated on prefers-reduced-motion and degrades to the FINAL state,
- * never a blank one. Someone who asked for less motion still gets the whole page.
+ * Everything respects prefers-reduced-motion and falls back to the finished state,
+ * never a blank one.
  */
 import { useEffect, useRef, useState } from "react";
 
@@ -27,14 +20,8 @@ export function prefersReducedMotion(): boolean {
 }
 
 /**
- * Fires once when the element first enters the viewport.
- *
- * `once` is the default because these are entrance animations: re-running them
- * every time a section scrolls back into view turns a page into a slot machine.
- *
- * The observer is skipped entirely when IntersectionObserver is missing (or on a
- * reduced-motion machine), returning `true` immediately — a browser that cannot
- * observe should get the finished page, not an invisible one.
+ * Fires once when the element first enters the viewport. Returns `true` right away
+ * when IntersectionObserver is missing or reduced motion is on, so the content shows.
  */
 export function useInView<T extends HTMLElement = HTMLDivElement>(
   { threshold = 0.25, rootMargin = "0px 0px -10% 0px", once = true } = {},
@@ -70,9 +57,8 @@ export function useInView<T extends HTMLElement = HTMLDivElement>(
 }
 
 /**
- * Easing + duration vocabulary, so twelve components don't each invent their own
- * feel. `outExpo` decelerates hard, which is what makes a value look like it
- * SETTLED rather than stopped — the right curve for anything numeric.
+ * Shared easing and durations. `outExpo` slows down sharply at the end, which suits
+ * numbers settling.
  */
 export const EASE = {
   settle: "outExpo",
@@ -88,29 +74,17 @@ export const DUR = {
 } as const;
 
 /**
- * True on phone-width viewports. Re-exported from `hooks/useIsNarrow` — it moved
- * there when the Settings page needed the same test, and is kept exported here so
- * the landing components that already import it from this module are unaffected.
- *
- * Here it picks the DESIGN WIDTH of the mini-UI mocks, not what to hide. A mock
- * laid out for 560px and scaled into a 343px column lands at 0.61, which turns
- * its 9px labels into 5px — legible as a shape, useless as text. Handing the
- * same mock a 360px design box instead means it renders at roughly 1:1 on a
- * phone and stays readable.
- *
- * The default (640) matches Tailwind's `sm` breakpoint so the mocks change over at
- * the same width as the layout around them, rather than at some second, invisible
- * boundary.
+ * True on phone-width viewports. Re-exported from `hooks/useIsNarrow` for the landing
+ * components that already import it here. Used to pick the mocks' design width: a
+ * mock designed for 560px shrunk to 343px has unreadable 5px labels, while a 360px
+ * design renders about 1:1. Default 640 matches Tailwind's `sm`.
  */
 export { useIsNarrow } from "../../hooks/useIsNarrow";
 
 /**
- * True once the page has scrolled past `threshold`.
- *
- * Drives the topbar's two states: floating over the hero at rest, frosted and
- * bordered once content is passing underneath it. rAF-throttled and registered
- * `passive`, because a scroll listener that forces layout on every event is the
- * classic way to make a page feel heavy on a phone.
+ * True once the page has scrolled past `threshold`; switches the topbar from
+ * transparent to frosted. Throttled with requestAnimationFrame and registered
+ * `passive`.
  */
 export function useScrolled(threshold = 24): boolean {
   const [scrolled, setScrolled] = useState(

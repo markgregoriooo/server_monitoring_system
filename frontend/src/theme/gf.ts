@@ -1,26 +1,11 @@
 /**
- * The Grafana design tokens, in one place.
+ * The Grafana design tokens, in one place. Import `GF` instead of declaring your own;
+ * every value is a `var(--gf-*)`, so the theme toggle works.
  *
- * Fourteen files declared their own local token literal mapping the same `--gf-*` CSS
- * variables. That was not a style problem — the copies had already drifted, and the
- * drift shipped a real defect:
- *
- *   `pages/Dashboard.tsx` wrote `accent: "#5794F2"` where the other thirteen wrote
- *   `accent: "var(--gf-accent)"`. Dashboard then used it as `color:` (Dashboard.tsx
- *   1099, 1268). On the LIGHT theme `--gf-accent` measures 2.76:1 against the page —
- *   below the 4.5:1 WCAG AA needs for body text — which is exactly why
- *   `--gf-accent-text` (#1F62E0, 4.92:1) exists and why the other pages carry an
- *   `accentText` key. A hardcoded hex cannot follow that split, so the Dashboard's
- *   accent type was unreadable on light in a way no other page was.
- *
- * Import `GF` instead of re-declaring the object. Every value is a `var(--gf-*)`
- * reference, never a literal hex, so the theme toggle keeps working.
- *
- * Surfaces vs type: use `accent` for backgrounds, borders and graphics; use
- * `accentText` whenever the colour lands on text. They are the same colour on dark
- * and deliberately different on light.
- *
- * See audits/code-duplication-report-2026-08-25.md — R-01.
+ * Use `accent` for backgrounds, borders and graphics, and `accentText` for text. They
+ * are the same in dark mode; in light mode `accent` is too pale for text (2.76:1), so
+ * `accentText` (#1F62E0, 4.92:1) is used.
+ * See audits/code-duplication-report-2026-08-25.md (R-01).
  */
 export const GF = {
   bg: "var(--gf-bg)",
@@ -43,15 +28,10 @@ export const GF = {
 } as const;
 
 /**
- * Status colours, from the table in CLAUDE.md.
- *
- * These hexes were re-declared as local consts in 20+ files (77 declarations, 256
- * literal occurrences). They are deliberately literal rather than `var(--gf-*)`:
- * several consumers paint them onto a <canvas>, which cannot resolve a CSS variable —
- * that is what `utils/canvasColor.resolveColor` exists for.
- *
- * CRITICAL (#E02F44) and DANGER (#F2495C) are different colours and are easy to
- * confuse. CRITICAL is the more severe of the two.
+ * Status colours, from the table in CLAUDE.md. Literal hexes rather than
+ * `var(--gf-*)`, because some are drawn on a <canvas>, which cannot read CSS variables
+ * (see `utils/canvasColor.resolveColor`). CRITICAL (#E02F44) is more severe than DANGER
+ * (#F2495C).
  */
 export const STATUS = {
   /** NORMAL / Online */

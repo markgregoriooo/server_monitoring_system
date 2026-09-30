@@ -1,18 +1,9 @@
-// The I/O half of "can this device be monitored, and HOW?" — ICMP + the three MIB
-// questions, run against one address, with no DB and no InfluxDB touched.
-//
-// It is the engine behind BOTH `npm run probe` (scripts/probeDevice.js) and the
-// **Test connection** button on the Add router / Add UPS forms. One implementation on
-// purpose: the CLI's own header has always claimed "there is nothing to install and no
-// second implementation to drift", and a probe that disagreed with the form would be
-// worse than no probe at all.
-//
-// Runs the SAME code the poller runs (snmpClient + icmpPing), so a pass here means the
-// poller will succeed for the same reasons — and a failure names the reason the poller
-// would otherwise have written only to the server console.
-//
-// Never throws. Every branch is a measurement: "no answer" is a result, not an error,
-// exactly as in icmpPing. The verdict itself lives in the pure deviceProbeVerdict.js.
+// Checks whether a device can be monitored, and how: ping, then the MIB-II, IF-MIB
+// and UPS-MIB questions for one address. No database access. Used by both
+// `npm run probe` and the Test connection button on the Add router / Add UPS
+// forms, and uses the same snmpClient/icmpPing as the poller, so a pass here means
+// polling will work. Never throws: "no answer" is a result. The verdict is in
+// deviceProbeVerdict.js.
 
 import { ping } from "./icmpPing.js";
 import client, { SYS_OID, IF_OID, UPS_OID, upsOutputState } from "./snmpClient.js";
@@ -44,10 +35,9 @@ const failed = (r) => r == null || r.__error != null;
  *
  * @param {string} ip
  * @param {object} opts
- * @param {string} [opts.community] blank/omitted = do NOT attempt SNMP at all. That is
- *   not a shortcut: a blank community on the Add router form REGISTERS the device for
- *   ICMP monitoring, so guessing "public" here would report a capability the saved
- *   device is never going to use. The CLI passes an explicit default instead.
+ * @param {string} [opts.community] blank/omitted = skip SNMP. On the Add router
+ *   form a blank community means ICMP-only monitoring, so there is nothing to check
+ *   over SNMP. The CLI passes its own default.
  * @param {number|string} [opts.port]
  * @param {'router'|'ups'} [opts.expect] what the caller is trying to register.
  * @param {number} [opts.pingCount]
@@ -60,9 +50,7 @@ export async function probe(ip, { community = "", port, expect = "router", pingC
   // probe and then be refused on save.
   if (!isValidIp(host)) return { ok: false, error: `"${host}" is not a valid IPv4 address.` };
 
-  // normalizePort THROWS on a typo rather than coercing — the right call on the save
-  // path, but this function's contract is that every outcome is a result, so the
-  // message is turned into one. The form then shows the same text either way.
+  // normalizePort throws on bad input; turn that into a result.
   let snmpPort;
   try {
     snmpPort = normalizePort(port);
@@ -73,8 +61,7 @@ export async function probe(ip, { community = "", port, expect = "router", pingC
   const conn = { host, community: comm, port: snmpPort, timeout: SNMP_TIMEOUT_MS, retries: SNMP_RETRIES };
 
   // ── 1. ICMP ────────────────────────────────────────────────────────────────
-  // First, because nothing can refuse a ping: a failure here means the address is
-  // wrong or the host is down, and every SNMP result below would then be noise.
+  // First: if ping fails, the address is wrong or the host is down.
   const icmp = await ping(host, { count: pingCount });
 
   const out = {
@@ -102,9 +89,8 @@ export async function probe(ip, { community = "", port, expect = "router", pingC
   }
 
   // ── 2. Does SNMP answer at all? ────────────────────────────────────────────
-  // "Answered" means the transport worked — the GET did not time out. Whether the
-  // system group has any CONTENTS is a separate question, and conflating the two is
-  // what once made the dev UPS (UPS-MIB only, empty MIB-II) read as unmonitorable.
+  // "Answered" means the GET did not time out; the system group may still be empty
+  // (the dev UPS has only UPS-MIB).
   const sys = await ask(conn, (s) =>
     client.get(s, [SYS_OID.sysDescr, SYS_OID.sysName, SYS_OID.sysUpTime]),
   );
@@ -117,9 +103,8 @@ export async function probe(ip, { community = "", port, expect = "router", pingC
     if (sys[SYS_OID.sysUpTime] != null) out.snmp.uptimeSeconds = Number(sys[SYS_OID.sysUpTime]) / 100;
   }
 
-  // ── 3 & 4. IF-MIB and UPS-MIB, asked independently ─────────────────────────
-  // Both are asked whenever SNMP answered at ALL, not only when the system group did,
-  // because a device may implement any subset of MIBs.
+  // ── 3 & 4. IF-MIB and UPS-MIB, asked separately ─────────────────────────
+  // Asked whenever SNMP answered, since a device may implement any subset.
   if (out.snmp.answered) {
     const names = await ask(conn, (s) => client.walkColumn(s, IF_OID.ifName));
     if (!failed(names)) {
@@ -138,9 +123,7 @@ export async function probe(ip, { community = "", port, expect = "router", pingC
     if (!failed(u)) {
       const charge = u[UPS_OID.upsEstimatedChargeRemaining];
       const src = u[UPS_OID.upsOutputSource];
-      // This is what separates "a UPS on the network" from "a UPS we can actually
-      // read" — a unit whose card only speaks its vendor's cloud app passes step 2
-      // and fails here.
+      // A UPS whose card only talks to its vendor's app passes step 2 and fails here.
       out.ups.isUps = charge != null || src != null;
       out.ups.chargePct = charge != null ? Number(charge) : null;
       const mins = u[UPS_OID.upsEstimatedMinutesRemaining];

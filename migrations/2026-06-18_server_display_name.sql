@@ -1,21 +1,16 @@
 -- ─────────────────────────────────────────────────────────────────────────────
--- Migration: admin-settable server DISPLAY NAME (friendly label / rename)
--- Date: 2026-06-18   Branch: pip-widget
+-- Migration: admin-set server display name
+-- Date: 2026-06-18
 --
--- Run ONCE in phpMyAdmin (select your DB → SQL → paste → Go).
+-- Run once in phpMyAdmin (select the DB → SQL → paste → Go).
 --
--- WHY:
---   A server's name is taken from its hostname at agent enrollment
---   (devices.device_name). Several boxes in one rack can share a hostname
---   (e.g. "unknown-server" / "localhost"), making them hard to tell apart on the
---   dashboard. This adds an OPTIONAL admin-set label, separate from the hostname.
+-- A server's name comes from its hostname at enrollment (devices.device_name), and
+-- several machines can share one (e.g. "localhost"). This adds an optional label.
 --
--- MODEL:
---   device_name  = the real hostname reported by the agent (kept intact, never
---                  overwritten — still shown for technical reference).
---   display_name = the admin's friendly label (NULL = none → fall back to hostname).
---   Effective name everywhere = COALESCE(NULLIF(display_name,''), device_name).
---   Survives re-registration (refreshHostInfo never touches it). Admin-only.
+--   device_name  = the hostname reported by the agent (never overwritten)
+--   display_name = the admin's label (NULL = use the hostname)
+--   Shown name   = COALESCE(NULLIF(display_name,''), device_name)
+-- Kept across re-registration (refreshHostInfo does not touch it). Admin-only.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 ALTER TABLE `devices`

@@ -11,10 +11,8 @@ import { GF as gf, STATUS } from "../theme/gf";
 import { GhostButton } from "../components/ui/primitives";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
-// Volume now lives in ../types/server — ServerDetail needs the shape and this file
-// imports ServerDetail as a value, so owning the type here formed an import cycle
-// (type-only, therefore erased, but one value-import away from being real). Re-exported
-// so nothing that already reaches for it from here breaks.
+// Volume is in ../types/server (ServerDetail needs it, and importing it from here
+// formed a cycle). Re-exported so existing imports still work.
 export type { Volume } from "../types/server";
 
 interface Server {
@@ -101,9 +99,7 @@ function mergeLive(prev: Server | undefined, p: any): Server {
   return {
     ...base,
     status: p.status ?? base.status,
-    // Receiving a metric IS the first report. Clearing it here rather than waiting for
-    // the next list fetch means the badge stops saying "Never reported" at the moment
-    // the thing it describes stops being true.
+    // A metric arriving is the first report, so clear "Never reported" right away.
     awaitingFirstReport: false,
     cpu: Math.round(p.cpuPercent ?? base.cpu),
     memory: Math.round(p.memPercent ?? base.memory),
@@ -299,13 +295,9 @@ function MetricBar({ label, value }: { label: string; value: number }) {
   );
 }
 
-// A server that has NEVER reported is not a server that went down, and until this
-// existed both said a flat "Offline". They call for opposite actions: Offline means go
-// and look at a machine that was working; this means the agent has not reached the
-// backend even once — wrong -server URL, a firewall, or a service installed and never
-// started. Nothing on this page distinguished them, so an admin who approved an
-// enrollment and then watched a red dot had no way to tell "installed wrong" from
-// "installed fine, box is off". Amber, not red, because nothing has broken yet.
+// A server that has never reported is different from one that went down. Offline means
+// check a machine that was working; this means the agent has never reached the backend
+// (wrong -server URL, a firewall, or a service that never started). Amber, not red.
 function StatusDot({ status, awaiting }: { status: string; awaiting?: boolean }) {
   const pending = Boolean(awaiting) && status !== "Maintenance";
   const c = pending ? ORANGE : statusColor(status);
@@ -325,9 +317,8 @@ function StatusDot({ status, awaiting }: { status: string; awaiting?: boolean })
 
 // ─── OS badge ─────────────────────────────────────────────────────────────────
 
-// "W" or "L" from the agent-reported OS string ("Microsoft Windows 11 Pro …",
-// "Ubuntu 22.04", "debian 12"). The agent only ships for Windows and Linux, so any
-// real non-Windows value is Linux. Blank/unknown gets no badge rather than a guess.
+// "W" or "L" from the agent's OS string. The agent only runs on Windows and Linux, so
+// anything not Windows is Linux. Blank gets no badge.
 function osTag(os: string | null | undefined): "W" | "L" | null {
   const v = (os ?? "").trim().toLowerCase();
   if (!v || v === "—" || v === "unknown") return null;
@@ -336,9 +327,7 @@ function osTag(os: string | null | undefined): "W" | "L" | null {
   return "L";
 }
 
-// Windows blue, Linux (Tux) yellow. Deliberately NOT the status palette — green,
-// orange and red already mean healthy / warning / critical on this page, and an OS
-// badge in one of those would read as a status.
+// Windows blue, Linux yellow; not the status colours, so the badge is not read as a status.
 const OS_COLOR = { W: "#5794F2", L: "#EAB839" } as const;
 
 function OsBadge({ os }: { os: string | null | undefined }) {
@@ -380,16 +369,9 @@ function ServerCard({ s, isAdmin, onView, onRename, onDelete, onMaintenance }: {
         <MetricBar label="Mem" value={s.memory} />
         <MetricBar label="Disk" value={s.diskUsed} />
       </div>
-      {/* ⚠️ flex-wrap, and the button group is NOT shrink-0.
-          For an admin this row carries four GhostButtons — View + Rename + Maintain +
-          Remove — which at 13px with px-2.5 padding comes to ~290px inside a card whose
-          inner width on a 390px phone is ~315px. With `shrink-0` on the group, the
-          uptime was the only item left to absorb the overflow, and `truncate` cut
-          "↑ 12d 4h" down to a stray "↑ 1…" — which reads as a lone number sitting
-          beside the View button, not as an uptime.
-          Wrapping moves the buttons to their own line instead. it_staff sees one
-          button, so that case still fits on a single line exactly as before.
-          Same shape MikrotikMonitoring.tsx already uses for its device card. */}
+      {/* flex-wrap, and the button group is not shrink-0: an admin's four buttons (~290px) do
+         not fit a phone card (~315px) next to the uptime, so they wrap to their own line.
+         Same as MikrotikMonitoring.tsx. */}
       <div className="flex items-center justify-between gap-2 mt-3 pt-2.5 flex-wrap" style={{ borderTop: `1px solid ${gf.divider}` }}>
         <span className="text-[13px] truncate" style={{ color: gf.textMuted }}>↑ {s.uptime}</span>
         <div className="flex flex-wrap gap-2">
@@ -548,9 +530,8 @@ function MetricCard({ icon, iconBg, iconColor, label, value, sub, percent }: Met
   );
 }
 
-// Expandable detail row shown when a table row is clicked. `newestAgent` is the
-// highest agent version seen across the fleet — comparing against it flags stale
-// agents without needing a hardcoded "current version" to keep updated.
+// Expandable detail row. `newestAgent` is the highest agent version in the fleet, used
+// to flag outdated agents without a hardcoded version.
 function ServerDrawerRow({ server: s, isOpen, newestAgent }: {
   server: Server; isOpen: boolean; newestAgent: string;
 }) {
@@ -624,12 +605,9 @@ export default function ServerMetrics() {
 
   const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
 
-  // The open detail view lives in the URL (?device=<id>), not in component state, so a
-  // refresh lands back on the same server and the browser's Back button returns to the
-  // list. It used to be a useState copy of the row, which a reload simply forgot — and
-  // the notification deep-link then deleted the param on arrival, so there was nothing
-  // left in the address bar to restore it from either. Looked up from `servers`, which
-  // the socket handlers below already keep live, so the gauges still move.
+  // The open detail view is in the URL (?device=<id>), so a refresh stays on the same
+  // server and Back returns to the list. Looked up from `servers`, which the socket
+  // handlers keep live.
   const detailId = searchParams.get("device");
   const detailServer = detailId ? servers.find((s) => s.id === detailId) ?? null : null;
   const openDetail = (id: string) => setSearchParams({ device: id });
@@ -714,10 +692,8 @@ export default function ServerMetrics() {
     };
   }, []);
 
-  // A ?device= that names no server (removed, rejected, or a stale bookmark) would
-  // otherwise leave the page on the list with a param that means nothing — drop it once
-  // the list has loaded. A notification deep-link needs nothing else: it is the same
-  // param the detail view already reads.
+  // Remove a ?device= that matches no server (removed, rejected, old bookmark) once the
+  // list has loaded.
   useEffect(() => {
     if (loaded && detailId && !detailServer) closeDetail();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -740,9 +716,8 @@ export default function ServerMetrics() {
   const avgRef = useRef({ cpu: cpuAvg, mem: memAvg, count: total });
   avgRef.current = { cpu: cpuAvg, mem: memAvg, count: total };
 
-  // Roll a short history of the aggregate averages for the stat sparklines on a
-  // FIXED 10s tick. Sampling on each socket push (one per host, staggered) made
-  // the x-axis non-uniform; a steady cadence matches the agents' interval.
+  // Keep a short history of the fleet averages for the sparklines on a fixed 10s tick,
+  // so the x-axis is evenly spaced.
   useEffect(() => {
     const t = setInterval(() => {
       if (avgRef.current.count === 0) return;
@@ -815,9 +790,8 @@ export default function ServerMetrics() {
         </span>
       </div>
 
-      {/* Install keys (admin) — sits directly above Pending approvals because that is
-          the order the work happens in: mint a key, run the command it gives you, then
-          approve the server when it shows up below. */}
+      {/* Install keys (admin), above Pending approvals in the order the work happens: create a
+         key, run the install command, approve the server. */}
       {isAdmin && <InstallKeysPanel />}
 
       {/* Pending approvals */}
@@ -938,11 +912,7 @@ export default function ServerMetrics() {
                         <td className="px-3 py-2.5"><TableBar value={s.memory} /></td>
                         <td className="px-3 py-2.5"><TableBar value={s.diskUsed} /></td>
                         <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{s.uptime}</td>
-                        {/* One flex row with a single gap, matching the mobile card's
-                            action group. The old `ml-2 inline-block` wrappers spaced the
-                            GROUPS but not the buttons inside them, so Rename and Maintain
-                            — which ended up sharing a wrapper — sat flush against each
-                            other with no gap at all. */}
+                        {/* One flex row with one gap, like the mobile card, so all buttons are evenly spaced. */}
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <div className="flex items-center justify-end gap-2">
                             <GhostButton onClick={(e) => { e.stopPropagation(); openDetail(s.id); }}>View</GhostButton>

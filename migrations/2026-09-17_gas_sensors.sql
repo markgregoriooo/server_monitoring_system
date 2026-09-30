@@ -1,48 +1,30 @@
 -- ─────────────────────────────────────────────────────────────────────────────
---  Gas (MQ-2) sensors become MANAGED DATA, not two hardcoded fields.
+--  MQ-2 gas sensors as managed data instead of two fixed fields.
 --
---  WHY
---  Two MQ-2s were `mq2_1_ppm` / `mq2_2_ppm`: a pair of field names repeated across
---  the firmware payload, sensorHandler's validation, the InfluxDB write, the SD
---  card's CSV, the backup NDJSON and three frontend pages. Adding a third sensor
---  meant editing every one of them, which is exactly the reflash-and-redeploy the
---  IR channel pool was built to avoid.
+--  mq2_1_ppm / mq2_2_ppm were repeated across the firmware, sensorHandler, InfluxDB,
+--  the SD card format, the backup and three pages, so adding a sensor meant changing
+--  all of them. The sensors also had no names, so "MQ2-2 is critical" did not say where
+--  in the room.
 --
---  It also left the sensors ANONYMOUS. Once they are placed apart — one over the
---  rack, one over the UPS cabinet, which is the only placement that makes two
---  sensors worth having — "MQ2-2 is critical" does not tell anyone which end of the
---  room to run to. The label is the point of the feature, not decoration.
+--  One row per channel, like the IR channels: the ESP32 reports its pins, the database
+--  records which are wired and what each is called.
 --
---  SHAPE
---  One row per physical channel, mirroring `network_interfaces.location_label` and
---  the IR channel pool: the DEVICE reports which pins it has, the DATABASE says
---  which are wired up and what each one is called. Adding a sensor is then wiring
---  it and ticking a box.
+--  Channel is 1-based and maps to the firmware's MQ2_PINS[channel-1], like
+--  aircon_state.ir_channel.
 --
---  ⚠️ CHANNEL IS 1-BASED and maps to the firmware's MQ2_PINS[channel-1], the same
---  convention `aircon_state.ir_channel` already uses. Keeping the two consistent
---  matters because both are edited by the same person on the same hardware.
+--  The limit of four is the hardware (ADC2 is unusable with WiFi on, and GPIO 32/33 are
+--  for IR), not the schema.
 --
---  ⚠️ THE CAP IS HARDWARE, NOT SCHEMA. The ESP32 can drive at most four of these:
---  ADC2 is unusable whenever WiFi is on (the WiFi driver owns it), which leaves
---  ADC1's GPIO 32/33/34/35/36/39, and 32/33 are already reserved for IR channels 3
---  and 4. Nothing here enforces 4 — a second ESP32 would raise the ceiling without
---  a schema change, which is the whole reason this is a table.
---
---  Idempotent: safe to re-run.
+--  Safe to re-run.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS `gas_sensors` (
   `channel` tinyint(3) UNSIGNED NOT NULL,
-  -- Where this sensor physically IS. NULL until somebody says, and the UI then
-  -- falls back to "MQ2-<channel>" — the same COALESCE-to-a-technical-name pattern
-  -- as devices.display_name, so an unlabelled sensor is never a blank space.
+  -- Where this sensor is. NULL until set; the UI then shows "MQ2-<channel>", like
+  -- devices.display_name.
   `location_label` varchar(100) DEFAULT NULL,
-  -- Is a sensor actually soldered to this pin? An unwired ADC input FLOATS: it does
-  -- not read zero, it reads noise, and noise through the MQ-2 curve is a plausible
-  -- looking ppm that can trip a smoke alarm. So a channel is silent until somebody
-  -- asserts the hardware exists — the same reason enabledChannels[] starts false for
-  -- unwired IR pins.
+  -- Is a sensor wired to this pin? An unwired ADC pin reads noise that can look like smoke,
+  -- so a channel is ignored until enabled (like unwired IR pins).
   `enabled` tinyint(1) NOT NULL DEFAULT 0,
   `updated_by` int(11) DEFAULT NULL,
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
@@ -52,11 +34,8 @@ CREATE TABLE IF NOT EXISTS `gas_sensors` (
     ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 
--- Seed the four channels the current board can reach. 1 and 2 are the sensors that
--- have always existed, so they arrive ENABLED — a migration must not silently turn
--- off the smoke detection that was already running. 3 and 4 are the free ADC1 pins
--- (GPIO 36 / 39), present so an admin can enable one the moment it is wired, and
--- disabled until then.
+-- Seed the four channels. 1 and 2 are the existing sensors and start enabled, so smoke
+-- detection keeps running. 3 and 4 (GPIO 36 / 39) start disabled until wired.
 INSERT IGNORE INTO `gas_sensors` (`channel`, `location_label`, `enabled`) VALUES
   (1, NULL, 1),
   (2, NULL, 1),
@@ -64,22 +43,14 @@ INSERT IGNORE INTO `gas_sensors` (`channel`, `location_label`, `enabled`) VALUES
   (4, NULL, 0);
 
 -- ─────────────────────────────────────────────────────────────────────────────
---  Remember the ADC pin each channel sits on.
+--  Remember the ADC pin of each channel.
 --
---  The DEVICE is authoritative: the ESP32 sends `gasSensorMap` on every connect and
---  overwrites these. But holding that only in memory meant the "Add smoke sensor"
---  dialog showed "GPIO — sensor offline" for the one audience it exists for — somebody
---  standing at the box, before it is wired, asking which pin to solder to. It also went
---  blank on every backend restart until the ESP32 happened to reconnect.
+--  The ESP32 sends `gasSensorMap` on every connect and overwrites these. Storing them
+--  lets the "Add smoke sensor" dialog show the pin before the sensor is wired and after
+--  a backend restart. Seeded with the current firmware's pins.
 --
---  So it is REMEMBERED here rather than re-asked. Seeded with the pins the current
---  firmware uses so the dialog is useful on day one; the device corrects them the moment
---  it connects, which is what makes this a cache rather than a second source of truth.
---
---  ⚠️ ADC1 ONLY. ADC2 cannot be read while WiFi is on — the WiFi driver owns it — and
---  GPIO 32/33 are reserved for IR channels 3 and 4. That leaves 34, 35, 36, 39.
---  36 and 39 are INPUT-ONLY (VP/VN): fine for an analog sensor, useless for anything
---  that has to drive a line.
+--  ADC1 only: ADC2 cannot be read with WiFi on, and GPIO 32/33 are for IR, which leaves
+--  34, 35, 36, 39. 36 and 39 are input-only (VP/VN).
 -- ─────────────────────────────────────────────────────────────────────────────
 ALTER TABLE `gas_sensors`
   ADD COLUMN IF NOT EXISTS `gpio` tinyint(3) UNSIGNED DEFAULT NULL AFTER `channel`;

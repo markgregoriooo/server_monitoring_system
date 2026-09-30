@@ -1,23 +1,15 @@
-// The CRITICAL alarm siren — a continuous two-tone sweep, synthesised with the Web Audio
-// API, that runs until somebody stops it.
+// The critical alarm: a continuous two-tone siren made with the Web Audio API, running
+// until someone stops it. Separate from `notificationSound.ts` (a short chime), with its
+// own mute: muting the chime must never silence this.
 //
-// Deliberately NOT the same thing as `notificationSound.ts`. That is a 200 ms chime for
-// "something happened"; this is for "the server room is on fire" and has to survive being
-// in another room. Different job, different volume, different lifetime — and, importantly,
-// a different mute: `notificationSound`'s localStorage toggle must NOT be able to silence
-// this one, or a staff member who muted the chime months ago is unreachable during a fire.
-//
-// ⚠️ AUTOPLAY IS THE HARD PART. Browsers start every AudioContext `suspended` and refuse to
-// resume it without a user gesture, so an alarm that first tries to make noise at the moment
-// of the emergency is exactly the one that gets blocked. `primeAlarm()` therefore unlocks the
-// context on the first click/keypress/touch anywhere in the app — normally the sign-in click,
-// long before any alert — and the modal reports it honestly when the context is still
-// suspended rather than pretending it is sounding. See isAudioBlocked().
+// Browsers keep audio suspended until a user gesture, so `primeAlarm()` unlocks it on
+// the first click/keypress/touch (usually the sign-in click). If audio is still blocked,
+// the modal says so instead of pretending to sound. See isAudioBlocked().
 
 const SWEEP_MS = 700; // one full high-low cycle
 const HI_HZ = 1000;
 const LO_HZ = 660;
-const PEAK_GAIN = 0.55; // loud on purpose; the chime peaks at 0.14
+const PEAK_GAIN = 0.55; // louder than the chime (0.14)
 
 let ctx: AudioContext | null = null;
 let osc: OscillatorNode | null = null;
@@ -43,9 +35,8 @@ function ensureContext(): AudioContext | null {
 }
 
 /**
- * Unlock audio on the first user gesture of the session, so the alarm is ready long before
- * it is needed. Idempotent, and it removes its own listeners once the context is running.
- * Call once, high in the tree.
+ * Unlock audio on the first user gesture of the session. Safe to call more than once;
+ * removes its listeners once audio is running. Call once, high in the tree.
  */
 export function primeAlarm(): void {
   const unlock = () => {
@@ -66,9 +57,8 @@ export function primeAlarm(): void {
 }
 
 /**
- * True when the browser is still refusing to play audio. The modal surfaces this as a
- * button rather than swallowing it: a siren that is silently blocked is worse than no
- * siren, because the screen implies a noise that nobody in the corridor can hear.
+ * True when the browser still blocks audio. The modal shows this as a button, since a
+ * silently blocked siren would make people think it is sounding.
  */
 export function isAudioBlocked(): boolean {
   const AC = audioContextClass();
@@ -86,13 +76,11 @@ export function startAlarm(): void {
   try {
     osc = c.createOscillator();
     gain = c.createGain();
-    osc.type = "square"; // harsh on purpose — a sine does not carry through a door
+    osc.type = "square"; // sawtooth carries through a door better than a sine
     gain.gain.value = 0;
 
-    // Schedule the sweep as a repeating ramp on the oscillator itself rather than with a JS
-    // timer: setInterval in a background tab is throttled to once a second or stopped
-    // outright, which would turn the siren into an intermittent bleep exactly when the
-    // operator has switched tabs.
+    // The sweep is scheduled on the oscillator itself, not with a JS timer: timers in a
+    // background tab are slowed to once a second or stopped.
     const now = c.currentTime;
     osc.frequency.setValueAtTime(HI_HZ, now);
     const cycles = 600; // ~7 minutes of scheduled sweep; restarted well before it runs out

@@ -5,25 +5,16 @@ import { upsOutputState, upsPowerKey, inRange, UPS_BOUNDS } from "./snmpUtils.js
 import { describeError } from "../utils/httpError.js";
 
 /**
- * FAST UPS power watch — the UPS's closest thing to a shutdown notice.
+ * Fast UPS power watch.
  *
- * A UPS cannot announce anything: there is no agent on it and its management card has
- * no pre-shutdown hook. But what actually matters about a UPS is visible EARLY: mains
- * fails, the UPS goes on battery, and minutes pass before the battery runs out and the
- * room goes dark. Reported the instant it happens, that is the warning. The full poll
- * reads everything (charge, runtime, load, three voltage tables) and so only runs every
- * SNMP_POLL_INTERVAL_MS (60s) — which let mains failure wait up to a minute.
+ * The full UPS poll reads everything and runs every SNMP_POLL_INTERVAL_MS (60s), so a
+ * mains failure could wait up to a minute to be reported. This reads only two values,
+ * output source and battery status (one GET), every UPS_POWER_CHECK_MS (5s). When they
+ * differ from the last full poll, it runs that full poll right away (pollDeviceNow), so
+ * the alerts, device log, InfluxDB point and broadcast are exactly the poller's.
  *
- * This asks two scalars — output source and battery status, one GET packet — every
- * UPS_POWER_CHECK_MS (5s). When they differ from what the last full poll saw, it runs
- * that full poll NOW (pollDeviceNow). Everything downstream is unchanged, which is the
- * point: the on-battery / bypass / output-off / battery-low alerts, the device log, the
- * InfluxDB point and the broadcast are all the poller's, so an event caught here in 5s
- * reads exactly like one caught at 60.
- *
- * Deliberately does NOT judge reachability. A UPS that stops answering is the ICMP
- * sweep's and the full poll's business (reachabilitySweep.js); acting on a missed GET
- * here would be a third, disagreeing opinion about the same status column.
+ * It does not judge reachability; that belongs to the ICMP sweep and the full poll
+ * (reachabilitySweep.js).
  */
 
 const CHECK_MS = Math.max(1000, Number(process.env.UPS_POWER_CHECK_MS) || 5000);

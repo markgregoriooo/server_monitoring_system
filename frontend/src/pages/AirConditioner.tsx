@@ -28,13 +28,9 @@ interface LogEntry {
   reason: string;
 }
 
-// Must match `logStamp` in backend/services/airconService.js AND the DATE_FORMAT its
-// getAll query uses. All three produce the same string, so an entry appended the instant
-// you press Turn On looks identical to the same entry after a refresh — two different
-// stamps for one event read as two events.
-//
-// Asia/Manila explicitly rather than the viewer's clock: a staffer on a laptop set to
-// another zone would otherwise see a different time from the one in the PDF report.
+// Must match `logStamp` in backend/services/airconService.js and the DATE_FORMAT in its
+// getAll query, so an entry looks the same before and after a refresh. Uses
+// Asia/Manila so the time matches the PDF reports whatever the viewer's timezone.
 const LOG_STAMP_OPTS: Intl.DateTimeFormatOptions = {
   month: "short", day: "numeric",
   hour: "numeric", minute: "2-digit", hour12: true,
@@ -71,15 +67,9 @@ const MUTED = "#6B7280";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// `tempZone` / `tempColor` / `IRZones` / `ZONE_DEFAULTS` used to live here. They now come
-// from utils/tempZone.ts, because the Dashboard and Environment pages colour a room
-// temperature too and three private copies could not stay in agreement — the same reading
-// would have shown a different colour depending on which page you were on.
-//
-// One behaviour changed in the move: ACCEPTABLE is now GREEN rather than its own teal.
-// NORMAL and ACCEPTABLE both mean "the room is fine, nothing to do", and that is what a
-// colour is for; the zone LABEL beside the value is what distinguishes them (they cool to
-// 26°C and 24°C), and it was already printed there for exactly that reason.
+// Zone helpers (`tempZone`, `tempColor`, `IRZones`, `ZONE_DEFAULTS`) come from
+// utils/tempZone.ts. NORMAL and ACCEPTABLE are both green ("nothing to do"); the zone
+// label next to the value tells them apart.
 
 function humColor(h: number | string): string {
   if (typeof h !== "number") return MUTED;
@@ -134,9 +124,8 @@ function Sparkline({ data, color, height = 38 }: { data: number[]; color: string
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    // Measured, not assumed: this canvas is `width: 100%`, so a fixed 280-pixel bitmap
-    // was stretched across the whole tile — the widest scale-up of the three hand-drawn
-    // canvases, and so the blurriest on a phone.
+    // The canvas is `width: 100%`, so size the bitmap to the real width instead of a fixed
+    // 280px, which looked blurry when stretched.
     const W = c.clientWidth || 280;
     const H = height;
     const ctx = fitCanvas(c, W, H);
@@ -237,9 +226,8 @@ function AirconCard({
   onToggle: (id: number, enabled: boolean) => void;
   onRename: (id: number, name: string) => void;
   siblingNames: string[]; // every OTHER unit's name — for the duplicate pre-check
-  // The IR signal reaches the AC only through the ESP32. With it absent the backend
-  // refuses the toggle (409), so the button says why rather than letting someone press
-  // it and read an error.
+  // IR only reaches the AC through the ESP32. Without it the backend refuses the toggle
+  // (409), so the button explains why.
   esp32Online: boolean;
 }) {
   const [toggling, setToggling] = useState(false);
@@ -248,9 +236,8 @@ function AirconCard({
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft]       = useState(ac.name);
 
-  // Inline rename: click the name, Enter or blur commits, Esc cancels. `session.done`
-  // makes the commit idempotent — Enter sets editing=false, which can also fire blur,
-  // and without the guard the rename would be submitted twice.
+  // Inline rename: click the name; Enter or blur saves, Esc cancels. `session.done`
+  // stops Enter and the blur that follows from saving twice.
   const session = useRef({ done: false });
 
   const startEdit = () => {
@@ -366,16 +353,9 @@ function AirconCard({
       >
         CH {ac.ir_channel}
       </span>
-      {/* ── Power state, and whether we can still vouch for it ──
-          This pill used to read ONLINE / OFFLINE from `ac.enabled`, which is
-          `aircon_state.is_on` — the unit's POWER, not its reachability. Two problems
-          with that: ONLINE/OFFLINE means "can we reach it" for every other device in
-          this system, and with the ESP32 gone the value is simply the last thing anyone
-          set, unverifiable and often days old.
-
-          So it says ON / OFF while the ESP32 is there, and UNKNOWN when it is not. An AC
-          nobody can see is not "on" — it is a unit whose state we last knew at some
-          point in the past, which is a different claim. */}
+      {/* ── Power state, if we can still tell ──
+         Shows ON / OFF (`aircon_state.is_on`) while the ESP32 is connected, and UNKNOWN when
+         it is not: without the ESP32 the value is only the last known setting. */}
       <span
         className="text-[11px] font-bold tracking-widest px-2 py-0.5 rounded-[2px] shrink-0"
         title={esp32Online
@@ -395,9 +375,8 @@ function AirconCard({
 
   const actions = (
     <>
-      {/* .gf-raise, not .gf-btn: this button's red/green tint IS its meaning (on →
-          "Turn Off" in red), and .gf-btn would replace that face with a neutral one.
-          .gf-raise adds only the lift and the press. */}
+      {/* .gf-raise, not .gf-btn: the red/green colour is the meaning here, and .gf-btn would
+         replace it with a neutral face. */}
       {canManage && (
         <button
           onClick={handleToggle}
@@ -497,12 +476,9 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
   const [error,   setError]   = useState("");
   const [saving,  setSaving]  = useState(false);
 
-  // The channel list comes from the DEVICE. The ESP32 reports its pin pool on connect,
-  // so adding an AC unit means wiring a transmitter and registering it — no constant to
-  // edit here, in the backend, or in the firmware.
-  //
-  // FALLBACK_CHANNELS is used only while the ESP32 has never connected, so the form is
-  // still usable on a cold start.
+  // The channel list comes from the ESP32, which reports its pins on connect, so adding
+  // an AC unit is wiring plus registering, no code change. FALLBACK_CHANNELS is only
+  // used until the ESP32 has connected once.
   const FALLBACK_CHANNELS = 2;
   const esp32Online  = channelMap.length > 0;
   const allChannels  = esp32Online
@@ -688,19 +664,17 @@ function AddAirconModal({ usedChannels, usedNames, channelMap, onAdd, onClose }:
 }
 
 // ─── IRZoneConfig (auto-cooling thresholds) ─────────────────────────────────────
-// The ESP32's getIRZone() fires IR when the room temp crosses these boundaries. Target
-// temps per zone are fixed (captured IR codes) — only the boundaries (WHEN it fires) are
-// configurable. Admin edits; both roles can view. Saved via PUT /aircon/ir-config, which
-// re-pushes "acConfig" to the device live. Kept separate from Alert Rules on purpose:
-// cooling should ramp BEFORE the alarm thresholds, so its thresholds sit at/below them.
+// The ESP32's getIRZone() sends IR when the room temperature crosses these
+// boundaries. The target temperature per zone is fixed (captured IR codes); only the
+// boundaries are editable. Admins edit, both roles view. Saved with PUT
+// /aircon/ir-config, which pushes "acConfig" to the device. Separate from Alert Rules:
+// cooling should start before the alarm thresholds.
 
 function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
   isAdmin: boolean; roomTemp: number | string; onZones?: (z: IRZones) => void;
 }) {
-  // Firmware-compiled defaults (CLAUDE.md IR Zone table): <22 / 22–24 / 25–27 / 28–29 / >29.
-  // Comes from utils/tempZone.ts, which mirrors the firmware's compiled values — one
-  // definition, so the "Reset to defaults" button and the Room Temp colours cannot drift
-  // apart.
+  // Firmware defaults (CLAUDE.md IR Zone table): <22 / 22–24 / 25–27 / 28–29 / >29,
+  // from utils/tempZone.ts, so "Reset to defaults" and the Room Temp colours match.
   const DEFAULTS = Object.fromEntries(
     Object.entries(ZONE_DEFAULTS).map(([k, v]) => [k, String(v)]),
   ) as Record<keyof IRZones, string>;
@@ -803,14 +777,10 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
       return { ...p, [key]: String(next) };
     });
 
-  // ── zones (target temps are fixed = captured IR codes; only boundaries are editable) ──
-  // `meaning` turns the internal zone name into something an operator can act on —
-  // the names alone ("Acceptable", "Near Critical") don't say what the AC is doing.
-  // Zone order — indexes ZONES below and maps a `TempZone` back to a row.
+  // ── zones (target temps are fixed IR codes; only boundaries are editable) ──
+  // `meaning` says what the AC does in each zone. Zone order indexes ZONES below.
   const ZONE_ORDER: TempZone[] = ["TOO_COLD", "NORMAL", "ACCEPTABLE", "NEAR_CRIT", "CRITICAL"];
-  // Colours come from utils/tempZone.ts, not from the local GREEN/ORANGE/RED constants:
-  // this table and the Room Temp tile describe the same five zones, and when they held
-  // separate copies they drifted (the table said green where the tile said teal).
+  // Colours from utils/tempZone.ts, so this table and the Room Temp tile match.
   const ZONES = [
     { name: "Too Cold",      meaning: "over-cooled — ease off",       target: "28°C", fan: "Auto" },
     { name: "Normal",        meaning: "comfortable — gentle cooling", target: "26°C", fan: "Auto" },
@@ -818,10 +788,8 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
     { name: "Near Critical", meaning: "too warm — strong cooling",    target: "22°C", fan: "High" },
     { name: "Critical",      meaning: "overheating — max cooling",    target: "20°C", fan: "High" },
   ].map((z, i) => ({ ...z, color: zoneColor(ZONE_ORDER[i]!) }));
-  // Indexes ZONES above, which is in zone order. Goes through the shared `zoneOf` rather
-  // than repeating the comparisons, so the row this highlights is the row the ESP32 is
-  // actually in — and note it resolves against `n`, the numbers currently IN THE FORM, so
-  // the preview follows an unsaved edit.
+  // Uses the shared `zoneOf`, so the highlighted row is the zone the ESP32 is in. Uses
+  // `n` (the values in the form), so the preview follows unsaved edits.
   const zoneForTemp = (t: number) => ZONE_ORDER.indexOf(zoneOf(t, n));
 
   // ── threshold-bar geometry (pad each open-ended end zone with ~4°C of visual width) ──
@@ -1007,16 +975,10 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
                 </>
               )}
               {/* zone segments (width ∝ temperature span) */}
-              {/* ⚠️ Five segments share the viewport width and each one is sized by the
-                  TEMPERATURE SPAN it covers, not by the text inside it — so segment width is
-                  whatever the admin's boundaries make it, and on a phone the default map
-                  gives the two 2°C zones about 44px each. "Near Critical" and "AC → 22°C"
-                  both need roughly double that, so both lines were being clipped mid-word
-                  ("Near Cri…", "AC → 2…") in the segments that matter most.
-                  What a phone keeps is the SHAPE — proportional widths, the zone colours,
-                  the boundary temperatures and the live marker. The wording moves to the
-                  five rows below, which are vertical, colour-matched by the same dot, and
-                  already say "set AC to 22°C" in full. */}
+              {/* Each segment's width follows the temperature range it covers, so on a phone the
+                 two 2°C zones are only ~44px and their text got cut off ("Near Cri…"). On a phone
+                 only the shape is kept (widths, colours, boundary temperatures, live marker); the
+                 wording is in the rows below. */}
               <div className="flex w-full rounded-[2px] overflow-hidden h-10 sm:h-14">
                 {ZONES.map((z, i) => {
                   const w = (segPts[i + 1] ?? 0) - (segPts[i] ?? 0);
@@ -1030,17 +992,11 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
                         borderTop: `2px solid ${z.color}`,
                         boxShadow: active ? `inset 0 0 0 1px ${z.color}` : "none",
                       }}>
-                      {/* Wraps on a phone instead of ellipsising: "Near Critical" splits over
-                          two lines and fits, where one clipped line read as a different zone
-                          name. Still `overflow-hidden` above, so a pathologically narrow
-                          segment (boundaries set 0.5°C apart) clips rather than spilling into
-                          its neighbour. */}
+                      {/* Wraps on a phone instead of truncating, so "Near Critical" fits on two lines. Still
+                         `overflow-hidden`, so an extremely narrow segment clips instead of spilling over. */}
                       <span className="text-[10px] sm:text-[11px] font-bold leading-[1.15] whitespace-normal sm:truncate max-w-full" style={{ color: z.color }}>{z.name}</span>
-                      {/* Desktop only. A bare "28°" would be worse than absent here — the axis
-                          under this bar is ROOM temperature, so an unprefixed number inside a
-                          segment reads as the room, which is the exact confusion the "AC →"
-                          prefix exists to prevent. Either the prefix fits or the figure waits
-                          for the rows below. */}
+                      {/* Desktop only. A bare "28°" inside a segment would read as the room temperature, so
+                         the value only shows with its "AC →" prefix. */}
                       <span className="hidden sm:inline text-[11px] leading-tight whitespace-nowrap" style={{ color: GF.textDim }}>AC → {z.target}</span>
                     </div>
                   );
@@ -1070,9 +1026,8 @@ function IRZoneConfig({ isAdmin, roomTemp, onZones }: {
           )}
 
           {/* ── Rule ladder: 5 zones separated by the 4 editable boundaries ──
-              Each row is a full sentence ("when the room is X, the AC is set to Y"),
-              and each input sits on the line it actually divides — so the 4-numbers →
-              5-zones relationship needs no explaining. */}
+             Each row reads "when the room is X, the AC is set to Y", and each input sits on the
+             line it divides. */}
           <div className="rounded-[2px] overflow-hidden" style={{ border: `1px solid ${GF.divider}` }}>
             <div className="flex items-center gap-3 px-3 py-1.5"
               style={{ background: GF.header, borderBottom: `1px solid ${GF.divider}` }}>
@@ -1247,9 +1202,8 @@ export default function AirConditioner() {
     };
   }, []);
 
-  // Adding, removing and renaming a unit all changed the page silently — the modal shut
-  // and you were left guessing whether it had worked. Registering an AC unit is also the
-  // moment a channel goes live on the ESP32, so it deserves an explicit confirmation.
+  // Show a confirmation after adding, removing or renaming a unit; adding one also
+  // activates its channel on the ESP32.
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok });
     window.setTimeout(() => setToast(null), 3500);
@@ -1324,9 +1278,7 @@ export default function AirConditioner() {
       </div>
 
       {/* ── ESP32 offline banner ──
-          The explanation lives here, once, rather than repeated on every card. Each card
-          carries only a short UNKNOWN pill; a full sentence beside four units would be
-          four copies of one fact. */}
+         Explained once here; each card only shows an UNKNOWN pill. */}
       {!loading && !esp32Online && (
         <div
           className="flex items-start gap-2 px-3 py-2.5 rounded-[2px] text-[12px]"
@@ -1395,9 +1347,7 @@ export default function AirConditioner() {
                 <path d="M8 10h8M8 14h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
               <span className="text-[13px]" style={{ color: GF.textMuted }}>No aircon units registered.</span>
-              {/* Was a bare accent-coloured text link, which read as a hyperlink rather
-                  than the empty state's primary action. Now a real raised button,
-                  matching the other pages' empty states. */}
+              {/* A real raised button for the empty state's main action, as on the other pages. */}
               {canManage && (
                 <button onClick={() => setShowModal(true)}
                   className="gf-btn text-[13px] font-semibold px-3 py-1.5"

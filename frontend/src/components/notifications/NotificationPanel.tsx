@@ -42,11 +42,8 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
         border: "1px solid var(--gf-panel-border)",
         borderRadius: 8,
         boxShadow: "var(--gf-shadow)",
-        // Constant gap on all four inner edges. The bottom one used to be pb-2 on the
-        // SCROLLING list, so it travelled with the content and the last notification
-        // finished hard against the rounded corner. The sides matter for the same
-        // reason: a row's unread tint and hover band are full-width, so without this
-        // they ran into the panel border and the corners looked clipped.
+        // Same padding on all four inner edges, so the last item and full-width row tints do
+        // not run into the rounded border.
         padding: "0 8px 10px",
         fontFamily: "'JetBrains Mono', monospace",
       }}
@@ -58,18 +55,9 @@ export default function NotificationPanel({ onClose }: { onClose: () => void }) 
         className="flex items-center justify-between px-2 py-2.5 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--gf-divider)" }}
       >
-        {/* The count is a SEPARATE, non-shrinking element rather than part of the
-            title string.
-            
-            It used to read `NOTIFICATIONS (22)` inside one truncating span, and the
-            three buttons on the right never shrink — so the title is the only thing
-            that can give. The count sits at the END of that string, which makes the
-            number the FIRST thing lost: at two digits the header read
-            "NOTIFICATIONS (2…", turning 22 unread into an apparent 2. The one part
-            of the header that carries information was the part being thrown away.
-            
-            Now the word truncates and the number cannot. Capped at 99+ like the bell
-            badge in Header.tsx, so a busy night can't widen the header either. */}
+        {/* The count is its own non-shrinking element, so when the header is tight the word
+           truncates, not the number ("NOTIFICATIONS (2…" used to hide that there were 22).
+           Capped at 99+ like the bell badge in Header.tsx. */}
         <span className="flex items-baseline gap-1.5 min-w-0">
           <span className="text-[14px] font-semibold tracking-wide truncate" style={{ color: "var(--gf-text-primary)" }}>
             NOTIFICATIONS

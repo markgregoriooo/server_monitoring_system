@@ -1,13 +1,10 @@
-// Backend base URL for the Axios client (api/client.ts) and the Socket.IO
-// client (socket/socket.ts). Set in ONE place here.
+// Backend base URL for the Axios client (api/client.ts) and Socket.IO (socket/socket.ts).
 //
-// Precedence:
-//   1. VITE_API_URL (from frontend/.env) — explicit override. Use this for production
-//      / HTTPS, or when the backend lives on a different host than the dashboard.
-//   2. Auto-detected from the page's own host on port 3000 — recommended for LAN.
-//      Because it follows window.location, the dashboard reaches the backend at whatever
-//      address you opened it from (localhost OR any IP), so changing networks/IPs needs
-//      NO code or .env edits.
+// Order:
+//   1. VITE_API_URL (frontend/.env): explicit override. Use for production/HTTPS, or
+//      when the backend is on another host.
+//   2. Otherwise the page's own host on port 3000. Follows whatever address the
+//      dashboard was opened from, so changing networks needs no edits.
 const override = import.meta.env.VITE_API_URL?.trim();
 
 export const API_URL =

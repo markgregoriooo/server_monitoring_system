@@ -10,20 +10,15 @@ import {
 } from "./chartMath.js";
 
 // ─── Report charts ───────────────────────────────────────────────────────────
-//
-// Line and bar charts drawn straight into the PDF with pdfkit's vector primitives —
-// no charting library, and no rasterised image. Two reasons that matters: the marks stay
-// sharp at any zoom or print size, and the report gains no dependency it would otherwise
-// have to carry through every deploy.
-//
-// This module is LAYOUT ONLY, like reportRenderer: it is handed a finished spec and
-// draws it. The builders decide what a chart says; chartMath decides where things land.
+// Line and bar charts drawn as vectors with pdfkit (no chart library, no images), so
+// they stay sharp when printed. Layout only: the builders decide what a chart
+// shows, chartMath decides where things go.
 //
 // Spec:
 //   { title, kind: "line" | "bar", unit?, labels: string[],
 //     series: [{ name, color, values: (number|null)[] }] }
 //
-// A `null` value is a GAP, not a zero — see chartMath.segments.
+// A `null` value is a gap, not a zero (see chartMath.segments).
 
 const AXIS = "#9aa1ab";
 const GRID = "#e5e7eb";
@@ -44,7 +39,7 @@ export const chartHeight = (spec) =>
   18 + PLOT_H + BOTTOM_GUTTER + (spec?.series?.length > 1 ? LEGEND_H : 0) + 10;
 
 /**
- * Draw one chart at the current cursor.
+ * Draw one chart at the current position.
  *
  * @param {PDFKit.PDFDocument} doc
  * @param {object} spec see the shape above
@@ -67,8 +62,8 @@ export function drawChart(doc, spec, fonts) {
   const plotW = right - plotX;
 
   // ── Axis ──
-  // Every series shares one axis. Two auto-scaled axes would let a 2% wobble and a 40%
-  // climb look identical, which is the same argument ServerFocus makes on the dashboard.
+  // All series share one axis, so a small wobble and a big climb do not look the same
+  // (as on the dashboard's ServerFocus chart).
   const all = series.flatMap((s) => s.values).filter((v) => typeof v === "number" && Number.isFinite(v));
   const top = spec.max ?? niceMax(all.length ? Math.max(...all) : 0);
 
@@ -120,8 +115,7 @@ export function drawChart(doc, spec, fonts) {
   }
 
   // ── X labels ──
-  // Thinned so a 30-day series does not smear into an unreadable band, always keeping
-  // the first and last so the reader knows what the chart covers.
+  // Thinned so long ranges stay readable, always keeping the first and last.
   const keep = labelIndices(labels.length, spec.kind === "bar" ? 10 : 8);
   const xs = spec.kind === "bar"
     ? labels.map((_, i) => plotX + (plotW / labels.length) * (i + 0.5))
@@ -138,8 +132,7 @@ export function drawChart(doc, spec, fonts) {
   let y = plotY + PLOT_H + BOTTOM_GUTTER;
 
   // ── Legend ──
-  // Only when there is more than one series: a legend naming the single line a chart
-  // already has in its title is noise.
+  // Only with more than one series.
   if (series.length > 1) {
     let x = plotX;
     doc.fontSize(size);

@@ -29,12 +29,13 @@ export interface ApiResult<T = any> {
   error?: string;
 }
 
-/** POST /network/test and POST /ups/test — "can this device be monitored, and HOW?"
+/**
+ * POST /network/test and POST /ups/test: can this device be monitored, and how?
  *
- *  Mirrors the return of backend `services/deviceProbe.js`. `ok:false` with `error` set
- *  means the INPUT was rejected (blank or malformed IP, impossible port) and nothing was
- *  probed; `ok:true` means the probe ran and `verdict` holds the answer — which may still
- *  be a refusal. The two are different things and the form says so differently. */
+ * Same shape as backend `services/deviceProbe.js`. `ok:false` with `error` means the
+ * input was rejected and nothing was probed; `ok:true` means the probe ran and
+ * `verdict` has the answer (which may still be a no).
+ */
 export interface ProbeResult {
   ok: boolean;
   /** Only when ok === false: why the probe could not even be attempted. */
@@ -70,10 +71,10 @@ export interface ProbeResult {
   };
 }
 
-/** `deviceFirstPoll` — how the FIRST poll of a just-registered device went, pushed to
- *  the admin who registered it (and to nobody else). The poll is fire-and-forget so the
- *  response is not held behind an SNMP/API timeout, which used to mean its verdict
- *  reached the server console and no human at all. */
+/**
+ * `deviceFirstPoll`: how the first poll of a newly registered device went, sent only
+ * to the admin who registered it.
+ */
 export interface DeviceFirstPoll {
   id: number | string;
   name: string;
@@ -84,9 +85,10 @@ export interface DeviceFirstPoll {
   mode: string;
 }
 
-/** Page sizes a report can be rendered at. Mirrors PAPER_SIZES in
- *  backend/services/reportTemplate.js — `folio` is Philippine long bond (8.5x13in),
- *  which is ICTU's default. */
+/**
+ * Paper sizes for reports. Same as PAPER_SIZES in backend/services/reportTemplate.js;
+ * `folio` is Philippine long bond (8.5x13in), ICTU's default.
+ */
 export type PaperSizeKey = "a4" | "letter" | "folio";
 
 /** One entry of GET /reports/template's `paperSizes` map. */
@@ -150,9 +152,7 @@ const handleError = (err: any): ApiResult<never> => {
   const status = err?.response?.status;
   const serverMessage = err?.response?.data?.error;
 
-  // A lookup table, written as a lookup table. This was a six-deep ternary ladder —
-  // readable, but a chain of equality tests against one variable IS a map, and saying so
-  // makes adding a status a one-line data change instead of another rung.
+  // Status → label lookup.
   const fallback = STATUS_FALLBACK[status ?? 0] ?? "Cannot connect to server.";
 
   return {
@@ -163,12 +163,10 @@ const handleError = (err: any): ApiResult<never> => {
 };
 
 export const api = {
-  // Auth — Google sign-in is the ONLY login path. Send the one-time AUTH CODE
-  // (from the custom "CSPC Mail" button's authorization-code flow); the backend
-  // exchanges it with Google. On an active account the backend returns
-  // { token, user }. For a not-yet-active account it returns a body with status =
-  // "pending" | "rejected" | "disabled", which we pass through (via data) so the
-  // Login page can show the right message instead of an error.
+  // Auth: Google sign-in is the only login. Sends the one-time auth code from the "CSPC
+  // Mail" button; the backend exchanges it with Google. An active account gets
+  // { token, user }. Otherwise the body has status "pending" | "rejected" | "disabled",
+  // passed through so the Login page can show the right message.
   loginWithGoogle: async (code: string): Promise<ApiResult<LoginResponse & { status?: string; message?: string }>> => {
     try {
       const res = await apiClient.post<LoginResponse>("/auth/google", { code });
@@ -224,9 +222,8 @@ export const api = {
     }
   },
 
-  // Privacy Notice & Terms — record acceptance of the version currently in force.
-  // Sends no version: the server records its own constant, so a client cannot
-  // claim to have accepted a document it was never shown.
+  // Record acceptance of the current Privacy Notice. No version is sent; the server
+  // records its own.
   acceptPolicy: async (): Promise<ApiResult<{ policy_version: string; policy_current: string }>> => {
     try {
       const res = await apiClient.post("/policy/accept");
@@ -236,9 +233,7 @@ export const api = {
     }
   },
 
-  // Version in force, readable WITHOUT a session — the public /privacy page stamps
-  // itself with this. apiClient attaches a token when there is one and the route
-  // ignores it either way.
+  // Current version, readable without signing in (the public /privacy page uses it).
   policyVersion: async (): Promise<ApiResult<{ version: string }>> => {
     try {
       const res = await apiClient.get("/policy/version");
@@ -258,10 +253,8 @@ export const api = {
     }
   },
 
-  // createUser / changePassword removed 2026-08-25 — their backend endpoints are gone.
-  // Login is Google-only, so no password stored through them could ever authenticate
-  // anyone, and nothing in this app called either function. See
-  // audits/auth-flow-security-2026-08-25.md — AF-03.
+  // createUser / changePassword were removed on 2026-08-25 along with their endpoints
+  // (sign-in is Google-only). See audits/auth-flow-security-2026-08-25.md (AF-03).
 
   updateUser: async (id: number, data: any): Promise<ApiResult> => {
     try {
@@ -279,9 +272,8 @@ export const api = {
     }
   },
 
-  // Update own USERNAME — the only self-editable field. Name, email and photo come
-  // from the Google ID token and are re-synced on every sign-in, so editing them
-  // here would be undone at the next login (see services/googleAuthService.js).
+  // Update own username, the only field a user can edit. Name, email and photo come from
+  // Google and are re-synced at every sign-in.
   updateMe: async (username: string): Promise<ApiResult<LoginUser>> => {
     try {
       const res = await apiClient.patch("/users/me", { username });
@@ -331,9 +323,9 @@ export const api = {
     }
   },
 
-  // Real metric history for one server (InfluxDB). Either a preset range
-  // ("-1h" | "-6h" | "-24h" | "-7d" | "-30d") OR an absolute window via
-  // { start, stop } ISO strings — pass one or the other; `start` wins if both go.
+  // Metric history for one server (InfluxDB). A preset range
+  // ("-1h" | "-6h" | "-24h" | "-7d" | "-30d") or an absolute window { start, stop }
+  // (ISO strings); `start` wins if both are given.
   getServerHistory: async (
     id: number,
     range: string,
@@ -387,9 +379,8 @@ export const api = {
     }
   },
 
-  // Agent install keys (admin) — the credential the installer presents at enrollment.
-  // Distinct from a server's agent token: revoking a key stops NEW enrollments and
-  // leaves every already-enrolled agent reporting.
+  // Agent install keys (admin): what the installer presents at enrollment. Revoking a key
+  // stops new enrollments; enrolled agents keep reporting.
   getInstallKeys: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/agents/install-keys");
@@ -399,11 +390,8 @@ export const api = {
     }
   },
 
-  // The response carries the plaintext key. It is the ONLY time the server will ever
-  // return it — only a hash is stored — so the caller must show it before discarding.
-  // No label: the dashboard identifies a key by its prefix and dates. The server still
-  // writes one for the audit trail (installKeyService.create), and the field stays
-  // accepted by the API, so this can grow a label again without a backend change.
+  // The response has the plaintext key, returned only this once (only a hash is stored),
+  // so show it before discarding. No label: keys are shown by prefix and dates.
   createInstallKey: async (
     expiresInDays: number | null,
   ): Promise<ApiResult<{ key: string; record: any }>> => {
@@ -426,9 +414,9 @@ export const api = {
     }
   },
 
-  // revokeAgents=false → block new enrolments only, running servers untouched.
-  // revokeAgents=true  → also de-authorise the servers this key enrolled; each agent
-  //                      gets a 403 on its next post, deletes its conf and exits.
+  // revokeAgents=false → only block new enrollments; running servers are untouched.
+  // revokeAgents=true  → also revoke the servers this key enrolled; each agent gets 403
+  //                      on its next post, deletes its conf and exits.
   revokeInstallKey: async (id: number, revokeAgents = false): Promise<ApiResult> => {
     try {
       const res = await apiClient.post(`/agents/install-keys/${id}/revoke`, { revokeAgents });
@@ -438,9 +426,8 @@ export const api = {
     }
   },
 
-  // The plaintext key again, so the install command can be re-opened. Admin-only, and
-  // the backend audits every call — this is the one path that returns a key after
-  // creation. 409 when the key predates recoverable storage.
+  // The key again, to reopen the install command. Admin-only and audited. 409 when the
+  // key was created before keys could be re-shown.
   revealInstallKey: async (id: number): Promise<ApiResult<{ key: string; label: string }>> => {
     try {
       const res = await apiClient.get(`/agents/install-keys/${id}/reveal`);
@@ -529,10 +516,9 @@ export const api = {
     }
   },
 
-  // Room-level alert thresholds ({tempWarn,tempCrit,gasWarn,gasCrit,humWarn,humCrit}) —
-  // what the dashboards colour humidity and gas against, so a tile turns orange exactly
-  // when the system starts calling it a warning. Both roles; rule EDITING stays admin-only
-  // on /api/alert-rules. See hooks/useRoomThresholds.ts.
+  // Room alert thresholds ({tempWarn,tempCrit,gasWarn,gasCrit,humWarn,humCrit}), used to
+  // colour readings so a tile turns orange when the warning fires. Both roles; editing
+  // rules is admin-only (/api/alert-rules). See hooks/useRoomThresholds.ts.
   getRoomThresholds: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/environment/thresholds");
@@ -542,10 +528,9 @@ export const api = {
     }
   },
 
-  // ── MQ-2 gas sensors: which channels are wired, and where each one is ──────────────
-  // Read by both roles (the Environment page needs the labels to draw its lines); the PATCH
-  // is admin-only server-side, because asserting a sensor is wired is a hardware claim and a
-  // wrong one arms a floating ADC pin to raise smoke alarms.
+  // ── MQ-2 gas sensors: which channels are wired and where ──────────────
+  // Both roles can read (the Environment page needs the labels); PATCH is admin-only,
+  // since enabling an unwired channel would let a floating pin raise smoke alarms.
   getGasSensors: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/gas-sensors");
@@ -578,9 +563,8 @@ export const api = {
     }
   },
 
-  // Ask the ESP32 to re-measure the MQ-2 clean-air baseline and save it to its flash.
-  // Admin-only. The air must be clean when this runs — the result arrives asynchronously
-  // on the `gasCalibrated` socket event.
+  // Ask the ESP32 to re-measure the MQ-2 clean-air baseline and save it. Admin-only; the
+  // air must be clean. The result comes back on the `gasCalibrated` socket event.
   calibrateGasSensor: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.post("/environment/calibrate-gas");
@@ -618,10 +602,11 @@ export const api = {
   addNetworkDevice: async (payload: {
     name: string;
     ip: string;
-    /** Read-only v2c community. **Empty string = register for ICMP ping monitoring
-     *  only** (up/down, latency, packet loss — no per-port traffic or link status),
-     *  which is the only way to watch gear you cannot enable SNMP on, such as an
-     *  ISP-owned router. A UPS has no such fallback and still requires one. */
+    /**
+     * Read-only v2c community. Empty string = ICMP ping monitoring only (up/down, latency,
+     * packet loss; no per-port traffic or link status), for equipment without SNMP such as
+     * an ISP router. A UPS always needs one.
+     */
     community: string;
     snmpPort?: number | string | undefined;
     location?: string | undefined;
@@ -634,15 +619,13 @@ export const api = {
     }
   },
 
-  /** Probe an address BEFORE registering it. Persists nothing.
+  /**
+   * Test an address before registering it. Saves nothing.
    *
-   *  The Add form's answer to "I filled this in and nothing ever appeared": a wrong IP,
-   *  a wrong community or a blocked UDP 161 is caught here, next to the field that
-   *  caused it, instead of becoming a device that sits Offline with no explanation.
-   *  Runs the same SNMP/ICMP code the poller runs — see backend services/deviceProbe.js.
-   *
-   *  A blank `community` is passed through as blank and means "verify ICMP", because
-   *  that is what a blank community registers. */
+   * Catches a wrong IP, wrong community or blocked UDP 161 on the form. Uses the same
+   * SNMP/ICMP code as the poller (backend services/deviceProbe.js). A blank `community`
+   * means ICMP monitoring, so only ping is checked.
+   */
   testNetworkDevice: async (payload: {
     ip: string;
     community?: string;
@@ -698,12 +681,10 @@ export const api = {
     }
   },
 
-  /** Probe an address BEFORE registering it as a UPS. Persists nothing.
-   *
-   *  Stricter than the router probe by design: an address that answers ping, or answers
-   *  SNMP without implementing UPS-MIB, FAILS here even though the identical result
-   *  passes on the Add router form. A UPS has no ping-only mode — a reply to ping only
-   *  proves its management card has power. */
+  /**
+   * Test an address before registering it as a UPS. Saves nothing. Stricter than the
+   * router test: ping alone, or SNMP without UPS-MIB, fails here.
+   */
   testUpsDevice: async (payload: {
     ip: string;
     community?: string;
@@ -795,10 +776,9 @@ export const api = {
     }
   },
 
-  // `iface` omitted → device totals; supplied → that single port's throughput.
-  // Either a preset range ("-1h" | "-6h" | "-24h" | "-7d" | "-30d") OR an absolute
-  // window via { start, stop } ISO strings — the same contract as getNetworkHistory,
-  // since both endpoints are served by networkHistoryHandler.
+  // No `iface` → device totals; with `iface` → that one port. Preset range
+  // ("-1h" | "-6h" | "-24h" | "-7d" | "-30d") or an absolute window { start, stop },
+  // same as getNetworkHistory (both use networkHistoryHandler).
   getMikrotikHistory: async (
     id: number,
     range: string,
@@ -852,9 +832,8 @@ export const api = {
     }
   },
 
-  // Per-day environment summary measured from InfluxDB (temperature avg/max/min,
-  // humidity avg, peak gas, environment-alert count). Replaces getEnvHistory, which
-  // hit a mock endpoint returning random values and had no callers.
+  // Per-day environment summary from InfluxDB (temperature avg/max/min, humidity avg,
+  // peak gas, alert count).
   getEnvironmentDaily: async (days: number = 7): Promise<ApiResult> => {
     try {
       const res = await apiClient.get(`/environment/daily?days=${days}`);
@@ -864,9 +843,8 @@ export const api = {
     }
   },
 
-  // Unified activity/audit history (system_logs + aircon_logs + alerts + device_logs)
-  // with actor accountability (admin | staff | system). Returns { events, total,
-  // page, pageSize, days, summary }.
+  // Combined activity history (system_logs + aircon_logs + alerts + device_logs) with who
+  // did what (admin | staff | system). Returns { events, total, page, pageSize, days, summary }.
   getHistory: async (params: {
     days?: number;
     start?: string;
@@ -1123,11 +1101,9 @@ export const api = {
     }
   },
 
-  // Returns 202 with a `pending` report — the backend builds it in the background
-  // and pushes the finished row over Socket.IO as `reportUpdated`.
-  // `deviceId` scopes the report to one device; omit for campus-wide.
-  // `paperSize` is per report (ICTU asked for it to be chosen, not fixed); omit to
-  // take the admin's configured default.
+  // Returns 202 with a pending report; the backend builds it in the background and pushes
+  // the result as `reportUpdated`. `deviceId` limits it to one device (omit for campus-wide).
+  // `paperSize` is per report; omit for the configured default.
   generateReport: async (opts: {
     type: string;
     title?: string;
@@ -1145,8 +1121,7 @@ export const api = {
   },
 
   // ── Report template (ICTU letterhead + page size) ───────────────────────────
-  // Read by both roles (the Generate modal needs the size options); every mutation
-  // below is admin-only server-side.
+  // Both roles can read (the Generate dialog needs the sizes); changes are admin-only.
   getReportTemplate: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.get("/reports/template");
@@ -1187,19 +1162,16 @@ export const api = {
     }
   },
 
-  // Sends the file's RAW bytes, not multipart and not base64 — the backend reads the
-  // body with express.raw and identifies the image by its leading bytes. The declared
-  // Content-Type only decides whether the body is parsed at all, so it is taken from
-  // the File and re-checked server-side.
+  // Sends the raw file bytes (not multipart or base64); the backend checks the first bytes
+  // to identify the image. Content-Type comes from the File and is re-checked server-side.
   uploadReportLogo: async (slot: "cspc" | "ictu", file: File): Promise<ApiResult> => {
     try {
       const type = file.type === "image/jpeg" ? "image/jpeg" : "image/png";
       const res = await apiClient.post(`/reports/template/logo/${slot}`, file, {
         headers: {
           "Content-Type": type,
-          // The body is the raw image, so the name it was uploaded under travels
-          // separately. Encoded because HTTP headers are Latin-1 and a filename can
-          // hold anything; the server decodes and sanitises it.
+          // The original file name goes in a header, URI-encoded because headers are Latin-1; the
+          // server decodes and cleans it.
           "X-Logo-Filename": encodeURIComponent(file.name),
         },
       });
@@ -1218,9 +1190,8 @@ export const api = {
     }
   },
 
-  // Streams the stored CSV/PDF and triggers a browser download. `filename` is
-  // supplied by the caller (built from the report title + period) — the backend's
-  // Content-Disposition name isn't readable cross-origin, so we don't rely on it.
+  // Downloads the stored CSV/PDF. The caller supplies `filename` (title + period), since
+  // the backend's Content-Disposition name cannot be read cross-origin.
   downloadReport: async (
     id: number | string,
     format: "csv" | "pdf",
@@ -1268,9 +1239,9 @@ export const api = {
     }
   },
 
-  // Alert rules — configurable thresholds (admin only). deviceId null = global default
-  // that applies to every server / the room; a deviceId is a per-server override.
-  // ── Predictive analytics (Phase 1) ──────────────────────────────────────────
+  // Alert rules (admin only). deviceId null = global default for every server / the room;
+  // a deviceId is a per-device override.
+  // ── Predictive analytics ──────────────────────────────────────────
   // Disk-full ETA per server (linear regression). days = lookback window.
   getDiskForecast: async (days?: number): Promise<ApiResult> => {
     try {

@@ -1,37 +1,24 @@
 import crypto from "node:crypto";
 
-// ─── AES-256-GCM for secrets that must be READ BACK, not just verified ──────────
+// ─── AES-256-GCM for secrets that must be read back ──────────
+// Used when a person needs to see the original value again. When you only need to
+// check "is this the same value?", use a hash instead (installKeyUtils.hashKey).
 //
-// The general form of what mikrotikCrypto.js has always done for the RouterOS API
-// password. Two things now need reversible storage, so the algorithm lives here once
-// and each caller binds it to its own key.
-//
-// WHEN TO USE THIS vs A HASH:
-//   hash (installKeyUtils.hashKey)  — you only ever need to ANSWER "is this the same
-//                                     value?". One-way. Always preferable.
-//   this                            — a human has to see the original again later.
-//
-// An install key needs both: the hash is what the enrollment path matches on (indexed,
-// one lookup), while the ciphertext is what lets an admin re-open the install command
-// tomorrow. Storing it encrypted rather than plaintext means a database dump — including
-// the nightly mysqldump that ops/db-backup drops onto the backup drive, and anything
-// rclone syncs offsite from there — does not hand over usable credentials on its own.
-// The key lives in backend/.env, which is not in the database and not in the backup.
+// Install keys use both: the hash for the enrollment lookup, the ciphertext so an
+// admin can reopen the install command. Encrypted values mean a database dump (the
+// nightly backup included) does not contain usable credentials; the key is only in
+// backend/.env.
 //
 // Stored format (base64):  [ iv(12) | authTag(16) | ciphertext ]
-// GCM is authenticated, so tampering with a stored value fails decryption rather than
-// silently returning corrupted bytes.
+// GCM is authenticated, so a tampered value fails to decrypt.
 
 const ALGO = "aes-256-gcm";
 const KEY_RE = /^[0-9a-fA-F]{64}$/;
 
 /**
- * Bind the cipher to one or more env var names, tried in order.
- *
- * The list exists so a caller can move to a better-named variable without breaking data
- * already encrypted under the old one — but note that switching WHICH key is present
- * makes existing ciphertext undecryptable, so a caller that already has stored data
- * (mikrotikCrypto) pins exactly one name rather than accepting a fallback.
+ * Bind the cipher to one or more env var names, tried in order. Changing which key is
+ * present makes existing ciphertext unreadable, so a caller that already has stored
+ * data (mikrotikCrypto) pins a single name.
  */
 export function createCipherSuite(envNames) {
   const names = Array.isArray(envNames) ? envNames : [envNames];
@@ -78,9 +65,8 @@ export function createCipherSuite(envNames) {
   };
 }
 
-// The general-purpose suite. Prefers a purpose-neutral SECRET_ENC_KEY, and falls back to
-// MIKROTIK_ENC_KEY so an existing deployment — which already has that one set, because
-// MikroTik monitoring requires it — gains this with no new configuration.
+// General-purpose suite: SECRET_ENC_KEY, falling back to MIKROTIK_ENC_KEY so existing
+// deployments need no new setting.
 const suite = createCipherSuite(["SECRET_ENC_KEY", "MIKROTIK_ENC_KEY"]);
 
 export const { isConfigured, encrypt, decrypt } = suite;

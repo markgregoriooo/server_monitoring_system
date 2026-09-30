@@ -1,9 +1,8 @@
 import agentService from "../services/agentService.js";
 
-// Authenticates a Go agent's metric POST via its permanent bearer token.
-// Validates against agent_tokens.approved_token WHERE status='approved' and,
-// on success, attaches req.device = { device_id, device_name, ip_address,
-// location, os }. This is separate from the JWT authMiddleware used by browsers.
+// Authenticates a Go agent's metric POST by its bearer token (looked up by hash in
+// agent_tokens, status 'approved'). On success sets req.device. Browsers use the
+// JWT authMiddleware instead.
 export async function agentAuthMiddleware(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token =

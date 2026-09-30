@@ -9,19 +9,10 @@ import { STATUS } from "../../theme/gf";
 const { green: GREEN, orange: ORANGE, critical: RED } = STATUS;
 
 /**
- * "See it work" — the alert loop, end to end.
- *
- * Everything above this point on the page is the system describing itself. This
- * is the one section that shows the chain actually closing: a reading rises past
- * a threshold, the node's own siren goes off, the dashboard raises an alert, and
- * an email leaves for whoever is on duty. Four different pieces of the system,
- * one physical cause.
- *
- * Animated rather than filmed. A recording of a real smoke test would be
- * stronger evidence, but it is also a smoke test — not something to stage in a
- * room full of equipment that may be under fire detection — and the sequence
- * itself is what the reader needs to understand. This says what fires, in what
- * order, and how quickly, without claiming to be footage.
+ * "See it work": the alert chain end to end. A reading rises past a threshold, the
+ * device's siren sounds, the dashboard raises an alert and an email goes out.
+ * Animated rather than filmed (staging a real smoke test in the server room is not
+ * practical); it shows what fires, in what order, and how fast.
  */
 
 const ACCENT = "#5794F2";
@@ -138,9 +129,8 @@ function AlertChainLoop() {
       )
       .add(line, { strokeDashoffset: 0, duration: 3400, ease: "inQuad" }, 0);
 
-    // Each link in the chain lights as the reading reaches the point that would
-    // actually trigger it — the LED and buzzer at the device's threshold, the
-    // dashboard and the email just after, because they cross the network.
+    // Each step lights when the reading reaches the point that would trigger it: LED and
+    // buzzer at the device threshold, the dashboard and email just after.
     const chipAt = [2350, 2500, 2900, 3300];
     chips.forEach((chip, i) => {
       tl.add(chip, { opacity: [0.28, 1], scale: [0.96, 1], duration: 300, ease: "outExpo" }, chipAt[i] ?? 0);
@@ -277,12 +267,8 @@ export default function DemoReel() {
           </Reveal>
         </div>
 
-        {/* Stage left, facts right. This is the two-column arrangement again,
-            but it works now for a reason the four narrated cards did not: three
-            one-line facts stack to roughly the height of the stage, so the two
-            columns actually balance instead of leaving a tall ragged text
-            column beside a short chart. `items-center` keeps them level if the
-            copy ever runs shorter than the mock. */}
+        {/* Stage on the left, facts on the right. The three one-line facts are about as tall
+           as the stage, so the columns balance; `items-center` keeps them level. */}
         <div className="grid lg:grid-cols-[1.5fr_1fr] gap-6 lg:gap-10 items-center">
           <Reveal y={20}>
             <BrowserFrame>

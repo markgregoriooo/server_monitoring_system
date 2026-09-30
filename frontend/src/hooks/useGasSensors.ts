@@ -9,26 +9,19 @@ export interface GasSensor {
    *  so the browser never has to hold a second copy of the fallback rule. */
   label: string;
   enabled: boolean;
-  /** The ADC pin, as reported by the ESP32 itself (`gasSensorMap`). null until it connects.
-   *  Never a constant in the frontend — MQ2_PINS[] lives in the firmware, and a second copy
-   *  here is one that goes stale the day the board is re-pinned. */
+  /**
+   * The ADC pin as reported by the ESP32 (`gasSensorMap`); null until it connects.
+   * Not a frontend constant, since the pins are defined in the firmware.
+   */
   gpio?: number | null;
   updatedAt?: string | null;
   updatedByName?: string | null;
 }
 
 /**
- * The MQ-2 sensors: which channels are wired and where each one physically is.
- *
- * Same shape as useRoomThresholds, and for the same reason it follows a broadcast rather
- * than only loading once: the admin who renames "MQ2-3" to "Above UPS cabinet" is standing
- * on the settings card and is the least likely person to notice that everyone else's chart
- * legend and alert list still say MQ2-3.
- *
- * Starts EMPTY rather than on a guessed set of four. A label is a claim about where a
- * physical sensor is pointing, and inventing one — even a placeholder — would put a location
- * on a reading nobody has actually sited yet. Callers fall back to `MQ2-<n>` for anything
- * missing, which is honest about knowing nothing.
+ * The MQ-2 sensors: which channels are wired and where each one is. Follows the
+ * update broadcast (like useRoomThresholds), so a renamed sensor updates everyone's
+ * chart legend. Starts empty; callers show `MQ2-<n>` for anything without a label.
  */
 export function useGasSensors() {
   const [sensors, setSensors] = useState<GasSensor[]>([]);

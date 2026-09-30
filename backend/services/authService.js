@@ -6,9 +6,8 @@ import { JWT_SECRET, JWT_SIGN_OPTS } from "../middleware/auth.js";
 import { notFound } from "../utils/httpError.js";
 
 const authService = {
-  // Build + sign a JWT session for an already-resolved, ACTIVE user. The only
-  // login path is Google (googleAuthService), which verifies identity + status
-  // before calling this. Records last_login and writes an audit log row.
+  // Sign a JWT session for an active user. Only called by googleAuthService after it
+  // has checked identity and status. Records last_login and an audit row.
   async issueSession(user, { ip = null, userAgent = null } = {}) {
     const permissions = await permissionService.getPermissionsByRole(user.role);
 
@@ -21,19 +20,16 @@ const authService = {
       profile_image: user.profile_image,
       permissions: permissions ?? [],
       tv: user.token_version ?? 0,   // F-02: session-revocation version
-      // When this SESSION began, as opposed to when the current token was minted.
-      // Carried unchanged across every sliding renewal so middleware/auth.js can cap
-      // total session age — without it a renewed token looks brand new forever and
-      // the sliding window has no ceiling. See maybeRenewToken.
+      // When the session started (not when this token was issued). Kept across renewals
+      // so middleware/auth.js can cap the total session age.
       ist: Math.floor(Date.now() / 1000),
     };
 
     const token = jwt.sign(payload, JWT_SECRET, { ...JWT_SIGN_OPTS, expiresIn: "1h" });
 
-    // Deliberately NOT in the signed payload. The token lives an hour, so a version
-    // baked into it would still read "not accepted" for the rest of that hour after
-    // the user accepts — the gate would refuse to go away. It rides on the user
-    // OBJECT instead, which the client replaces the moment acceptance succeeds.
+    // Not in the token: a token lasts an hour, so the old version would keep the gate
+    // up after the user accepts. It is on the user object, which the client replaces
+    // as soon as acceptance succeeds.
     const policy = await policyService.getAcceptance(user.user_id);
 
     await db.query(`UPDATE users SET last_login = NOW() WHERE user_id = ?`, [user.user_id]);
@@ -47,15 +43,10 @@ const authService = {
     return { token, user: { ...payload, permissions, ...policy } };
   },
 
-  // Record a DENIED sign-in attempt. issueSession above logs every SUCCESS, so
-  // without this the trail only ever shows who got in — never who was turned
-  // away (non-CSPC domain, unverified email, pending/rejected/disabled account,
-  // failed token exchange), which is exactly what's worth reviewing on a campus
-  // system. system_logs.user_id is nullable, so an attempt from an account we've
-  // never seen still records, with the email preserved in the description.
-  //
-  // Callers treat this as best-effort: an audit-write failure must never turn a
-  // clean "you're not allowed" into a 500.
+  // Record a denied sign-in (other domain, unverified email, pending/rejected/disabled
+  // account, failed code exchange), so the audit log shows who was turned away and
+  // not just who got in. user_id may be NULL; the email goes in the description.
+  // Callers treat it as best-effort.
   async recordSignInDenied({
     email = null,
     reason = "denied",
@@ -107,9 +98,8 @@ const authService = {
       last_login: user.last_login,
       created_at: user.created_at,
       permissions,
-      // Drives the acceptance gate. `policy_current` is what is in force NOW, so a
-      // bumped POLICY_VERSION re-prompts every user at their next sign-in — which
-      // is at most an hour away, since that is the JWT's lifetime.
+      // Drives the acceptance gate. `policy_current` is the version in force now, so
+      // bumping POLICY_VERSION asks everyone again at their next sign-in.
       policy_version: user.policy_version ?? null,
       policy_accepted_at: user.policy_accepted_at ?? null,
       policy_current: policyService.POLICY_VERSION,

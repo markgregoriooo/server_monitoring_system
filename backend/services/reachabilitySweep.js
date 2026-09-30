@@ -7,48 +7,29 @@ import snmpPollerService from "./snmpPollerService.js";
 import mikrotikPollerService from "./mikrotikPollerService.js";
 
 /**
- * FAST offline detection — the missing half of `pollDeviceNow`.
+ * Fast offline detection.
  *
- * Registering a device gives an immediate answer because the admin's click IS the
- * trigger: we know the exact moment to go and look. Going offline has no trigger, so
- * something has to notice an ABSENCE, and until this existed the only things noticing
- * were the full polls:
+ * Without it, going offline was only noticed by the full polls:
  *
- *     servers    heartbeat window (3 missed posts, ≥30s) + a 15s sweep  → 30-45s
+ *     servers    heartbeat window + sweep                               → 30-45s
  *     routers    the next SNMP walk                                     → up to 60s
  *     UPS        the next SNMP walk                                     → up to 60s
  *     MikroTik   the next RouterOS API poll                             → up to 30s
  *
- * Those cadences are set by what the full poll COSTS — an SNMP walk of every interface,
- * a RouterOS login. But "is it still there?" is a far cheaper question than "what are
- * its metrics?", and separating the two is the whole idea here: one ICMP echo, every
- * few seconds, for every device at once.
+ * "Is it still there?" is much cheaper than a full poll, so this sends one ping to
+ * every online device every few seconds.
  *
- * ── Three rules keep this safe ───────────────────────────────────────────────────
+ * Three rules:
+ * 1. Down only. A failed ping can mark a device offline; a reply never marks it
+ *    online. Recovery is left to the full poll, which owns the status.
+ * 2. Only devices seen answering ping before. Some equipment blocks ICMP but
+ *    answers SNMP. A device becomes eligible once it has replied at least once
+ *    (`everAnswered`), so after a restart the worst case is the old behaviour.
+ * 3. Confirm first. A device must miss FAST_OFFLINE_FAILS sweeps in a row (default
+ *    2) before it is flipped, so one lost packet is not an outage.
  *
- * 1. DOWN-ONLY. A failed ping can mark a device offline; a successful one marks nothing
- *    online. Recovery stays with the real poll, which is the only thing that can say a
- *    router is answering SNMP again rather than merely answering ICMP. A fast path that
- *    could also mark UP would fight the poller for ownership of the status column.
- *
- * 2. NEVER ACT ON A DEVICE WE HAVE NOT SEEN ANSWER. Plenty of equipment drops ICMP by
- *    policy while answering SNMP perfectly, and marking that offline every 5 seconds
- *    would be worse than the delay this removes. A device only becomes eligible once
- *    this sweep has seen it reply at least once (`everAnswered`). Unknown means do
- *    nothing — so the failure mode of a fresh start is the OLD behaviour, not a false
- *    alarm. The cost is that a device which is already down when the backend starts is
- *    detected by the normal poll, once, and is eligible from then on.
- *
- * 3. CONFIRM BEFORE FLIPPING. One lost echo is not an outage — it is a lost echo. A
- *    device must fail `FAST_OFFLINE_FAILS` consecutive sweeps (default 2) before it is
- *    flipped, which at a 5s cadence still beats every full poll by a wide margin while
- *    being immune to a single dropped packet.
- *
- * The transition itself is NOT reimplemented here. Each poller already owns a
- * `setReachable()` that writes the device row, the device log, the socket event and the
- * real alert, and `agentService` owns the equivalent for servers. This sweep only
- * decides WHEN to call them, so an offline raised at 5 seconds is indistinguishable from
- * one raised by the poller at 60 — same log line, same alert, same severity.
+ * The change itself goes through each poller's setReachable() (or agentService for
+ * servers), so the alert and log are the same as a poller-raised one.
  */
 
 const SWEEP_MS = Math.max(1000, Number(process.env.FAST_OFFLINE_CHECK_MS) || 5000);
@@ -56,10 +37,8 @@ const PING_TIMEOUT_MS = Math.max(200, Number(process.env.FAST_OFFLINE_PING_TIMEO
 const FAILS_BEFORE_DOWN = Math.max(1, Number(process.env.FAST_OFFLINE_FAILS) || 2);
 const ENABLED = (process.env.FAST_OFFLINE_CHECK ?? "").trim().toLowerCase() !== "false";
 
-// Device ids this sweep has seen reply to ICMP at least once. In memory on purpose:
-// the question it answers is "does this device answer ping AT ALL", and a restart
-// re-learning that over one sweep is cheaper than a column that can go stale against
-// a device whose firewall policy changed months ago.
+// Devices seen answering ping at least once. In memory; relearned in one sweep
+// after a restart.
 const everAnswered = new Set();
 
 // Consecutive failed sweeps per device id. Cleared by any reply.
@@ -68,9 +47,8 @@ const failures = new Map();
 let timer = null;
 let running = false;
 
-// Only devices that are currently ONLINE can transition to offline, so the ones already
-// marked offline are not worth an echo. Maintenance is excluded for the same reason the
-// offline sweep excludes it: the server is down on purpose and nobody wants the page.
+// Only online devices can go offline, so offline ones are skipped. Servers in
+// maintenance are skipped too.
 async function loadCandidates() {
   const [rows] = await db.query(
     `SELECT d.device_id AS id,
@@ -87,10 +65,10 @@ async function loadCandidates() {
   return rows;
 }
 
-// Route the flip to whoever owns this device type's status, so the alert, the device log
-// and the socket event are byte-for-byte what the slow path would have produced.
-// Returns false when the owner declined — a server whose agent is still reporting is
-// alive whatever ping says (see agentService.markOfflineByIds).
+// Hand the change to whoever owns this device type's status, so the alert, log and
+// socket event are the same as from the slow path. Returns false when the owner
+// declines, e.g. a server whose agent is still reporting (see
+// agentService.markOfflineByIds).
 async function markOffline(io, d) {
   if (d.type === "server") {
     const rows = await agentService.markOfflineByIds([d.id]);
@@ -112,9 +90,8 @@ async function sweep(io) {
     const devices = await loadCandidates();
     if (devices.length === 0) return;
 
-    // One echo each, all at once. Sequential would make the sweep's duration a function
-    // of how many devices are DOWN (each one costing a full timeout), which is precisely
-    // when it needs to be quick.
+    // Ping all at once; one at a time would make the sweep slowest exactly when many
+    // devices are down.
     const results = await Promise.all(
       devices.map(async (d) => ({ d, r: await ping(d.ip, { count: 1, timeoutMs: PING_TIMEOUT_MS }) })),
     );
@@ -122,9 +99,8 @@ async function sweep(io) {
     for (const { d, r } of results) {
       const id = Number(d.id);
 
-      // probeError = `ping` itself could not run (missing binary, no permission). That is
-      // a broken PROBE, not a down device — icmpPing already warns once — and treating it
-      // as an outage would take the whole fleet offline at once.
+      // probeError = ping itself could not run (missing binary, no permission). That is not
+      // a down device, and treating it as one would take every device offline at once.
       if (r.probeError) continue;
 
       if (r.reachable) {

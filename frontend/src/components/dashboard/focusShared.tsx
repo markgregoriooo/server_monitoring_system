@@ -1,19 +1,12 @@
 import type { ChartOptions } from "chart.js";
 
-// ─── Shared parts of the Dashboard's three "focus" panels ───────────────────────
-//
-// Servers, Network and UPS all answer the same shape of question on the Dashboard —
-// pick one device, see its headline numbers, see whether they are moving — so the tile,
-// the legend, the axis formatting and the chart options live here once. Three copies of
-// a Chart.js options object is exactly how two panels quietly end up with different tick
-// densities and a reader starts mistrusting the axes.
-//
-// What is NOT shared: which metrics each panel shows, and their units. Those differ per
-// device class and belong in the individual components.
+// ─── Shared parts of the Dashboard's three focus panels ───────────────────────
+// Servers, Network and UPS all show one device's numbers and trend, so the legend,
+// axis formatting and chart options are defined once here and match. Which metrics
+// and units each shows stays in the component.
 
-// Chart body height, shared so the three panels line up when they sit side by side in a
-// two-column row. Smaller than pages/ServerDetail's charts on purpose: this is the
-// glance, and each panel now occupies half a row rather than the full width.
+// Chart height, shared so panels side by side line up. Smaller than ServerDetail's
+// charts; each panel is half a row.
 export const FOCUS_CHART_H = 140;
 
 const MULTI_DAY_SEC = 48 * 3600;
@@ -31,14 +24,9 @@ export function fmtTime(iso: string, spanSec: number) {
 }
 
 /**
- * MB/s between two CUMULATIVE byte counters.
- *
- * Only the SERVER path needs this: `server_metrics` stores raw counters, so the rate
- * exists only as a difference. The network endpoint already derives its rate server-side
- * (`derivative(nonNegative: true)`) and hands back bytes/sec directly.
- *
- * Math.max clamps a counter reset — an agent restart or host reboot — to 0 rather than
- * graphing a large negative spike.
+ * MB/s between two cumulative byte counters. Only the server panel needs this; the
+ * network endpoint already returns bytes/sec. Math.max turns a counter reset
+ * (restart, reboot) into 0 instead of a big negative spike.
  */
 // rateMBs now lives in utils/format — ServerDetail had a byte-identical copy.
 // Re-exported so the dashboard focus panels keep importing it from here.
@@ -51,18 +39,12 @@ export function loadColor(v: number) {
   return "#73BF69";
 }
 
-// A `Tile` component lived here, drawing the 2x2 headline-number grid each panel used to
-// carry above its chart. Those grids are gone: on the server panel they restated the
-// table directly above them, and on all three they cost more height than the chart they
-// introduced. The current values now ride on the legend, which had the labels anyway.
+// The old 2x2 `Tile` grid was removed; current values are shown on the legend.
 
 /**
- * Legend entry, optionally carrying the series' CURRENT value.
- *
- * `valueColor` is separate from `color` on purpose. The dot must stay the series' colour
- * — it is what maps this label to a line on the chart — while the value is free to take
- * its own alert band. UPS battery needs exactly that: its line is green because green is
- * the battery series, but 15% must not read green.
+ * Legend entry, optionally with the series' current value. `valueColor` is separate
+ * from `color`: the dot keeps the series colour, while the value can show its alert
+ * colour (e.g. UPS battery at 15% must not look green).
  */
 export function LegendDot({
   color, label, value, valueColor,
@@ -93,11 +75,9 @@ export function ChartMessage({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Chart.js options for a focus panel's line chart.
- *
- * `min`/`max` are passed explicitly rather than left to auto-scaling for the PERCENT
- * charts: a metric sitting flat at 12% with 1% of noise auto-scales into a dramatic
- * mountain range. Throughput has no natural ceiling, so it auto-scales and omits them.
+ * Chart.js options for a focus panel. Percent charts get a fixed `min`/`max` so a
+ * flat line with a little noise does not look dramatic; throughput has no ceiling
+ * and auto-scales.
  */
 export function focusLineOptions(
   isDark: boolean,
@@ -160,11 +140,8 @@ export function focusLineOptions(
 }
 
 /**
- * Shared dataset styling, so the three charts draw with the same weight and smoothing.
- *
- * `null` is a meaningful value here, not a missing one: Chart.js breaks the line at a
- * null, which is how an outage is drawn as a hole rather than as a straight segment
- * across it. `spanGaps` is left at its default (false) for exactly that reason.
+ * Shared dataset style. Chart.js breaks the line at a null, so an outage shows as a
+ * gap; `spanGaps` stays false for that reason.
  */
 export function lineSeries(label: string, data: (number | null)[], color: string, fill = false) {
   return {

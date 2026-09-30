@@ -8,13 +8,8 @@ import {
   pingDeadlineMs,
 } from "../services/pingOutput.js";
 
-// Pure-logic tests for the ICMP fallback's parser. No packets are sent and no
-// process is spawned — pingOutput.js is import-free on purpose so `npm test` runs
-// anywhere. Run: cd backend && npm test
-//
-// The fixtures below are REAL `ping` output, verbatim, including the localized
-// builds. Every one of them is a shape the poller can meet on a deployment box,
-// and the whole reason the parser reads numbers rather than words.
+// Tests for the ping output parser. No packets are sent. Run: cd backend && npm test
+// The fixtures are real `ping` output, including localized versions.
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -98,9 +93,8 @@ test("summary lines carry at most one of the two, so none of them count", () => 
   // An address but no RTT.
   assert.equal(isReplyLine("Ping statistics for 8.8.8.8:"), false);
   assert.equal(isReplyLine("--- 8.8.8.8 ping statistics ---"), false);
-  // Linux's trailing `time 3005ms` is the total ELAPSED time, not an RTT, and has
-  // no address on its line — the one summary line that could otherwise be mistaken
-  // for a reply and would report a 3-second latency.
+  // Linux's `time 3005ms` is the total elapsed time, not a reply, and has no address,
+  // so it must not be read as a 3-second latency.
   assert.equal(isReplyLine("3 packets transmitted, 3 received, 0% packet loss, time 2003ms"), false);
 });
 

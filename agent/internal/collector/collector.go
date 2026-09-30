@@ -26,9 +26,9 @@ func diskPath() string {
 	return "/"
 }
 
-// Collect samples the current system metrics. CPU uses a 500ms blocking
-// interval for accuracy — keep it. A failure in any single probe leaves that
-// metric at its zero value rather than failing the whole collection.
+// Collect samples the current system metrics. CPU uses a 500ms blocking interval for
+// accuracy; keep it. A failing probe leaves that metric at zero instead of failing the
+// whole collection.
 func Collect() (ServerMetrics, error) {
 	var m ServerMetrics
 
@@ -70,17 +70,16 @@ func Collect() (ServerMetrics, error) {
 // (containers, network shares) must not turn a 10s metric post into a large body.
 const maxVolumes = 16
 
-// pseudoFS are Linux filesystem types that report usage but aren't real storage.
-// disk.Partitions(false) already filters most of them; this catches the rest so
-// "disk full" alerts can't fire on a tmpfs.
+// pseudoFS are Linux filesystem types that report usage but are not real storage.
+// disk.Partitions(false) filters most; this catches the rest so disk alerts never fire
+// on a tmpfs.
 var pseudoFS = map[string]bool{
 	"tmpfs": true, "devtmpfs": true, "devfs": true, "overlay": true,
 	"squashfs": true, "aufs": true, "ramfs": true, "proc": true, "sysfs": true,
 }
 
-// usageFunc matches disk.Usage. Injected so buildVolumes can be tested against a
-// synthetic mount table — the filtering rules below are the part that can be
-// wrong, and they must not require a real Linux box to verify.
+// usageFunc matches disk.Usage. Injected so buildVolumes can be tested with a fake mount
+// table, without a real Linux machine.
 type usageFunc func(string) (*disk.UsageStat, error)
 
 // collectVolumes probes every fixed volume on this host.
@@ -89,25 +88,13 @@ func collectVolumes() []Volume {
 	return buildVolumes(usablePartitions(parts, err), disk.Usage)
 }
 
-// usablePartitions decides whether a Partitions() result is worth using.
+// usablePartitions decides whether a Partitions() result can be used.
 //
-// On Windows, `err != nil` does NOT mean the call failed. gopsutil walks the drive
-// letters and collects WARNINGS as it goes — a mapped network drive that is currently
-// disconnected, a BitLocker-locked volume, a RAW or recovery partition that happens to
-// have a letter — then returns the drives it read successfully AND those warnings
-// together (`return ret, warnings.Reference()`, disk_windows.go). A CD-ROM or empty
-// card reader is skipped silently, but anything DRIVE_FIXED or DRIVE_REMOTE that
-// cannot be read adds a warning.
-//
-// So `if err != nil { return nil }` threw away a perfectly good C: and D: because some
-// OTHER drive on the machine was unreadable. The symptom is the worst kind: metrics
-// keep arriving and look completely healthy, while the volumes list is simply empty —
-// which reads as "this host has no disks" rather than as an error. It only shows up on
-// machines that HAVE such a drive, which is why an office PC with a stale mapped share
-// reported nothing while the laptops next to it were fine.
-//
-// Partial success is the normal case here, so take what we got and only give up when
-// there is genuinely nothing.
+// On Windows a non-nil err does not mean the call failed: gopsutil returns the drives it
+// could read together with warnings for the ones it could not (a disconnected network
+// drive, a BitLocker-locked volume, a RAW partition). Treating that as a failure threw
+// away good C: and D: drives and sent an empty volume list. So use what was returned,
+// and only give up when there is nothing.
 func usablePartitions(parts []disk.PartitionStat, err error) []disk.PartitionStat {
 	if len(parts) > 0 {
 		if err != nil {
@@ -132,11 +119,9 @@ func warnPartitionsOnce(err error) {
 		"or a recovery partition with a drive letter.", err)
 }
 
-// buildVolumes filters a mount table down to real, reportable storage.
-// Best-effort throughout: a volume that errors on usage (a disconnected share, a
-// permission-denied mount) is skipped rather than failing the whole sample.
-// Returns nil if none could be read, which the backend treats as "not reported"
-// rather than "zero volumes".
+// buildVolumes filters a mount table down to real storage. A volume that fails
+// (disconnected share, permission denied) is skipped. Returns nil if none could be read,
+// which the backend treats as "not reported" rather than "zero volumes".
 func buildVolumes(parts []disk.PartitionStat, usage usageFunc) []Volume {
 	seen := make(map[string]bool, len(parts))
 	vols := make([]Volume, 0, len(parts))

@@ -1,28 +1,16 @@
 import db from "../config/mysql.js";
 import { queryClient, bucket } from "../config/influx.js";
 
-// ─── Environment daily summary (real, from InfluxDB) ─────────────────────────────
-// Replaces the `data/db.js` mock that backed GET /api/environment/history and /logs:
-// `generateSensorHistory()` returned `24 + Math.random() * 4`, and `historyLogs` was
-// five rows hardcoded to March 2025. Both are gone.
+// ─── Environment daily summary (from InfluxDB) ─────────────────────────────
+// Per UTC day: average/max/min temperature, average humidity, peak gas (the worse
+// MQ-2, like sensorHandler) and the number of environment alerts that day.
 //
-// Per UTC day: temperature avg/max/min, humidity avg, peak gas (the worse of the two
-// MQ-2 sensors, matching how sensorHandler alerts on `max(mq2_1, mq2_2)`), plus a count
-// of environment alerts raised that day.
-//
-// Day boundaries are UTC, because `aggregateWindow(every: 1d)` buckets in UTC. On a
-// UTC+8 campus a "day" therefore runs 08:00–08:00 local. That is acceptable for a
-// summary view, but it MUST be consistent across both stores — so the MySQL event
-// counts are bucketed in UTC too (via UNIX_TIMESTAMP + JS), not with DATE(created_at),
-// which would silently use the server's local date and misalign the two columns.
-//
-// This is metric history, deliberately distinct from services/historyService.js — that
-// one is the audit trail of who did what (system_logs / aircon_logs / alerts /
-// device_logs). Same page, different question.
+// Days are UTC because aggregateWindow(every: 1d) buckets in UTC (08:00–08:00
+// local). The MySQL alert counts are bucketed in UTC too so the columns line up.
+// This is metric history; historyService.js is the audit trail.
 
 // Room-level alert types (no device row). Keep in sync with sensorHandler's
-// ENV_METRICS. `esp32_offline` is raised by the sensor-liveness monitor on the
-// aircon-feature branch; listing it here now is harmless and forward-compatible.
+// ENV_METRICS; `esp32_offline` comes from esp32Monitor.
 const ENV_ALERT_TYPES = ["temperature", "gas", "humidity", "esp32_offline"];
 
 const FIELDS = ["temperature", "humidity", "mq2_1_ppm", "mq2_2_ppm"];
@@ -43,10 +31,8 @@ function round(v, dp = 1) {
   return Math.round(v * f) / f;
 }
 
-// One aggregation pass (mean | max | min) over all four fields, bucketed per day.
-// `days` is a clamped integer before it reaches here, so inlining it is safe — the
-// same posture as querySensorHistoryHandler's whitelisted ranges. No user string
-// ever enters the query.
+// One aggregation (mean | max | min) over all four fields per day. `days` is a
+// clamped integer, so no user text reaches the query.
 function dailyQuery(days, fn) {
   const filter = FIELDS.map((f) => `r._field == "${f}"`).join(" or ");
   return `

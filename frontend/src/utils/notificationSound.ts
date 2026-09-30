@@ -1,6 +1,5 @@
-// A short "ding-dong" chime on each new notification, synthesised with the Web
-// Audio API — no audio asset to ship or 404 on. User-mutable (persisted in
-// localStorage); defaults to ON.
+// A short "ding-dong" chime for each new notification, made with the Web Audio API (no
+// audio file). Can be muted (saved in localStorage); on by default.
 
 const STORAGE_KEY = "cspc_notif_sound";
 

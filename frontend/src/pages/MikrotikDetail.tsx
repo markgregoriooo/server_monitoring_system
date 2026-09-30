@@ -11,13 +11,11 @@ import { formatUptime, fmtDateTime, formatSpeed, fmtAxisTime, MULTI_DAY_SEC } fr
 import { Stat, Th } from "../components/ui/primitives";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
-// ─── Per-MikroTik detail view (throughput + ports + log) ──────────────────────
-// Reached from MikrotikMonitoring via "View". In-page swap (Back button), mirroring
-// ServerMetrics ↔ ServerDetail and NetworkMonitoring ↔ NetworkDetail. Ports/CPU/mem
-// stay live via `networkMetrics`; throughput history is fetched per range.
-//
-// Types live here (not in MikrotikMonitoring) so the list can import them without a
-// circular import — the list imports this module, never the other way round.
+// ─── MikroTik detail view (throughput, ports, log) ──────────────────────
+// Opened from MikrotikMonitoring via "View" and replaces the list in place (Back
+// button), like ServerMetrics ↔ ServerDetail. Ports/CPU/mem update live from
+// `networkMetrics`; throughput history is fetched per range. Types are defined here so
+// the list can import them without a circular import.
 
 export interface MkIface {
   name: string;
@@ -39,10 +37,8 @@ export interface PortGate {
   everUp: boolean; // observed by the poller; a port that never came up isn't a fault
 }
 
-// Mirrors backend/services/linkAlertPolicy.js. Duplicated rather than shared because
-// the backend is ESM Node and this is the Vite bundle, but the ORDER matters and must
-// match: the most actionable explanation wins, so "you silenced it" outranks "RouterOS
-// has it disabled" outranks "it never had a cable in it".
+// Same rules and order as backend/services/linkAlertPolicy.js (copied, since the
+// backend is Node): muted, then disabled in RouterOS, then never connected.
 function portAlertState(i: MkIface, gate?: PortGate): { text: string; alerting: boolean } {
   if (gate && !gate.monitored) return { text: "Alerts off", alerting: false };
   if (i.adminUp === false) return { text: "Disabled in RouterOS", alerting: false };
@@ -51,9 +47,9 @@ function portAlertState(i: MkIface, gate?: PortGate): { text: string; alerting: 
   return { text: "Down — alerting", alerting: true };
 }
 
-// Per-port throughput derived on the client from the cumulative byte counters between
-// two polls. The API only ever reports totals, so without this a port shows a bare
-// utilization % — which reads as "0%" whenever link speed is unknown, even under load.
+// Per-port throughput worked out here from the byte counters between two polls. The API
+// only gives totals, so otherwise a port would only show a utilization %, which reads 0%
+// when the link speed is unknown.
 export interface PortRate { rxBps: number; txBps: number }
 export interface MkDevice {
   id: string;
@@ -66,9 +62,8 @@ export interface MkDevice {
   cpuPercent: number | null;
   memPercent: number | null;
   connectedClients: number | null;
-  // ICMP, measured alongside the RouterOS API call each poll. The API says whether the
-  // router is answering; these say how well the PATH to it is carrying traffic — a link
-  // dropping a third of its packets answers the API perfectly.
+  // ICMP, measured with each API poll. The API shows whether the router answers; ping
+  // shows how well the path to it carries traffic.
   latencyMs?: number | null;
   packetLossPct?: number | null;
   routerosVersion: string | null;
@@ -80,27 +75,22 @@ export interface MkDevice {
   monitored: boolean;
 }
 interface HistPoint { time: string; rxBytesPerSec: number | null; txBytesPerSec: number | null; }
-// The ICMP half of the same response. Its own array with its own timestamps, never
-// merged into HistPoint — the two measurements land in different windows and
-// `createEmpty: false` keeps a different subset of them for each, so interleaving would
-// put a null in every other row and withGaps would shatter both lines. See the long
-// note in backend/handlers/networkHistoryHandler.js, which serves this route too.
+// The ICMP part of the same response: its own array and timestamps, never merged into
+// HistPoint (merging would put nulls in every other row). See
+// backend/handlers/networkHistoryHandler.js.
 interface IcmpPoint { time: string; latencyMs: number | null; packetLossPct: number | null; }
 interface DeviceLog { log_level: "info" | "warning" | "critical" | "error"; message: string; recorded_at: string; }
 
 
 
-// Windows spanning more than a day need the DATE on the axis — bare "14:00" repeats
-// every day, which makes a 7d/30d chart unreadable. Driven by the window's actual
-// SPAN rather than a list of preset keys, so a custom 5-day window gets dates too.
-// Same rule as ServerDetail, so the two pages label an incident identically.
+// Windows longer than a day show the date on the axis. Based on the window's span, so a
+// custom 5-day window gets dates too. Same rule as ServerDetail.
 
 function loadColor(v: number) { if (v >= 85) return RED; if (v >= 65) return ORANGE; return GREEN; }
 function statusColor(s: string) { if (s === "Online") return GREEN; if (s === "Warning") return ORANGE; return RED; }
 function logColor(level: string) { if (level === "critical" || level === "error") return RED; if (level === "warning") return ORANGE; return BLUE; }
-// formatBps moved to utils/format.ts. The Dashboard's network panel needs the identical
-// scaling — three copies is how the same router starts reading differently per page.
-// Chart.js line chart — same config as NetworkDetail so both network pages read alike.
+// formatBps is in utils/format.ts (the Dashboard uses it too).
+// Chart.js line chart, same config as NetworkDetail.
 function ThroughputChart({ history, spanSec }: { history: HistPoint[]; spanSec: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -111,9 +101,8 @@ function ThroughputChart({ history, spanSec }: { history: HistPoint[]; spanSec: 
       return;
     }
     chartRef.current?.destroy();
-    // Break the line where the poller stopped, so an unreachable router reads as a hole
-    // with a start and an end rather than as a straight segment drawn across the outage.
-    // `?? null`, not `?? 0`: no reading is not zero traffic.
+    // Break the line where the poller stopped, so an outage shows as a gap. `?? null`, not
+    // `?? 0`: no reading is not zero traffic.
     const gapped = withGaps(
       history.map((p) => Date.parse(p.time)),
       history.map((p) => fmtAxisTime(p.time, spanSec)),
@@ -159,25 +148,15 @@ function ThroughputChart({ history, spanSec }: { history: HistPoint[]; spanSec: 
   );
 }
 
-// ICMP series colours, identical to NetworkDetail and to the Dashboard's network panel —
-// latency cyan, loss the danger red. Three pages show this pair; a reader must not have
-// to re-learn which line is which on each of them.
+// ICMP colours, the same as NetworkDetail and the Dashboard: latency cyan, loss red.
 const LATENCY = "#3CC8E8";
 const LOSS = RED;
 
 // ─── ICMP history (latency + packet loss) ─────────────────────────────────────
+// Ping runs with every MikroTik poll. The API shows whether the router answers; ping
+// shows whether the link is healthy, and catches packet loss the API cannot see.
 //
-// ICMP is measured on every MikroTik poll, alongside the RouterOS API call rather than
-// instead of it: the API says whether the router is answering, ping says whether the
-// LINK to it is healthy. Those are different questions, and only the second one catches
-// a link quietly dropping a third of its packets — an API call either returns or times
-// out, so degradation reads as perfect health right up until it flips to Offline.
-//
-// The two figures already drove alert rules and Analytics; this page showed them as two
-// tiles, which is a reading with no trend behind it.
-//
-// TWO AXES: milliseconds and percent are different units. The Dashboard shares one axis
-// for them, but that is a compromise for a 120px panel, not the shape to copy here.
+// Two axes, since milliseconds and percent are different units.
 function IcmpChart({ history, spanSec }: { history: IcmpPoint[]; spanSec: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -227,11 +206,9 @@ function IcmpChart({ history, spanSec }: { history: IcmpPoint[]; spanSec: number
         },
         scales: {
           x: { ticks: { color: "#6B7280", maxTicksLimit: 6, font: { size: 9 } }, grid: { color: "rgba(127,127,127,0.10)" } },
-          // beginAtZero + suggestedMax, never a bare auto-scale. A MikroTik on the same
-          // rack answers in well under a millisecond, and an axis fitted to 0.9-1.2 ms
-          // turns that healthy flat line into a mountain range. suggestedMax is a FLOOR
-          // for the axis top, not a cap, so a router across a slower link still gets an
-          // axis that fits it.
+          // beginAtZero + suggestedMax instead of pure auto-scale, so a healthy sub-millisecond
+          // line does not look like big swings. suggestedMax is a minimum for the axis top, not a
+          // cap.
           y: {
             type: "linear",
             position: "left",
@@ -240,9 +217,8 @@ function IcmpChart({ history, spanSec }: { history: IcmpPoint[]; spanSec: number
             ticks: { color: LATENCY, font: { size: 9 }, callback: (v: any) => `${v} ms` },
             grid: { color: "rgba(127,127,127,0.10)" },
           },
-          // Loss is deliberately NOT pinned to 0-100 either: any loss at all is a fault,
-          // and on a full 0-100 axis a real 2% is two pixels off the floor — visually
-          // identical to the healthy zero it is not.
+          // Loss is not fixed to 0-100: any loss is a fault, and 2% on a 0-100 axis would look
+          // like zero.
           y1: {
             type: "linear",
             position: "right",
@@ -269,15 +245,10 @@ function IcmpChart({ history, spanSec }: { history: IcmpPoint[]; spanSec: number
 
 function Panel({ title, right, children, noPad }: { title: string; right?: React.ReactNode; children: React.ReactNode; noPad?: boolean }) {
   return (
-    // `overflow-visible` so an absolutely-positioned control in the header (the range
-    // picker's Custom dropdown) isn't clipped by the panel box. The rounded corners
-    // still read fine because every child that can reach an edge is itself rounded or
-    // padded.
+    // `overflow-visible` so the range picker's Custom dropdown in the header is not clipped.
     <div className="flex flex-col rounded-lg overflow-visible" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
-      {/* Header WRAPS instead of overflowing. As a fixed 32px row that could not wrap,
-          the port selector + In/Out readouts + five range buttons ran past the panel
-          edge on a phone and the right-most control (Custom) was unreachable.
-          min-height keeps the desktop look identical. */}
+      {/* The header wraps on a phone so the last control (Custom) stays reachable. min-height
+         keeps the desktop layout the same. */}
       <div
         className="flex items-center justify-between gap-x-3 gap-y-1.5 flex-wrap px-3 py-1.5 sm:py-0 shrink-0"
         style={{ minHeight: 32, borderBottom: `1px solid ${gf.divider}` }}
@@ -290,14 +261,11 @@ function Panel({ title, right, children, noPad }: { title: string; right?: React
   );
 }
 
-// ─── Interface table (WinBox "Interface List" style) ──────────────────────────
-// Deliberately a dense table of NUMBERS rather than progress bars. Two reasons:
-//  • an idle port is the normal state here, and a wide empty bar track reads as a
-//    skeleton-loading placeholder rather than a real measurement;
-//  • it matches the Interface List in WinBox, which is what an operator already knows —
-//    the `R` running flag, Tx/Rx rate columns and right-aligned figures all carry over.
-// Every colour is either a --gf-* token or a status colour, so it holds up in light and
-// dark mode without hardcoded greys.
+// ─── Interface table (like WinBox's Interface List) ──────────────────────────
+// Numbers rather than progress bars: an idle port is normal and an empty bar looks like
+// a loading placeholder, and it matches the WinBox view operators know (R flag, Tx/Rx
+// columns, right-aligned figures). Colours use --gf-* tokens and status colours, so it
+// works in light and dark mode.
 
 function PortRow({ i, rate }: { i: MkIface; rate?: PortRate | undefined }) {
   const hasUtil = i.utilizationPct != null && Number.isFinite(i.utilizationPct);
@@ -311,9 +279,8 @@ function PortRow({ i, rate }: { i: MkIface; rate?: PortRate | undefined }) {
 
   return (
     <tr style={{ borderTop: `1px solid ${gf.divider}` }}>
-      {/* WinBox's flags column: R = running, X = disabled. Worth distinguishing here
-          because the two look identical on the wire but only one is a fault — a
-          disabled port is switched off on purpose and never alerts. */}
+      {/* WinBox flags: R = running, X = disabled. A disabled port is off on purpose and never
+         alerts. */}
       <td className={`${td} text-center font-bold`}
         style={{ color: disabled ? gf.textDim : down ? gf.textDim : GREEN }}
         title={disabled ? "Disabled in RouterOS" : down ? "No link" : "Running"}>
@@ -399,9 +366,8 @@ export default function MikrotikDetail({
         connectedClients: data.device.connectedClients ?? prev.connectedClients,
         interfaces: data.device.interfaces ?? prev.interfaces,
       }));
-      // Derive per-port throughput from the counter delta since the previous poll.
-      // A negative delta means a counter wrap or a router reboot — drop it rather than
-      // graph a spike, matching how the pollers handle the same case server-side.
+      // Per-port throughput from the counter change since the last poll. A negative change
+      // (counter wrap or reboot) is dropped, as the pollers do.
       const now = Date.now();
       const next: Record<string, PortRate> = {};
       for (const iface of (data.device.interfaces ?? []) as MkIface[]) {
@@ -432,9 +398,7 @@ export default function MikrotikDetail({
         : { ...prev, status: data.status }));
       setLastUpdate(Date.now());
     };
-    // device_logs inserts are broadcast as they happen (poller reachability flips +
-    // deviceAlerts threshold/event alerts) — prepend ours so the log is live, not a
-    // snapshot from page load.
+    // New device_logs entries are broadcast; add ours to the top so the log stays live.
     const onLog = (l: any) => {
       if (!l || String(l.device_id) !== String(d.id)) return;
       setLogs((prev) => [
@@ -452,12 +416,8 @@ export default function MikrotikDetail({
     };
   }, [d.id]);
 
-  // Re-fetch on each poll so the chart stays current. Naturally rate-limited by the
-  // poll cadence (~30s), and it reuses the server's own derivative rather than
-  // deriving throughput client-side from the cumulative counters.
-  // A CUSTOM window is a fixed slice of the past, so it must NOT refetch on every
-  // poll — the answer can't change, and re-querying a 30-day span every 30s is pure
-  // load. Only a relative preset tracks live.
+  // Re-fetch on each poll (~30s) so the chart stays current, using the server's own
+  // derivative. A custom window is a fixed past period, so it is not re-fetched.
   useEffect(() => {
     const custom = range.kind === "custom" ? { start: range.start, stop: range.stop } : undefined;
     api
@@ -484,9 +444,9 @@ export default function MikrotikDetail({
   const ifaces = d.interfaces ?? [];
   const portsUp = ifaces.filter((i) => i.linkUp).length;
 
-  // `monitored` and `everUp` live in network_interfaces, not in the live poll payload,
-  // so opening the editor fetches them. A port with no row yet answers with the same
-  // defaults the backend uses: never connected, monitoring on.
+  // `monitored` and `everUp` are in network_interfaces, not in the poll data, so opening
+  // the editor fetches them. A port with no row gets the backend defaults: never
+  // connected, monitoring on.
   const startLabelEdit = async () => {
     const draft: Record<string, string> = {};
     for (const i of ifaces) draft[i.name] = i.locationLabel ?? "";
@@ -527,9 +487,8 @@ export default function MikrotikDetail({
   const cpu = Math.round(d.cpuPercent ?? 0);
   const mem = Math.round(d.memPercent ?? 0);
   const latest = history.length ? history[history.length - 1] : undefined;
-  // The ICMP series carries its own gaps, so the headline reads the last NON-NULL
-  // sample rather than `.at(-1)`: a series that happens to close on an empty window
-  // would otherwise report "—" while the chart beside it plainly shows a line.
+  // Headline uses the last non-null ICMP sample, since the series can end on an empty
+  // window.
   const lastReal = (a: (number | null)[]) => {
     for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i] as number;
     return null;
@@ -539,11 +498,8 @@ export default function MikrotikDetail({
 
   return (
     <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
-      {/* Header — WRAPS on a phone. As one row it was: back button (~110px, fixed) +
-          identity (flexible) + Configure/status/timestamp (~180px, fixed), so on a 360px
-          screen the identity got what was left — about 70px — and the subtitle truncated to
-          "Server Room · 19…". The identity is the only part that says WHICH router you are
-          looking at, and it was the only part being sacrificed. */}
+      {/* Header wraps on a phone, so the router name and subtitle are not squeezed to ~70px by
+         the back button and the status block. */}
       <div className="flex items-center gap-3 px-0.5 flex-wrap">
         <button
           onClick={onBack}
@@ -557,10 +513,8 @@ export default function MikrotikDetail({
         {/* Takes the full width on its own line below `sm`, so nothing else competes. */}
         <div className="min-w-0 w-full sm:w-auto order-last sm:order-none">
           <h1 className="text-[16px] sm:text-[15px] font-semibold sm:truncate" style={{ color: gf.textPrimary }}>{d.name}</h1>
-          {/* WRAPS on a phone rather than truncating — there is no second column to protect
-              there, so clipping only hides the IP and the model. `textDim` measures ~3:1 on
-              the page background, under the 4.5:1 floor for text this small, so it is lifted
-              to textMuted; it is still the quieter of the two lines. */}
+          {/* Wraps on a phone instead of truncating, so the IP and model stay visible. textMuted
+             instead of textDim for enough contrast at this size. */}
           <div className="text-[13px] sm:truncate leading-relaxed" style={{ color: gf.textMuted }}>
             {d.location} · <span className="whitespace-nowrap">{d.ip}</span>
             {d.routerosVersion ? <> · <span className="whitespace-nowrap">RouterOS {d.routerosVersion}</span></> : null}
@@ -599,11 +553,8 @@ export default function MikrotikDetail({
       {/* Stats */}
       {/* Latency and loss are measured on every poll and were already driving alerts
           and Analytics — the router's own page was the one place they weren't visible. */}
-      {/* AUTO-FIT rather than a fixed column count. The tile count is not constant —
-          a ping-only router shows 4, an SNMP router 7, a MikroTik 7 — and any fixed
-          grid leaves an orphan row for some of them (7 into 5 gives 5+2, 7 into 4
-          gives 4+3). auto-fit packs as many as fit at >=150px and stretches them to
-          fill the row, so every layout comes out flush whatever the count. */}
+      {/* auto-fit instead of a fixed column count: the number of tiles varies (4 for a ping-only
+         router, 7 for SNMP and MikroTik), and a fixed grid leaves an uneven last row. */}
       <div
         className="grid gap-2.5"
         style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}
@@ -612,9 +563,7 @@ export default function MikrotikDetail({
         <Stat label="CPU" value={d.cpuPercent != null ? String(cpu) : "—"} unit={d.cpuPercent != null ? "%" : undefined} color={loadColor(cpu)} sub="router load" />
         <Stat label="Memory" value={d.memPercent != null ? String(mem) : "—"} unit={d.memPercent != null ? "%" : undefined} color={loadColor(mem)} sub="router RAM" />
         <Stat label="Ports Up" value={`${portsUp}/${ifaces.length}`} color={ifaces.length > 0 && portsUp === ifaces.length ? GREEN : portsUp === 0 ? RED : ORANGE} sub="links online" />
-        {/* Named for what it actually measures: bound DHCP leases, not live links. A
-            lease survives the device unplugging until it expires, so this lags reality
-            by up to one lease period — calling it "clients" invites the wrong reading. */}
+        {/* Counts bound DHCP leases, not live connections; a lease lasts until it expires. */}
         <Stat label="DHCP Leases" value={d.connectedClients != null ? String(d.connectedClients) : "—"} color={BLUE} sub="bound" />
         <Stat
           label="Latency"
@@ -642,11 +591,8 @@ export default function MikrotikDetail({
         title={chartPort ? `Throughput · ${chartPort}` : "Total Throughput"}
         right={
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Per-port history: the data was always tagged by interface_name in
-                InfluxDB, there was simply no way to ask for one port.
-                `max-w` + `truncate`: a long "ether1 — Uplink to admin building" option
-                would otherwise stretch the select past a phone's width and push the
-                range buttons off the row. */}
+            {/* Per-port history. `max-w` + `truncate` so a long option does not push the range
+               buttons off the row on a phone. */}
             <select name="chartPort"
               value={chartPort}
               onChange={(e) => setChartPort(e.target.value)}
@@ -669,10 +615,8 @@ export default function MikrotikDetail({
         <ThroughputChart history={history} spanSec={rangeSpanSec(range)} />
       </Panel>
 
-      {/* ICMP history — see IcmpChart for why link quality is a separate question from
-          "is the RouterOS API answering". One range for the page: the Throughput panel
-          above owns the picker and both charts follow it, because two pickers bound to
-          one piece of state are two controls that silently move each other. */}
+      {/* ICMP history (see IcmpChart). The Throughput panel above has the range picker, and both
+         charts follow it. */}
       <Panel
         title="ICMP · Latency & Packet Loss"
         right={
@@ -759,9 +703,7 @@ export default function MikrotikDetail({
                     className="flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
                     style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
                   />
-                  {/* Why this port is (or isn't) alerting. Explaining the silence is the
-                      point: "down and quiet" is alarming until you can see it is quiet
-                      because nothing has ever been plugged into it. */}
+                  {/* Why this port is or is not alerting, e.g. quiet because nothing was ever plugged in. */}
                   <span className="w-40 shrink-0 text-[11px] text-right truncate"
                     title={state.text}
                     style={{ color: state.alerting ? RED : gf.textDim }}>
@@ -825,11 +767,8 @@ export default function MikrotikDetail({
         </p>
       </Panel>
 
-      {/* Recent events (device_logs) — same shape as ServerDetail's panel: the MESSAGE
-          leads and wraps, with the timestamp beneath it. The old single-line row put a
-          fixed-width timestamp first and `truncate`d the message, so the very thing you
-          open the log to read ("interface ether3 down", a threshold crossing) was the
-          part that got cut off on a narrow panel. */}
+      {/* Recent events (device_logs), like ServerDetail's panel: the message comes first and
+         wraps, with the time below, so the message is never cut off. */}
       <Panel
         title="Recent Events"
         right={logs.length > 0 ? <span className="text-[12px]" style={{ color: gf.textDim }}>{logs.length}</span> : undefined}

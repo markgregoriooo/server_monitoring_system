@@ -10,20 +10,12 @@ import { fmtDateTime } from "../utils/format";
 import { Stat } from "../components/ui/primitives";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
-// ─── Per-UPS detail view (live values + discharge history + event log) ────────
-// Reached from UpsMonitoring via "View". In-page swap (Back button), and laid out
-// to match NetworkDetail / MikrotikDetail: header → banner → stat grid → chart →
-// facts panel → event log. Current values stay live via the `upsMetrics` socket.
-//
-// This page DOES chart, unlike the first cut. The earlier reasoning — "a healthy UPS
-// is a flat line at 1h/6h/24h" — is true and is exactly why the chart earns its
-// place: the moment it stops being flat is a power event, and the battery discharge
-// curve is the single most useful thing on screen during one. It answers "how long
-// have we got, and how fast are we losing it", which no instantaneous number does.
-// (`/api/ups/:id/history` already existed and served this data; nothing called it.)
-//
-// Types live HERE so UpsMonitoring can import them without a circular import —
-// the list imports this module, never the reverse. Same as NetworkDetail.
+// ─── UPS detail view (live values, battery history, event log) ────────
+// Opened from UpsMonitoring via "View" and replaces the list in place (Back button),
+// laid out like NetworkDetail / MikrotikDetail: header → banner → stats → chart → facts
+// → event log. Current values update live from `upsMetrics`. The chart matters most
+// during a power event: it shows how fast the battery is draining. Types are defined
+// here so UpsMonitoring can import them without a circular import.
 
 export interface UpsDevice {
   id: string;
@@ -40,13 +32,11 @@ export interface UpsDevice {
   outputVoltage: number | null;
   batteryVoltage: number | null;
   onBattery: boolean | null;
-  // On BYPASS: the load is on raw mains with the inverter and battery cut out of
-  // the path. Powered, but with zero protection — a distinct state from onBattery,
-  // never both at once (RFC 1628 upsOutputSource is one value).
+  // On bypass: the load is on raw mains with the inverter and battery out of the path.
+  // Powered but unprotected; never at the same time as onBattery.
   onBypass?: boolean | null;
-  // The raw state name from the backend: normal | battery | bypass | off | avr |
-  // unknown. Lets the UI name WHICH abnormal source is in use instead of inferring
-  // it from a pair of booleans.
+  // The state name from the backend (normal | battery | bypass | off | avr | unknown), so
+  // the UI can name the power source directly.
   outputState?: string | null;
   temperature: number | null;
   batteryStatus?: number | null; // RFC 1628: 1 unknown, 2 normal, 3 low, 4 depleted
@@ -93,9 +83,8 @@ function logColor(level: string) {
   if (level === "warning") return ORANGE;
   return BLUE;
 }
-// RFC 1628 upsBatteryStatus. Battery HEALTH, which is not the same as charge level —
-// a pack sitting at 100% can still report "replace", and that's the early warning
-// that matters most (a UPS only fails when you actually need it).
+// upsBatteryStatus (RFC 1628): battery health, separate from charge. A full battery can
+// still report "replace".
 export function batteryHealth(v: number | null | undefined): { text: string; color: string } {
   switch (v) {
     case 2: return { text: "Normal", color: GREEN };
@@ -104,9 +93,8 @@ export function batteryHealth(v: number | null | undefined): { text: string; col
     default: return { text: "—", color: gf.textDim };
   }
 }
-// Battery + load over time. Two y-axes would over-complicate it: both are percentages,
-// so they share one 0–100 axis and read directly against each other — load is what
-// determines how fast the battery line falls.
+// Battery and load share one 0–100 axis (both are percentages); load decides how fast
+// the battery drops.
 function UpsChart({ history }: { history: UpsHistPoint[] }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -117,11 +105,8 @@ function UpsChart({ history }: { history: UpsHistPoint[] }) {
       return;
     }
     chartRef.current?.destroy();
-    // Break the line where the poller stopped. `spanGaps` was TRUE here, which does the
-    // opposite — it bridges a null so the line jumps the hole. On a UPS that is the worst
-    // possible default: the one thing you look at this chart to find is what the battery
-    // did during an outage, and spanning drew it as a steady hold through hours that were
-    // never measured.
+    // Break the line where the poller stopped (`spanGaps` is off), so the chart does not
+    // show a steady battery through hours that were not measured.
     const gapped = withGaps(
       history.map((p) => Date.parse(p.time)),
       history.map((p) =>
@@ -187,9 +172,7 @@ function Panel({ title, right, children, noPad }: { title: string; right?: React
   );
 }
 
-// Horizontal battery meter. The one place a bar beats a number: charge is a
-// fraction of a known whole, which is exactly what a bar encodes well (unlike link
-// utilization, where an idle port's empty track reads as a loading skeleton).
+// Horizontal battery meter: a bar suits charge, which is a fraction of a whole.
 function BatteryMeter({ pct, onBattery }: { pct: number | null; onBattery: boolean }) {
   const v = pct == null || !Number.isFinite(pct) ? null : Math.max(0, Math.min(100, pct));
   const color = v == null ? gf.textDim : batteryColor(v);
@@ -252,9 +235,8 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
       setU((prev) => ({ ...prev, status: data.status }));
       setLastUpdate(Date.now());
     };
-    // device_logs inserts are broadcast as they happen (reachability flips + the
-    // on-battery / low-charge alerts) — prepend ours so the log is live rather than a
-    // snapshot from page load. During an outage this panel is the running narrative.
+    // New device_logs entries are broadcast; add ours to the top so the log stays live
+    // during an outage.
     const onLog = (l: any) => {
       if (!l || String(l.device_id) !== String(u.id)) return;
       setLogs((prev) => [{ log_level: l.log_level, message: l.message, recorded_at: l.recorded_at }, ...prev].slice(0, 50));
@@ -275,10 +257,8 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
     });
   }, [u.id]);
 
-  // Re-fetch on each poll so the curve stays current — rate-limited by the ~60s
-  // poll cadence rather than a timer of its own.
-  // A CUSTOM window is a fixed slice of the past — it must not refetch on every
-  // poll, since the answer cannot change. Only a relative preset tracks live.
+  // Re-fetch on each poll (~60s) so the curve stays current. A custom window is a fixed
+  // past period, so it is not re-fetched.
   useEffect(() => {
     const custom = range.kind === "custom" ? { start: range.start, stop: range.stop } : undefined;
     api.getUpsHistory(Number(u.id), range.kind === "preset" ? range.preset : "", custom).then((r) => {
@@ -405,11 +385,8 @@ export default function UpsDetail({ device, onBack }: { device: UpsDevice; onBac
         </p>
       </Panel>
 
-      {/* Recent events (device_logs) — same shape as ServerDetail's panel: the MESSAGE
-          leads and wraps, with the timestamp beneath it. The old single-line row put a
-          fixed-width timestamp first and `truncate`d the message, so the very thing you
-          open the log to read ("on battery", a runtime threshold crossing) was the part
-          that got cut off on a narrow panel. */}
+      {/* Recent events (device_logs), like ServerDetail's panel: the message comes first and
+         wraps, with the time below, so the message is never cut off. */}
       <Panel
         title="Recent Events"
         right={logs.length > 0 ? <span className="text-[12px]" style={{ color: gf.textDim }}>{logs.length}</span> : undefined}

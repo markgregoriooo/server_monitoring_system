@@ -1,9 +1,8 @@
 import db from "../config/mysql.js";
 
-// Per-user PiP widget layout (widget_prefs). A missing row = the default layout.
-// The canonical tile-id allow-list lives here (the server can't import the frontend
-// catalog) — KEEP IN SYNC with frontend/src/pip/tiles/catalog.tsx. We sanitize on
-// every write AND read, so a stale/hand-edited layout can never inject unknown ids.
+// Per-user PiP widget layout (widget_prefs). No row = the default layout. The allowed
+// tile ids are listed here (the server cannot import the frontend catalog); keep in
+// sync with frontend/src/pip/tiles/catalog.tsx. Cleaned on every write and read.
 
 const ALLOWED_TILES = new Set([
   "env.temp",
@@ -21,18 +20,11 @@ const ALLOWED_TILES = new Set([
   "meta.clock",
 ]);
 
-// PARAMETERISED tile ids pin one device — "ups.device:7", "network.device:3",
-// "server.device:12" — so they
-// can't live in the literal set above. They are validated by SHAPE instead.
-//
-// Deliberately no existence check against `devices`: the frontend already renders an
-// unknown id as "Unavailable" (the same forward-compatible behaviour every unknown id
-// has had), so a decommissioned device degrades on its own. Validating here would mean
-// a DB round-trip on every layout read AND a rule that silently deletes a user's tile
-// the moment a device is briefly absent. Shape-checking is enough to keep junk out.
-// `[1-9]\d*` — no leading zeros, so "ups.device:07" can't sneak in as a SECOND distinct
-// string for device 7 and defeat the dedupe below. Bounded length keeps it away from
-// unsafe-integer territory. Must stay in step with catalog.tsx's DEVICE_TILE_RE.
+// Tile ids for one device ("ups.device:7", "network.device:3", "server.device:12") are
+// checked by shape. Not checked against `devices`: the frontend shows an unknown id as
+// "Unavailable", and a lookup would cost a query per read. `[1-9]\d*` rules out
+// leading zeros so "07" and "7" cannot both appear. Must match DEVICE_TILE_RE in
+// catalog.tsx.
 const DEVICE_TILE_RE = /^(ups|network|server)\.device:[1-9]\d{0,9}$/;
 
 function isAllowedTile(id) {

@@ -2,31 +2,17 @@ import { useCallback, useEffect, useRef } from "react";
 import type { LandingPhoto } from "./photos";
 
 /**
- * The photo strip's detail view.
+ * The photo detail view, opened from PhotoGallery. Shows the image larger with a
+ * fuller description.
  *
- * Opened by clicking a photo in PhotoGallery. Shows the image at a readable size next
- * to what it actually is — the captions on the strip name each shot in five words, and
- * five words cannot say why there are two gas sensors or why the IR only fires on a
- * zone change. This is where that lives.
- *
- * ── IT IS A REAL DIALOG, NOT A STYLED DIV ─────────────────────────────────────
- * A modal that traps the eye but not the keyboard is worse than no modal: a screen
- * reader keeps announcing the page behind it and Tab walks out of the picture into
- * links nobody can see. So this does the whole set —
- *
- *   role="dialog" + aria-modal   the tree behind it is announced as inert
- *   aria-labelledby              it is announced BY NAME, not as "dialog"
- *   Escape closes                the shortcut everyone tries first
- *   focus moves in on open       and RETURNS to the photo that opened it on close,
- *                                so the page does not silently reset to the top
- *   Tab is cycled                inside the dialog rather than escaping behind it
- *   body scroll is locked        without it the page scrolls under the overlay
- *
- * ── ARROWS MOVE BETWEEN PHOTOS ────────────────────────────────────────────────
- * The gallery is four images; opening one and being unable to reach the next three
- * without closing and re-aiming is the kind of thing that makes people give up on the
- * second photo. Wraps at both ends — with four items, "you have reached the last one"
- * is a message nobody needs.
+ * A proper dialog:
+ *   role="dialog" + aria-modal   the page behind is treated as inert
+ *   aria-labelledby              announced by its name
+ *   Escape closes
+ *   focus moves in on open       and back to the photo that opened it on close
+ *   Tab cycles                   inside the dialog
+ *   body scroll is locked        so the page does not scroll underneath
+ * Arrow keys move between photos and wrap at both ends.
  */
 export default function PhotoLightbox({
   photos,
@@ -41,9 +27,7 @@ export default function PhotoLightbox({
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
-  // Captured on mount rather than passed in: whatever had focus when this opened is
-  // exactly what should have it again on close, and the dialog is the only thing that
-  // reliably knows when that moment is.
+  // Remember what had focus when this opened, so focus can go back there on close.
   const openerRef = useRef<HTMLElement | null>(null);
 
   const photo = photos[index];
@@ -60,9 +44,8 @@ export default function PhotoLightbox({
     openerRef.current = document.activeElement as HTMLElement | null;
     closeRef.current?.focus();
 
-    // The page behind must not scroll under the overlay. Restoring the previous value
-    // rather than clearing it: another component may legitimately own it (the policy
-    // gate does exactly this), and blanking it here would silently unlock their modal.
+    // Lock the page scroll, restoring the previous value afterwards (another component,
+    // like the policy gate, may have set it).
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
@@ -84,9 +67,7 @@ export default function PhotoLightbox({
       }
       if (e.key !== "Tab") return;
 
-      // Focus cycle. Queried on each press rather than cached, because the set of
-      // focusable controls changes with the photo (the prev/next buttons are absent
-      // when there is only one).
+      // Focus cycle. Looked up on each keypress, since the buttons change with the photo.
       const focusables = panelRef.current?.querySelectorAll<HTMLElement>(
         'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
       );

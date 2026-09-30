@@ -3,48 +3,23 @@ import { animate } from "animejs";
 import { prefersReducedMotion, EASE } from "./motion";
 
 /**
- * The fold's ambient background. Two layers, both decorative, both `aria-hidden`:
+ * Background of the first screen, decorative and `aria-hidden`:
  *
- *   1. a dot matrix, faded in from the right
- *   2. two telemetry series drifting sideways  (the original layer)
+ *   1. a dot matrix, fading in from the right
+ *   2. two telemetry lines drifting sideways
  *
- * Two other layers were tried here and removed: a node-and-edge constellation, which
- * against the dot matrix read as a second competing set of dots rather than as a
- * topology, and expanding "ping" rings, which pulled the eye to a corner where nothing
- * was happening. Both are worth NOT re-adding — the fold is a backdrop for a headline
- * and a sign-in button, and every layer past texture costs the copy some attention.
- *
- * Purely ambient — every value here is a fixed shape wired to nothing, so none of it
- * can go stale or claim something untrue. Its whole job is to say "there are graphs
- * behind this product" underneath the headline, the way Grafana's and Zabbix's own
- * marketing pages do.
- *
- * ── EVERYTHING IS WEIGHTED TO THE RIGHT ────────────────────────────────────────
- * The hero copy is a single LEFT-aligned column, so the right of the fold is the empty
- * half — the space the dashboard mock used to occupy. Layers 1 and 2 are masked or
- * placed to live there and fade out before they reach the text (layer 3 spans the full
- * width, but it hugs the bottom edge, well under the copy). That is the whole reason the
- * masked 44px grid that used to sit here was removed: it ran lines straight through
- * the headline. Texture beside the copy reads as depth; texture behind it reads as
- * noise, and the copy is the one thing the hero cannot afford to make harder to read.
- *
- * ── ANIMATION IS COMPOSITED, OR IT DOES NOT ANIMATE ────────────────────────────
- * The one moving layer translates a group — `transform` and `opacity` are the two
- * properties the compositor can handle without re-rasterising, which matters for
- * something that runs forever on a page that can sit open on a wall display.
- *
- * All motion is skipped under `prefers-reduced-motion` — this is a large-area, slow,
- * peripheral movement, which is precisely the kind that triggers vestibular symptoms.
- * The static frame is composed to look deliberate on its own, not like a broken loop.
+ * Both sit on the right, away from the left-aligned headline, so nothing crosses
+ * the text. The values are fixed shapes connected to nothing. Only transform and
+ * opacity animate (cheap on a page that may stay open on a wall display), and all
+ * motion stops under `prefers-reduced-motion`.
  */
 
 const W = 1200;
 const H = 300;
 
 /**
- * Both series are PERIODIC: the last value repeats the first, which is what lets
- * the doubled copy join without a step. Change a value at either end and you
- * must change the other, or a notch appears once per lap.
+ * Both series repeat: the last value equals the first so the doubled copy joins
+ * seamlessly. Change one end and change the other.
  */
 const SERIES_A = [
   55, 48, 52, 44, 58, 41, 47, 62, 50, 44, 57, 71, 60, 49, 54, 43, 51, 66, 78, 63,
@@ -102,10 +77,8 @@ export default function HeroBackdrop() {
   return (
     <>
       {/* ── 1. dot matrix ─────────────────────────────────────────────────────
-          Dots, not the grid lines this replaced: a dot never forms a continuous
-          rule that can cut through a line of type, so it survives being masked
-          close to the copy. Doubly masked — a horizontal ramp keeps it clear of
-          the text, a vertical one stops it colliding with the fixed topbar. */}
+         Dots rather than grid lines, so nothing forms a line through the text. Masked
+         horizontally (away from the text) and vertically (away from the topbar). */}
       <div
         aria-hidden="true"
         className="absolute inset-0 pointer-events-none"
@@ -130,10 +103,8 @@ export default function HeroBackdrop() {
         className="absolute inset-x-0 bottom-0 w-full pointer-events-none"
         style={{ height: "62%" }}
       >
-        {/* ⚠️ Colours go through `style`, NOT the `stroke`/`fill` ATTRIBUTES.
-            An SVG presentation attribute does not parse `var()` — `stroke="var(--x)"`
-            is silently dropped and the path renders black. The CSS property does, so
-            the theme token only reaches the shape via style. */}
+        {/* Colours are set through `style`, not the `stroke`/`fill` attributes: SVG attributes
+           do not understand `var()` and the path would render black. */}
         {/* back plane — slower, fainter */}
         <g ref={backRef}>
           <path d={PATH_B} fill="none" strokeWidth="2" style={{ stroke: "var(--gf-hero-line-b)" }} />

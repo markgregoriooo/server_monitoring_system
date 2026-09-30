@@ -1,36 +1,17 @@
 import secretCrypto from "./secretCrypto.js";
 
 // ─── SNMP community strings, encrypted at rest ─────────────────────────────────
-//
-// `device_network.snmp_community` held its value verbatim. An SNMPv2c community IS the
-// credential — there is no user, no challenge and no transport security; whoever holds
-// the string can read the device's full MIB over UDP.
-//
-// WHY THAT MATTERS HERE SPECIFICALLY, and it is not "if someone reads the database":
-// `ops/db-backup/dump-mysql.sh` writes a full mysqldump of this schema into BACKUP_DIR,
-// and `ops/offsite-backup/sync-offsite.sh` rclone-copies that folder to Backblaze. So
-// the community string for every router and UPS on the campus network was leaving the
-// building nightly, in a file on third-party storage. That is the exact argument
-// migrations/2026-08-25_agent_token_hash.sql makes for agent tokens and
-// 2026-08-15b_install_key_reveal.sql makes for install keys. This column was simply the
-// one nobody came back to — meanwhile `mikrotik_devices.api_password`, one table over,
-// has been AES-256-GCM since it was introduced.
-//
-// A HASH would be wrong here, for the reason secretCrypto.js sets out: the poller has to
-// PRESENT this value to the device on every cycle, so it must be recoverable. Reversible
-// storage is the requirement, not a shortcut.
+// A v2c community is the credential for reading a device, and the nightly database
+// dump is copied offsite (ops/db-backup, ops/offsite-backup), so the column is
+// encrypted like mikrotik_devices.api_password. Encryption, not a hash, because the
+// poller has to send the value to the device.
 //
 // ── Stored format ──────────────────────────────────────────────────────────────
 //   "gcm1:" + base64([ iv(12) | authTag(16) | ciphertext ])
 //
-// The prefix is what makes an IN-PLACE migration of a live column safe. Without a
-// marker, telling ciphertext from a legacy plaintext community means guessing, and
-// Node's base64 decoder is lenient enough to "successfully" decode `dev-router` into
-// bytes — so a wrong guess turns a working community into an unusable one silently.
-// With it, `readCommunity` can be exact: prefixed → decrypt, otherwise → return as
-// written. That tolerance is deliberate and permanent, not a migration window: the
-// dev simulator's seed SQL (dev-snmpsim/seed-dev-devices.sql) inserts plaintext
-// directly, and a hand-fixed row during an incident should not break the poller.
+// The prefix tells ciphertext from plaintext exactly (base64 decoding alone would
+// "succeed" on a plain string like `dev-router`). Unprefixed values are always read
+// as plaintext, e.g. the dev-snmpsim seed or a row fixed by hand.
 
 export const PREFIX = "gcm1:";
 
@@ -41,16 +22,9 @@ let decryptFailureReported = false;
 export const isConfigured = () => secretCrypto.isConfigured();
 
 /**
- * Encrypt a community string for storage. Returns null for a blank input, which is the
- * ICMP-only router case and means "no SNMP credential", not "empty credential".
- *
- * ⚠️ Degrades to storing plaintext when no key is configured, rather than throwing.
- * agentService.approve() takes the opposite line for agent tokens and is right to: it
- * MINTS a credential, so refusing costs nothing. This value is supplied by an admin to
- * describe a device that already exists, and refusing would mean "you cannot register
- * your router because an unrelated variable is unset" — which ends with the feature
- * being worked around rather than the variable being set. The warning fires on every
- * such write so the condition cannot stay quiet.
+ * Encrypt a community for storage. Returns null for blank (an ICMP-only router).
+ * Stores plaintext with a warning when no key is configured, so registering a
+ * router does not fail on an unrelated setting.
  */
 export function writeCommunity(plaintext) {
   const s = plaintext == null ? "" : String(plaintext).trim();
@@ -72,13 +46,9 @@ export function writeCommunity(plaintext) {
 }
 
 /**
- * Read a stored community string back. Accepts both the encrypted form and a legacy or
- * hand-written plaintext value; returns "" for null/blank.
- *
- * A decryption failure returns "" rather than throwing: the poller's job is to keep
- * polling the devices it CAN reach, and one device encrypted under a key that has since
- * changed must not take down the cycle for all of them. The empty string then fails the
- * connFor() guard for that device alone, which is the correct blast radius.
+ * Read a stored community back (encrypted or plaintext); "" for null/blank. A
+ * decryption failure returns "" instead of throwing, so only that one device fails
+ * connFor() and the rest keep being polled.
  */
 export function readCommunity(stored) {
   if (stored == null) return "";

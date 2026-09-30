@@ -4,30 +4,14 @@ import { animate, onScroll, stagger } from "animejs";
 import { prefersReducedMotion, EASE } from "./motion";
 
 /**
- * Scroll-LINKED effects, as opposed to the scroll-TRIGGERED entrances in
- * Reveal.tsx.
- *
- * The difference is what made the first pass feel flat. A triggered animation
- * fires once and finishes on its own schedule, so past the first 600ms the page
- * is static again no matter what the reader does — scrolling and not scrolling
- * look identical. A linked animation is driven BY the scroll position, so the
- * page keeps responding for as long as the wheel is moving. One of those feels
- * alive; the other is a slideshow with a fade.
- *
- * anime's `onScroll({ sync: true })` does the linking. `sync` also accepts a
- * number for interpolation, deliberately not used here: scroll events already
- * arrive often enough to look smooth, and adding lag between the wheel and the
- * page is the thing that makes scroll-jacked sites feel broken.
- *
- * All of it is off under prefers-reduced-motion — scroll-linked motion is the
- * most likely thing on the page to make someone ill, so it degrades to nothing
- * moving at all rather than to something moving less.
+ * Scroll-linked effects (driven by the scroll position), as opposed to the one-time
+ * entrances in Reveal.tsx. anime's `onScroll({ sync: true })` links them; no extra
+ * smoothing, which would add lag behind the wheel. Everything is off under
+ * prefers-reduced-motion.
  */
 
 /* ── Scroll progress ─────────────────────────────────────────────────────────
-   A 2px accent bar along the top of the viewport. Small, but it is the one cue
-   that tells a reader the page is long and how far in they are — without it a
-   long single-column page gives no sense of depth at all. */
+   A 2px accent bar along the top showing how far down the page you are. */
 export function ScrollProgress() {
   const barRef = useRef<HTMLDivElement | null>(null);
 
@@ -71,9 +55,8 @@ export function ScrollProgress() {
 }
 
 /* ── Parallax ────────────────────────────────────────────────────────────────
-   Moves its child against the scroll, so foreground and background separate
-   instead of sliding as one flat sheet. Keep `distance` small: past about 40px
-   it stops reading as depth and starts reading as a bug. */
+   Moves its child against the scroll for a sense of depth. Keep `distance` small
+   (under ~40px) or it looks like a bug. */
 export function Parallax({
   children,
   distance = 26,
@@ -118,16 +101,9 @@ export function Parallax({
 }
 
 /* ── Split heading ───────────────────────────────────────────────────────────
-   A heading that assembles word by word.
-
-   The words are split in React rather than by anime's TextSplitter: the splitter
-   rewrites the element's innerHTML, which is exactly the DOM React believes it
-   owns, and the two disagree the moment anything re-renders. Rendering the spans
-   ourselves keeps one owner.
-
-   The whole phrase stays in the accessibility tree as a single label, because a
-   screen reader announcing eleven separate one-word fragments is worse than no
-   animation at all. */
+   A heading that appears word by word. The words are split in React (anime's
+   TextSplitter rewrites innerHTML, which React owns). The whole phrase stays one label
+   for screen readers. */
 export function SplitHeading({
   text,
   className = "",
@@ -200,9 +176,7 @@ export function SplitHeading({
 }
 
 /* ── Section rail ────────────────────────────────────────────────────────────
-   A hairline that draws itself down the left edge of a section as the section
-   passes through the viewport. Cheap, but it is continuous feedback: something
-   on screen is always responding to the wheel. */
+   A thin line that draws down the left edge of a section as it scrolls past. */
 export function SectionRail({ tone = "var(--gf-accent)" }: { tone?: string }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const lineRef = useRef<HTMLDivElement | null>(null);

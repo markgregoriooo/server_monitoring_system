@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { clientIpFrom, createHandshakeLimiter } from "../services/handshakeLimiter.js";
 
 // ─── clientIpFrom ─────────────────────────────────────────────────────────────
-// Must reproduce Express's numeric `trust proxy` semantics exactly, or the socket
-// limiter buckets by a different address than every HTTP limiter and the audit trail.
+// Must match Express's numeric `trust proxy` rules exactly, so the socket limiter
+// sees the same address as the HTTP limiters.
 
 test("clientIpFrom: hops=0 trusts nothing but the direct peer", () => {
   const h = { "x-forwarded-for": "1.1.1.1, 2.2.2.2" };

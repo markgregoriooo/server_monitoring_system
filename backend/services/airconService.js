@@ -26,18 +26,9 @@ function formatUptime(ms) {
 // ─── Queries ──────────────────────────────────────────────────────────────────
 
 // ─── Activity-log timestamps ─────────────────────────────────────────────────
-// ONE format, used by the live entries below and matched exactly by the DATE_FORMAT
-// in getAll. The two must agree: an entry appended the moment you press Turn On and
-// the same entry after a refresh are the same event, and two different-looking stamps
-// read as two different things.
-//
-// ⚠️ Includes the DATE. It used to be time-only, so a three-day-old entry read "10:19
-// AM" with nothing to say it was not today — on a log whose whole purpose is telling
-// you when the room was last cooled.
-//
-// Asia/Manila explicitly, not the host clock: the reports render in PHT and a
-// dashboard that disagreed with them about when something happened would be worse
-// than either being wrong alone.
+// One format, used by the live entries below and matched by the DATE_FORMAT in
+// getAll, so an entry looks the same before and after a refresh. Includes the date,
+// and uses Asia/Manila like the reports do.
 const LOG_STAMP_OPTS = {
   month: "short", day: "numeric",
   hour: "numeric", minute: "2-digit", hour12: true,
@@ -108,12 +99,9 @@ function fail(status, message) {
   return e;
 }
 
-// Aircon display names must be unique so two cards can't look identical on the
-// dashboard. There is no UNIQUE index to lean on — `devices.device_name` is shared by
-// every device type, and only aircon names need to be distinct — so it is enforced
-// here, on BOTH the add and rename paths. `excludeId` lets a rename keep its own name.
-// LOWER() is explicit rather than relying on the table's case-insensitive collation,
-// so behaviour doesn't silently change if that collation ever does.
+// Aircon names must be unique so two cards never look the same. There is no UNIQUE
+// index (device_name is shared by all device types), so it is checked here on add
+// and rename. `excludeId` lets a rename keep its own name.
 async function nameTaken(name, excludeId = null) {
   const [rows] = await db.query(
     `SELECT device_id FROM devices
@@ -161,13 +149,8 @@ async function addUnit({ name, ir_channel, userId, userName }) {
   }
 }
 
-// Returns WHAT was removed ({ name, ir_channel }) rather than a bare boolean, because
-// the row is gone by the time the caller could look it up — and "Removed AC unit 3" is
-// not an audit entry anyone can act on months later. null = nothing matched.
-//
-// Read-then-delete, not DELETE ... RETURNING: MySQL has no RETURNING clause. The gap
-// between the two statements is harmless here — a concurrent delete just means
-// affectedRows is 0 and we report not-found, which is the truth either way.
+// Returns what was removed ({ name, ir_channel }) so the audit entry can name it;
+// null when nothing matched. Read then delete, since MySQL has no RETURNING.
 async function removeUnit(id) {
   const [[row]] = await db.query(`
     SELECT d.device_name AS name, a.ir_channel
@@ -215,12 +198,10 @@ async function toggle(id, userId, userName) {
   `, [id, userId, action, `By ${userName}`]);
 
   // ── Re-sync a unit that was just switched back ON ──────────────────────────
-  // Auto IR fires only on a zone CHANGE, and applyAutoIR skips units that are off at
-  // that moment — so a unit switched off across a zone change comes back showing a
-  // stale set_temperature and never catches up while the room stays in that zone.
-  // Mirror the firmware's re-send (irCommand "on") by writing the current zone's
-  // target here, so DB + dashboard + hardware agree. No-op when the ESP32 hasn't
-  // reported a zone yet (fresh backend restart).
+  // Auto IR only fires on a zone change and skips units that are off, so a unit
+  // switched back on could keep an old set temperature. Write the current zone's
+  // target, matching what the firmware re-sends. No-op until the ESP32 has reported
+  // a zone since the backend started.
   let syncEntry = null;
   let setTemp = null;
   if (newState && lastZone != null) {
@@ -265,16 +246,12 @@ async function toggle(id, userId, userName) {
   };
 }
 
-// NOTE: setMode() and setTemp() were removed — see the comment at the foot of
-// routes/aircon.js. They were unreachable, and `applyAutoIR` overwrites
-// set_temperature on every unit that is ON at the next zone change, so a manual
-// value could never persist. `mode` / `set_temperature` / `fan_mode` remain in
-// aircon_state as READ-ONLY status written by the auto path.
+// setMode() and setTemp() were removed (see the note at the end of routes/aircon.js).
+// mode, set_temperature and fan_mode are read-only status written by the auto path.
 
-// Rename a unit. `devices.device_name` is purely a display label — the hardware is
-// driven by aircon_state.ir_channel, and every log row references device_id, so a
-// rename is non-destructive and keeps the unit's full activity history. Returns null
-// when the id isn't an aircon; `entry` is null on a no-op rename (same name).
+// Rename a unit. The name is only a label (IR uses ir_channel, logs use device_id),
+// so history is kept. Returns null if the id is not an aircon; `entry` is null when
+// the name did not change.
 async function rename(id, name, userId, userName) {
   const clean = String(name ?? "").trim();
   if (!clean) throw fail(400, "Name is required.");
@@ -315,10 +292,8 @@ async function rename(id, name, userId, userName) {
 // Map IR zone → set_temperature the ESP32 commanded
 const ZONE_TEMP = { 0: 28, 1: 26, 2: 24, 3: 22, 4: 20 };
 
-// The last zone the ESP32 reported firing (via the `irFired` event). `toggle` reads it
-// to re-sync a unit switched back ON — auto IR fires only on a zone CHANGE, so a unit
-// that was off at that moment would otherwise stay stale indefinitely. In-memory by
-// design: it resets on restart and repopulates at the next zone change.
+// Last zone the ESP32 reported (`irFired`), used by toggle to re-sync a unit that is
+// switched back on. In memory; filled again at the next zone change after a restart.
 let lastZone = null;
 
 async function applyAutoIR({ zone, label }) {
@@ -329,10 +304,8 @@ async function applyAutoIR({ zone, label }) {
   // needs it for (nothing was updated below, so this is the only trace of the zone).
   lastZone = zone;
 
-  // Auto IR only RE-TARGETS the set temperature of units that are currently ON;
-  // it must never switch a unit's power. A unit a user manually turned OFF stays
-  // off when IR fires (on/off is manual-only). Returns the affected ids so the
-  // dashboard updates exactly those units and leaves off units untouched.
+  // Auto IR only changes the set temperature of units that are on; it never turns a
+  // unit on or off. Returns the affected ids so the dashboard updates only those.
   const [onUnits] = await db.query(`
     SELECT s.device_id
     FROM aircon_state s
@@ -363,11 +336,10 @@ async function applyAutoIR({ zone, label }) {
   return { setTemp, action, deviceIds: ids };
 }
 
-// ─── Auto-cooling IR zone thresholds (configurable; pushed to the ESP32) ─────────
-// The firmware's getIRZone() switches the AC setting when the room temperature crosses
-// these boundaries. The TARGET temp per zone is fixed (tied to the captured raw IR codes
-// in the firmware) — only the BOUNDARIES (when IR fires) are configurable. One global
-// row (a single server room / one ESP32). Pushed live via the "acConfig" socket event.
+// ─── Auto-cooling IR zone thresholds (pushed to the ESP32) ─────────
+// The firmware's getIRZone() changes the AC setting when the room crosses these
+// boundaries. Only the boundaries are configurable; each zone's target temperature
+// is a captured IR code. One global row, pushed with the "acConfig" socket event.
 const IR_CFG_DEFAULTS = { coldBelow: 22, normalMax: 24, acceptableMax: 27, nearCritMax: 29 };
 
 function irCfgErr(status, message) {

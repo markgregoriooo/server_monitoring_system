@@ -23,9 +23,8 @@ const APPROVED = { name: "Juan Dela Cruz", email: "juan@cspc.edu.ph", role: "it_
 const URL = "https://monitoring.cspc-ictu.stream";
 
 // ─── Role labels must match the dashboard ────────────────────────────────────
-// Parses the FRONTEND source, in the spirit of contract.test.js parsing metrics.go.
-// An email that says "Administrator" while every screen says "Admin" reads as mail
-// from a different system, and nothing else would catch that drift.
+// Reads the frontend source (like contract.test.js reads metrics.go), so the email
+// uses the same role names as the screens.
 
 test("ROLE_LABEL matches the frontend roleConfig labels", () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -47,8 +46,7 @@ test("ROLE_LABEL matches the frontend roleConfig labels", () => {
 });
 
 // ─── Escaping ────────────────────────────────────────────────────────────────
-// `name` comes from a Google profile and `email` from whatever registered, so both
-// are user-controlled and neither may reach the markup raw.
+// `name` and `email` come from the user's Google account, so both must be escaped.
 
 test("esc neutralises HTML", () => {
   assert.equal(esc(`<script>"x"&'y'</script>`), "&lt;script&gt;&quot;x&quot;&amp;&#39;y&#39;&lt;/script&gt;");
@@ -154,11 +152,8 @@ test("neither template ever emits the literal 'undefined' or 'null'", () => {
 });
 
 // ─── Readability of the plain-text part ──────────────────────────────────────
-// Added after the first version shipped with EVERY blank line stripped: the flat
-// line-array used "" both as a paragraph break and as an omitted line, and one filter
-// removed both, collapsing the message into a wall of text. Asserting that a string
-// CONTAINS the right words says nothing about whether a person can read it, so these
-// check the shape instead.
+// Added after the first version lost every blank line and read as one block of text.
+// These check the layout, not just the words.
 
 test("the plain-text emails are broken into paragraphs", () => {
   for (const out of [approvedText(APPROVED, URL), rejectedText(APPROVED)]) {

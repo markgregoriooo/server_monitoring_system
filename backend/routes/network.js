@@ -7,17 +7,9 @@ import { getDeviceLogs } from "../services/deviceLogs.js";
 
 const router = express.Router();
 
-// Tell the admin who registered a device how its FIRST poll went.
-//
-// `pollDeviceNow` is fire-and-forget by design — the response must not be held behind an
-// SNMP timeout — which used to mean its verdict reached the server console and nobody
-// else. Registering a device with a wrong IP, a wrong community or a blocked UDP 161 was
-// therefore indistinguishable from registering a healthy one: both showed a card that
-// said Offline, and an admin had no way to know whether to wait or to go and fix it.
-//
-// Addressed to `user:<id>` (the room connectionHandler joins every browser socket to)
-// rather than broadcast: this is feedback on one person's action, and the other dashboards
-// already get the device itself through networkMetrics/networkStatus.
+// Tell the admin who registered a device how its first poll went. pollDeviceNow is
+// not awaited, so without this a wrong IP or community only showed up in the
+// server console. Sent to that admin's room (user:<id>) only.
 function reportFirstPoll(req, kind, device) {
   const io = req.app.get("io");
   const userId = req.user?.id;
@@ -45,18 +37,10 @@ router.get("/", authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── POST /api/network/test ─ probe an address BEFORE registering it (admin) ───
-//
-// Declared before every `/:id` route so a literal path can never be parsed as an id.
-//
-// Nothing is persisted. The Add form calls this so a wrong IP, a wrong community or a
-// blocked UDP 161 is caught while the admin is still looking at the field that caused
-// it — rather than becoming a device that sits Offline with no explanation. Same engine
-// as `npm run probe` and as the poller itself, so a pass here means the poller will
-// succeed for the same reasons.
-//
-// A blank community is passed through as blank on purpose: that is the ICMP-monitoring
-// choice, and what has to be verified for it is ICMP. See services/deviceProbe.js.
+// ── POST /api/network/test ─ test an address before registering it (admin) ───
+// Declared before the /:id routes. Saves nothing. Uses the same code as the poller
+// and `npm run probe`, so a pass here means polling will work. A blank community
+// means ICMP monitoring, so only ping is checked. See services/deviceProbe.js.
 router.post("/test", authMiddleware, requireRole("admin"), async (req, res, next) => {
   try {
     res.json(
@@ -78,14 +62,9 @@ router.post("/", authMiddleware, requireRole("admin"), async (req, res, next) =>
     const device = await snmpPollerService.addNetworkDevice(req.body || {});
     // Broadcast so other open dashboards insert it live (reuses the metrics merge).
     req.app.get("io")?.emit("networkMetrics", { device });
-    /* Poll it once, RIGHT NOW, without waiting for the next cycle. Fire-and-forget on
-       purpose: the response must not be held behind an SNMP timeout (up to several seconds
-       on a wrong IP), and the result arrives on its own through the same `networkMetrics`
-       broadcast the poller already uses. So the panel fills in a second or two rather than
-       up to a minute, and a wrong IP/community/port shows as Offline immediately instead of
-       being indistinguishable from "the poller has not got round to it yet".
-       The interval itself is untouched — see pollDeviceNow.
-       Its verdict now also goes back to the admin who did this — see reportFirstPoll. */
+    /* Poll once right away instead of waiting for the next cycle. Not awaited, so the
+       response is not held up by an SNMP timeout; the result comes through the usual
+       `networkMetrics` broadcast. The admin is told the outcome (reportFirstPoll). */
     reportFirstPoll(req, "router", device);
     res.status(201).json({ device });
   } catch (err) {
@@ -107,10 +86,9 @@ router.delete("/:id", authMiddleware, requireRole("admin"), async (req, res, nex
   }
 });
 
-// ── PATCH /api/network/:id/interfaces ─ name one discovered port (admin) ──────
-// Body: { interfaceName, locationLabel }. The poller discovers the ports; this puts
-// a human label on one ("ether3" → "Uplink to admin building"). 404 when the pair
-// isn't a discovered interface, so a typo can't create an orphan row.
+// ── PATCH /api/network/:id/interfaces ─ label one discovered port (admin) ─────
+// Body: { interfaceName, locationLabel }, e.g. "ether3" → "Uplink to admin building".
+// 404 if the port was never discovered.
 router.patch("/:id/interfaces", authMiddleware, requireRole("admin"), async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid device id." });

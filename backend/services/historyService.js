@@ -1,25 +1,20 @@
 import db from "../config/mysql.js";
 
-// ─── Unified activity / audit history ─────────────────────────────────────────
-// The History page reads one merged, accountable timeline built from the four
-// append-only log tables the system already writes:
+// ─── Activity / audit history ─────────────────────────────────────────
+// The History page's timeline, merged from four log tables:
 //
-//   system_logs  — user actions (login/logout + admin audit: user/rule/server mgmt)
-//   aircon_logs  — AC control: manual (user) vs auto (system, IR zone change)
-//   alerts       — every alert raised (server + room/environment) + its lifecycle
-//   device_logs  — agent/server lifecycle + CPU/Mem/Disk threshold crossings (system)
+//   system_logs  — user actions (login/logout, admin changes)
+//   aircon_logs  — AC control: manual (user) or auto (IR zone change)
+//   alerts       — every alert raised and its lifecycle
+//   device_logs  — agent/server lifecycle and threshold crossings
 //
-// Each row is normalized to a common shape and tagged with an ACTOR:
-//   admin  — a user whose role is 'admin'
-//   staff  — a user whose role is 'it_staff'
-//   system — no user (automated: alert engine, ESP32 auto IR, agent, sweeps)
+// Each row gets an actor:
+//   admin  — a user with role 'admin'
+//   staff  — a user with role 'it_staff'
+//   system — no user (alerts, auto IR, agents, sweeps)
 //
-// (This is an audit trail, deliberately distinct from metric history — temp/CPU
-// time-series live on the Environment / Server Detail pages.)
-//
-// Injection-safe posture (mirrors serverHistoryHandler): numeric inputs (days,
-// pagination) are parsed + clamped to integers before being inlined; every
-// string/value filter is a bound `?` placeholder.
+// Numbers (days, paging) are clamped integers before being inlined; every other
+// filter is a bound `?` parameter.
 
 function clampInt(v, min, max, dflt) {
   const n = parseInt(v, 10);
@@ -127,15 +122,9 @@ function buildWhere({ category, severity, actorType, userId, search }) {
     clauses.push("h.actor_user_id = ?");
     params.push(uid);
   }
-  // Escape the LIKE metacharacters before wrapping the term in wildcards of our own.
-  // Binding the parameter stops INJECTION, but it does not stop the term from being
-  // interpreted: `_` matches any single character and `%` matches everything, so a search
-  // for "server_01" quietly also matched "server-01", and a search for "%" matched every
-  // row in the table. Backslash first, or it would escape the escapes.
-  //
-  // Also length-capped. Each term is compared against FOUR columns with a leading
-  // wildcard, which cannot use an index — a very long string is pure scan cost, and 120
-  // characters is far more than any real audit-log search.
+  // Escape LIKE wildcards so `_` and `%` in a search are literal ("server_01" should
+  // not match "server-01"). Backslash first. Capped at 120 characters because each
+  // term is matched against four columns with a leading wildcard (no index).
   const term = String(search ?? "").trim().slice(0, 120);
   if (term) {
     const like = `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
@@ -222,9 +211,8 @@ async function getHistory(opts = {}) {
   };
 }
 
-// Distinct users who appear as an actor in the history (for the per-user filter).
-// Only people who have actually done something logged — actor attribution lives in
-// system_logs + aircon_logs (alerts/device_logs are system-generated).
+// Users who appear as an actor in the history (for the per-user filter). Only
+// system_logs and aircon_logs have actors.
 async function getActors() {
   const [rows] = await db.query(
     `SELECT u.user_id AS id, u.name, u.role

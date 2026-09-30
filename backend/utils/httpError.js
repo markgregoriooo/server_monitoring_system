@@ -1,26 +1,11 @@
-// ─── HTTP-aware errors — PURE, import-free ────────────────────────────────────
-//
-// The codebase already had a consistent CONVENTION — attach `.status` to an Error and
-// the central handler in src/server.js uses it — but no shared implementation. At least
-// eight modules rolled their own three-line factory (`badRequest` in reportService,
-// `err` in installKeyService, `irCfgErr` in airconService, `ruleError` in
-// alertRuleValidation, plus inline `e.status = 400` in historyRange, snmpUtils,
-// userService, widgetPrefsService).
-//
-// More importantly, **32 `throw new Error(...)` calls carried no status at all**, so the
-// central handler defaulted them to 500. That is not cosmetic: `src/server.js` only puts
-// `error` on the response body for 4xx, and the frontend's `handleError` reads exactly
-// that field — so a 500 fell through to the generic "Server error. Please try again
-// later." A user typing a duplicate email was told the server had broken.
-//
-// See audits/error-handling-report-2026-08-25.md — E-04, E-08.
+// ─── HTTP errors ─────────────────────────────────────────────────────────────
+// Errors that carry an HTTP status. The central handler in src/server.js sends
+// `error` to the client only for 4xx, so a user error thrown without a status
+// used to show up as "Server error". See audits/error-handling-report-2026-08-25.md (E-04, E-08).
 
 /**
- * An Error that knows its HTTP status.
- *
- * `expose` marks a message as safe to send to the client. Every 4xx built here is
- * intentional text written for a user, so it defaults to true for 4xx and false for 5xx —
- * matching what the central handler does with it.
+ * An Error with an HTTP status. `expose` marks the message as safe to show the
+ * client; it defaults to true for 4xx and false for 5xx.
  */
 export class HttpError extends Error {
   constructor(status, message, options = {}) {
@@ -54,13 +39,8 @@ export const notFound = (message = "Not found.", options) => new HttpError(404, 
 export const conflict = (message, options) => new HttpError(409, message, options);
 
 /**
- * 503 — a dependency this request needs is unavailable right now.
- *
- * Exposed by default. A 5xx is normally kept generic, but this one is RAISED
- * DELIBERATELY with text written for the operator ("Email is not configured on this
- * server"), which is useless if the central handler replaces it. That also makes it
- * substitutable with the `ServiceUnavailable` class below, which has always set
- * `expose: true` — two 503s that behaved differently was the LSP violation in L-01.
+ * 503: a dependency this request needs is unavailable. Exposed by default, since
+ * the message is written for the operator (e.g. "Email is not configured").
  */
 export const unavailable = (message = "Service temporarily unavailable.", options) =>
   new HttpError(503, message, { expose: true, ...options });
@@ -71,21 +51,10 @@ export const isClientError = (err) =>
 
 
 /**
- * A human-readable description of ANY thrown value, guaranteed non-empty.
- *
- * `err.message` is not reliable. mysql2's connection errors carry an **empty**
- * message — verified: a MySQL outage throws `Error` with `code: "ECONNREFUSED"` and
- * `message: ""`. There were 46 log lines in this codebase of the form
- * `console.error("[x] failed:", err.message)`, so during a database outage — precisely
- * when someone is reading the log — they printed:
- *
- *     [audit] failed to record action:
- *     [BACKUP] flush error:
- *
- * Falls back through `message` → `code` → the error's type → String(). Also handles a
- * thrown non-Error (a string, an object), which `.message` renders as `undefined`.
- *
- * See audits/error-flow-report-2026-08-25.md — F-01.
+ * A readable description of any thrown value, never empty. mysql2 connection
+ * errors have an empty message (only `code`), so this falls back through
+ * message → code → error type → String(). Also handles thrown non-Errors.
+ * See audits/error-flow-report-2026-08-25.md (F-01).
  */
 export function describeError(err) {
   if (err == null) return "unknown error";
@@ -104,22 +73,15 @@ export function describeError(err) {
 }
 
 
-// ─── Merged from utils/httpErrors.js (plural) ─────────────────────────────────
-//
-// There were TWO error modules whose names differed by one character —
-// `httpError.js` (this file, 29 dependents) and `httpErrors.js` (2 dependents, the
-// Google sign-in path). They overlapped: `ServiceUnavailable` vs `unavailable()`,
-// `isClientSafe` vs `isClientError`. A name collision that subtle is worse than either
-// module being missing, because an import can be wrong and still compile.
-//
-// Consolidated here. The distinctions below are real and deliberately kept:
-//   isClientError — "does this carry a 4xx status?"          (status range)
-//   isClientSafe  — "was this deliberately marked exposable?" (explicit opt-in)
+// ─── Formerly utils/httpErrors.js ────────────────────────────────────────────
+// Merged here from the nearly identically named httpErrors.js.
+//   isClientError: does it carry a 4xx status?
+//   isClientSafe:  was it explicitly marked safe to show?
 // The second is stricter: a 4xx from a library is not automatically safe to show.
-// See audits/resilience-report-2026-08-25.md — S-06.
+// See audits/resilience-report-2026-08-25.md (S-06).
 
-// A request we are deliberately turning down — bad code, unverified email, wrong
-// domain. The user can act on this, so the message is safe to show them.
+// A request we are turning down (bad code, unverified email, wrong domain). The
+// user can act on it, so the message is safe to show.
 export class AuthRejection extends Error {
   constructor(message, status = 401) {
     super(message);
@@ -140,14 +102,13 @@ export class ServiceUnavailable extends Error {
   }
 }
 
-// True when an error was deliberately raised WITH a client-safe message.
+// True when an error was raised with a client-safe message.
 export function isClientSafe(err) {
   return Boolean(err && err.expose === true && typeof err.status === "number");
 }
 
-// Node/undici transport failures. Used to tell "Google is unreachable" (our
-// problem) from "Google rejected this code" (the user's problem) — both surface
-// as a thrown error from the auth library, but they mean opposite things.
+// Network failures, used to tell "Google is unreachable" (our problem) from
+// "Google rejected this code" (the user's problem).
 const NETWORK_CODES = new Set([
   "ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "ETIMEDOUT", "EAI_AGAIN",
   "EHOSTUNREACH", "ENETUNREACH", "EPIPE", "ERR_NETWORK",

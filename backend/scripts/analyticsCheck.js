@@ -1,16 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// DRY RUN of the predictive-alerting job. Prints exactly what analyticsAlerts.js
-// WOULD raise, and raises nothing — no alerts, no bell, no email.
-//
-// Why this exists: the job runs every 6 hours, and on a healthy system it
-// correctly raises nothing at all. That makes "is the alerting working?" and
-// "is there simply nothing to alert about?" indistinguishable from the outside.
-// This answers it in a few seconds.
+// Dry run of the predictive-alerting job: prints what analyticsAlerts.js would raise
+// and raises nothing (no alerts, bell or email). The job runs every 6 hours and
+// usually raises nothing, so this tells "broken" apart from "nothing to report".
 //
 //     cd backend && npm run analytics:check
-//
-// Mirrors `npm run mail:check`: a read-only probe of a subsystem whose silence is
-// otherwise ambiguous.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import "../config/env.js";

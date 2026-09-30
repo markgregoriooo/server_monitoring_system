@@ -5,18 +5,11 @@ import { toRoomThresholds, ROOM_THRESHOLD_FALLBACK } from "../utils/envThreshold
 import type { RoomThresholds } from "../utils/envThresholds";
 
 /**
- * The room-level alert thresholds (`alert_rules`, global scope), kept current.
- *
- * Loads once from GET /api/environment/thresholds (both roles), then follows the
- * `envConfigUpdated` broadcast so an open page re-colours the moment an admin retunes a
- * rule — the admin doing the retuning is on the Alert Rules page and would never see a
- * stale Dashboard, which is exactly why this cannot wait for a reload.
- *
- * Starts on the shipped seed values rather than on `{}`: an empty set means "no rule, no
- * colour", which would paint a smoke reading green for as long as the request takes.
- *
- * Temperature, humidity and gas all colour from this one source, so a reading changes at
- * the same instant the system raises the alert for it.
+ * Room alert thresholds (`alert_rules`, global scope), kept up to date. Loads once
+ * from GET /api/environment/thresholds, then follows `envConfigUpdated`, so open
+ * pages re-colour as soon as an admin changes a rule. Starts on the seeded defaults,
+ * not `{}`, so readings are never uncoloured while loading. Temperature, humidity and
+ * gas all use this.
  */
 export function useRoomThresholds(): RoomThresholds {
   const [thresholds, setThresholds] = useState<RoomThresholds>(ROOM_THRESHOLD_FALLBACK);

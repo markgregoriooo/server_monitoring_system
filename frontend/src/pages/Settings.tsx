@@ -8,11 +8,9 @@ import NotificationPreferences from "../components/notifications/NotificationPre
 import WidgetBuilder from "../pip/WidgetBuilder";
 import { useIsNarrow } from "../hooks/useIsNarrow";
 
-// Personal settings — everything on this page is PER-USER and scoped to the signed-in
-// account: profile (users row), notification prefs (notification_prefs, keyed by user_id,
-// API scoped to req.user.id), and theme (this browser's localStorage). No global/system
-// config lives here — alert thresholds are on the admin-only Alert Rules page; the old
-// mock "backend connection / thresholds / save" cards were removed.
+// Personal settings, all per user: profile (users row), notification preferences
+// (notification_prefs, by user_id) and theme (this browser's localStorage). System
+// settings such as alert thresholds are on the admin-only Alert Rules page.
 
 const panelStyle: React.CSSProperties = {
   background: "var(--gf-panel)",
@@ -52,9 +50,7 @@ export default function Settings() {
         <div className="text-sm font-bold mb-1" style={titleColor}>Profile</div>
         <div className="text-[13px] mb-4" style={subColor}>Your account identity.</div>
 
-        {/* flex-wrap + basis-full: on a phone the 112px button eats the space the email
-            needs, truncating the one line here that cannot be guessed from the rest.
-            Below `sm` it drops to its own full-width row instead. */}
+        {/* flex-wrap + basis-full: on a phone the button gets its own row so the email is not cut off. */}
         <div className="flex items-center gap-4 flex-wrap">
           {imageSrc ? (
             <img
@@ -91,22 +87,12 @@ export default function Settings() {
       {/* ── Notification preferences (per-user, persisted in notification_prefs) ── */}
       <NotificationPreferences />
 
-      {/* ── Customize Widget (per-user, persisted in widget_prefs) ──
-          Desktop only. The widget it builds is a Document Picture-in-Picture window,
-          which no mobile browser implements — so on a phone this is a drag-and-drop
-          builder for a window that can never be opened on that device, and dragging
-          tiles past a scrolling page is the worst way to find that out.
-
-          NOT RENDERED rather than hidden with `md:hidden`: WidgetBuilder mounts
-          useWidgetLayout (a GET /api/widget-prefs) and subscribes to LiveSummary, so
-          a CSS-hidden copy would still spend a request out of the per-user rate
-          budget on every Settings visit from a phone.
-
-          ⚠️ The gate is the VIEWPORT, deliberately not `pipSupported`. The builder is
-          meant to stay visible on a desktop browser without the API (Firefox, Safari)
-          — the layout saves to the account and is used later from Chrome or Edge,
-          which is what the "Pop-out itself needs Chrome or Edge" note inside it is
-          for. Capability decides what the button does; width decides what fits. */}
+      {/* ── Customize Widget (per-user, saved in widget_prefs) ──
+         Desktop only: the widget is a Document Picture-in-Picture window, which no mobile
+         browser supports. Not rendered at all on a phone (rather than hidden with CSS), since
+         WidgetBuilder makes a request on mount. The check is the screen width, not
+         `pipSupported`: on Firefox/Safari the layout can still be built and used later from
+         Chrome or Edge. */}
       {!narrow && <WidgetBuilder />}
 
       {/* ── Appearance (per-user, persisted in localStorage: cspc_theme) ── */}

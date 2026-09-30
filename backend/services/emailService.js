@@ -3,52 +3,36 @@ import nodemailer from "nodemailer";
 import { describeError } from "../utils/httpError.js";
 import accountTpl from "./accountEmailTemplate.js";
 
-// Alert + report email over SMTP (nodemailer).
+// Alert and report email over SMTP (nodemailer).
 //
-// Why SMTP over a real mailbox (the deliberate choice for the on-prem CSPC deploy):
-// email carries no built-in proof of sender, so receiving servers check SPF/DKIM DNS
-// records to decide whether a given server may send as @cspc.edu.ph. A third-party
-// sending API is an outside service acting on the domain's behalf, so it must be
-// authorized by adding ITS records to the live campus domain — a DNS change ICTU is
-// unlikely to grant, and until then such a service only delivers to its own account
-// owner. Logging into an actual Workspace mailbox sidesteps all of that: Google
-// already publishes SPF/DKIM for the domain, so mail from ictusupport@cspc.edu.ph is
-// authorized exactly like a staff member's, and it delivers to ANY recipient.
+// Sending through a real Workspace mailbox means Google's existing SPF/DKIM records
+// already cover the domain, so no DNS change is needed and mail reaches any
+// recipient. A third-party sending API would need its own DNS records on cspc.edu.ph.
 //
-// Blank SMTP_USER/SMTP_PASS = channel off (no-op). The bell + toast still work and the
-// app runs fine with no mail configured at all.
+// Blank SMTP_USER/SMTP_PASS turns email off; the bell and toasts still work.
 //
 //   SMTP_HOST        e.g. smtp.gmail.com. Blank = smtp.gmail.com.
 //   SMTP_PORT        587 (STARTTLS) or 465 (implicit TLS). Blank = 587.
-//   SMTP_USER        FULL mailbox address. Dev: your own Gmail. Prod: ictusupport@cspc.edu.ph
-//   SMTP_PASS        App Password — NOT the account password. Gmail requires 2-Step
-//                    Verification on the account, then generates a 16-character App Password.
-//   MAIL_FROM        "Name <addr@domain>"; blank = SMTP_USER. Gmail rewrites From to the
-//                    authenticated mailbox anyway unless it's a verified alias.
-//   NOTIFY_EMAIL_TO  Optional: force ALL mail to this ONE address (testing).
+//   SMTP_USER        full mailbox address. Dev: your own Gmail. Prod: ictusupport@cspc.edu.ph
+//   SMTP_PASS        App Password, not the account password (needs 2-Step Verification).
+//   MAIL_FROM        "Name <addr@domain>"; blank = SMTP_USER. Gmail rewrites the address
+//                    to the signed-in mailbox unless it is a verified alias.
+//   NOTIFY_EMAIL_TO  optional: send all mail to this one address (testing).
 
 const SMTP_HOST = (process.env.SMTP_HOST || "").trim() || "smtp.gmail.com";
 const SMTP_PORT = Number(process.env.SMTP_PORT) || 587;
 const SMTP_USER = (process.env.SMTP_USER || "").trim();
-// Google DISPLAYS an App Password as four spaced groups ("abcd efgh ijkl mnop") and
-// people paste it that way. The spaces are presentational — strip all whitespace so a
-// copy-paste doesn't fail auth with a misleading "Invalid login".
+// Google shows App Passwords as four groups with spaces; strip all whitespace so a
+// pasted password still works.
 const SMTP_PASS = (process.env.SMTP_PASS || "").replace(/\s+/g, "");
 const TO_OVERRIDE = (process.env.NOTIFY_EMAIL_TO || "").trim();
 
 const ENABLED = Boolean(SMTP_USER && SMTP_PASS);
 
-// ─── The dashboard address to put in a link ──────────────────────────────────
-//
-// Only account email needs this: an alert goes to somebody already using the system,
-// but an approval goes to somebody who has never reached it and needs to be told where
-// it is.
-//
-// APP_PUBLIC_URL is preferred, with WEB_ORIGIN's FIRST entry as the fallback so an
-// existing deployment gets a working link with no new config. The fallback is only a
-// fallback, deliberately: WEB_ORIGIN is a CORS allow-list, so it may legitimately hold
-// several origins in any order, or the literal `*` — none of which is a URL to send a
-// person. `*` and anything not http(s) are rejected rather than pasted into an email.
+// ─── Dashboard address for email links ──────────────────────────────────
+// Only account emails need it (an approved user has never opened the dashboard).
+// APP_PUBLIC_URL first, else the first WEB_ORIGIN entry. WEB_ORIGIN is a CORS list
+// and may be `*`, so `*` and anything not http(s) are refused and the link is left out.
 function resolveAppUrl() {
   const explicit = (process.env.APP_PUBLIC_URL || "").trim();
   if (explicit) return explicit;
@@ -71,10 +55,9 @@ if (!ENABLED) {
   );
 }
 
-// Pooled + lazy: raiseAlert fans out to every active user CONCURRENTLY
-// (Promise.allSettled). A pool queues those sends over a few reused connections
-// instead of opening a TCP+TLS handshake per recipient, which is what trips Gmail's
-// concurrent-connection limit. Built on first use so startup never blocks on SMTP.
+// Pooled and created on first use. raiseAlert sends to all users at once, and a pool
+// reuses a few connections instead of opening one per recipient (which trips Gmail's
+// connection limit).
 let _transporter = null;
 function transporter() {
   if (!_transporter) {
@@ -107,9 +90,8 @@ function phTime(v) {
   return v ? new Date(v).toLocaleString("en-PH", { timeZone: "Asia/Manila", hour12: false }) : "";
 }
 
-// One place to send: keeps From / recipient override / error shape identical for
-// alerts and reports. Returns true/false, never throws — callers treat mail as
-// best-effort and must not fail because a send failed.
+// Single send path so From, the recipient override and errors are the same for
+// every email. Returns true/false and never throws.
 async function send({ to, subject, html, text, attachments }) {
   if (!ENABLED) return false;
   const recipient = TO_OVERRIDE || to;
@@ -224,13 +206,8 @@ function renderReportText(r) {
     .join("\n");
 }
 
-// Send one generated report as a PDF attachment. Same contract as sendAlertEmail:
-// returns true/false, never throws, no-op when SMTP isn't configured.
-//
-// PDF only, not both formats — the PDF is the readable artifact, and the CSV is
-// there for spreadsheet work, which is a download-from-the-dashboard job.
-//
-// nodemailer takes the PDF Buffer directly — callers pass a plain Buffer.
+// Send one generated report as a PDF attachment. Returns true/false, never throws,
+// does nothing when SMTP is not configured. PDF only; the CSV is for downloading.
 async function sendReportEmail(to, report, pdfBuffer) {
   return send({
     to,
@@ -242,18 +219,10 @@ async function sendReportEmail(to, report, pdfBuffer) {
 }
 
 // ─── Account status ──────────────────────────────────────────────────────────
-//
-// TRANSACTIONAL, not notifications. Both bypass `notification_prefs.email_enabled` and
-// the Privacy Notice gate on purpose — see the header of accountEmailTemplate.js for
-// why each exemption is correct rather than an oversight.
-//
-// Same contract as the other two senders: returns true/false, never throws, no-op when
-// SMTP is unconfigured. That is what lets the route await them without an approval ever
-// being able to fail because of a mail server.
-//
-// ⚠️ NOTIFY_EMAIL_TO applies here too. With it set, every one of these goes to the
-// override address instead of to the person — correct for testing, and a silent
-// surprise if it is left set on a real deployment.
+// One-off replies, not alert notifications, so they skip email_enabled and the
+// Privacy Notice gate (see accountEmailTemplate.js). Return true/false and never
+// throw, so an approval cannot fail because of email. NOTIFY_EMAIL_TO applies here
+// too; leave it blank in production.
 
 /** Tell an approved user their account is live, and where. */
 async function sendAccountApprovedEmail(user) {

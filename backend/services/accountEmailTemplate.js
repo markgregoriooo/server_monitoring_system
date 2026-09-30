@@ -1,39 +1,15 @@
-// ─── Account-status email content — PURE, import-free ────────────────────────
+// ─── Account-status email content ───────────────────────────────────────────────
+// The wording of the approval and rejection emails; emailService.js sends them.
+// No imports, so tests/accountEmail.test.js can check the text without SMTP.
 //
-// What an approval / rejection email SAYS. emailService.js does the sending; this
-// decides the words. Same split as reportTemplate (content) vs reportRenderer (I/O),
-// and for the same reason: `tests/accountEmail.test.js` runs these with no SMTP, no
-// .env and no nodemailer, so the wording can be pinned by a test.
+// These are one-off replies to the person's own registration, so they are not
+// controlled by notification_prefs.email_enabled (which is for alert email) and do
+// not wait for Privacy Notice acceptance (a pending user cannot have accepted yet).
 //
-// ⚠️ THESE ARE TRANSACTIONAL, NOT NOTIFICATIONS. They are deliberately NOT gated by
-// `notification_prefs.email_enabled` and NOT gated by Privacy Notice acceptance, and
-// both exemptions are load-bearing:
-//
-//   * `email_enabled` governs ALERT email — an ongoing stream of operational data the
-//     person never asked for, which is opt-in for good reason (see
-//     NOTIFY_EMAIL_MIN_SEVERITY in CLAUDE.md, and
-//     migrations/2026-09-18_notification_prefs_default_off.sql). This is the opposite
-//     case: a single reply to an action the person themselves started by registering.
-//     Routing it through that flag would let a default meant to protect someone from
-//     alerts suppress the one message telling them their account works.
-//
-//   * Policy acceptance is IMPOSSIBLE to have here. A pending user has never held a
-//     session, so PolicyGate has never rendered for them and `users.policy_version` is
-//     unset. Gating on acceptance makes the mail unsendable: they cannot accept until
-//     they can sign in, and they cannot know to sign in without the mail.
-//
-// Two things are deliberately absent from both templates:
-//
-//   * THE ADMIN'S NAME. Accountability lives in `system_logs` (action='approve_user' /
-//     'reject_user', with the actor). Putting it in the email would make one staff
-//     member the personal support contact for everyone they ever approved.
-//   * THE REASON FOR A REJECTION. A rejection can be a security decision, and an email
-//     that explains itself confirms to whoever registered exactly what was noticed.
-//     One neutral sentence and a route back to a human is the whole message.
+// They leave out the admin's name (that is in system_logs) and the reason for a
+// rejection (a rejection can be a security decision).
 
-/** DB role → the label the dashboard shows. Kept identical to frontend
- *  `data/users.ts` roleConfig: an email that calls it "Administrator" while every
- *  screen says "Admin" reads as a different system. */
+/** DB role → the label the dashboard shows. Must match frontend `data/users.ts`. */
 export const ROLE_LABEL = Object.freeze({
   admin: "Admin",
   it_staff: "IT Staff",
@@ -42,11 +18,7 @@ export const ROLE_LABEL = Object.freeze({
 /** Where ICTU is reached when something is wrong. One constant, used by both. */
 export const SUPPORT_CONTACT = "the CSPC ICT Unit";
 
-/**
- * HTML-escape. Every interpolated value below is user-controlled — `name` comes from
- * a Google profile and `email` from the address that registered — so neither reaches
- * the markup raw.
- */
+/** HTML-escape. `name` and `email` both come from the user's Google account. */
 export function esc(s) {
   return String(s ?? "").replace(
     /[&<>"']/g,
@@ -89,8 +61,7 @@ export function approvedSubject() {
 
 /**
  * @param {{name?: string, email?: string, role?: string}} user
- * @param {string} [appUrl] dashboard URL; the link is omitted entirely when unknown,
- *   rather than printed as a broken or guessed address.
+ * @param {string} [appUrl] dashboard URL; the link is left out when unknown.
  */
 export function approvedHtml(user, appUrl) {
   const url = normalizeUrl(appUrl);
@@ -123,14 +94,9 @@ export function approvedHtml(user, appUrl) {
 }
 
 /**
- * ⚠️ Built as BLOCKS joined by a blank line, not as a flat list of lines.
- *
- * The first version was a flat array with `""` entries for the blank lines and `""` for
- * omitted ones, filtered by `line !== ""` — which cannot tell the two apart, so it
- * stripped every paragraph break and rendered the whole message as one unreadable wall.
- * Nothing caught it, because asserting that a string CONTAINS the right words says
- * nothing about whether it is readable. A block list makes omission (`null`, dropped)
- * and separation (the join) different mechanisms, so they cannot collide again.
+ * Built as blocks joined by a blank line. A flat list with "" for both blank lines
+ * and omitted lines once stripped every paragraph break; null (dropped) and the
+ * join now do the two jobs separately.
  */
 export function approvedText(user, appUrl) {
   const url = normalizeUrl(appUrl);
@@ -163,9 +129,8 @@ export function rejectedSubject() {
 }
 
 /**
- * Neutral by design — no reason, no actor. The only actionable content is a route back
- * to a human, because the legitimate case this exists for is somebody who was rejected
- * by mistake and otherwise has no way to find out or say so.
+ * No reason and no admin name, only a way to contact someone, for the case where
+ * a person was rejected by mistake.
  */
 export function rejectedHtml(user) {
   const greeting = user?.name ? `Hi ${esc(user.name)},` : "Hello,";

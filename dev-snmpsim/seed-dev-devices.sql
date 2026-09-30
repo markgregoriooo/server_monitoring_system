@@ -1,9 +1,8 @@
 -- ─────────────────────────────────────────────────────────────────────────────
--- DEV-ONLY seed: register a fake router + fake UPS that the snmpsim simulator
--- answers for, so the SNMP poller has something to poll without real hardware.
+-- Dev only: register a fake router and a fake UPS that the snmpsim simulator answers
+-- for, so the SNMP poller has something to poll without real hardware.
 --
--- Both point at 127.0.0.1 (the simulator on this PC). The simulator serves a
--- different data file per COMMUNITY string:
+-- Both use 127.0.0.1 (the simulator on this PC), with a data file per community:
 --     community 'dev-router' -> dev-snmpsim/data/dev-router.snmprec
 --     community 'dev-ups'    -> dev-snmpsim/data/dev-ups.snmprec
 -- Port 1161 (not 161) so it needs no admin rights.

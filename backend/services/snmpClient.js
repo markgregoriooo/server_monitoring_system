@@ -8,18 +8,13 @@ import {
   isProtected,
 } from "./snmpUtils.js";
 
-// ─── Thin net-snmp wrapper for the router/UPS poller ──────────────────────────
+// ─── net-snmp wrapper for the router/UPS poller ──────────────────────────
+// Uses only standard MIBs (MIB-II system, IF-MIB, UPS-MIB / RFC 1628), so it works
+// across vendors without special code. snmpPollerService decides what to read; this
+// module opens sessions, GETs scalars, walks table columns and normalises values.
 //
-// Vendor-neutral by design: it speaks the *standard* MIBs (MIB-II system group,
-// IF-MIB, UPS-MIB / RFC 1628) so it works across Cisco / HP / Aruba / TP-Link /
-// APC / Eaton / … without per-vendor code. The poller (snmpPollerService) decides
-// WHAT to read and how to shape it; this module only knows HOW to talk SNMP:
-// open a session, GET scalars, walk a table column, and normalize values.
-//
-// SNMP version: v2c only. device_network stores a community string + port but has
-// no v3 columns (no auth user / protocol / priv), so the DB models v2c. The v3
-// branch is intentionally left as a single extension point in openSession() — add
-// the credential columns + a createV3Session() call when an untrusted LAN needs it.
+// SNMP v2c only: device_network has a community and port but no v3 columns. v3 would
+// need those columns plus a createV3Session() call in openSession().
 
 // ─── OID maps ─────────────────────────────────────────────────────────────────
 
@@ -30,10 +25,9 @@ export const SYS_OID = {
   sysName: "1.3.6.1.2.1.1.5.0", // OctetString — admin-assigned name
 };
 
-// IF-MIB — per-interface status/counters. These are COLUMN base OIDs: append
-// ".<ifIndex>" for one row, or walk the base to enumerate every interface. The HC
-// (high-capacity, 64-bit) octet counters live in ifXTable and are the ones to use
-// (Counter32 wraps in seconds on a gigabit link — see the design doc §5).
+// IF-MIB per-interface status and counters. Column base OIDs: add ".<ifIndex>" for
+// one row or walk the base for all. Use the 64-bit HC counters from ifXTable
+// (Counter32 wraps within seconds on gigabit links).
 export const IF_OID = {
   ifNumber: "1.3.6.1.2.1.2.1.0", // scalar — interface count
   ifDescr: "1.3.6.1.2.1.2.2.1.2", // OctetString col — interface description
@@ -50,16 +44,13 @@ export const IF_OID = {
 // IF-MIB ifOperStatus enum (RFC 2863). Only `up` is treated as link-up.
 export const IF_OPER_STATUS = { up: 1, down: 2, testing: 3, unknown: 4, dormant: 5, notPresent: 6, lowerLayerDown: 7 };
 
-// IF-MIB ifAdminStatus enum (RFC 2863) — what the operator CONFIGURED, as opposed to
-// what the port is doing. The classic NMS rule is "alert when adminStatus=up and
-// operStatus=down": a port the operator shut down is not an incident. Absent on some
-// agents, so a missing value is treated as enabled rather than as "disabled".
+// ifAdminStatus (RFC 2863): what the operator configured, not what the port is
+// doing. Alert only when admin is up and oper is down. Missing = treat as enabled.
 export const IF_ADMIN_STATUS = { up: 1, down: 2, testing: 3 };
 
-// UPS-MIB (RFC 1628), base 1.3.6.1.2.1.33. Battery + output-source are scalars
-// (append ".0"); the voltage/load values are per-line table columns (append ".1"
-// for line 1, or walk). Units per the RFC are noted — the poller converts where
-// the RFC stores a scaled integer (e.g. battery voltage in 0.1 V units).
+// UPS-MIB (RFC 1628), base 1.3.6.1.2.1.33. Battery and output source are scalars
+// (add ".0"); voltage/load are per-line table columns (add ".1" for line 1, or walk).
+// The poller converts scaled integers (e.g. battery voltage in 0.1 V).
 export const UPS_OID = {
   upsBatteryStatus: "1.3.6.1.2.1.33.1.2.1.0", // 1=unknown 2=normal 3=low 4=depleted
   upsEstimatedMinutesRemaining: "1.3.6.1.2.1.33.1.2.3.0", // minutes
@@ -72,23 +63,18 @@ export const UPS_OID = {
   upsOutputPercentLoad: "1.3.6.1.2.1.33.1.4.4.1.5", // percent — table col (per output line)
 };
 
-// UPS-MIB upsOutputSource enum (RFC 1628) + its interpreters. Defined in the PURE
-// snmpUtils.js — they are reasoning about a value, not transport, and `npm test`
-// can reach that file without net-snmp or a device. Re-exported here so the OIDs
-// and the meaning of what they return stay one import away from each other.
-//
-// Imported and re-exported rather than `export … from`, because that form creates
-// no LOCAL binding — the default-export object at the bottom of this file needs
-// real ones.
+// upsOutputSource enum and helpers, defined in snmpUtils.js (no imports, tested) and
+// re-exported here. Imported then re-exported, not `export … from`, because the
+// default export object below needs local bindings.
 export { UPS_OUTPUT_SOURCE, upsOutputState, isOnBattery, isOnBypass, isOutputOff, isProtected };
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 
 export const DEFAULTS = { port: 161, timeout: 5000, retries: 1 };
 
-// Open a v2c SNMP session to one device. Caller MUST closeSession() it (the poller
-// opens one per device per cycle and closes it in a finally). Throws only on bad
-// args — a dead/unreachable device surfaces later as a timeout from get()/walk().
+// Open a v2c SNMP session to one device. The caller must closeSession() it (the
+// poller closes it in a finally). Only throws on bad arguments; a dead device shows
+// up later as a timeout.
 export function openSession({ host, community = "public", port, timeout, retries } = {}) {
   if (!host) throw new Error("snmpClient.openSession: host is required");
   return snmp.createSession(host, community || "public", {
@@ -111,11 +97,10 @@ export function closeSession(session) {
 
 // ─── Value normalization ──────────────────────────────────────────────────────
 
-// Convert a varbind's raw value into a friendly JS value:
-//   OctetString → utf8 string,  Counter64 → BigInt (precision-safe),
+// Convert a raw varbind value:
+//   OctetString → utf8 string,  Counter64 → BigInt (keeps precision),
 //   OID → string,  everything else (Integer/Counter32/Gauge/TimeTicks) → number.
-// Counter64 stays a BigInt so an 8-byte octet counter never loses precision —
-// the InfluxDB writer must use uintField() for these (see design doc §5).
+// Counter64 values must be written to InfluxDB with uintField().
 function normalize(vb) {
   const T = snmp.ObjectType;
   switch (vb.type) {
@@ -135,11 +120,10 @@ function normalize(vb) {
 
 // ─── Reads ────────────────────────────────────────────────────────────────────
 
-// SNMP GET one or more scalar OIDs. Resolves to a plain map { <oid>: value }.
-// A per-OID error (noSuchObject / noSuchInstance — i.e. the device doesn't expose
-// that optional OID) becomes `null` for that OID so one missing value never fails
-// the whole read. REJECTS only on a transport-level failure (timeout / no route),
-// which is how the poller detects an unreachable device.
+// SNMP GET for one or more scalar OIDs; resolves to { <oid>: value }. An OID the
+// device does not have (noSuchObject / noSuchInstance) becomes null, so one missing
+// value does not fail the read. Rejects only on a transport failure (timeout, no
+// route), which is how an unreachable device is detected.
 export function get(session, oids) {
   const list = Array.isArray(oids) ? oids : [oids];
   return new Promise((resolve, reject) => {
@@ -152,10 +136,9 @@ export function get(session, oids) {
   });
 }
 
-// Walk one OID column (e.g. IF_OID.ifName) and resolve to rows keyed by the
-// trailing table index, so callers can join columns by index:
+// Walk one OID column (e.g. IF_OID.ifName) and return rows keyed by table index:
 //   walkColumn(s, IF_OID.ifName) → { "1": "ether1", "2": "ether2", … }
-// REJECTS on a transport failure (same contract as get()).
+// Rejects on a transport failure, like get().
 export function walkColumn(session, baseOid, { maxRepetitions = 20 } = {}) {
   return new Promise((resolve, reject) => {
     const out = {};

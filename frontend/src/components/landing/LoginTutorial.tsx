@@ -9,21 +9,10 @@ import { STATUS } from "../../theme/gf";
 const { green: GREEN, orange: ORANGE, critical: RED } = STATUS;
 
 /**
- * The walkthrough: signing in, then actually using the thing.
- *
- * It started as a login demo, which undersold it — signing in is one button, and
- * stopping there left the interesting half undescribed anywhere on the page: an
- * alert arriving, being taken by someone, and being closed. The scenes now run
- * from the sign-in screen through to a resolved alert, which is a shift's worth
- * of the product rather than its front door.
- *
- * Animated in code rather than screen-recorded: no file to host on a page that
- * loads before login, it follows the theme toggle, and it cannot drift out of
- * date against a UI change without someone noticing the code no longer matches.
- *
- * The chapter cards beside the stage are BUTTONS. Auto-advance is a courtesy for
- * someone who just wants to watch; the full cycle runs half a minute, and anyone
- * who came for the last scene should not have to sit through the other five.
+ * The walkthrough: signing in, then using the system through to a resolved alert.
+ * Animated in code instead of recorded: nothing to host, follows the theme, and it
+ * visibly goes out of date if the UI changes. The progress bars are buttons, so a
+ * viewer can jump to any scene instead of waiting.
  */
 
 const ACCENT = "#5794F2";
@@ -73,11 +62,9 @@ const SCENES: Scene[] = [
     body: "Acknowledging says someone has it. Resolving closes it, with your name against both.",
     ms: 5700,
   },
-  // ── Act two: the rest of the system ──────────────────────────────────────
-  // Scenes 01-06 are a narrative — get in, watch, something happens, close it.
-  // These are a tour, and they are deliberately after the story rather than
-  // interleaved with it: a reader who leaves at scene 06 has still seen the
-  // system make its case.
+  // ── Part two: the rest of the system ──────────────────────────────────────
+  // Scenes 01-06 tell the story (sign in, watch, alert, resolve); these are a tour and
+  // come after it.
   {
     n: "07",
     title: "Every device, in depth",
@@ -138,8 +125,7 @@ function Cursor({ style }: { style?: React.CSSProperties }) {
   );
 }
 
-/** Chrome shared by the in-app scenes (03, 04, 06), so they read as one product.
-    05 deliberately opts out — it is a phone, and that is its whole argument. */
+/** Frame shared by the in-app scenes (03, 04, 06). Scene 05 is a phone. */
 function AppChrome({ children, badge = 0 }: { children: React.ReactNode; badge?: number }) {
   return (
     <div className="absolute inset-0 flex flex-col" style={{ background: "var(--gf-bg)" }}>
@@ -253,10 +239,8 @@ function SceneSignIn(_props: SceneProps) {
       .add(popup, { opacity: 1, translateY: 0, duration: 320 }, 1430)
       .add(cursor, { opacity: 0, duration: 200 }, 1620);
 
-    // The chooser used to be where the scene stopped, leaving it parked on
-    // "Choose an account" for three and a half seconds — which reads as frozen,
-    // not as a pause. Picking the account and handing back to a signing-in
-    // button finishes the thought and fills the scene's own dwell.
+    // The scene picks the account and returns to the signing-in button instead of
+    // stopping on "Choose an account", which looked frozen.
     if (account) {
       tl.add(account, { backgroundColor: ["rgba(0,0,0,0)", "rgba(87,148,242,0.16)"], duration: 260 }, 2150);
     }
@@ -567,13 +551,9 @@ function SceneAlert(_props: SceneProps) {
 }
 
 /* ── Scene 05 — the alert email ──────────────────────────────────────────────
-   On a phone, deliberately. The dashboard scenes all argue "look how much this
-   shows you"; this one argues the opposite and more important thing — that you
-   do not have to be looking at all. A desktop mail client would have blurred
-   that, because a desktop is where the dashboard already is.
-
-   The message mirrors what emailService actually sends: severity in the subject,
-   then the device, the reading, the threshold it crossed and the time. */
+   Shown on a phone: you do not need to be watching the dashboard to be told. The
+   message follows what emailService sends: severity in the subject, then the device,
+   reading, threshold and time. */
 function SceneEmail({ compact }: SceneProps) {
   const root = useRef<HTMLDivElement | null>(null);
 
@@ -1491,9 +1471,8 @@ export default function LoginTutorial() {
   // `once: false` matters: inView has to go BACK to false when the section
   // leaves, or it cannot gate anything that needs to stop again.
   const { ref, inView } = useInView<HTMLDivElement>({ threshold: 0.25, once: false });
-  // A phone gets a narrower, TALLER design box: 16:9 at 360px is only 202px
-  // high, which is not enough room for six scenes that each hold a small
-  // interface. 6:5 gives them the height back without the scale penalty.
+  // Phones get a narrower, taller box: 16:9 at 360px is only 202px high. 6:5 gives the
+  // scenes room.
   const narrow = useIsNarrow();
   const [scene, setScene] = useState<number>(0);
   // Bumped on every manual pick, so the dwell timer restarts from that moment
@@ -1503,9 +1482,7 @@ export default function LoginTutorial() {
   const still = prefersReducedMotion();
 
   useEffect(() => {
-    // Off screen: don't advance. Coming back to a walkthrough that has silently
-    // played three scenes without you is worse than finding it where you left
-    // it. Reduced motion: no auto-advance at all — the bars are the control.
+    // Off screen: don't advance. Reduced motion: no auto-advance; the bars are the control.
     if (!inView || still) return;
     const t = window.setTimeout(
       () => setScene((s) => (s + 1) % SCENES.length),
@@ -1553,21 +1530,12 @@ export default function LoginTutorial() {
         <div ref={ref} className="grid lg:grid-cols-[1.5fr_1fr] gap-6 lg:gap-8 items-center">
           <Reveal y={20}>
             <BrowserFrame>
-              {/* Fixed 560x315 design box, scaled to fit. The scenes position
-                  themselves absolutely against it, so they are laid out once and
-                  simply get smaller on a phone — see ScaledStage. */}
+              {/* Fixed 560x315 design box, scaled to fit (see ScaledStage). */}
               <ScaledStage width={narrow ? 360 : 560} height={narrow ? 300 : 315}>
                 <div className="relative w-full h-full overflow-hidden" style={{ background: "var(--gf-bg)" }}>
-                  {/* Mounted only while the section is on screen. Mounting is
-                      what starts a scene's timeline, so rendering it eagerly
-                      meant scene 01 played its cursor, click and popup during
-                      page load and was sitting at its finished state — cursor
-                      already faded out — by the time anyone scrolled down to it.
-                      It read as frozen, because it was over.
-
-                      `key` then remounts on every scene change, which is what
-                      re-runs the entrance animation. Far clearer than one
-                      timeline that would have to rewind eleven scenes. */}
+                  {/* Mounted only while the section is on screen, since mounting starts the scene's
+                     animation; otherwise scene 01 finished during page load. `key` remounts it on every
+                     scene change to replay the entrance. */}
                   {inView && <Stage key={`${scene}-${nonce}`} compact={narrow} />}
                 </div>
               </ScaledStage>
@@ -1578,17 +1546,9 @@ export default function LoginTutorial() {
             </p>
           </Reveal>
 
-          {/* ONE caption, following the stage.
-              Six cards restated every scene at once, which on a phone was most
-              of the section and asked the reader to hold six things in their
-              head while watching a seventh. A single box says only what is on
-              screen now — and the bars above it do the job the cards were really
-              there for, which was letting someone jump. */}
+          {/* One caption for the current scene. */}
           <div className="gf-panel p-4">
-            {/* Progress bars, one per scene: past filled, current filling,
-                future empty. Navigation and progress in one control, so the
-                reader can see how far in they are AND skip, without a second
-                widget for each. */}
+            {/* One progress bar per scene (done, playing, upcoming); click to jump. */}
             <div className="flex gap-1.5 mb-4">
               {SCENES.map((s, i) => {
                 const done = i < scene;
@@ -1625,10 +1585,8 @@ export default function LoginTutorial() {
               })}
             </div>
 
-            {/* Keyed on the scene so the copy crossfades instead of snapping.
-                minHeight holds the box still across scenes whose text runs to a
-                different number of lines — without it the section jolts every
-                few seconds, which is far more distracting than the animation. */}
+            {/* Keyed on the scene so the text crossfades. minHeight stops the section jumping when
+               captions have different line counts. */}
             <div
               key={`${scene}-${nonce}`}
               style={{

@@ -4,32 +4,22 @@ import gasSensorService from "../services/gasSensorService.js";
 import { normalizeGas, worstGas, legacyFields } from "../services/gasReadings.js";
 import { parseDeviceTime } from "../services/backfillTime.js";
 
-// Backfill of readings the ESP32 buffered to its micro SD while the socket was down,
-// replayed a few rows at a time once the backend is reachable again (firmware:
-// sdFlushStep). Same fields as sensorHandler, but three things differ, and each of
-// them is the reason this is a separate handler rather than a flag on that one:
-//
-//   - the timestamp comes from the DEVICE, not from us. Live points are stamped with
-//     `new Date()` because the reading arrives within milliseconds of being taken;
-//     a backfilled one was taken minutes or hours ago and only the ESP32 knows when.
-//   - no broadcast. This is history, not news — pushing it at the dashboard would
-//     redraw the live tiles with a reading from the middle of the outage.
-//   - no alert evaluation. The room has already been whatever it was; raising a
-//     smoke alert now, for air that cleared an hour ago, would be a false alarm with
-//     a real siren attached.
-//
-// It is also not re-gated by envPersistPolicy: the firmware already applied the same
-// deadband rules before writing each row (SD_HEARTBEAT_MS / SD_DEADBAND_*), so every
-// row that arrives here is one a connected device would have stored anyway.
+// Backfill of readings the ESP32 saved to its SD card while the socket was down,
+// replayed a few rows at a time after reconnecting (firmware: sdFlushStep).
+// Differences from sensorHandler:
+//   - the timestamp comes from the device, since only it knows when the reading
+//     was taken;
+//   - no broadcast: it is history, not a live reading;
+//   - no alerts: raising a smoke alarm now for air that cleared an hour ago would
+//     be a false alarm.
+// Not filtered by envPersistPolicy; the firmware applied the same rules when it
+// wrote each row.
 
-// Timestamp parsing and the plausibility gates live in services/backfillTime.js —
-// pure, and unit-tested, because a dead RTC coin cell produces a WELL-FORMED wrong
-// date (the firmware's build date) that would otherwise be written as history.
+// Timestamp parsing and range checks are in services/backfillTime.js (tested). A
+// dead RTC battery gives a valid-looking but wrong date.
 
-// A replay is a burst — a two-hour outage is ~240 rows arriving back to back. The old
-// implementation awaited a flush PER ROW, i.e. 240 round trips to InfluxDB for data
-// that has already waited two hours. Batch instead: let the write client accumulate and
-// flush once the burst goes quiet. Rows are still durable within a second of arriving.
+// A replay can be hundreds of rows. Instead of flushing per row, let the write
+// client batch them and flush once the burst goes quiet.
 const FLUSH_DEBOUNCE_MS = 1000;
 let flushTimer = null;
 let pending = 0;
@@ -64,9 +54,8 @@ export async function offlineDataHandler(socket, data) {
     !data ||
     typeof data.temperature        !== "number" ||
     typeof data.humidity           !== "number" ||
-    // Gas is not required here either — how many channels a buffered row carries depends
-    // on the firmware that wrote it and on how many sensors were fitted at the time. See
-    // the same relaxation in sensorHandler.
+    // Gas is not required; how many channels a row has depends on the firmware that
+    // wrote it. Same as sensorHandler.
 
     typeof data.heat_index         !== "number" ||
     typeof data.smoke_status       !== "string" ||
@@ -81,9 +70,8 @@ export async function offlineDataHandler(socket, data) {
 
   const { at: timestamp, reason } = parseDeviceTime(data.timestamp);
   if (!timestamp) {
-    // Each reason points at a different fix, so they are not collapsed into one line:
-    // "no-clock" and "stale" both mean go and check the coin cell, "future" means the
-    // RTC was set wrong, "unparseable" means the row itself is damaged.
+    // Each reason needs a different fix: "no-clock" and "stale" mean check the RTC
+    // battery, "future" means the RTC was set wrong, "unparseable" means a damaged row.
     console.warn(
       `[OFFLINE] Dropped a buffered row — ${reason} ("${String(data.timestamp).slice(0, 32)}"). ` +
         (reason === "no-clock" || reason === "stale"
@@ -95,10 +83,8 @@ export async function offlineDataHandler(socket, data) {
     return;
   }
 
-  // Same normalisation as the live path, so a replayed reading lands in the same
-  // per-sensor series as a live one and a chart cannot tell them apart. A row buffered by
-  // the two-sensor firmware carries no `gas_ppm`, and normalizeGas falls back to the
-  // legacy pair — which is the whole point of accepting both shapes.
+  // Same normalisation as the live path, so replayed readings land in the same
+  // per-sensor series. Rows from the two-sensor firmware only have the legacy fields.
   const gas = normalizeGas(data, gasSensorService.enabledChannels());
   const legacy = legacyFields(gas);
 
@@ -132,12 +118,9 @@ export async function offlineDataHandler(socket, data) {
     return;
   }
 
-  // Mirror into the on-site NDJSON backup, exactly as sensorHandler does for a live
-  // reading. Without this the backup would hold a gap precisely across the outage —
-  // the stretch it is least able to reconstruct from anywhere else, and the one the
-  // SD buffer was added to cover. `ts` overrides the default "now" that record()
-  // stamps, so the line carries the time the reading was TAKEN; the file it lands in
-  // is still today's, which is honest — that is when the backend learned of it.
+  // Also write the reading to the on-site backup, like sensorHandler, so the backup
+  // has no gap over the outage. `ts` is when the reading was taken; the file is
+  // today's because that is when the backend received it.
   backupService.record("env", {
     ts: timestamp.toISOString(),
     backfilled: true,

@@ -2,48 +2,27 @@ import db from "../config/mysql.js";
 import { describeError } from "../utils/httpError.js";
 
 /**
- * MQ-2 gas sensors as MANAGED DATA — which channels exist, which are wired, and what each
- * one is called.
+ * MQ-2 gas sensors: which channels exist, which are wired and what each is called.
  *
- * The same split the IR channel pool uses, and for the same reason: the DEVICE knows which
- * pins it has, the DATABASE knows which of them somebody actually soldered a sensor to and
- * where that sensor is pointing. Neither can answer the other's question, and baking either
- * into the firmware means a reflash to add a sensor.
- *
- * ⚠️ `enabled` is a safety gate, not a display preference. An ADC pin with nothing attached
- * FLOATS — it does not read zero, it reads noise, and noise pushed through the MQ-2 curve is
- * a believable ppm that can trip the smoke alarm. A channel stays silent until an admin
- * asserts the hardware is there.
- *
- * The label is the point of the feature. Two MQ-2s are only worth having if they are apart
- * (the alarm is `max()` across them — coverage logic, not redundancy), and once they are
- * apart "MQ2-2 is critical" does not tell anyone which end of the room to run to.
- *
- * Migration: `2026-09-17_gas_sensors.sql`.
+ * Like the IR channels, the device reports its pins and the database records which
+ * ones actually have a sensor and where it points. `enabled` is a safety setting:
+ * an unwired pin reads noise that could trigger the smoke alarm, so a channel is
+ * ignored until an admin enables it. The label tells people where in the room the
+ * smoke is. Migration: `2026-09-17_gas_sensors.sql`.
  */
 
-// Mirrors the firmware's MQ2_PINS[] length. Not a database constraint — the cap is the
-// ESP32's ADC1 budget, and a second board would raise it without a schema change — but a
-// bound on what this service will accept from a request, so a typo cannot create channel 99.
+// Matches the firmware's MQ2_PINS[] length. Only bounds what a request may send,
+// so a typo cannot create channel 99.
 const MAX_CHANNEL = 8;
 
-// In-memory copy, reloaded on startup and after every mutation. Read on EVERY ESP32 reading
-// (3s) to resolve labels for alerts and to decide which channels count — a per-reading
-// SELECT would put the gas path in front of the same 10-connection pool the pollers and the
-// dashboard share, for data that changes a few times a year.
+// Cached in memory and reloaded on startup and after each change, since it is read
+// on every 3s reading.
 let cache = [];
 
 /**
- * Channel -> GPIO, as REPORTED BY THE DEVICE on every connect (`gasSensorMap`).
- *
- * Not stored and not configured: the pin numbers live in the firmware's MQ2_PINS[], and a
- * second copy in the database is a copy that goes stale the day somebody re-pins the board.
- * Held in memory exactly like airconService's IR channel map, for exactly the same reason —
- * a staff member about to wire sensor 3 has to be told WHICH PIN, on screen, without opening
- * the sketch.
- *
- * Empty until the ESP32 has connected once this process, which the UI reports honestly
- * rather than guessing.
+ * Channel → GPIO as reported by the ESP32 on every connect (`gasSensorMap`). The pins
+ * are defined in the firmware; the UI shows them so staff know where to wire a
+ * sensor. Empty until the ESP32 has connected once.
  */
 let pinMap = [];
 
@@ -52,11 +31,8 @@ export async function setPinMap(sensors) {
     .map((s) => ({ channel: Number(s?.channel), gpio: Number(s?.gpio) }))
     .filter((s) => Number.isInteger(s.channel) && Number.isInteger(s.gpio));
 
-  // REMEMBERED, not just held. The dialog that needs these is the one somebody opens
-  // BEFORE wiring a sensor, and an in-memory-only map showed "GPIO — sensor offline"
-  // exactly then — and went blank again on every backend restart. Writing it through means
-  // the last thing the device said survives both. The device still wins on every connect,
-  // so this is a cache of its answer rather than a second source of truth.
+  // Also saved to the database so the pins can be shown before the sensor is online
+  // and after a restart. The device's report on connect always overrides it.
   for (const p of pinMap) {
     try {
       await db.query(`UPDATE gas_sensors SET gpio = ? WHERE channel = ?`, [p.gpio, p.channel]);
@@ -124,9 +100,9 @@ export async function list() {
 }
 
 /**
- * The payload the ESP32 needs: which channels to read at all. Deliberately the same shape as
- * airconService.getChannelConfig's — one array of booleans indexed by channel-1 — because the
- * firmware already parses that for `irConfig` and a second shape would be a second parser.
+ * What the ESP32 needs: which channels to read. Same shape as
+ * airconService.getChannelConfig (booleans indexed by channel-1), so the firmware
+ * reuses the `irConfig` parser.
  */
 export async function getDeviceConfig() {
   if (cache.length === 0) await reload();
@@ -137,11 +113,7 @@ export async function getDeviceConfig() {
   return { enabled };
 }
 
-/**
- * Update one channel. Both fields optional so the UI can rename without touching the wiring
- * flag and vice versa — COALESCE rather than a plain SET, matching userService.updateUser,
- * so an omitted field can never blank a column.
- */
+/** Update one channel. Both fields are optional; COALESCE keeps an omitted field as it was. */
 export async function update(channel, { locationLabel, enabled }, userId = null) {
   const ch = Number(channel);
   if (!Number.isInteger(ch) || ch < 1 || ch > MAX_CHANNEL) {

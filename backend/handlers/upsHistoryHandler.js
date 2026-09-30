@@ -4,13 +4,9 @@ import { describeError } from "../utils/httpError.js";
 
 // GET /api/ups/:id/history?range=-1h  (JWT, via authMiddleware)
 //   ...or an absolute window: ?start=<ISO>&stop=<ISO>  (see historyRange.resolveRange)
-// Battery/load/voltage history for one UPS from InfluxDB (`ups_metrics`). These are
-// all plain gauges, so a windowed mean reads cleanly (unlike the cumulative byte
-// counters in network/server history).
-//
-// Ranges and the custom-window rules come from the SHARED resolver, so this page and
-// the network page always offer the same choices — a battery discharge and the
-// traffic during the same outage have to be comparable over the same period.
+// Battery/load/voltage history for one UPS from InfluxDB (`ups_metrics`). All
+// gauges, so a windowed mean works. Uses the shared range resolver, so the ranges
+// match the network page.
 export function upsHistoryHandler(req, res) {
   const parsed = resolveHistoryRequest(req, res);
   if (!parsed) return;
