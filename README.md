@@ -81,7 +81,7 @@ Four collectors converge on one alerting pipeline:
 └── cspc-ictu-monitoring-system.mwb     ← MySQL Workbench EER model (the ER DIAGRAM)
 ```
 
-> ⚠️ **The `.mwb` is documentation, not the schema source of truth** — that is
+> **The `.mwb` is documentation, not the schema source of truth** — that is
 > `v13_cspc-ictu-monitoring-system.sql`. Never forward-engineer a deployment schema from
 > the model: it was untracked once (`dbc0177`) precisely because a stale copy was used that
 > way and produced a database missing eight migrations. It is current as of v13 (24 tables,
@@ -144,11 +144,11 @@ npm install
 npm run dev                 # → http://localhost:5173
 ```
 
-> ⚠️ **First sign-in on a fresh database lands `pending` with nobody able to approve it** —
+> **First sign-in on a fresh database lands `pending` with nobody able to approve it** —
 > the schema seeds no admin row. Promote your account by hand once, then use the UI. See
 > [`deployment-guide.md`](deployment-guide.md) §4.3.
 
-> ⚠️ **Google allows only `localhost` or HTTPS as a JavaScript origin**, so a raw
+> **Google allows only `localhost` or HTTPS as a JavaScript origin**, so a raw
 > `http://<LAN-IP>:5173` cannot sign in. On-prem needs an HTTPS hostname before go-live.
 
 ### Environment variables
@@ -393,20 +393,20 @@ be impossible.
 
 | Page | Admin | IT Staff |
 |------|:-----:|:--------:|
-| Dashboard | ✅ | ✅ |
-| Server Metrics | ✅ | ✅ |
-| Network Monitoring | ✅ | ✅ |
-| MikroTik Network | ✅ | ✅ |
-| UPS Monitoring | ✅ | ✅ |
-| Environment | ✅ | ✅ |
-| Air Conditioner | ✅ | ✅ |
-| Alerts | ✅ | ✅ |
-| Analytics | ✅ | ✅ |
-| History & Logs | ✅ | ✅ |
-| Reports | ✅ | ✅ |
-| Settings | ✅ | ✅ |
-| User Management | ✅ | ❌ |
-| Alert Rules | ✅ | ❌ |
+| Dashboard | ✓ | ✓ |
+| Server Metrics | ✓ | ✓ |
+| Network Monitoring | ✓ | ✓ |
+| MikroTik Network | ✓ | ✓ |
+| UPS Monitoring | ✓ | ✓ |
+| Environment | ✓ | ✓ |
+| Air Conditioner | ✓ | ✓ |
+| Alerts | ✓ | ✓ |
+| Analytics | ✓ | ✓ |
+| History & Logs | ✓ | ✓ |
+| Reports | ✓ | ✓ |
+| Settings | ✓ | ✓ |
+| User Management | ✓ | x |
+| Alert Rules | ✓ | x |
 
 Source of truth: `frontend/src/data/users.ts` (`roleConfig`) and `requireRole(...)` on
 each route.
