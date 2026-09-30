@@ -158,7 +158,7 @@ async function register(host, installKeyId = null) {
 
     const [dev] = await conn.query(
       `INSERT INTO devices (ip_address, device_name, device_type, status, location)
-       VALUES (?, ?, 'server', 'pending', ?)`,
+       VALUES (?, ?, 'server', 'offline', ?)`,
       [host.ip_address || null, host.hostname || "unknown-server", host.location || "CSPC-ICTU Server Room"],
     );
     const deviceId = dev.insertId;
