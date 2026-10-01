@@ -47,10 +47,10 @@ part works internally* see `CLAUDE.md`, `server-metrics.md`, `google-oauth.md`, 
         │  /api/ + /socket.io/ ─▶ :3000   everything else ─▶ :8080
         └───────────────────────────┬───────────────────────────┘
    ┌──────────────── CAMPUS SERVER (on-prem, docker compose) ─────────────────┐
-   │   backend   container  :3000  Node + Express + Socket.IO + pollers       │
-   │   frontend  container  :8080  nginx serving the built dashboard          │
-   │   db        container  MariaDB 10.11   (not published to the host)       │
-   │   influxdb  container  InfluxDB 2.7    (not published to the host)       │
+   │   dc-backend   :3000  Node + Express + Socket.IO + pollers              │
+   │   dc-frontend  :8080  nginx serving the built dashboard                 │
+   │   dc-db        MariaDB 10.11   (not published to the host)              │
+   │   dc-influxdb  InfluxDB 2.7    (not published to the host)              │
    └──────────────────────────────────────────────────────────────────────────┘
         ▲ Socket.IO(deviceKey)        ▲ HTTP Bearer         ▲ SNMP / RouterOS API / ICMP
    ESP32 env node            Go agents ON campus        Routers/UPS/MikroTik
@@ -66,6 +66,20 @@ internet is down. A Go agent on a server **off campus** sends to the public
 **Five deployable units:** (1) MariaDB, (2) InfluxDB, (3) backend, (4) frontend,
 (5) the edge collectors (Go agents on each server + the ESP32 firmware) — units 1–4 are the
 four containers in `docker-compose.yml`, on the one campus server.
+
+**Container names.** Every container carries a `dc-` prefix (*datacenter*) so it is easy to
+pick out in `docker ps` on a server that runs other things too:
+
+| Service (in `docker compose …`) | Container (in plain `docker …`) | What it is |
+|---|---|---|
+| `db` | `dc-db` | MariaDB 10.11 |
+| `influxdb` | `dc-influxdb` | InfluxDB 2.7 |
+| `backend` | `dc-backend` | Node backend, `:3000` |
+| `frontend` | `dc-frontend` | nginx + dashboard, `:8080` |
+
+`docker compose` commands take the **service** name (`docker compose logs -f backend`);
+plain `docker` commands take the **container** name (`docker logs -f dc-backend`). Both
+reach the same container. This guide uses the `docker compose` form throughout.
 
 ---
 
@@ -246,6 +260,7 @@ chmod 600 .env backend/.env
 ```bash
 docker compose up -d --build
 docker compose ps                   # all four "healthy" after ~1-2 min on the first start
+                                    #   (dc-db, dc-influxdb, dc-backend, dc-frontend)
 docker compose logs -f backend      # expect "Server running on port 3000", no DB/Influx errors
 ```
 
@@ -306,6 +321,15 @@ docker compose up -d backend           # after editing backend/.env — NOT `res
 docker compose up -d --build frontend  # after changing VITE_* in the root .env
 git pull && docker compose up -d --build   # update to a new version
 docker compose down                    # stop everything, KEEP the data
+```
+
+The same with plain `docker`, by container name (see the table in [§0](#0-architecture-at-a-glance-what-you-actually-deploy) — `dc-` = datacenter):
+
+```bash
+docker ps --filter name=dc-            # just this system's containers
+docker logs -f dc-backend              # = docker compose logs -f backend
+docker exec -it dc-db mariadb -u cspc -p cspc-ictu-monitoring-system
+docker stats dc-backend dc-db dc-influxdb dc-frontend   # CPU / memory per container
 ```
 
 ⚠️ **`restart` does not re-read `backend/.env`** — `env_file` is read when a container is
@@ -1798,7 +1822,7 @@ Full walkthrough — bucket, keys, rclone config, connection test, restore, and 
 
 ## 12. Post-deploy verification checklist
 
-- [ ] `docker compose ps` shows all four containers **healthy**, and `docker compose logs backend`
+- [ ] `docker compose ps` shows all four containers (`dc-db`, `dc-influxdb`, `dc-backend`, `dc-frontend`) **healthy**, and `docker compose logs backend`
       shows `Server running on port 3000` with no DB/Influx errors (manual install: `node src/server.js`).
 - [ ] `https://datacenter.cspc.edu.ph/` loads the dashboard **from off the campus network** (test on phone mobile data, WiFi off).
 - [ ] Live data updates on the public URL — confirms ICTU's proxy passes WebSocket upgrades.
