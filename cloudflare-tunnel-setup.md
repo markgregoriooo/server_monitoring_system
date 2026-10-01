@@ -5,7 +5,7 @@ forwarding, no router changes.
 
 ```
 Browser ──https──▶ Cloudflare ──tunnel──▶ this PC ┬─ :3001 backend   (/api, /socket.io)
-                                                  └─ :8080 dashboard (everything else)
+                                                  └─ :8081 dashboard (everything else)
 
 Agents + ESP32 ──── LAN, straight to 192.168.100.39:3001 ────▶   (never use the domain)
 ```
@@ -31,12 +31,12 @@ Wait for the startup lines to stop.
 ### Window 2 — dashboard
 ```powershell
 cd "C:\Users\Mark Angelo\Documents\server-infrastructure-monitoring-system-webSystem\frontend"
-npx serve -s dist -l 8080
+npx serve -s dist -l 8081
 ```
-Wait for `Accepting connections at http://localhost:8080`.
+Wait for `Accepting connections at http://localhost:8081`.
 
 ⚠️ **`npx serve`, never `npm run dev`.** `npm run dev` starts Vite on port **5173**; the tunnel
-points at **8080**, so you would get `502 Bad Gateway`. It must also be the **built** `dist` —
+points at **8081**, so you would get `502 Bad Gateway`. It must also be the **built** `dist` —
 that is the only copy with the tunnel URL compiled into it.
 
 ⚠️ **`-s` is required.** Without it, pressing F5 on any page gives a 404.
@@ -133,7 +133,7 @@ Debug: `cloudflared tunnel run --loglevel debug cspc-monitoring`
 | `frontend/.env` | `VITE_API_URL` | `https://monitoring.cspc-ictu.stream` |
 | `backend/.env` | `WEB_ORIGIN` | `https://monitoring.cspc-ictu.stream,…` |
 | `backend/.env` | `TRUST_PROXY` | `1` |
-| `~/.cloudflared/config.yml` | `service:` | `http://localhost:3001` / `:8080` |
+| `~/.cloudflared/config.yml` | `service:` | `http://localhost:3001` / `:8081` |
 | `agent.conf` (each server) | `API_URL` | `http://192.168.100.39:3001` |
 | `secrets.h` (ESP32) | `BACKEND_HOST` | `192.168.100.39` |
 
@@ -179,7 +179,7 @@ ingress:
     path: ^/socket.io/
     service: http://localhost:3001
   - hostname: monitoring.cspc-ictu.stream
-    service: http://localhost:8080
+    service: http://localhost:8081
   - service: http_status:404
 ```
 ⚠️ Order matters — first match wins, catch-all last. Miss `/socket.io/` and the dashboard loads

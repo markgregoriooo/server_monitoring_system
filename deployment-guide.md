@@ -44,11 +44,11 @@ part works internally* see `CLAUDE.md`, `server-metrics.md`, `google-oauth.md`, 
                  ▼                                  ▼
         ┌──────────────── ICTU's reverse proxy ────────────────┐
         │  ICTU's hostname + TLS certificate (ICTU manages it)  │
-        │  /api/ + /socket.io/ ─▶ :3001   everything else ─▶ :8080
+        │  /api/ + /socket.io/ ─▶ :3001   everything else ─▶ :8081
         └───────────────────────────┬───────────────────────────┘
    ┌──────────────── CAMPUS SERVER (on-prem, docker compose) ─────────────────┐
    │   dc-backend   :3001  Node + Express + Socket.IO + pollers              │
-   │   dc-frontend  :8080  nginx serving the built dashboard                 │
+   │   dc-frontend  :8081  nginx serving the built dashboard                 │
    │   dc-db        MariaDB 10.11   (not published to the host)              │
    │   dc-influxdb  InfluxDB 2.7    (not published to the host)              │
    └──────────────────────────────────────────────────────────────────────────┘
@@ -75,7 +75,7 @@ pick out in `docker ps` on a server that runs other things too:
 | `db` | `dc-db` | MariaDB 10.11 |
 | `influxdb` | `dc-influxdb` | InfluxDB 2.7 |
 | `backend` | `dc-backend` | Node backend, `:3001` |
-| `frontend` | `dc-frontend` | nginx + dashboard, `:8080` |
+| `frontend` | `dc-frontend` | nginx + dashboard, `:8081` |
 
 `docker compose` commands take the **service** name (`docker compose logs -f backend`);
 plain `docker` commands take the **container** name (`docker logs -f dc-backend`). Both
@@ -96,7 +96,7 @@ sensor that never appears.
 |---|---|---|---|
 | 1 | root `.env` (Docker) — or `frontend/.env` (manual install) | `VITE_API_URL=https://datacenter.cspc.edu.ph` | **hostname** |
 | 2 | `backend/.env` | `WEB_ORIGIN=https://datacenter.cspc.edu.ph` | **hostname** |
-| 3 | ICTU's proxy config (theirs, not ours) | `/api/` + `/socket.io/` → `<server>:3001`, the rest → `<server>:8080` | **server LAN IP / localhost** |
+| 3 | ICTU's proxy config (theirs, not ours) | `/api/` + `/socket.io/` → `<server>:3001`, the rest → `<server>:8081` | **server LAN IP / localhost** |
 | 4 | the ESP32's **setup page** (hold its button 3 s — §8.2) | Backend IP `<server-LAN-IP>`, port `3001` | **LAN IP** |
 | 5 | *(a command)* agent installer, **on-campus** server | `install.sh http://<server-LAN-IP>:3001 AIK-<key>` | **LAN IP** |
 | 6 | *(a command)* agent installer, **off-campus** server | `install.sh https://datacenter.cspc.edu.ph AIK-<key>` | **hostname** |
@@ -270,13 +270,13 @@ the root `.env`. Neither happens again — an existing volume is never re-initia
 
 ### D.5 One port or two for ICTU's proxy
 
-The containers publish **two** ports: `3001` (backend) and `8080` (dashboard). ICTU's proxy
+The containers publish **two** ports: `3001` (backend) and `8081` (dashboard). ICTU's proxy
 can use them either way:
 
 | Option | ICTU's proxy points at | Set `TRUST_PROXY` to |
 |---|---|---|
-| **A — two upstreams (default)** | `/api/` + `/socket.io/` → `:3001`, everything else → `:8080` | `1` |
-| **B — one upstream** | everything → `:8080`; our nginx container splits `/api/` + `/socket.io/` to the backend itself | `2` |
+| **A — two upstreams (default)** | `/api/` + `/socket.io/` → `:3001`, everything else → `:8081` | `1` |
+| **B — one upstream** | everything → `:8081`; our nginx container splits `/api/` + `/socket.io/` to the backend itself | `2` |
 
 For **B**, uncomment the two `location` blocks at the bottom of `frontend/nginx.conf`, then
 `docker compose up -d --build frontend`. B is simpler for ICTU (one address to configure)
@@ -1088,8 +1088,8 @@ vars at build time → **rebuild after any change** (`npm run build`).
 npm run build          # → frontend/dist/  (static SPA)
 ```
 
-`frontend/dist/` is served on port 8080 — by the nginx container in Docker (§D), or by
-`npx serve -s dist -l 8080` on a manual install ([§5B.5](#5b5-serve-the-built-dashboard-on-8080)) — and
+`frontend/dist/` is served on port 8081 — by the nginx container in Docker (§D), or by
+`npx serve -s dist -l 8081` on a manual install ([§5B.5](#5b5-serve-the-built-dashboard-on-8081)) — and
 the proxy in front forwards to it.
 (For local development instead:
 `npm run dev` → `http://localhost:5173`.)
@@ -1153,7 +1153,7 @@ requirements below.
 
 | # | Requirement | What breaks without it |
 |---|---|---|
-| 1 | **Route by path**: `/api/` and `/socket.io/` → `<server>:3001`; everything else → `<server>:8080`. (Or everything → `:8080` with option B, §D.5) | Login page loads, every panel is empty |
+| 1 | **Route by path**: `/api/` and `/socket.io/` → `<server>:3001`; everything else → `<server>:8081`. (Or everything → `:8081` with option B, §D.5) | Login page loads, every panel is empty |
 | 2 | **Pass WebSocket upgrades** on `/socket.io/` (`Upgrade` + `Connection: upgrade`, HTTP/1.1), with a long read timeout | Dashboard loads but no chart moves, no toast, no bell count — the easiest one to miss because everything *looks* fine |
 | 3 | **Send `X-Forwarded-For` and `X-Forwarded-Proto`** | Every visitor logs as the proxy's IP (one shared rate-limit bucket for the whole campus); HSTS is never sent |
 | 4 | **Allow request bodies of at least 2 MB** on `/api/` | Report logo uploads (up to 2 MB) and agent back-fill after an outage are refused with 413 |
@@ -1195,7 +1195,7 @@ server {
     }
 
     location / {
-        proxy_pass http://<server>:8080;
+        proxy_pass http://<server>:8081;
         proxy_set_header Host $host;
     }
 }
@@ -1301,7 +1301,7 @@ The tunnel splits a single hostname by URL **path**:
 ```
                                     ┌─ /api/        ─┐
 Browser ─https─▶ Cloudflare ─tunnel─┤ /socket.io/   ─┼─▶ localhost:3001   backend
-                                    └─ everything else ─▶ localhost:8080  dashboard files
+                                    └─ everything else ─▶ localhost:8081  dashboard files
 
 ESP32 + on-campus Go agents ── LAN, straight to <server-LAN-IP>:3001 ──▶
 off-campus Go agents ── https://<the domain> ── through the tunnel like a browser
@@ -1353,7 +1353,7 @@ ingress:
     service: http://localhost:3001
 
   - hostname: monitoring.cspc-ictu.stream
-    service: http://localhost:8080
+    service: http://localhost:8081
 
   - service: http_status:404
 ```
@@ -1370,12 +1370,12 @@ cloudflared tunnel ingress rule https://monitoring.cspc-ictu.stream/api/servers
 # must answer: service: http://localhost:3001
 ```
 
-### 5B.5 Serve the built dashboard on :8080
+### 5B.5 Serve the built dashboard on :8081
 
 ```bash
 cd /opt/cspc-monitoring/frontend
 npm run build
-npx serve -s dist -l 8080
+npx serve -s dist -l 8081
 ```
 
 ⚠️ **`-s` is required.** Without it, a deep link or F5 on `/alerts` returns 404 instead of
@@ -1399,7 +1399,7 @@ It reconnects by itself after a network drop or a reboot. No cron, no watchdog.
 | Process | Port | Started by |
 |---|---|---|
 | backend | 3001 | pm2 / systemd (§3.2) |
-| dashboard files | 8080 | pm2 / systemd |
+| dashboard files | 8081 | pm2 / systemd |
 | `cloudflared` | — | systemd (§5B.6) |
 | MySQL + InfluxDB | 3306 / 8086 | systemd |
 
@@ -1613,11 +1613,11 @@ on the same network segment. That is why §9.1 limits port 3001 to the ESP32 and
 |---|---|---|---|
 | **443** (+ 80 → redirect) | **ICTU's proxy** | HTTPS front door | the internet — ICTU manages it |
 | 3001 | campus server | backend container (HTTP + WebSocket) | ICTU's proxy, on-campus Go agents, ESP32 |
-| 8080 | campus server | dashboard container (nginx) | ICTU's proxy only |
+| 8081 | campus server | dashboard container (nginx) | ICTU's proxy only |
 | — | inside Docker | MariaDB, InfluxDB | the backend container only — **not published to the host at all** |
 
-- **Only ICTU's proxy faces the internet.** 3001 and 8080 are campus-side, plain HTTP.
-- **8080 should be reachable by ICTU's proxy only.** Opened to the whole LAN it serves the
+- **Only ICTU's proxy faces the internet.** 3001 and 8081 are campus-side, plain HTTP.
+- **8081 should be reachable by ICTU's proxy only.** Opened to the whole LAN it serves the
   dashboard over plain HTTP, around the certificate.
 - MariaDB and InfluxDB have no `ports:` in `docker-compose.yml`, so nothing outside the Docker
   network can reach them. Keep it that way.
@@ -1654,7 +1654,7 @@ sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3001 -j DROP
 sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3001 -s <ESP32_IP>      -j ACCEPT
 sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3001 -s <AGENT_SUBNET>  -j ACCEPT  # e.g. 10.10.20.0/24
 sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3001 -s <ICTU_PROXY_IP> -j ACCEPT
-# dashboard: host 8080 → container 80, and DOCKER-USER sees the CONTAINER port
+# dashboard: host 8081 → container 80, and DOCKER-USER sees the CONTAINER port
 sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 80 -j DROP
 sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 80 -s <ICTU_PROXY_IP> -j ACCEPT
 

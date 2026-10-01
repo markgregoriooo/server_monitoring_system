@@ -59,7 +59,7 @@ docker compose down              # stop, keep data;  `down -v` ALSO DELETES the 
 Four containers, named `dc-db` / `dc-influxdb` / `dc-backend` / `dc-frontend` (`container_name`, "dc" = datacenter,
 so ICTU can spot them in `docker ps`). `docker compose` commands and `DB_HOST`/`INFLUX_URL` still use the SERVICE
 names below — `docker compose logs backend`, but `docker logs dc-backend`. `db` (MariaDB 10.11 — not MySQL, the v13 dump and the alert-rule generated
-columns were verified on MariaDB), `influxdb` (2.7), `backend` (:3001), `frontend` (nginx, :8080).
+columns were verified on MariaDB), `influxdb` (2.7), `backend` (:3001), `frontend` (nginx, :8081).
 `v13_cspc-ictu-monitoring-system.sql` is mounted into `docker-entrypoint-initdb.d`, so it
 loads **once**, on an empty volume, and never again. Right after it, `ops/docker/first-admin.sh` (mounted as
 `02-first-admin.sh`) creates `FIRST_ADMIN_EMAIL` from the root `.env` as an **active admin**

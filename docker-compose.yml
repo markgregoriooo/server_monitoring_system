@@ -9,7 +9,7 @@
 #      dc-db         MariaDB      users, devices, alerts, reports, audit trail
 #      dc-influxdb   InfluxDB 2   every time-series (environment, servers, SNMP)
 #      dc-backend    this repo    API + Socket.IO + the pollers        :3001
-#      dc-frontend   nginx        the built dashboard                  :8080
+#      dc-frontend   nginx        the built dashboard                  :8081
 #
 #  First run:
 #      cp .env.docker.example .env      # fill it in; compose reads it
@@ -25,7 +25,7 @@
 #      docker compose down -v           # also deletes the volumes = the data
 #
 #  The HTTPS proxy in front (ICTU's, or cloudflared for testing) is not part of
-#  this file; it points at ports 3001 and 8080. See deployment-guide.md §5.
+#  this file; it points at ports 3001 and 8081. See deployment-guide.md §5.
 # ============================================================================
 
 services:
@@ -169,9 +169,10 @@ services:
         VITE_LOGO_SRC: ${VITE_LOGO_SRC:-/logo-128.png}
     restart: unless-stopped
     ports:
-      # 8080 because that is what the tunnel's catch-all rule already points at
-      # (cloudflare-tunnel-setup.md ingress).
-      - "8080:80"
+      # Host port for the dashboard; ICTU's proxy sends everything except /api and
+      # /socket.io here. 8081 because 8080 is taken on ICTU's server. Change it with
+      # FRONTEND_PORT in the root .env — only the left side; nginx listens on 80 inside.
+      - "${FRONTEND_PORT:-8081}:80"
     depends_on:
       - backend
 

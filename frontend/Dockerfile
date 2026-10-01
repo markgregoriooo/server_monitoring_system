@@ -66,7 +66,7 @@ FROM nginx:1.27-alpine
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /build/dist /usr/share/nginx/html
 
-# The tunnel's catch-all points at localhost:8080, which compose maps to this.
+# The tunnel's catch-all points at localhost:8081, which compose maps to this.
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
