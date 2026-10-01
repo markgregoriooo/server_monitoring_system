@@ -1,12 +1,15 @@
 # ============================================================================
 #  CSPC-ICTU Monitoring System — the whole stack
 # ----------------------------------------------------------------------------
-#  Four containers on one private network:
+#  Four containers on one private network. Each has a fixed container name with a
+#  `dc-` (datacenter) prefix so they are easy to spot in `docker ps`; the SERVICE
+#  names (db, influxdb, backend, frontend) are unchanged, and are what
+#  `docker compose ...` commands and the backend's DB_HOST/INFLUX_URL use.
 #
-#      db         MariaDB      users, devices, alerts, reports, audit trail
-#      influxdb   InfluxDB 2   every time-series (environment, servers, SNMP)
-#      backend    this repo    API + Socket.IO + the pollers        :3000
-#      frontend   nginx        the built dashboard                  :8080
+#      dc-db         MariaDB      users, devices, alerts, reports, audit trail
+#      dc-influxdb   InfluxDB 2   every time-series (environment, servers, SNMP)
+#      dc-backend    this repo    API + Socket.IO + the pollers        :3000
+#      dc-frontend   nginx        the built dashboard                  :8080
 #
 #  First run:
 #      cp .env.docker.example .env      # fill it in; compose reads it
@@ -31,6 +34,7 @@ services:
   # index (persistent generated columns) were tested on MariaDB.
   db:
     image: mariadb:10.11
+    container_name: dc-db
     restart: unless-stopped
     environment:
       MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD in .env}
@@ -66,6 +70,7 @@ services:
   # ── InfluxDB 2 ───────────────────────────────────────────────────────────
   influxdb:
     image: influxdb:2.7-alpine
+    container_name: dc-influxdb
     restart: unless-stopped
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
@@ -89,6 +94,7 @@ services:
 
   # ── Backend ──────────────────────────────────────────────────────────────
   backend:
+    container_name: dc-backend
     build:
       context: .
       dockerfile: Dockerfile
@@ -140,6 +146,7 @@ services:
 
   # ── Dashboard ────────────────────────────────────────────────────────────
   frontend:
+    container_name: dc-frontend
     build:
       context: .
       dockerfile: frontend/Dockerfile

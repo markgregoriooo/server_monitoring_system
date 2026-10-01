@@ -56,7 +56,9 @@ docker compose logs -f backend
 docker compose up -d backend     # after editing backend/.env — NOT `restart` (env_file is read at container CREATE)
 docker compose down              # stop, keep data;  `down -v` ALSO DELETES the volumes = the data
 ```
-Four containers: `db` (MariaDB 10.11 — not MySQL, the v13 dump and the alert-rule generated
+Four containers, named `dc-db` / `dc-influxdb` / `dc-backend` / `dc-frontend` (`container_name`, "dc" = datacenter,
+so ICTU can spot them in `docker ps`). `docker compose` commands and `DB_HOST`/`INFLUX_URL` still use the SERVICE
+names below — `docker compose logs backend`, but `docker logs dc-backend`. `db` (MariaDB 10.11 — not MySQL, the v13 dump and the alert-rule generated
 columns were verified on MariaDB), `influxdb` (2.7), `backend` (:3000), `frontend` (nginx, :8080).
 `v13_cspc-ictu-monitoring-system.sql` is mounted into `docker-entrypoint-initdb.d`, so it
 loads **once**, on an empty volume, and never again. Right after it, `ops/docker/first-admin.sh` (mounted as
