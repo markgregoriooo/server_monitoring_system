@@ -278,8 +278,11 @@ can use them either way:
 | **A — two upstreams (default)** | `/api/` + `/socket.io/` → `:3001`, everything else → `:8081` | `1` |
 | **B — one upstream** | everything → `:8081`; our nginx container splits `/api/` + `/socket.io/` to the backend itself | `2` |
 
-For **B**, uncomment the two `location` blocks at the bottom of `frontend/nginx.conf`, then
-`docker compose up -d --build frontend`. B is simpler for ICTU (one address to configure)
+**B works out of the box** — the two `location` blocks at the bottom of `frontend/nginx.conf`
+are enabled, so nothing needs uncommenting (under A they are simply never reached). They were
+commented out until 2026-10-01, and the first deployment routed everything to `:8081` anyway:
+`POST /api/auth/google` got the dashboard's HTML back with a 405 and sign-in said **"Cannot
+connect to server"**. B is simpler for ICTU (one address to configure)
 at the cost of one extra hop. Add 1 to `TRUST_PROXY` for every *further* proxy ICTU has in
 front of their own (ask them — §5.3).
 
