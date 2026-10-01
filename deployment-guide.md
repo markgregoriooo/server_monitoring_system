@@ -44,22 +44,22 @@ part works internally* see `CLAUDE.md`, `server-metrics.md`, `google-oauth.md`, 
                  ▼                                  ▼
         ┌──────────────── ICTU's reverse proxy ────────────────┐
         │  ICTU's hostname + TLS certificate (ICTU manages it)  │
-        │  /api/ + /socket.io/ ─▶ :3000   everything else ─▶ :8080
+        │  /api/ + /socket.io/ ─▶ :3001   everything else ─▶ :8080
         └───────────────────────────┬───────────────────────────┘
    ┌──────────────── CAMPUS SERVER (on-prem, docker compose) ─────────────────┐
-   │   dc-backend   :3000  Node + Express + Socket.IO + pollers              │
+   │   dc-backend   :3001  Node + Express + Socket.IO + pollers              │
    │   dc-frontend  :8080  nginx serving the built dashboard                 │
    │   dc-db        MariaDB 10.11   (not published to the host)              │
    │   dc-influxdb  InfluxDB 2.7    (not published to the host)              │
    └──────────────────────────────────────────────────────────────────────────┘
         ▲ Socket.IO(deviceKey)        ▲ HTTP Bearer         ▲ SNMP / RouterOS API / ICMP
    ESP32 env node            Go agents ON campus        Routers/UPS/MikroTik
-   (LAN → :3000 direct)      (LAN → :3000 direct)       (backend polls them)
+   (LAN → :3001 direct)      (LAN → :3001 direct)       (backend polls them)
                                                 + Google OAuth (login) · SMTP (email, optional)
 ```
 
 **Two kinds of collectors, two addresses.** The ESP32 and any Go agent **on the campus LAN**
-send straight to `http://<server-LAN-IP>:3000` — no proxy, and they keep working when the
+send straight to `http://<server-LAN-IP>:3001` — no proxy, and they keep working when the
 internet is down. A Go agent on a server **off campus** sends to the public
 `https://datacenter.cspc.edu.ph` through ICTU's proxy, encrypted, like a browser does.
 
@@ -74,7 +74,7 @@ pick out in `docker ps` on a server that runs other things too:
 |---|---|---|
 | `db` | `dc-db` | MariaDB 10.11 |
 | `influxdb` | `dc-influxdb` | InfluxDB 2.7 |
-| `backend` | `dc-backend` | Node backend, `:3000` |
+| `backend` | `dc-backend` | Node backend, `:3001` |
 | `frontend` | `dc-frontend` | nginx + dashboard, `:8080` |
 
 `docker compose` commands take the **service** name (`docker compose logs -f backend`);
@@ -96,9 +96,9 @@ sensor that never appears.
 |---|---|---|---|
 | 1 | root `.env` (Docker) — or `frontend/.env` (manual install) | `VITE_API_URL=https://datacenter.cspc.edu.ph` | **hostname** |
 | 2 | `backend/.env` | `WEB_ORIGIN=https://datacenter.cspc.edu.ph` | **hostname** |
-| 3 | ICTU's proxy config (theirs, not ours) | `/api/` + `/socket.io/` → `<server>:3000`, the rest → `<server>:8080` | **server LAN IP / localhost** |
-| 4 | the ESP32's **setup page** (hold its button 3 s — §8.2) | Backend IP `<server-LAN-IP>`, port `3000` | **LAN IP** |
-| 5 | *(a command)* agent installer, **on-campus** server | `install.sh http://<server-LAN-IP>:3000 AIK-<key>` | **LAN IP** |
+| 3 | ICTU's proxy config (theirs, not ours) | `/api/` + `/socket.io/` → `<server>:3001`, the rest → `<server>:8080` | **server LAN IP / localhost** |
+| 4 | the ESP32's **setup page** (hold its button 3 s — §8.2) | Backend IP `<server-LAN-IP>`, port `3001` | **LAN IP** |
+| 5 | *(a command)* agent installer, **on-campus** server | `install.sh http://<server-LAN-IP>:3001 AIK-<key>` | **LAN IP** |
 | 6 | *(a command)* agent installer, **off-campus** server | `install.sh https://datacenter.cspc.edu.ph AIK-<key>` | **hostname** |
 
 #### Files you do NOT edit
@@ -108,7 +108,7 @@ sources of truth that disagree:
 
 | File | Why it needs no edit |
 |---|---|
-| `frontend/src/config.ts` | Reads `VITE_API_URL`, falling back to `<page-host>:3000` for LAN development. |
+| `frontend/src/config.ts` | Reads `VITE_API_URL`, falling back to `<page-host>:3001` for LAN development. |
 | `frontend/src/socket/socket.ts` | `io(API_URL)` — imports the same value. **The socket has no separate setting.** |
 | `frontend/src/api/client.ts` | Axios `baseURL`, same value again. |
 
@@ -127,11 +127,11 @@ accept CORS from. **They must match exactly** — same scheme, same host, no tra
 **Server address (3)** — ICTU's proxy forwards to the containers' published ports. If the
 proxy runs on the same machine that is `localhost`; if it is a separate box it is the campus
 server's LAN IP. Either way it is **plain HTTP inside the campus network** — the certificate
-lives on the proxy. A browser asking for `localhost:3000` is asking its **own** laptop.
+lives on the proxy. A browser asking for `localhost:3001` is asking its **own** laptop.
 
-**LAN IP (4, 5)** — the ESP32 and on-campus agents talk to `:3000` directly, never through the
+**LAN IP (4, 5)** — the ESP32 and on-campus agents talk to `:3001` directly, never through the
 proxy. That keeps collection, buzzing and alerting alive when the internet is down — only the
-dashboard and off-campus agents go dark — and it is why §9.1 firewalls `:3000` to the
+dashboard and off-campus agents go dark — and it is why §9.1 firewalls `:3001` to the
 collector subnets rather than closing it.
 
 > ⚠️ **`VITE_API_URL` is compiled into the JavaScript at build time.** With Docker, set it in
@@ -162,7 +162,7 @@ keep calling the developers' Cloudflare address.
 | This guide + the values that are ours to give: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | **The public hostname** (e.g. `datacenter.cspc.edu.ph`) |
 | | **The alert mailbox** (`ictusupport@cspc.edu.ph`) and its **App Password** — generated by whoever owns that mailbox, typed into `backend/.env` by ICTU (D.3). Never a developer's personal one |
 | Registering ICTU's hostname in the Google OAuth client ([§5.4](#54-google-oauth)) | **The reverse proxy and the TLS certificate** ([§5](#5-publish-over-https--ictus-proxy-production)) |
-| Flashing the ESP32 once with the production `DEVICE_SECRET` (§8.1) | Setting the ESP32's WiFi + backend IP from its setup page (§8.2) and firewall rules for port 3000 (§9.1) |
+| Flashing the ESP32 once with the production `DEVICE_SECRET` (§8.1) | Setting the ESP32's WiFi + backend IP from its setup page (§8.2) and firewall rules for port 3001 (§9.1) |
 
 ⚠️ **Hand secrets over separately from the code** — in person, on a USB stick, or through a
 password manager. Never in the repo, an email body or a chat. The server generates its **own**
@@ -261,7 +261,7 @@ chmod 600 .env backend/.env
 docker compose up -d --build
 docker compose ps                   # all four "healthy" after ~1-2 min on the first start
                                     #   (dc-db, dc-influxdb, dc-backend, dc-frontend)
-docker compose logs -f backend      # expect "Server running on port 3000", no DB/Influx errors
+docker compose logs -f backend      # expect "Server running on port 3001", no DB/Influx errors
 ```
 
 On the **first** start MariaDB imports `v13_cspc-ictu-monitoring-system.sql` by itself (it is
@@ -270,12 +270,12 @@ the root `.env`. Neither happens again — an existing volume is never re-initia
 
 ### D.5 One port or two for ICTU's proxy
 
-The containers publish **two** ports: `3000` (backend) and `8080` (dashboard). ICTU's proxy
+The containers publish **two** ports: `3001` (backend) and `8080` (dashboard). ICTU's proxy
 can use them either way:
 
 | Option | ICTU's proxy points at | Set `TRUST_PROXY` to |
 |---|---|---|
-| **A — two upstreams (default)** | `/api/` + `/socket.io/` → `:3000`, everything else → `:8080` | `1` |
+| **A — two upstreams (default)** | `/api/` + `/socket.io/` → `:3001`, everything else → `:8080` | `1` |
 | **B — one upstream** | everything → `:8080`; our nginx container splits `/api/` + `/socket.io/` to the backend itself | `2` |
 
 For **B**, uncomment the two `location` blocks at the bottom of `frontend/nginx.conf`, then
@@ -368,8 +368,8 @@ switch to their Docker mode when it is set. Full steps:
 | An HTTPS hostname + certificate | — | **ICTU's** (e.g. `datacenter.cspc.edu.ph`), on **their** reverse proxy ([§5](#5-publish-over-https--ictus-proxy-production)). **Google rejects a bare LAN IP**, so this is required, not optional. For testing, the Cloudflare Tunnel ([§5B](#5b-cloudflare-tunnel--testing-and-the-defense-only)) |
 | (optional) SMTP mailbox | — | alert + account emails over SMTP (`email-popup-notifications.md` §8); the system works without it |
 
-Network: the backend listens on **0.0.0.0:3000** (all interfaces). On-campus collectors
-(agents, ESP32) reach it directly at the server's LAN IP:3000; browsers and off-campus agents
+Network: the backend listens on **0.0.0.0:3001** (all interfaces). On-campus collectors
+(agents, ESP32) reach it directly at the server's LAN IP:3001; browsers and off-campus agents
 reach it through ICTU's proxy. Give the campus server a **static LAN IP / internal hostname** —
 agents and firmware cache the address, and ICTU's proxy needs a fixed target.
 
@@ -444,7 +444,7 @@ be "no" on an institutional server.
 | **A static LAN IP** (or a reserved DHCP lease) for the server | Agents and the ESP32 firmware **cache the address**. If it moves, every collector goes silent at once and nothing points at DHCP as the cause | Re-flash the ESP32 and re-enroll every agent whenever the lease changes |
 | **Outbound internet from the server** to `github.com` (**port 22** for SSH clones, or 443 for HTTPS) and `registry.npmjs.org` (443) | `git clone` **and** `npm ci` both need it. `npm ci` is required by §1.1.4 regardless of how the code arrives | Method 1 is impossible, and §1.1.4 needs an offline `node_modules` workaround — tell ICTU early, this is the expensive one |
 | **Whether the server sits behind an HTTP proxy**, and its address | `git` and `npm` both need explicit proxy configuration; without it they hang and then time out with no useful error | Installs fail in a way that looks like a broken network |
-| **Inbound firewall**: TCP **3000** open to the subnets holding the monitored servers and the ESP32 | Collectors reach the backend directly on `:3000`, never through the tunnel ([§9.1](#91-restrict-port-3000-to-the-agent-subnets--do-this-on-deploy-day)). **80/443 are no longer needed** | Agents enroll but never deliver metrics; the room shows no sensor data |
+| **Inbound firewall**: TCP **3001** open to the subnets holding the monitored servers and the ESP32 | Collectors reach the backend directly on `:3001`, never through the tunnel ([§9.1](#91-restrict-port-3001-to-the-agent-subnets--do-this-on-deploy-day)). **80/443 are no longer needed** | Agents enroll but never deliver metrics; the room shows no sensor data |
 | **Outbound TCP 7844** allowed from the server | `cloudflared` dials Cloudflare on it. Nothing INBOUND needs opening — that is the point of a tunnel | The tunnel never connects: `failed to connect to the edge` |
 | **A maintenance window** for restarts | The backend restarts on every deploy and config change | Coordinate each restart ad hoc |
 
@@ -851,7 +851,7 @@ npm install
 Create `backend/.env`. Full reference (also in `CLAUDE.md`):
 
 ```dotenv
-PORT=3000
+PORT=3001
 JWT_SECRET=<long-random-string>          # signs app JWTs (1h expiry)
 DEVICE_SECRET=<shared-secret>            # ESP32 socket auth — MUST match firmware deviceSecret
 AGENT_INSTALL_KEY=<shared-secret>        # Go agents present this at enrollment
@@ -993,7 +993,7 @@ not generated here — see `google-oauth.md` and `email-popup-notifications.md` 
 npm run dev            # nodemon src/server.js
 
 # Production (foreground)
-node src/server.js     # entry point is backend/src/server.js  → "Server running on port 3000"
+node src/server.js     # entry point is backend/src/server.js  → "Server running on port 3001"
 ```
 
 > Note: `package.json`'s `start` script points at the old `server.js`; the real entry is
@@ -1067,14 +1067,14 @@ npm install
 
 ```dotenv
 VITE_GOOGLE_CLIENT_ID=<same-web-client-id>.apps.googleusercontent.com
-# Pin the backend to the PUBLIC origin (no :3000). ICTU's proxy (or the test tunnel, §5B)
+# Pin the backend to the PUBLIC origin (no :3001). ICTU's proxy (or the test tunnel, §5B)
 # routes /api and /socket.io to the backend on the same hostname, so the browser talks to
 # one origin. Must match the backend's WEB_ORIGIN exactly.
 VITE_API_URL=https://datacenter.cspc.edu.ph
 ```
 
-> Why set this here: by default the app auto-detects the backend at `<page-host>:3000`
-> (`frontend/src/config.ts`). Behind a proxy, port 3000 isn't public — the API
+> Why set this here: by default the app auto-detects the backend at `<page-host>:3001`
+> (`frontend/src/config.ts`). Behind a proxy, port 3001 isn't public — the API
 > is reached at the page's own origin under `/api`. Pinning `VITE_API_URL` to the public
 > URL makes both the Axios client and Socket.IO use it. (Docker: this value goes in the root
 > `.env` instead — §D.3.)
@@ -1153,7 +1153,7 @@ requirements below.
 
 | # | Requirement | What breaks without it |
 |---|---|---|
-| 1 | **Route by path**: `/api/` and `/socket.io/` → `<server>:3000`; everything else → `<server>:8080`. (Or everything → `:8080` with option B, §D.5) | Login page loads, every panel is empty |
+| 1 | **Route by path**: `/api/` and `/socket.io/` → `<server>:3001`; everything else → `<server>:8080`. (Or everything → `:8080` with option B, §D.5) | Login page loads, every panel is empty |
 | 2 | **Pass WebSocket upgrades** on `/socket.io/` (`Upgrade` + `Connection: upgrade`, HTTP/1.1), with a long read timeout | Dashboard loads but no chart moves, no toast, no bell count — the easiest one to miss because everything *looks* fine |
 | 3 | **Send `X-Forwarded-For` and `X-Forwarded-Proto`** | Every visitor logs as the proxy's IP (one shared rate-limit bucket for the whole campus); HSTS is never sent |
 | 4 | **Allow request bodies of at least 2 MB** on `/api/` | Report logo uploads (up to 2 MB) and agent back-fill after an outage are refused with 413 |
@@ -1177,14 +1177,14 @@ server {
     client_max_body_size 3m;               # report logos are up to 2 MB
 
     location /api/ {
-        proxy_pass http://<server>:3000;
+        proxy_pass http://<server>:3001;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location /socket.io/ {
-        proxy_pass http://<server>:3000;
+        proxy_pass http://<server>:3001;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -1217,7 +1217,7 @@ low and everyone shares the proxy's IP.
 
 | Path to the backend | `TRUST_PROXY` |
 |---|---|
-| ICTU proxy → backend `:3000` (option A) | `1` |
+| ICTU proxy → backend `:3001` (option A) | `1` |
 | ICTU proxy → our nginx container → backend (option B) | `2` |
 | Each further proxy ICTU has in front (a load balancer, a firewall that adds `X-Forwarded-For`) | add `1` |
 
@@ -1300,10 +1300,10 @@ The tunnel splits a single hostname by URL **path**:
 
 ```
                                     ┌─ /api/        ─┐
-Browser ─https─▶ Cloudflare ─tunnel─┤ /socket.io/   ─┼─▶ localhost:3000   backend
+Browser ─https─▶ Cloudflare ─tunnel─┤ /socket.io/   ─┼─▶ localhost:3001   backend
                                     └─ everything else ─▶ localhost:8080  dashboard files
 
-ESP32 + on-campus Go agents ── LAN, straight to <server-LAN-IP>:3000 ──▶
+ESP32 + on-campus Go agents ── LAN, straight to <server-LAN-IP>:3001 ──▶
 off-campus Go agents ── https://<the domain> ── through the tunnel like a browser
 ```
 
@@ -1346,11 +1346,11 @@ credentials-file: /home/<service-user>/.cloudflared/f8859a41-0eea-4c0c-a698-1653
 ingress:
   - hostname: monitoring.cspc-ictu.stream
     path: ^/api/
-    service: http://localhost:3000
+    service: http://localhost:3001
 
   - hostname: monitoring.cspc-ictu.stream
     path: ^/socket.io/
-    service: http://localhost:3000
+    service: http://localhost:3001
 
   - hostname: monitoring.cspc-ictu.stream
     service: http://localhost:8080
@@ -1367,7 +1367,7 @@ Validate:
 ```bash
 cloudflared tunnel ingress validate
 cloudflared tunnel ingress rule https://monitoring.cspc-ictu.stream/api/servers
-# must answer: service: http://localhost:3000
+# must answer: service: http://localhost:3001
 ```
 
 ### 5B.5 Serve the built dashboard on :8080
@@ -1398,7 +1398,7 @@ It reconnects by itself after a network drop or a reboot. No cron, no watchdog.
 
 | Process | Port | Started by |
 |---|---|---|
-| backend | 3000 | pm2 / systemd (§3.2) |
+| backend | 3001 | pm2 / systemd (§3.2) |
 | dashboard files | 8080 | pm2 / systemd |
 | `cloudflared` | — | systemd (§5B.6) |
 | MySQL + InfluxDB | 3306 / 8086 | systemd |
@@ -1514,7 +1514,7 @@ then runs). **Which address to give it depends on where that server is:**
 
 | The monitored server is… | `-ApiUrl` / `API_URL` | Why |
 |---|---|---|
-| **on the campus LAN** | `http://<backend-server-ip>:3000` | direct, no proxy — keeps reporting when the internet is down |
+| **on the campus LAN** | `http://<backend-server-ip>:3001` | direct, no proxy — keeps reporting when the internet is down |
 | **off campus** (another building's network, another site, a cloud VM) | `https://datacenter.cspc.edu.ph` | the only address it can reach; HTTPS encrypts the metrics and the `AGT-` token on the way |
 
 **Get the install key from the dashboard first.** As admin: **Server Metrics → Agent
@@ -1528,12 +1528,12 @@ an expiry, and copy the ready-made command it prints — the key is shown **once
 
 ```powershell
 # Windows — elevated PowerShell, binary in same folder
-.\install.ps1 -ApiUrl "http://<backend-server-ip>:3000" -InstallKey "AIK-<key>"   # on campus
+.\install.ps1 -ApiUrl "http://<backend-server-ip>:3001" -InstallKey "AIK-<key>"   # on campus
 .\install.ps1 -ApiUrl "https://datacenter.cspc.edu.ph" -InstallKey "AIK-<key>"    # off campus
 ```
 ```bash
 # Linux — systemd
-sudo bash install.sh http://<backend-server-ip>:3000 AIK-<key>                   # on campus
+sudo bash install.sh http://<backend-server-ip>:3001 AIK-<key>                   # on campus
 sudo bash install.sh https://datacenter.cspc.edu.ph AIK-<key>                    # off campus
 ```
 
@@ -1581,7 +1581,7 @@ wired.
    characters come from the box's MAC address). The setup page opens by itself; if it does not,
    browse to `http://192.168.4.1`.
 3. Choose the server room's WiFi and enter its password, the **backend IP** (the campus server's
-   **LAN IP** — the ESP32 never uses the public hostname) and the port **`3000`**. Save.
+   **LAN IP** — the ESP32 never uses the public hostname) and the port **`3001`**. Save.
 4. The box joins the WiFi and **tests the backend address**. If nothing answers, the setup page
    reopens with the failure named, so a mistyped IP is caught on the spot.
 5. On success it starts sending `sensorData` every ~3 s → the **Environment** page goes live.
@@ -1601,7 +1601,7 @@ socket events — no reflash needed to retune. The IR codes are real captures fr
 remote (see `CLAUDE.md` → Air Conditioner System).
 
 ⚠️ The ESP32 connects over **plain HTTP on the LAN**, so `DEVICE_SECRET` is readable to anything
-on the same network segment. That is why §9.1 limits port 3000 to the ESP32 and agent subnets.
+on the same network segment. That is why §9.1 limits port 3001 to the ESP32 and agent subnets.
 
 ---
 
@@ -1612,11 +1612,11 @@ on the same network segment. That is why §9.1 limits port 3000 to the ESP32 and
 | Port | Where | Service | Who may connect |
 |---|---|---|---|
 | **443** (+ 80 → redirect) | **ICTU's proxy** | HTTPS front door | the internet — ICTU manages it |
-| 3000 | campus server | backend container (HTTP + WebSocket) | ICTU's proxy, on-campus Go agents, ESP32 |
+| 3001 | campus server | backend container (HTTP + WebSocket) | ICTU's proxy, on-campus Go agents, ESP32 |
 | 8080 | campus server | dashboard container (nginx) | ICTU's proxy only |
 | — | inside Docker | MariaDB, InfluxDB | the backend container only — **not published to the host at all** |
 
-- **Only ICTU's proxy faces the internet.** 3000 and 8080 are campus-side, plain HTTP.
+- **Only ICTU's proxy faces the internet.** 3001 and 8080 are campus-side, plain HTTP.
 - **8080 should be reachable by ICTU's proxy only.** Opened to the whole LAN it serves the
   dashboard over plain HTTP, around the certificate.
 - MariaDB and InfluxDB have no `ports:` in `docker-compose.yml`, so nothing outside the Docker
@@ -1625,11 +1625,11 @@ on the same network segment. That is why §9.1 limits port 3000 to the ESP32 and
 **Testing with the Cloudflare Tunnel (§5B)** adds **outbound 7844** for `cloudflared` and
 needs no inbound port at all.
 
-### 9.1 Restrict port 3000 to the agent subnets — do this on deploy day
+### 9.1 Restrict port 3001 to the agent subnets — do this on deploy day
 
-The backend listens on `0.0.0.0:3000` (`src/server.js`), and it **has to**: on-campus Go agents
-and the ESP32 connect to it directly, not through the proxy. So port 3000 is reachable by anything
-on the campus LAN, and *that is the bypass* — a client talking to `:3000` skips ICTU's proxy
+The backend listens on `0.0.0.0:3001` (`src/server.js`), and it **has to**: on-campus Go agents
+and the ESP32 connect to it directly, not through the proxy. So port 3001 is reachable by anything
+on the campus LAN, and *that is the bypass* — a client talking to `:3001` skips ICTU's proxy
 entirely, which means it also writes its own `X-Forwarded-For`. The backend then believes it,
 so such a client picks its own `req.ip`: its own bucket in every IP-keyed rate limiter
 (sign-in, agent enrollment, metric ingest) and its own value in `system_logs.ip_address` — the
@@ -1642,7 +1642,7 @@ ICTU which VLAN the server room and the monitored servers are on — do not gues
 prefer to enforce this on their own switches/firewall instead; that works just as well.
 
 ⚠️ **With Docker, `ufw` does NOT protect published ports.** Docker writes its own iptables rules
-for `ports:` and they are evaluated before `ufw`'s, so `ufw deny 3000` looks correct and blocks
+for `ports:` and they are evaluated before `ufw`'s, so `ufw deny 3001` looks correct and blocks
 nothing. The rules have to go in the `DOCKER-USER` chain, which Docker checks first and never
 overwrites:
 
@@ -1650,10 +1650,10 @@ overwrites:
 ip -br addr        # find the LAN interface name (e.g. eth0, ens18) → <LAN_IF>
 
 # -I inserts at the TOP, so run these in this order: the DROP ends up LAST.
-sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3000 -j DROP
-sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3000 -s <ESP32_IP>      -j ACCEPT
-sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3000 -s <AGENT_SUBNET>  -j ACCEPT  # e.g. 10.10.20.0/24
-sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3000 -s <ICTU_PROXY_IP> -j ACCEPT
+sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3001 -j DROP
+sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3001 -s <ESP32_IP>      -j ACCEPT
+sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3001 -s <AGENT_SUBNET>  -j ACCEPT  # e.g. 10.10.20.0/24
+sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 3001 -s <ICTU_PROXY_IP> -j ACCEPT
 # dashboard: host 8080 → container 80, and DOCKER-USER sees the CONTAINER port
 sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 80 -j DROP
 sudo iptables -I DOCKER-USER -i <LAN_IF> -p tcp --dport 80 -s <ICTU_PROXY_IP> -j ACCEPT
@@ -1667,13 +1667,13 @@ option B (our nginx container → backend, §D.5) stops working. If ICTU's proxy
 same machine**, it reaches the ports over loopback, which these rules do not touch — leave the
 `<ICTU_PROXY_IP>` lines out.
 
-On a manual install without Docker, plain `ufw allow from … to any port 3000` rules work.
+On a manual install without Docker, plain `ufw allow from … to any port 3001` rules work.
 
 **Browsers and off-campus agents are unaffected** — they arrive through ICTU's proxy, which is
 on the allow list. Verify from a machine outside the allowed range:
 
 ```bash
-curl -m 5 http://<backend-server-ip>:3000/api/policy/version      # expect: timeout / refused
+curl -m 5 http://<backend-server-ip>:3001/api/policy/version      # expect: timeout / refused
 curl -I  https://datacenter.cspc.edu.ph/api/policy/version        # expect: 200 (proxy fine)
 ```
 
@@ -1823,13 +1823,13 @@ Full walkthrough — bucket, keys, rclone config, connection test, restore, and 
 ## 12. Post-deploy verification checklist
 
 - [ ] `docker compose ps` shows all four containers (`dc-db`, `dc-influxdb`, `dc-backend`, `dc-frontend`) **healthy**, and `docker compose logs backend`
-      shows `Server running on port 3000` with no DB/Influx errors (manual install: `node src/server.js`).
+      shows `Server running on port 3001` with no DB/Influx errors (manual install: `node src/server.js`).
 - [ ] `https://datacenter.cspc.edu.ph/` loads the dashboard **from off the campus network** (test on phone mobile data, WiFi off).
 - [ ] Live data updates on the public URL — confirms ICTU's proxy passes WebSocket upgrades.
 - [ ] `system_logs` shows real client IPs, not ICTU's proxy address or a `172.x` Docker address (confirms `TRUST_PROXY` — [§5.3](#53-trust_proxy--ask-ictu-how-many-hops)).
 - [ ] **Google sign-in** works from the public URL (origin added in Google Console — [§5.4](#54-google-oauth)).
 - [ ] An **off-campus** agent (if any) reports through `https://datacenter.cspc.edu.ph` and shows Online.
-- [ ] Port 3000 refuses a machine outside the allow list ([§9.1](#91-restrict-port-3000-to-the-agent-subnets--do-this-on-deploy-day)).
+- [ ] Port 3001 refuses a machine outside the allow list ([§9.1](#91-restrict-port-3001-to-the-agent-subnets--do-this-on-deploy-day)).
 - [ ] First admin promoted ([§4.3](#43-bootstrap-the-first-admin-important--chicken-and-egg)); **Pending registrations** visible under User Management.
 - [ ] **Alert Rules** page shows seeded rules (confirms the schema loaded WITH its data —
       an empty list means the export was structure-only and alerting will be silent).
@@ -1854,11 +1854,11 @@ Full walkthrough — bucket, keys, rclone config, connection test, restore, and 
 
 | Symptom | Likely cause / fix |
 |---|---|
-| Public URL loads the page but API/live data fails | `VITE_API_URL` not set to the public origin, **or set but not rebuilt** (`docker compose up -d --build frontend`) — it is compiled in at build time. Otherwise ICTU's proxy is not routing `/api/` + `/socket.io/` to `:3000` ([§5.1](#51-what-ictus-proxy-must-do)). |
+| Public URL loads the page but API/live data fails | `VITE_API_URL` not set to the public origin, **or set but not rebuilt** (`docker compose up -d --build frontend`) — it is compiled in at build time. Otherwise ICTU's proxy is not routing `/api/` + `/socket.io/` to `:3001` ([§5.1](#51-what-ictus-proxy-must-do)). |
 | Page loads but live data never updates | ICTU's proxy is not passing **WebSocket upgrades** on `/socket.io/` — the most common failure with a proxy you don't control ([§5.1](#51-what-ictus-proxy-must-do)). |
 | Every request logs the same IP | `TRUST_PROXY` lower than the real number of hops ([§5.3](#53-trust_proxy--ask-ictu-how-many-hops)). |
 | Edited `backend/.env`, nothing changed | `docker compose restart` does not re-read it — use `docker compose up -d backend`. |
-| Port 3000 still open to everyone despite `ufw` | Docker bypasses `ufw` — the rules belong in `DOCKER-USER` ([§9.1](#91-restrict-port-3000-to-the-agent-subnets--do-this-on-deploy-day)). |
+| Port 3001 still open to everyone despite `ufw` | Docker bypasses `ufw` — the rules belong in `DOCKER-USER` ([§9.1](#91-restrict-port-3001-to-the-agent-subnets--do-this-on-deploy-day)). |
 | Uploading a report logo fails with 413 | ICTU's proxy body limit is below 2 MB ([§5.1](#51-what-ictus-proxy-must-do)). |
 | API calls blocked (CORS error in console) | Public origin not in `WEB_ORIGIN`. Add the exact hostname; `docker compose up -d backend`. |
 | Login fails from the public URL | Origin not in the Google OAuth **Authorized JavaScript origins** ([§5.4](#54-google-oauth)), or `GOOGLE_CLIENT_ID` ≠ `VITE_GOOGLE_CLIENT_ID`. |
@@ -1866,10 +1866,10 @@ Full walkthrough — bucket, keys, rclone config, connection test, restore, and 
 | First user can't do anything | Still `status='pending'`. Promote in MySQL ([§4.3](#43-bootstrap-the-first-admin-important--chicken-and-egg)). |
 | No alerts ever fire | `alert_rules` is empty → alerting is rules-only → silent. The schema seeds it; if the table is empty the dump was loaded structure-only. |
 | Agent stuck "pending" | Not approved yet (Server Metrics page), or `AGENT_INSTALL_KEY` mismatch. |
-| Agent can't reach backend | On campus: use `http://<backend-server-ip>:3000` and check its subnet is in the §9.1 allow list. Off campus: use `https://datacenter.cspc.edu.ph`, and check ICTU's proxy is not limiting `/api/agents/` + `/api/servers/` to the LAN ([§7](#7-server-agents-go--one-per-monitored-server)). |
+| Agent can't reach backend | On campus: use `http://<backend-server-ip>:3001` and check its subnet is in the §9.1 allow list. Off campus: use `https://datacenter.cspc.edu.ph`, and check ICTU's proxy is not limiting `/api/agents/` + `/api/servers/` to the LAN ([§7](#7-server-agents-go--one-per-monitored-server)). |
 | Agent reports "certificate" / TLS errors | The proxy's certificate is not trusted by that server (self-signed or internal CA) — install the CA on the server, or have ICTU use a public certificate. |
 | Agent 403s and removes itself | The server was **removed** in the dashboard (token revoked). Re-run `--register`. |
-| ESP32 won't connect | `DEVICE_SECRET` in `secrets.h` ≠ the backend's (reflash), or a wrong backend IP/port — hold the setup button 3 s and fix it on the setup page (§8.2), or port 3000 blocks the ESP32's IP (§9.1). |
+| ESP32 won't connect | `DEVICE_SECRET` in `secrets.h` ≠ the backend's (reflash), or a wrong backend IP/port — hold the setup button 3 s and fix it on the setup page (§8.2), or port 3001 blocks the ESP32's IP (§9.1). |
 | Server IP or WiFi changed | Hold the ESP32's setup button 3 s and enter the new values (§8.2) — no reflash. |
 | Analytics shows "need more data" | Expected early — forecasts need ~1–2 weeks of `server_metrics`; alert analytics works day one. |
 

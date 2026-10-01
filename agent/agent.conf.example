@@ -1,7 +1,7 @@
 # Example agent.conf. The real file is written automatically by
 # `cspc-agent --register` once an admin approves the device — you normally
 # do not create it by hand. Shown here for reference.
-API_URL=http://<backend-server-ip>:3000
+API_URL=http://<backend-server-ip>:3001
 DEVICE_TOKEN=AGT-replace-with-approved-token
 DEVICE_ID=1
 INTERVAL_SECONDS=10

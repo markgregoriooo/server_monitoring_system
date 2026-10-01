@@ -39,11 +39,11 @@ systemctl status cspc-monitoring          # expect: active (running)
 # 2. It found its config and started cleanly
 journalctl -u cspc-monitoring -n 30 | grep -i "CONFIG\|injecting env\|Server running"
 #    want:  injecting env (30) from /opt/cspc/backend/.env
-#           Server running on port 3000
+#           Server running on port 3001
 #    NOT:   [CONFIG] Missing in backend/.env: GOOGLE_CLIENT_ID …
 
 # 3. It answers
-curl -sI http://127.0.0.1:3000/api/policy/version | head -1     # HTTP/1.1 200 OK
+curl -sI http://127.0.0.1:3001/api/policy/version | head -1     # HTTP/1.1 200 OK
 
 # 4. ICMP still works (see the NoNewPrivileges warning in the unit file)
 sudo -u cspc bash -c 'cd /opt/cspc/backend && npm run probe -- <a-router-ip>'
@@ -117,7 +117,7 @@ watches it. This is the most common "I changed the setting and nothing happened"
 | Symptom (`journalctl -u cspc-monitoring -n 50`) | Cause |
 |---|---|
 | `[CONFIG] Missing in backend/.env: …` | `.env` is missing those keys, or is unreadable by `cspc` (`chmod 600` + `chown` — §1) |
-| `Error: listen EADDRINUSE … 0.0.0.0:3000` | Something else holds the port — `sudo ss -lptn 'sport = :3000'` |
+| `Error: listen EADDRINUSE … 0.0.0.0:3001` | Something else holds the port — `sudo ss -lptn 'sport = :3001'` |
 | `Could not read /opt/cspc/backend/.env (ENOENT)` | The file is not there. The error names the exact path tried — no guessing |
 | `EACCES` writing `reports/` or `backups/` | `chown` step in §1 missed |
 | `[ICMP] ping could not be started` in the journal | `NoNewPrivileges=true` blocked `ping`, or no `ping` binary. Latency/loss are reported as **null** (not a false outage) — read the ⚠️ block in the unit file |

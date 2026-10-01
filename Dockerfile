@@ -5,7 +5,7 @@
 #      docker build -t cspc-monitoring-backend .
 #
 #  Run — configuration comes from the environment, never from a baked-in file:
-#      docker run -d --name cspc-backend -p 3000:3000 \
+#      docker run -d --name cspc-backend -p 3001:3001 \
 #        --env-file backend/.env \
 #        -v cspc-backups:/app/backups \
 #        -v cspc-reports:/app/reports \
@@ -38,7 +38,7 @@ RUN apk add --no-cache iputils-ping tzdata
 
 ENV NODE_ENV=production \
     TZ=Asia/Manila \
-    PORT=3000
+    PORT=3001
 
 WORKDIR /app
 
@@ -70,18 +70,18 @@ USER node
 # Declared AFTER the chown so a bind mount inherits sane ownership.
 VOLUME ["/app/backups", "/app/reports", "/app/branding"]
 
-# Documentation only — publishing the port is `-p 3000:3000` at run time. The
+# Documentation only — publishing the port is `-p 3001:3001` at run time. The
 # server binds 0.0.0.0 for the ESP32 and the Go agents (src/server.js).
-EXPOSE 3000
+EXPOSE 3001
 
 # GET /api/policy/version is the one public route that needs no database, so it checks
 # the process is serving HTTP without failing during a MySQL blip. start-period covers
 # startup checks and the first poll.
-# ${PORT:-3000}, not ${PORT}: compose's env_file overrides image ENV, and a blank
+# ${PORT:-3001}, not ${PORT}: compose's env_file overrides image ENV, and a blank
 # `PORT=` in backend/.env would make the URL http://127.0.0.1:/api/... while the
-# server still runs on 3000.
+# server still runs on 3001.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-3000}/api/policy/version" || exit 1
+  CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-3001}/api/policy/version" || exit 1
 
 # Exec form, so node is PID 1 and gets SIGTERM directly. The shutdown handler flushes
 # the backup buffer (src/server.js); a shell wrapper would swallow the signal.

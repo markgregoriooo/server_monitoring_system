@@ -49,7 +49,7 @@ func main() {
 	// flag.Type(name, defaultValue, helpText)
 	register := flag.Bool("register", false, "enroll if not already enrolled, then start the metric loop")
 	registerOnly := flag.Bool("register-only", false, "enroll and exit without sending metrics (used by installers)")
-	apiURL := flag.String("api-url", "", "backend base URL, e.g. http://<backend-server-ip>:3000 (enroll mode)")
+	apiURL := flag.String("api-url", "", "backend base URL, e.g. http://<backend-server-ip>:3001 (enroll mode)")
 	installKey := flag.String("install-key", "", "install key from the dashboard, AIK-... (enroll mode)")
 	confPath := flag.String("conf", defaultConfPath(), "path to agent.conf")
 	interval := flag.Int("interval", 10, "metric send interval in seconds (written to conf on enroll)")

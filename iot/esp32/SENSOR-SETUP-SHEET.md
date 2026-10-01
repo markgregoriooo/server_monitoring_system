@@ -24,7 +24,7 @@
    | (network list) | Tap the server room's WiFi — **2.4 GHz only**, the box cannot see 5 GHz networks |
    | Password | That network's password |
    | **Backend IP** | The IP of the PC running the monitoring server, e.g. `192.168.1.10` |
-   | **Backend port** | `3000` unless ICTU has changed it |
+   | **Backend port** | `3001` unless ICTU has changed it |
 
 6. Tap **Save**. The hotspot disappears and the box joins the network.
 7. Open the dashboard. The sensor should appear within about a minute.
@@ -41,7 +41,7 @@ comes straight back**. Tap **Configure WiFi**: a red-edged *Sensor status* panel
 
 > **Sensor status**
 > WiFi: GREGORIO WIFI 2.4G — 192.168.100.55
-> Backend: 192.168.1.10:3000 — **NO ANSWER**. Check the IP, and that the dashboard server
+> Backend: 192.168.1.10:3001 — **NO ANSWER**. Check the IP, and that the dashboard server
 > is running.
 
 Correct the address and save again. You get two tries; after that the box carries on

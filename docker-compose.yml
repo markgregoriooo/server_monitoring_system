@@ -8,7 +8,7 @@
 #
 #      dc-db         MariaDB      users, devices, alerts, reports, audit trail
 #      dc-influxdb   InfluxDB 2   every time-series (environment, servers, SNMP)
-#      dc-backend    this repo    API + Socket.IO + the pollers        :3000
+#      dc-backend    this repo    API + Socket.IO + the pollers        :3001
 #      dc-frontend   nginx        the built dashboard                  :8080
 #
 #  First run:
@@ -25,7 +25,7 @@
 #      docker compose down -v           # also deletes the volumes = the data
 #
 #  The HTTPS proxy in front (ICTU's, or cloudflared for testing) is not part of
-#  this file; it points at ports 3000 and 8080. See deployment-guide.md §5.
+#  this file; it points at ports 3001 and 8080. See deployment-guide.md §5.
 # ============================================================================
 
 services:
@@ -121,10 +121,13 @@ services:
       # Where the files go on the host is BACKUP_HOST_DIR in the root .env.
       BACKUP_DIR: /app/backups
       BACKUP_OFFSITE_MARKER: /app/backups/.last_offsite_sync
+      # Fixed to match `ports:` below, overriding backend/.env. A PORT=3000 left there would
+      # make the backend listen on a port nothing is mapped to. (3000 is taken on ICTU's server.)
+      PORT: 3001
     ports:
       # Published on all interfaces: the ESP32 and the Go agents connect to this port over
       # the campus LAN, not through the proxy. Firewall it to those subnets.
-      - "3000:3000"
+      - "3001:3001"
     volumes:
       # Named volumes, so the data survives `docker compose down` and rebuilds.
       #

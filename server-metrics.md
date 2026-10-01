@@ -35,7 +35,7 @@ updates to the dashboard.
 **The agent speaks only HTTPS to the backend.** It never connects to InfluxDB and never opens
 a socket — Socket.IO is browser↔Node only. Each monitored host holds one credential for one
 endpoint, not database access. Point `-api-url` at the backend's `https://` address (the TLS
-front end); the agent needs no code change for it. Plain `http://…:3000` is for a dev LAN
+front end); the agent needs no code change for it. Plain `http://…:3001` is for a dev LAN
 only — the `AGT-` token rides in the `Authorization` header on every POST, so over HTTP
 anyone on the path can read it and report as that server.
 

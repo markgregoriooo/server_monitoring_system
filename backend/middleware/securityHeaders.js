@@ -44,7 +44,7 @@ export function securityHeaders(_opts = {}) {
     res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), interest-cohort=()");
 
     // HSTS only over real TLS (req.secure reads X-Forwarded-Proto). Over plain HTTP it
-    // would pin http://<ip>:3000 to HTTPS in staff browsers and lock them out.
+    // would pin http://<ip>:3001 to HTTPS in staff browsers and lock them out.
     if (HSTS_MAX_AGE > 0 && (req.secure || _opts.secure === true)) {
       res.setHeader("Strict-Transport-Security", `max-age=${HSTS_MAX_AGE}`);
     }

@@ -166,8 +166,8 @@ const COMMAND_URL = (() => {
   if (!isLocalUrl) return API_URL;
   try {
     const u = new URL(API_URL);
-    // Rebuilt from parts to keep the port and handle IPv6 like http://[::1]:3000.
-    // `<backend-server-ip>` because agents should post to the backend's LAN IP on :3000,
+    // Rebuilt from parts to keep the port and handle IPv6 like http://[::1]:3001.
+    // `<backend-server-ip>` because agents should post to the backend's LAN IP on :3001,
     // not the public hostname. Same placeholder as the deployment guide (§0.1).
     return `${u.protocol}//<backend-server-ip>${u.port ? `:${u.port}` : ""}`;
   } catch {

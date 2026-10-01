@@ -11,7 +11,7 @@
  * Client address for a Socket.IO handshake, using the same `trust proxy` hop count
  * as Express: chain = [peer address, ...X-Forwarded-For reversed], take index `hops`
  * (clamped). With hops = 2, XFF "a, b, c" and peer R, the chain is [R, c, b, a] and
- * the answer is b. Entries past `hops` can be forged if port 3000 is reachable
+ * the answer is b. Entries past `hops` can be forged if port 3001 is reachable
  * directly (see audit A-03).
  *
  * @param {Record<string, unknown>} headers handshake headers

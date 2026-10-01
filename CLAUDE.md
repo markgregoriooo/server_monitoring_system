@@ -59,7 +59,7 @@ docker compose down              # stop, keep data;  `down -v` ALSO DELETES the 
 Four containers, named `dc-db` / `dc-influxdb` / `dc-backend` / `dc-frontend` (`container_name`, "dc" = datacenter,
 so ICTU can spot them in `docker ps`). `docker compose` commands and `DB_HOST`/`INFLUX_URL` still use the SERVICE
 names below — `docker compose logs backend`, but `docker logs dc-backend`. `db` (MariaDB 10.11 — not MySQL, the v13 dump and the alert-rule generated
-columns were verified on MariaDB), `influxdb` (2.7), `backend` (:3000), `frontend` (nginx, :8080).
+columns were verified on MariaDB), `influxdb` (2.7), `backend` (:3001), `frontend` (nginx, :8080).
 `v13_cspc-ictu-monitoring-system.sql` is mounted into `docker-entrypoint-initdb.d`, so it
 loads **once**, on an empty volume, and never again. Right after it, `ops/docker/first-admin.sh` (mounted as
 `02-first-admin.sh`) creates `FIRST_ADMIN_EMAIL` from the root `.env` as an **active admin**
@@ -174,13 +174,13 @@ TRUST_PROXY=            # how many proxy hops in front of the backend may be BEL
                        # `req.ip`, hence its own bucket in every IP-keyed limiter (sign-in 30/15min, agent enrollment
                        # 30/15min, metric ingest) and its own value in `system_logs.ip_address` — the row that IS the
                        # evidence for a Privacy Notice acceptance. Set TRUST_PROXY=0 when nothing is in front.
-                       # The backend listens on 0.0.0.0:3000 for the ESP32 and the Go agents, so :3000 stays directly
+                       # The backend listens on 0.0.0.0:3001 for the ESP32 and the Go agents, so :3001 stays directly
                        # reachable on the LAN whatever nginx does — firewall it to the agent subnets. See audits/api-infra-security-2026-08-25.md
 JSON_BODY_LIMIT=       # max JSON request body; blank = 100kb. The agent batch cap (MAX_BATCH 60, serverMetricsHandler)
                        # is sized to fit inside it — raise both together or a post-outage backfill 413s silently
 HSTS_MAX_AGE_SEC=      # Strict-Transport-Security max-age; blank = 15552000 (180d), 0 disables. Only ever sent over a
                        # real TLS connection (`req.secure` via X-Forwarded-Proto) — sending it on a plain-HTTP LAN
-                       # deployment would pin http://<ip>:3000 to HTTPS in every staff browser and lock them out of a
+                       # deployment would pin http://<ip>:3001 to HTTPS in every staff browser and lock them out of a
                        # host with no certificate. Deliberately no `preload`/`includeSubDomains`: neither is ours to
                        # commit cspc.edu.ph to. See middleware/securityHeaders.js
 SOCKET_HANDSHAKE_MAX_FAILURES= # FAILED Socket.IO handshakes allowed per client address per 15 min; blank = 50.
@@ -262,7 +262,7 @@ Frontend also needs `VITE_GOOGLE_CLIENT_ID` in `frontend/.env` (same client ID; 
 
 ### Backend address (no longer hardcoded in the dashboard)
 The dashboard's backend URL is centralized in `frontend/src/config.ts`, which **auto-detects**
-from the page's own host on port 3000 — so it follows whatever IP you open the dashboard from
+from the page's own host on port 3001 — so it follows whatever IP you open the dashboard from
 and **changing networks needs no edit**. To pin a specific backend (different host / HTTPS),
 set `VITE_API_URL` in `frontend/.env` (then restart `npm run dev`). Backend CORS is driven by
 `WEB_ORIGIN` in `backend/.env` — set `WEB_ORIGIN=*` to allow any origin on a roaming LAN.
@@ -376,7 +376,7 @@ frontend/src/
   index.css                     ← Grafana --gf-* design tokens + JetBrains Mono
   chart/ChartConfig.ts          ← one-time Chart.js registration, imported for side effects. **No zoom plugin**: `chartjs-plugin-zoom` + `hammerjs` backed the Environment page's scroll-to-zoom / drag-to-select and were removed with it (−38 kB from the bundle). The **RangePicker is the only way to change a chart's window.** ⚠️ Charts use a CATEGORY x-axis of preformatted label strings, so a tick callback's `index` argument is the position among the ticks Chart.js chose to DRAW (0…maxTicksLimit-1), NOT the data index — pass the callback's `value` (or `ticks[index].value`) to `getLabelForValue`. Using `index` labelled all seven ticks from the first seven samples, which is why a tick could read "Jun" while the tooltip on that same point read "Jul"
   App.tsx                       ← route tree + ProtectedRoute
-  config.ts                     ← backend URL: auto-detects from page host:3000, VITE_API_URL override
+  config.ts                     ← backend URL: auto-detects from page host:3001, VITE_API_URL override
   api/
     client.ts                   ← Axios instance, auto-attaches Bearer token (baseURL from config.ts)
     api.ts                      ← all API calls, all return ApiResult<T>

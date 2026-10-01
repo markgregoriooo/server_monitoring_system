@@ -39,7 +39,7 @@ test("the API CSP forbids everything, including being framed", () => {
 });
 
 test("HSTS is sent ONLY over TLS", () => {
-  // Over plain HTTP this header would pin http://<lan-ip>:3000 to HTTPS in every
+  // Over plain HTTP this header would pin http://<lan-ip>:3001 to HTTPS in every
   // staff browser and lock them out of a host with no certificate.
   assert.equal(run(securityHeaders()).headers.has("Strict-Transport-Security"), false);
   const secure = run(securityHeaders(), { secure: true }).headers.get("Strict-Transport-Security");

@@ -378,7 +378,7 @@ process.on("uncaughtException", (err, origin) => {
   process.exit(1);
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 // ─── HTTP server timeouts ─────────────────────────────────────────────────────
 // Node's 300s request timeout could hold a socket and a DB connection for minutes;

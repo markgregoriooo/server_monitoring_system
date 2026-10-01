@@ -304,7 +304,7 @@ const doc = new Document({
           [t("Hold "), b("SETUP"), t(". The light turns "), b("magenta"), t(" while the 3 seconds count.")],
           [t("It blinks "), b("green"), t(" once — the hold registered. Let go; the box restarts on its own.")],
           [t("The setup page comes up by itself. On your phone, join the WiFi "), code("CSPC-ICTU-Sensor-XXXX"), t(" (no password) — if the page does not open, go to "), code("http://192.168.4.1"), t(".")],
-          [b("Configure WiFi"), t(" → pick the network ("), b("2.4 GHz only"), t("), type the password, enter the "), b("Backend IP"), t(" and port "), code("3000"), t(".")],
+          [b("Configure WiFi"), t(" → pick the network ("), b("2.4 GHz only"), t("), type the password, enter the "), b("Backend IP"), t(" and port "), code("3001"), t(".")],
           [b("Save"), t(", and wait for the page to say "), b("Connected"), t(".")],
         ]),
         callout([

@@ -29,7 +29,7 @@ COPY frontend/ ./
 # rebuild.
 #
 #   VITE_API_URL          where the browser sends /api and /socket.io.
-#                         Blank = the page's own host on port 3000 (right for a LAN
+#                         Blank = the page's own host on port 3001 (right for a LAN
 #                         install, wrong behind a proxy, where it must be the public
 #                         address with no port).
 #   VITE_GOOGLE_CLIENT_ID the OAuth client id. Public (it is in every page), unlike

@@ -288,7 +288,7 @@ pair there if you want it to join straight away instead.
 | 4 | **Wrong WiFi password** | Pick your network, type a wrong password, Save, then **do nothing** | A countdown appears on the save page; after ~11 s a red panel replaces it **on that same page** — **"Not connected — The WiFi password is wrong"**. No navigation, no scrolling. Nothing saved; retry works |
 | 4b | **5 GHz / absent network** | In the portal type an SSID that is not in range, Save, wait | `/sensorstate` says **"That network was not found"** and names 2.4 GHz as the likely cause |
 | 4c | **Result page reachable directly** | While the portal is up, open `http://192.168.4.1/sensorstate` | The same verdict as a full standalone page — the recovery path when a phone gets knocked off the AP mid-attempt. `?raw=1` on the end returns the bare panel the script uses |
-| 5 | **Correct password + backend IP** | Pick the network, right password, Backend IP = the backend PC's LAN IP, port `3000`, Save | Serial: `Saved to flash` → `[WiFi] IP: …` → **`Backend <ip>:3000 answered.`** The sensor appears on the dashboard within ~30 s |
+| 5 | **Correct password + backend IP** | Pick the network, right password, Backend IP = the backend PC's LAN IP, port `3001`, Save | Serial: `Saved to flash` → `[WiFi] IP: …` → **`Backend <ip>:3001 answered.`** The sensor appears on the dashboard within ~30 s |
 | 6 | **Bad backend IP is caught** | Redo 5 with a deliberately wrong IP (e.g. `192.168.1.222`) | Serial: `did not answer — reopening the portal`. **The portal comes back with a RED banner** naming the address. Fix it, Save, and it goes through |
 | 7 | **Power-cycle** | Unplug, plug in | Serial: `Provisioned: SSID "…"` → connects. **No AP.** Dashboard picks it up again |
 | 8 | **Reflash keeps the config** | Upload the sketch again (Erase Flash **Disabled**) | Still connects on its own. NVS survived |
@@ -358,13 +358,13 @@ staff to do.
 | Line | Means |
 |---|---|
 | `[NET] Nothing provisioned — using the secrets.h defaults.` | NVS is empty. Either the fallbacks take over or the portal opens |
-| `[NET] Provisioned: SSID "x"  backend 10.0.0.5:3000` | Read back from NVS — this is a configured box |
+| `[NET] Provisioned: SSID "x"  backend 10.0.0.5:3001` | Read back from NVS — this is a configured box |
 | `[NET] Press BOOT within 4s to re-run WiFi setup — no.` | The window passed unpressed. Normal |
 | `[NET] Setup portal opening — join WiFi "CSPC-ICTU-Sensor-A4C1" (no password)` | The AP is coming up now (BOOT-forced, or a later round) |
 | `[NET] Trying any stored credentials; failing that, the setup portal opens as …` | First-boot path. An AP appears only if the stored credentials do not work |
-| `[NET] Current backend 10.0.0.5:3000 answered.` | Probed before the form was shown — this is what colours the banner |
+| `[NET] Current backend 10.0.0.5:3001 answered.` | Probed before the form was shown — this is what colours the banner |
 | `[NET] Saved to flash: …` | The portal committed a configuration |
-| `[NET] Backend 10.0.0.5:3000 answered.` | Something is listening. The address is right |
+| `[NET] Backend 10.0.0.5:3001 answered.` | Something is listening. The address is right |
 | `[NET] Backend … did not answer — reopening the portal to correct it.` | Wrong IP, wrong port, backend down, or a firewall |
 | `[WiFi] Saved network unreachable — offline mode, loop() keeps retrying.` | Configured, but the AP is not there. **Deliberately not a portal** |
 | `[NET] No backend address set — readings buffer to the SD card.` | Portal timed out on a blank box. `socketIO` was never begun |

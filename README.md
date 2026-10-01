@@ -59,7 +59,7 @@ Four collectors converge on one alerting pipeline:
 ├── frontend/                         ← React 18 + TypeScript + Vite + Tailwind
 │   └── src/
 │       ├── App.tsx                   ← route tree + ProtectedRoute + the public /privacy page
-│       ├── config.ts · branding.ts   ← backend URL (auto-detects host:3000) + UI naming
+│       ├── config.ts · branding.ts   ← backend URL (auto-detects host:3001) + UI naming
 │       ├── api/{client.ts,api.ts}    ← Axios instance + all calls (ApiResult<T>)
 │       ├── context/                  ← Auth, Theme, Notification
 │       ├── pip/                      ← pop-out live widget: host, context, tiles, builder
@@ -133,7 +133,7 @@ mysql -u root -p < v13_cspc-ictu-monitoring-system.sql
 cd backend
 npm install
 # create backend/.env by hand — see "Environment variables" below
-npm run dev                 # nodemon src/server.js → http://localhost:3000
+npm run dev                 # nodemon src/server.js → http://localhost:3001
 ```
 
 ```bash
@@ -174,7 +174,7 @@ npm run dev                 # → http://localhost:5173
 | Variable | Purpose |
 |---|---|
 | `VITE_GOOGLE_CLIENT_ID` | **required for login** — same client ID as the backend's `GOOGLE_CLIENT_ID` |
-| `VITE_API_URL` | pin a backend (different host / HTTPS). Blank = auto-detect from the page host on port 3000 |
+| `VITE_API_URL` | pin a backend (different host / HTTPS). Blank = auto-detect from the page host on port 3001 |
 | `VITE_APP_NAME` | short name in the UI; blank = `CSPC-ICTU` |
 | `VITE_APP_FULL_NAME` | full institution name; blank = `Camarines Sur Polytechnic Colleges …` |
 | `VITE_APP_SUBTITLE` | sidebar subtitle; blank = `MONITORING` |

@@ -4,10 +4,10 @@ Cloudflare Tunnel publishes the LAN system on a public HTTPS hostname. No nginx,
 forwarding, no router changes.
 
 ```
-Browser ──https──▶ Cloudflare ──tunnel──▶ this PC ┬─ :3000 backend   (/api, /socket.io)
+Browser ──https──▶ Cloudflare ──tunnel──▶ this PC ┬─ :3001 backend   (/api, /socket.io)
                                                   └─ :8080 dashboard (everything else)
 
-Agents + ESP32 ──── LAN, straight to 192.168.100.39:3000 ────▶   (never use the domain)
+Agents + ESP32 ──── LAN, straight to 192.168.100.39:3001 ────▶   (never use the domain)
 ```
 
 Setup is **already done**. Day-to-day you only need Part 1.
@@ -133,8 +133,8 @@ Debug: `cloudflared tunnel run --loglevel debug cspc-monitoring`
 | `frontend/.env` | `VITE_API_URL` | `https://monitoring.cspc-ictu.stream` |
 | `backend/.env` | `WEB_ORIGIN` | `https://monitoring.cspc-ictu.stream,…` |
 | `backend/.env` | `TRUST_PROXY` | `1` |
-| `~/.cloudflared/config.yml` | `service:` | `http://localhost:3000` / `:8080` |
-| `agent.conf` (each server) | `API_URL` | `http://192.168.100.39:3000` |
+| `~/.cloudflared/config.yml` | `service:` | `http://localhost:3001` / `:8080` |
+| `agent.conf` (each server) | `API_URL` | `http://192.168.100.39:3001` |
 | `secrets.h` (ESP32) | `BACKEND_HOST` | `192.168.100.39` |
 
 **Browser → hostname. cloudflared → localhost. Hardware → LAN IP.**
@@ -174,10 +174,10 @@ credentials-file: C:\Users\Mark Angelo\.cloudflared\f8859a41-0eea-4c0c-a698-1653
 ingress:
   - hostname: monitoring.cspc-ictu.stream
     path: ^/api/
-    service: http://localhost:3000
+    service: http://localhost:3001
   - hostname: monitoring.cspc-ictu.stream
     path: ^/socket.io/
-    service: http://localhost:3000
+    service: http://localhost:3001
   - hostname: monitoring.cspc-ictu.stream
     service: http://localhost:8080
   - service: http_status:404

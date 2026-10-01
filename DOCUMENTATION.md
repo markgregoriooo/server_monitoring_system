@@ -143,7 +143,7 @@ server-infrastructure-monitoring-system-webSystem/
 ├── frontend/
 │   └── src/
 │       ├── App.tsx                 ← route tree + ProtectedRoute
-│       ├── config.ts               ← backend URL (auto-detect host:3000, VITE_API_URL override)
+│       ├── config.ts               ← backend URL (auto-detect host:3001, VITE_API_URL override)
 │       ├── api/{client.ts,api.ts}  ← Axios instance + all API calls (ApiResult<T>)
 │       ├── context/{AuthContext,ThemeContext}.tsx
 │       ├── socket/socket.ts        ← shared Socket.IO client (autoConnect:false)
@@ -195,11 +195,11 @@ Provision an InfluxDB org + bucket and an API token with write/read on that buck
 cd backend
 npm install
 # create backend/.env (see section 6)
-npm run dev        # nodemon src/server.js (watch mode) → http://localhost:3000
+npm run dev        # nodemon src/server.js (watch mode) → http://localhost:3001
 # or: node src/server.js   (production)
 ```
 
-> Entry point is `backend/src/server.js`. It binds `0.0.0.0:3000` (all interfaces).
+> Entry point is `backend/src/server.js`. It binds `0.0.0.0:3001` (all interfaces).
 
 ### 3. Frontend
 
@@ -211,7 +211,7 @@ npm run dev        # Vite → http://localhost:5173
 npm run build      # production bundle
 ```
 
-The dashboard's backend URL **auto-detects** from the page host on port 3000
+The dashboard's backend URL **auto-detects** from the page host on port 3001
 (`frontend/src/config.ts`), so roaming between networks needs no edits. Pin a specific
 backend with `VITE_API_URL` in `frontend/.env` (then restart `npm run dev`).
 
@@ -229,7 +229,7 @@ an admin approves it in **Server Metrics → pending**, and the agent then POSTs
 
 | Variable | Purpose |
 |----------|---------|
-| `PORT` | API port (default 3000) |
+| `PORT` | API port (default 3001) |
 | `JWT_SECRET` | Signing secret for app session JWTs |
 | `DEVICE_SECRET` | Shared secret for ESP32 socket auth — must match the firmware constant |
 | `DB_HOST` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_PORT` | MySQL connection |

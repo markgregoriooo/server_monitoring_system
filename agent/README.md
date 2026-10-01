@@ -177,7 +177,7 @@ Everything is driven by command-line flags parsed in `main.go`:
 |------|---------|
 | `--register` | Enroll if not already enrolled, **wait** for admin approval, then **start the metric loop** (one command does it all). |
 | `--register-only` | Enroll and **exit** after approval. Used by the installers — the service then runs the loop separately. |
-| `-api-url URL` | Backend base URL, e.g. `http://<backend-server-ip>:3000`. Required for enrollment. |
+| `-api-url URL` | Backend base URL, e.g. `http://<backend-server-ip>:3001`. Required for enrollment. |
 | `-install-key KEY` | The enrollment key (`AIK-…`), minted by an admin on **Server Metrics → Agent install keys**. Required for enrollment. Used once — the agent then runs on the `AGT-…` token it gets at approval. Revoking the install key blocks new installs; the admin can *also* choose to de-authorise the servers it enrolled, in which case this agent gets a 403, deletes its `agent.conf` and exits (re-run with a live key to come back). |
 | `-conf PATH` | Path to `agent.conf`. Defaults to **next to the executable** so the installed service finds it regardless of working directory. |
 | `-interval N` | Seconds between metric posts (default **10**). Saved into `agent.conf` at enrollment. |
@@ -186,7 +186,7 @@ So in practice:
 
 ```bash
 # Brand-new machine: enroll, wait for approval, then run forever
-cspc-agent --register -api-url http://<backend-server-ip>:3000 -install-key <KEY> -conf agent.conf
+cspc-agent --register -api-url http://<backend-server-ip>:3001 -install-key <KEY> -conf agent.conf
 
 # Already enrolled (agent.conf exists): just run the loop
 cspc-agent -conf agent.conf
@@ -329,7 +329,7 @@ listed in `server-metrics.md` §5.)
 
 The agent runs on arbitrary servers across the LAN. Keeping it to a single outbound
 HTTP call (no DB drivers, no socket library, no inbound ports) makes it tiny, easy to
-firewall (only the backend's port 3000 needs to be reachable *from* the agent), and
+firewall (only the backend's port 3001 needs to be reachable *from* the agent), and
 trivial to secure later behind HTTPS/a reverse proxy without touching agent code.
 
 ---
@@ -510,7 +510,7 @@ re-pointing it). Plain `KEY=value`:
 
 ```ini
 # Written by `cspc-agent --register` after admin approval. Do not commit.
-API_URL=http://<backend-server-ip>:3000
+API_URL=http://<backend-server-ip>:3001
 DEVICE_TOKEN=AGT-3f9c…           # the permanent bearer token for this machine
 DEVICE_ID=42
 INTERVAL_SECONDS=10
@@ -642,7 +642,7 @@ pauses until you approve in the dashboard, then creates and starts the OS servic
 
 ```powershell
 # Windows — run from an ELEVATED PowerShell, binary in the same folder
-.\install.ps1 -ApiUrl "http://<backend-server-ip>:3000" -InstallKey "<INSTALL_KEY>"
+.\install.ps1 -ApiUrl "http://<backend-server-ip>:3001" -InstallKey "<INSTALL_KEY>"
 ```
 
 - Copies the binary to `C:\Program Files\cspc-agent\`.
@@ -656,7 +656,7 @@ pauses until you approve in the dashboard, then creates and starts the OS servic
 
 ```bash
 # Linux — systemd, binary in the same folder (auto-picks amd64 vs arm64)
-sudo bash install.sh http://<backend-server-ip>:3000 <INSTALL_KEY>
+sudo bash install.sh http://<backend-server-ip>:3001 <INSTALL_KEY>
 ```
 
 - Copies the binary to `/opt/cspc-agent/`, writes `/etc/systemd/system/cspc-agent.service`,
@@ -689,7 +689,7 @@ systemctl status cspc-agent            # check
 sudo systemctl disable --now cspc-agent   # remove
 ```
 
-> Full ops walkthrough (USB folders, firewall rule for port 3000, running on a second
+> Full ops walkthrough (USB folders, firewall rule for port 3001, running on a second
 > machine, UPS notes, troubleshooting table) is in **`server-metrics.md` §2**.
 
 ---
@@ -698,13 +698,13 @@ sudo systemctl disable --now cspc-agent   # remove
 
 ```bash
 # one-time enrollment (blocks until you Approve it in the dashboard), then runs
-go run ./cmd/agent --register -api-url http://<backend-server-ip>:3000 -install-key <KEY> -conf ./agent.conf
+go run ./cmd/agent --register -api-url http://<backend-server-ip>:3001 -install-key <KEY> -conf ./agent.conf
 
 # already enrolled — just run the loop
 make run     # == go run ./cmd/agent -conf ./agent.conf
 ```
 
-On the **same PC as the backend**, use `-api-url http://localhost:3000`. On any other
+On the **same PC as the backend**, use `-api-url http://localhost:3001`. On any other
 machine, use the backend's LAN IP (localhost would point at the wrong machine).
 
 ---

@@ -191,7 +191,7 @@ bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
 #define BACKEND_HOST ""
 #endif
 #ifndef BACKEND_PORT
-#define BACKEND_PORT 3000
+#define BACKEND_PORT 3001
 #endif
 
 /* The live configuration: starts from the secrets.h fallbacks and is replaced by
