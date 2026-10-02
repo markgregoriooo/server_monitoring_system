@@ -158,13 +158,13 @@ const gb = (bytes) => +((Number(bytes) || 0) / 1e9).toFixed(2);
  * A time-bucketed series for a chart, from InfluxDB. The tables summarise the whole
  * period; a trend line needs it split into buckets.
  *
- * `fn: mean` across the matching devices: exact for one device, the campus average
- * otherwise. `createEmpty: false` leaves a gap where nothing was recorded, and
+ * `fn` (default `mean`) across the matching devices: exact for one device, the campus
+ * average otherwise. `max` is for a series whose peak matters more than its average (gas). `createEmpty: false` leaves a gap where nothing was recorded, and
  * chartMath.segments breaks the line there.
  *
  * @returns {Promise<{labels: string[], byField: Map<string, (number|null)[]>}>}
  */
-async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope, points = 30) {
+async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope, points = 30, fn = "mean") {
   const spanMs = stop.getTime() - start.getTime();
   // At least a minute per bucket — 30 points over a short window would otherwise ask
   // Influx for sub-second aggregation and return noise.
@@ -176,7 +176,7 @@ async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope, poin
       ${scope}
       |> filter(fn: (r) => ${fieldFilter})
       |> group(columns: ["_field"])
-      |> aggregateWindow(every: ${everySec}s, fn: mean, createEmpty: false)`);
+      |> aggregateWindow(every: ${everySec}s, fn: ${fn}, createEmpty: false)`);
 
   // One column per distinct timestamp, so every field lines up on the same x axis even
   // when one of them stopped reporting partway through.
@@ -211,10 +211,16 @@ async function buildEnvironment(start, stop) {
       |> aggregateWindow(every: 1d, fn: ${fn}, timeSrc: "_start", createEmpty: false)
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")`;
 
-  const [means, maxes, mins] = await Promise.all([
+  // The charts use ~30 time buckets over the period, like the server report, not one
+  // point per day: a report over a day or two of data would otherwise be a lone dot.
+  const [means, maxes, mins, climate, gas] = await Promise.all([
     fluxRows(q("mean")),
     fluxRows(q("max")),
     fluxRows(q("min")),
+    fluxTimeSeries("sensor_environment",
+      `r._field == "temperature" or r._field == "humidity"`, start, stop, ""),
+    fluxTimeSeries("sensor_environment",
+      `r._field == "mq2_1_ppm" or r._field == "mq2_2_ppm"`, start, stop, "", 30, "max"),
   ]);
 
   const byDay = new Map();
@@ -287,32 +293,33 @@ async function buildEnvironment(start, stop) {
           : "—",
       },
     ],
-    // Ascending for the chart — the table is newest-first, but a time axis that ran
-    // backwards would be read wrong by everyone.
-    charts: (() => {
-      const asc = [...days].reverse();
-      if (!asc.length) return [];
-      const labels = asc.map((d) => dayLabel(d.date));
-      return [
-        {
-          // Temperature and humidity share one 0-100 axis: both live in that range, and
-          // it is the pairing ICTU asked for ("Temperature / Humidity").
-          title: "Temperature (°C) and humidity (%)",
-          kind: "line", max: 100, labels,
-          series: [
-            { name: "Avg temp °C", color: "#EF9F27", values: asc.map((d) => d.avgTemp ?? null) },
-            { name: "Avg humidity %", color: "#38BDF8", values: asc.map((d) => d.avgHum ?? null) },
-          ],
-        },
-        {
-          // Gas is ppm — its own axis, or a 300ppm smoke event would be invisible
-          // against a 0-100 scale.
-          title: "Peak gas (ppm)",
-          kind: "line", labels,
-          series: [{ name: "Peak gas", color: "#F472B6", values: asc.map((d) => d.maxGas ?? null) }],
-        },
-      ];
-    })(),
+    charts: [
+      climate.labels.length && {
+        // Temperature and humidity share one 0-100 axis: both live in that range, and
+        // it is the pairing ICTU asked for ("Temperature / Humidity").
+        title: "Temperature (°C) and humidity (%)",
+        kind: "line", max: 100, labels: climate.labels,
+        series: [
+          { name: "Avg temp °C", color: "#EF9F27", values: climate.byField.get("temperature") ?? [] },
+          { name: "Avg humidity %", color: "#38BDF8", values: climate.byField.get("humidity") ?? [] },
+        ].filter((x) => x.values.length),
+      },
+      gas.labels.length && {
+        // Gas is ppm — its own axis, or a 300ppm smoke event would be invisible
+        // against a 0-100 scale. The higher of the two sensors in each bucket.
+        title: "Peak gas (ppm)",
+        kind: "line", labels: gas.labels,
+        series: [{
+          name: "Peak gas", color: "#F472B6",
+          values: gas.labels.map((_, i) => {
+            const vs = ["mq2_1_ppm", "mq2_2_ppm"]
+              .map((f) => gas.byField.get(f)?.[i])
+              .filter((v) => typeof v === "number");
+            return vs.length ? Math.max(...vs) : null;
+          }),
+        }],
+      },
+    ].filter(Boolean),
     // Two tables: the daily readings, and which sensor produced them. Left out when the
     // period has no per-sensor data.
     tables: [
