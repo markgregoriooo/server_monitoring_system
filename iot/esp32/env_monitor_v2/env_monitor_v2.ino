@@ -310,7 +310,11 @@ const char* deviceSecret = DEVICE_SECRET;
 bool socketConfigured = false;
 
 /* ================= MQ-2 CONFIG ============== */
-#define RL_VALUE 10.0
+// Load resistor ON THE MQ-2 MODULE, in kΩ — read the SMD code beside the AO pin
+// (102 = 1 kΩ, the usual one; 103 = 10 kΩ). Must match the board: with 10.0 on a 1 kΩ
+// module, clean air computed as Rs ≈ 1000 kΩ → 0.0 ppm, and calibration was rejected.
+// ⚠️ Changing it invalidates a stored baseline — press Recalibrate after reflashing.
+#define RL_VALUE 1.0
 
 /*
  * ---- Clean-air baseline (Ro), stored in flash -------------
