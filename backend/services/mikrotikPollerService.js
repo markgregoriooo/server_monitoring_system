@@ -18,6 +18,23 @@ import { describeError } from "../utils/httpError.js";
 
 const TIMEOUT_MS = Number(process.env.MIKROTIK_API_TIMEOUT_MS) || 5000;
 
+// Hard ceiling on ONE device's poll inside pollAll. TIMEOUT_MS covers each API call,
+// but a socket left half-open (the backend host changed networks mid-poll, a cable
+// moved) can leave a call pending forever — and pollAll's `polling` guard then skips
+// every later cycle, so the device reads Online with one stored sample and a chart
+// that never fills. pollDeviceNow bypasses the guard, which is why "Add" still works.
+const POLL_DEADLINE_MS = Math.max(TIMEOUT_MS * 6, 30_000);
+
+function withDeadline(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} did not finish within ${ms} ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 // ─── In-memory state (resets on restart, repopulates next cycle) ───────────────
 const prevIface = new Map(); // `${id}:${name}` -> { rx(BigInt), tx(BigInt), t(ms) }
 const latest = new Map(); // id -> shaped summary for GET /api/mikrotik
@@ -340,7 +357,7 @@ async function pollAll(io) {
     const devices = await loadDevices();
     for (const d of devices) {
       try {
-        await pollDevice(io, d);
+        await withDeadline(pollDevice(io, d), POLL_DEADLINE_MS, "poll");
       } catch (err) {
         // Fallback only. API failures are handled inside pollDevice; what lands here is a
         // failure in our own side (label lookup, InfluxDB write, alert check), so the
