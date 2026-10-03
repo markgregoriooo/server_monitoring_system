@@ -196,6 +196,9 @@ async function forecastDiskFull({ deviceId = null, lookbackDays = 30, full = 100
           etaDays: v.etaDays,
           status: v.status,
           confidence: v.confidence,
+          // Kept per volume so the forecast report can list every partition with its own
+          // recommendation, not only the headline's.
+          advice: v.advice,
         }))
         .sort((a, b) => (b.currentPercent ?? -1) - (a.currentPercent ?? -1)),
     });

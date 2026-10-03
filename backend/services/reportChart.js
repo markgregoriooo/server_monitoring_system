@@ -34,9 +34,32 @@ const LEFT_GUTTER = 34; // room for y-axis labels
 const BOTTOM_GUTTER = 16; // room for x-axis labels
 const LEGEND_H = 14;
 
+// For page-break arithmetic only, before there is a doc to measure with: a generous
+// per-character width and a conservative row width, so the estimate errs towards an
+// early page break rather than a legend running into the footer.
+const EST_CHAR_W = 4.8;
+const EST_ROW_W = 440;
+const legendItemW = (nameW) => 10 + nameW + 14;
+
+/** Legend rows: items flow left to right and wrap when the next would overflow. */
+function legendRowCount(widths, rowW) {
+  let rows = 1;
+  let x = 0;
+  for (const w of widths) {
+    if (x > 0 && x + w > rowW) { rows += 1; x = 0; }
+    x += w;
+  }
+  return rows;
+}
+
 /** Total vertical space one chart occupies, for page-break arithmetic. */
-export const chartHeight = (spec) =>
-  18 + PLOT_H + BOTTOM_GUTTER + (spec?.series?.length > 1 ? LEGEND_H : 0) + 10;
+export const chartHeight = (spec) => {
+  const names = (spec?.series ?? []).map((s) => String(s.name ?? ""));
+  const legend = names.length > 1
+    ? LEGEND_H * legendRowCount(names.map((n) => legendItemW(n.length * EST_CHAR_W)), EST_ROW_W)
+    : 0;
+  return 18 + PLOT_H + BOTTOM_GUTTER + legend + 10;
+};
 
 /**
  * Draw one chart at the current position.
@@ -132,15 +155,18 @@ export function drawChart(doc, spec, fonts) {
   let y = plotY + PLOT_H + BOTTOM_GUTTER;
 
   // ── Legend ──
-  // Only with more than one series.
+  // Only with more than one series. Wraps onto another row rather than running off the
+  // page — four gas sensors with location names do not fit on one line.
   if (series.length > 1) {
     let x = plotX;
     doc.fontSize(size);
     series.forEach((s, si) => {
       const color = s.color ?? SERIES_COLORS[si % SERIES_COLORS.length];
+      const w = legendItemW(doc.widthOfString(s.name ?? ""));
+      if (x > plotX && x + w > plotX + plotW) { x = plotX; y += LEGEND_H; }
       doc.rect(x, y + 2, 7, 4).fill(color);
       doc.fillColor(MUTED).text(s.name ?? "", x + 10, y, { lineBreak: false });
-      x += 10 + doc.widthOfString(s.name ?? "") + 14;
+      x += w;
     });
     y += LEGEND_H;
   }

@@ -158,13 +158,16 @@ const gb = (bytes) => +((Number(bytes) || 0) / 1e9).toFixed(2);
  * A time-bucketed series for a chart, from InfluxDB. The tables summarise the whole
  * period; a trend line needs it split into buckets.
  *
- * `fn: mean` across the matching devices: exact for one device, the campus average
- * otherwise. `createEmpty: false` leaves a gap where nothing was recorded, and
- * chartMath.segments breaks the line there.
+ * `fn` (default `mean`) across the matching devices: exact for one device, the campus
+ * average otherwise. `max` is for a series whose peak matters more than its average (gas).
+ * `by` is the column that names a series — `_field` normally, `channel` for `sensor_gas`,
+ * whose sensors share one field and differ by tag. `createEmpty: false` leaves a gap
+ * where nothing was recorded, and chartMath.segments breaks the line there.
  *
  * @returns {Promise<{labels: string[], byField: Map<string, (number|null)[]>}>}
  */
-async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope, points = 30) {
+async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope,
+  { points = 30, fn = "mean", by = "_field" } = {}) {
   const spanMs = stop.getTime() - start.getTime();
   // At least a minute per bucket — 30 points over a short window would otherwise ask
   // Influx for sub-second aggregation and return noise.
@@ -175,8 +178,8 @@ async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope, poin
       |> filter(fn: (r) => r._measurement == "${measurement}")
       ${scope}
       |> filter(fn: (r) => ${fieldFilter})
-      |> group(columns: ["_field"])
-      |> aggregateWindow(every: ${everySec}s, fn: mean, createEmpty: false)`);
+      |> group(columns: ["${by}"])
+      |> aggregateWindow(every: ${everySec}s, fn: ${fn}, createEmpty: false)`);
 
   // One column per distinct timestamp, so every field lines up on the same x axis even
   // when one of them stopped reporting partway through.
@@ -184,9 +187,10 @@ async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope, poin
   const index = new Map(times.map((t, i) => [t, i]));
   const byField = new Map();
   for (const r of rows) {
-    if (!byField.has(r._field)) byField.set(r._field, new Array(times.length).fill(null));
+    const key = String(r[by]);
+    if (!byField.has(key)) byField.set(key, new Array(times.length).fill(null));
     const v = Number(r._value);
-    byField.get(r._field)[index.get(r._time)] = Number.isFinite(v) ? +v.toFixed(2) : null;
+    byField.get(key)[index.get(r._time)] = Number.isFinite(v) ? +v.toFixed(2) : null;
   }
 
   // A day is label enough for a multi-day report; a 24-hour one needs the clock.
@@ -200,6 +204,10 @@ async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope, poin
   return { labels, byField };
 }
 
+// Per-sensor gas colours — the Environment page's (GAS_SERIES in Environment.tsx), so a
+// sensor is the same colour on screen and on paper.
+const GAS_SERIES = ["#A78BFA", "#F472B6", "#FBBF24", "#2DD4BF"];
+
 // ─── Data builders (return the normalized report payload) ────────────────────
 async function buildEnvironment(start, stop) {
   const fields = `r._field == "temperature" or r._field == "humidity" or r._field == "mq2_1_ppm" or r._field == "mq2_2_ppm"`;
@@ -211,11 +219,31 @@ async function buildEnvironment(start, stop) {
       |> aggregateWindow(every: 1d, fn: ${fn}, timeSrc: "_start", createEmpty: false)
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")`;
 
-  const [means, maxes, mins] = await Promise.all([
+  // The charts use ~30 time buckets over the period, like the server report, not one
+  // point per day: a report over a day or two of data would otherwise be a lone dot.
+  // Gas is one line PER SENSOR, from `sensor_gas` (tagged by channel), so a third and
+  // fourth MQ-2 appear with no change here. `legacyGas` covers a period from before that
+  // series existed, when only the first two sensors were recorded (mq2_1/mq2_2_ppm).
+  const [means, maxes, mins, climate, gasByChannel, legacyGas] = await Promise.all([
     fluxRows(q("mean")),
     fluxRows(q("max")),
     fluxRows(q("min")),
+    fluxTimeSeries("sensor_environment",
+      `r._field == "temperature" or r._field == "humidity"`, start, stop, ""),
+    fluxTimeSeries("sensor_gas", `r._field == "ppm"`, start, stop, "", { fn: "max", by: "channel" }),
+    fluxTimeSeries("sensor_environment",
+      `r._field == "mq2_1_ppm" or r._field == "mq2_2_ppm"`, start, stop, "", { fn: "max" }),
   ]);
+  const gas = gasByChannel.labels.length
+    ? gasByChannel
+    : {
+        labels: legacyGas.labels,
+        byField: new Map(
+          [["1", "mq2_1_ppm"], ["2", "mq2_2_ppm"]]
+            .filter(([, f]) => legacyGas.byField.has(f))
+            .map(([ch, f]) => [ch, legacyGas.byField.get(f)]),
+        ),
+      };
 
   const byDay = new Map();
   const slot = (d) => {
@@ -287,32 +315,38 @@ async function buildEnvironment(start, stop) {
           : "—",
       },
     ],
-    // Ascending for the chart — the table is newest-first, but a time axis that ran
-    // backwards would be read wrong by everyone.
-    charts: (() => {
-      const asc = [...days].reverse();
-      if (!asc.length) return [];
-      const labels = asc.map((d) => dayLabel(d.date));
-      return [
-        {
-          // Temperature and humidity share one 0-100 axis: both live in that range, and
-          // it is the pairing ICTU asked for ("Temperature / Humidity").
-          title: "Temperature (°C) and humidity (%)",
-          kind: "line", max: 100, labels,
-          series: [
-            { name: "Avg temp °C", color: "#EF9F27", values: asc.map((d) => d.avgTemp ?? null) },
-            { name: "Avg humidity %", color: "#38BDF8", values: asc.map((d) => d.avgHum ?? null) },
-          ],
-        },
-        {
-          // Gas is ppm — its own axis, or a 300ppm smoke event would be invisible
-          // against a 0-100 scale.
-          title: "Peak gas (ppm)",
-          kind: "line", labels,
-          series: [{ name: "Peak gas", color: "#F472B6", values: asc.map((d) => d.maxGas ?? null) }],
-        },
-      ];
-    })(),
+    charts: [
+      climate.labels.length && {
+        // Temperature and humidity share one 0-100 axis: both live in that range, and
+        // it is the pairing ICTU asked for ("Temperature / Humidity").
+        title: "Temperature (°C) and humidity (%)",
+        kind: "line", max: 100, labels: climate.labels,
+        series: [
+          { name: "Avg temp °C", color: "#EF9F27", values: climate.byField.get("temperature") ?? [] },
+          { name: "Avg humidity %", color: "#38BDF8", values: climate.byField.get("humidity") ?? [] },
+        ].filter((x) => x.values.length),
+      },
+      gas.labels.length && {
+        // Gas is ppm — its own axis, or a 300ppm smoke event would be invisible
+        // against a 0-100 scale. One line per sensor, peak per bucket, so the reader can
+        // see which one rose — the point of having several.
+        title: "Peak gas per sensor (ppm)",
+        kind: "line", labels: gas.labels,
+        series: [...gas.byField.keys()]
+          .map(Number)
+          .filter(Number.isFinite)
+          .sort((a, b) => a - b)
+          .map((ch) => {
+            // labelFor falls back to "MQ2-n" when no location is set — don't print it twice.
+            const label = gasSensorService.labelFor(ch);
+            return {
+              name: label === `MQ2-${ch}` ? label : `MQ2-${ch} · ${label}`,
+              color: GAS_SERIES[(ch - 1) % GAS_SERIES.length],
+              values: gas.byField.get(String(ch)),
+            };
+          }),
+      },
+    ].filter(Boolean),
     // Two tables: the daily readings, and which sensor produced them. Left out when the
     // period has no per-sensor data.
     tables: [
@@ -1147,13 +1181,21 @@ async function buildForecast(start, stop, deviceId) {
   const dated = (etaDays) =>
     etaDays == null ? "—" : new Date(Date.now() + etaDays * 86_400_000).toISOString().slice(0, 10);
   const eta = (v) => (v == null ? "—" : `${v} d`);
-  const acting = [...disks, ...upses, ...links].filter((r) => r.advice);
+  // One row per VOLUME, not per server: a capacity report that printed only the
+  // headline partition would leave /boot (or D:\) out of the record entirely. A server
+  // with no per-volume history has only its root series, so it stays one row.
+  const volumes = disks.flatMap((d) =>
+    d.volumes?.length
+      ? d.volumes.map((v) => ({ ...v, name: d.name, historyDays: d.historyDays }))
+      : [d],
+  );
+  const acting = [...volumes, ...upses, ...links].filter((r) => r.advice);
 
   const tables = [
     {
       title: "Disk capacity",
       columns: ["Server", "Volume", "Current %", "Trend %/day", "ETA", "Projected full", "Confidence", "History d"],
-      rows: disks.map((d) => [
+      rows: volumes.map((d) => [
         d.name, d.mount ?? "—", d.currentPercent ?? "—", d.slopePerDay ?? "—",
         d.status === "filling" ? eta(d.etaDays) : d.status,
         d.status === "filling" ? dated(d.etaDays) : "—",
@@ -1206,7 +1248,7 @@ async function buildForecast(start, stop, deviceId) {
   return {
     summary: [
       { label: "Lookback used", value: `${spanDaysReq} days` },
-      { label: "Volumes projected to fill", value: disks.filter((d) => d.status === "filling").length },
+      { label: "Volumes projected to fill", value: volumes.filter((d) => d.status === "filling").length },
       { label: "UPS batteries declining", value: upses.filter((u) => u.status === "declining").length },
       { label: "Interfaces trending up", value: links.filter((l) => l.status === "rising").length },
       { label: "Items needing action", value: acting.length },
