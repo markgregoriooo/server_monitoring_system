@@ -12,6 +12,7 @@ import AddGasSensorModal from "../components/environment/AddGasSensorModal";
 import RangePicker, { DEFAULT_RANGE } from "../components/ui/RangePicker";
 import type { RangeValue } from "../components/ui/RangePicker";
 import { useRoomThresholds } from "../hooks/useRoomThresholds";
+import { useBalancedGrid } from "../hooks/useBalancedGrid";
 import { withGaps } from "../utils/seriesGaps";
 import { fitCanvas } from "../utils/hidpiCanvas";
 import { useCanvasRedraw } from "../hooks/useCanvasRedraw";
@@ -702,10 +703,12 @@ function StatPanel({ title, value, unit, color, segPct, sparkData, max, avg, min
 // ─── StatePanel (Grafana State style) ────────────────────────────────────────
 
 function StatePanel({
-  smokeStatus, environmentStatus, tempStatus, liveHeatIndex,
+  smokeStatus, environmentStatus, tempStatus, liveHeatIndex, span = 1,
 }: {
   smokeStatus: string; environmentStatus: string;
   tempStatus: string; liveHeatIndex: number | string;
+  /** Grid columns to cover — it fills whatever the last row of tiles leaves empty. */
+  span?: number;
 }) {
   // Both statuses arrive normalised, so CRITICAL is the only top band to test — it used to
   // also check DANGER on each, which was the same two conditions under two spellings.
@@ -713,7 +716,8 @@ function StatePanel({
     tempStatus === "CRITICAL" || smokeStatus === "CRITICAL" ? "#F2495C" : "#FF780A";
 
   return (
-    <div className="flex flex-col rounded" style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}` }}>
+    <div className="flex flex-col rounded"
+      style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}`, gridColumn: `span ${span}` }}>
       {/* Panel title */}
       <div className="flex items-center px-3 pt-2.5 pb-1.5"
         style={{ borderBottom: `1px solid ${GF.divider}` }}>
@@ -928,6 +932,8 @@ export default function Environment() {
     () => gasSensorRows.filter((g) => g.enabled).map((g) => g.channel).sort((a, b) => a - b),
     [gasSensorRows],
   );
+  // Row-1 tiles: temperature, humidity, one per fitted gas sensor, then System Status.
+  const statGrid = useBalancedGrid(2 + gasChannels.length + 1, 190, 12);
   // Kept as derived values so the existing channel-1/2 tiles, colours and gauges keep
   // working unchanged; everything NEW reads the maps above.
   const livePPM1: number | string = liveGasCh[1] ?? "--";
@@ -1357,12 +1363,14 @@ export default function Environment() {
       <div className="flex flex-col gap-3 p-4">
 
         {/* Row 1: Stat panels + Status */}
-        {/* Temperature, humidity, one tile per fitted sensor, and the state panel. `auto-fit`
-           with a 190px minimum instead of a fixed column count, since the number of tiles
-           depends on how many sensors are fitted. */}
+        {/* Temperature, humidity, one tile per fitted sensor, and the state panel. The tile
+           count depends on how many sensors are fitted, so the column count is computed
+           (useBalancedGrid): rows are balanced and System Status fills the rest of the last
+           row. Plain `auto-fit` left it alone on a second row once four sensors made seven tiles. */}
         <div
+          ref={statGrid.ref}
           className="grid gap-3"
-          style={{ gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))" }}
+          style={{ gridTemplateColumns: `repeat(${statGrid.cols}, minmax(0, 1fr))` }}
         >
           {/* Coloured by the `temperature` alert rules (utils/envThresholds.ts): gauge, sparkline
              and MAX/AVG/MIN all change colour with the room, at the moment the alert fires. The
@@ -1420,6 +1428,7 @@ export default function Environment() {
             environmentStatus={liveEnvironmentStatus}
             tempStatus={liveTempStatus}
             liveHeatIndex={liveHeatIndex}
+            span={statGrid.lastSpan}
           />
         </div>
 
