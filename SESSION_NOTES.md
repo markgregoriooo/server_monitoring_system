@@ -2672,3 +2672,28 @@ and their preconditions confirmed against live endpoints, but the end-to-end pat
 re-run — doing so would have written metrics and possibly raised alerts on the real
 database. Worth confirming by hand: add a MikroTik with a wrong password (expect a warning
 toast naming the reason), and delete a device mid-poll (expect it to stay gone).
+
+---
+
+## 2026-10-03 — Environment report: one gas line per sensor
+
+The environment report's gas chart drew ONE line, "Peak gas" = the higher of the two
+sensors in each bucket, so the PDF could not show which sensor rose and a 3rd/4th MQ-2
+would never appear. It now reads `sensor_gas` grouped by `channel` (`fluxTimeSeries` takes
+`{ points, fn, by }` — `by: "channel"`), one line per sensor, labelled `MQ2-n · <location>`
+from `gasSensorService.labelFor` and coloured like the Environment page's `GAS_SERIES`. A
+period from before `sensor_gas` existed falls back to `mq2_1_ppm`/`mq2_2_ppm` as channels
+1 and 2. The PDF legend now wraps onto a second row instead of running off the page, and
+`chartHeight` reserves room for it. Verified: 515/515, plus a rendered 4-sensor PDF.
+⚠️ Not run against live InfluxDB (it was down on the dev machine) — generate an environment
+report once to confirm.
+
+## 2026-10-03 — Forecast report: every disk volume, not just the headline
+
+The forecast report's **Disk capacity** table printed one row per server — the headline
+volume from `worstVolumeForecast` — so `/boot` (or `D:\`) never appeared in the record,
+although `forecastDiskFull` had already projected it. It now prints one row per volume
+(`d.volumes`, which now also carries each volume's `advice`), so "Action needed" names the
+partition that is filling and "Volumes projected to fill" counts volumes rather than
+servers. A server with no per-volume history still prints its root row. The Analytics
+page is unchanged: one row per server with the volumes listed beneath. 515/515.
