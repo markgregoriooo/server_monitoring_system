@@ -859,7 +859,31 @@ export default function Analytics() {
                 <Stat label="Predictions checked" value={String(accuracy.totalFolds)} />
                 <Stat label="Horizon" value={`${accuracy.horizonDays}d ahead`} />
               </div>
-              <div className="overflow-x-auto">
+              {/* Mobile: cards, as in the forecast panels. */}
+              <div className="md:hidden flex flex-col gap-2">
+                {accuracy.devices.filter((d) => d.folds > 0).map((d) => (
+                  <div key={`${d.deviceId}-${d.name}`} className="rounded-[2px] p-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
+                    <DeviceLabel name={d.name} typeLabel={d.typeLabel} sub={d.mount} />
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-2 mt-2.5">
+                      <CardField label="Typical miss">
+                        <span style={{ color: gf.textPrimary }}>±{d.mae}{accuracy.unit}</span>
+                      </CardField>
+                      <CardField label="Bias">
+                        <span style={{ color: (d.bias ?? 0) > 0 ? ORANGE : (d.bias ?? 0) < 0 ? gf.accent : gf.textMuted }}>
+                          {(d.bias ?? 0) > 0 ? "over" : (d.bias ?? 0) < 0 ? "under" : "even"} {Math.abs(d.bias ?? 0)}{accuracy.unit}
+                        </span>
+                      </CardField>
+                      <CardField label="Worst miss">
+                        <span style={{ color: gf.textMuted }}>±{d.worst}{accuracy.unit}</span>
+                      </CardField>
+                      <CardField label="Checked">
+                        <span style={{ color: gf.textDim }}>{d.folds}</span>
+                      </CardField>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ color: gf.textDim, textAlign: "left" }}>
@@ -1379,7 +1403,47 @@ function ForecastPanel({
       ) : rows.length === 0 ? (
         <Empty>{empty}</Empty>
       ) : (
-        <div className="overflow-x-auto" style={{ opacity: loading ? 0.5 : 1, transition: "opacity 120ms" }}>
+        <div style={{ opacity: loading ? 0.5 : 1, transition: "opacity 120ms" }}>
+        {/* Mobile: one card per row. Eight columns do not fit a phone, and a table you
+            have to swipe sideways hides the ETA — the column that matters — off-screen. */}
+        <div className="md:hidden flex flex-col gap-2">
+          {groups
+            ? groups.map((g) => {
+                const open = isGroupOpen(g);
+                return (
+                  <Fragment key={g.key}>
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(g.key)}
+                      className="w-full text-left px-2.5 py-2 rounded-[2px] flex flex-wrap items-center gap-2"
+                      style={{ background: gf.hover, border: `1px solid ${gf.border}` }}
+                    >
+                      <span aria-hidden style={{ color: gf.textMuted, width: "1em" }}>{open ? "▾" : "▸"}</span>
+                      <span style={{ color: gf.textPrimary, fontWeight: 600 }}>{g.label}</span>
+                      {g.typeLabel && <TypeBadge label={g.typeLabel} />}
+                      <span className="text-[0.9em]" style={{ color: gf.textDim }}>
+                        {g.rows.length} interface{g.rows.length === 1 ? "" : "s"}
+                      </span>
+                      {g.worstEta != null ? (
+                        <span className="text-[0.9em]" style={{ color: etaColor(g.worstEta), fontWeight: 600 }}>
+                          soonest {fmtEta(g.worstEta)}
+                        </span>
+                      ) : (
+                        <span className="text-[0.9em]" style={{ color: gf.textMuted }}>all stable</span>
+                      )}
+                      {g.advice > 0 && (
+                        <Badge color={g.critical > 0 ? RED : ORANGE} label={`${g.advice} to act on`} />
+                      )}
+                    </button>
+                    {open && g.rows.map((r) => renderCard(r))}
+                  </Fragment>
+                );
+              })
+            : rows.map((r) => renderCard(r))}
+        </div>
+
+        {/* Desktop: the table. */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ color: gf.textDim, textAlign: "left" }}>
@@ -1439,9 +1503,59 @@ function ForecastPanel({
             </tbody>
           </table>
         </div>
+        </div>
       )}
     </Panel>
   );
+
+  // The same fields as renderRow, laid out to fit a phone: the device and its
+  // confidence on top, then label/value pairs two to a line.
+  function renderCard(r: ForecastRow) {
+    return (
+      <div key={r.key} className="rounded-[2px] p-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <DeviceLabel name={r.name} typeLabel={r.typeLabel} sub={r.sub} />
+          </div>
+          <Badge color={CONF_COLOR[r.confidence]} label={r.confidence} />
+        </div>
+        {r.volumes.length > 1 && <VolumeChips volumes={r.volumes} />}
+        <div className="grid grid-cols-2 gap-x-3 gap-y-2 mt-2.5">
+          <CardField label="Current">
+            <div className="flex items-center gap-2">
+              <span>{r.currentText}</span>
+              {r.barPct != null && (
+                <div className="h-1.5 flex-1 max-w-16 rounded-full overflow-hidden" style={{ background: gf.hover }}>
+                  <div style={{ width: `${Math.min(100, r.barPct)}%`, height: "100%", background: etaColor(r.etaDays) }} />
+                </div>
+              )}
+            </div>
+          </CardField>
+          <CardField label="Trend / day">
+            <TrendCell value={r.slopePerDay} suffix={r.slopeSuffix} risingIsBad={r.risingIsBad} />
+          </CardField>
+          <CardField label={etaHeader}>
+            {r.forecasting && r.etaDays != null ? (
+              <span style={{ color: etaColor(r.etaDays), fontWeight: 600 }}>{fmtEta(r.etaDays)}</span>
+            ) : (
+              <span style={{ color: gf.textMuted }}>{r.statusText}</span>
+            )}
+          </CardField>
+          <CardField label={byHeader}>
+            <span style={{ color: gf.textMuted }}>
+              {r.forecasting && r.etaDays != null ? fmtFullBy(r.etaDays) : "—"}
+            </span>
+          </CardField>
+          <CardField label="History">
+            <HistoryCell days={r.historyDays} requested={lookback.value} />
+          </CardField>
+          <CardField label="Fit (R² · MAE)">
+            <FitCell r2={r.fitR2} mae={r.mae} maeSuffix={r.maeSuffix} />
+          </CardField>
+        </div>
+      </div>
+    );
+  }
 
   function renderRow(r: ForecastRow) {
     return (
@@ -1802,6 +1916,16 @@ function Panel({ title, subtitle, children, action }: {
       </div>
       <div className="p-4">{children}</div>
     </section>
+  );
+}
+
+// One label/value pair on a mobile card — the card's stand-in for a table column.
+function CardField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[0.82em] uppercase tracking-wider" style={{ color: gf.textDim }}>{label}</div>
+      <div className="mt-0.5">{children}</div>
+    </div>
   );
 }
 

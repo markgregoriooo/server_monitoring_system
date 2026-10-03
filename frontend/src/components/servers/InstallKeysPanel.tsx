@@ -194,7 +194,7 @@ function CommandLine({ os, command }: { os: string; command: string }) {
           $
         </span>
         <code
-          className="flex-1 min-w-0 text-[12px] overflow-x-auto whitespace-pre"
+          className="flex-1 min-w-0 text-[12px] whitespace-pre-wrap break-all md:whitespace-pre md:break-normal md:overflow-x-auto"
           style={{ color: gf.textPrimary }}
         >
           {command}
@@ -320,6 +320,65 @@ export default function InstallKeysPanel() {
   };
 
   const activeCount = keys.filter((k) => k.status === "active").length;
+
+  // Shared by the desktop table row and the mobile card, so the two cannot drift.
+  const statusPill = (k: InstallKey) => (
+    <span
+      className="text-[11px] tracking-widest uppercase px-1.5 py-0.5 rounded-[2px]"
+      style={{
+        color: STATUS_COLOR[k.status],
+        background: `${STATUS_COLOR[k.status]}14`,
+        border: `1px solid ${STATUS_COLOR[k.status]}40`,
+      }}
+    >
+      {k.status}
+    </span>
+  );
+
+  const keyActions = (k: InstallKey) => (
+    <>
+      {/* A separate button rather than a clickable row, since Revoke and Delete are in the
+         same row. Hidden for keys that cannot be shown again. */}
+      {k.canReveal && revealId !== k.id && (
+        <button
+          type="button"
+          onClick={() => showCommand(k)}
+          className="text-[12px] px-2 py-1 rounded-[2px] transition-colors"
+          style={{ color: gf.accentText, border: `1px solid ${ACCENT_EDGE}` }}
+          title="Show the key and install command again"
+        >
+          Show command
+        </button>
+      )}
+      {k.status === "revoked" ? (
+        <>
+          {k.revokedByName && (
+            <span className="text-[11px]" style={{ color: gf.textDim }}>
+              by {k.revokedByName}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => handleDelete(k)}
+            className="text-[12px] px-2 py-1 rounded-[2px] transition-colors"
+            style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
+            title="Remove this key from the list"
+          >
+            Delete
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={() => openRevoke(k)}
+          className="text-[12px] px-2 py-1 rounded-[2px] transition-colors"
+          style={{ color: RED, border: `1px solid ${RED}40` }}
+        >
+          Revoke
+        </button>
+      )}
+    </>
+  );
 
   return (
     <div
@@ -454,7 +513,7 @@ export default function InstallKeysPanel() {
                 style={{ background: gf.well, border: `1px solid ${gf.border}` }}
               >
                 <code
-                  className="flex-1 min-w-0 text-[13px] tracking-wide overflow-x-auto whitespace-pre"
+                  className="flex-1 min-w-0 text-[13px] tracking-wide whitespace-pre-wrap break-all md:whitespace-pre md:break-normal md:overflow-x-auto"
                   style={{ color: gf.accentText }}
                 >
                   {revealedKey}
@@ -490,7 +549,44 @@ export default function InstallKeysPanel() {
             No install keys yet. Create one to enrol a server.
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          {/* Mobile: one card per key — six columns do not fit a phone without swiping. */}
+          <div className="md:hidden flex flex-col gap-2">
+            {keys.map((k) => (
+              <div
+                key={k.id}
+                className="rounded-[2px] p-2.5"
+                style={{ background: gf.bg, border: `1px solid ${gf.border}` }}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[13px] truncate" style={{ color: gf.textPrimary }}>{k.keyPrefix}…</div>
+                    {k.createdByName && (
+                      <div className="text-[11px]" style={{ color: gf.textDim }}>by {k.createdByName}</div>
+                    )}
+                  </div>
+                  {statusPill(k)}
+                </div>
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  {[
+                    ["Enrolled", String(k.enrolledCount), k.lastUsedAt ? `last ${fmtDate(k.lastUsedAt)}` : null],
+                    ["Created", fmtDate(k.createdAt), null],
+                    ["Expires", k.expiresAt ? fmtDate(k.expiresAt) : "never", null],
+                  ].map(([label, value, sub]) => (
+                    <div key={label} className="min-w-0">
+                      <div className="text-[10px] tracking-widest uppercase" style={{ color: gf.textDim }}>{label}</div>
+                      <div className="text-[12px] mt-0.5" style={{ color: gf.textMuted }}>{value}</div>
+                      {sub && <div className="text-[11px]" style={{ color: gf.textDim }}>{sub}</div>}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 mt-2.5">{keyActions(k)}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop: the table. */}
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr style={{ borderBottom: `1px solid ${gf.divider}` }}>
@@ -518,18 +614,7 @@ export default function InstallKeysPanel() {
                         </span>
                       )}
                     </td>
-                    <td className="px-2 py-2 whitespace-nowrap">
-                      <span
-                        className="text-[11px] tracking-widest uppercase px-1.5 py-0.5 rounded-[2px]"
-                        style={{
-                          color: STATUS_COLOR[k.status],
-                          background: `${STATUS_COLOR[k.status]}14`,
-                          border: `1px solid ${STATUS_COLOR[k.status]}40`,
-                        }}
-                      >
-                        {k.status}
-                      </span>
-                    </td>
+                    <td className="px-2 py-2 whitespace-nowrap">{statusPill(k)}</td>
                     <td className="px-2 py-2 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>
                       {k.enrolledCount}
                       {k.lastUsedAt && (
@@ -545,54 +630,14 @@ export default function InstallKeysPanel() {
                       {k.expiresAt ? fmtDate(k.expiresAt) : "never"}
                     </td>
                     <td className="px-2 py-2 whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-2">
-                        {/* A separate button rather than a clickable row, since Revoke and Delete are in the
-                           same row. Hidden for keys that cannot be shown again. */}
-                        {k.canReveal && revealId !== k.id && (
-                          <button
-                            type="button"
-                            onClick={() => showCommand(k)}
-                            className="text-[12px] px-2 py-1 rounded-[2px] transition-colors"
-                            style={{ color: gf.accentText, border: `1px solid ${ACCENT_EDGE}` }}
-                            title="Show the key and install command again"
-                          >
-                            Show command
-                          </button>
-                        )}
-                        {k.status === "revoked" ? (
-                          <>
-                            {k.revokedByName && (
-                              <span className="text-[11px]" style={{ color: gf.textDim }}>
-                                by {k.revokedByName}
-                              </span>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(k)}
-                              className="text-[12px] px-2 py-1 rounded-[2px] transition-colors"
-                              style={{ color: gf.textMuted, border: `1px solid ${gf.border}` }}
-                              title="Remove this key from the list"
-                            >
-                              Delete
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => openRevoke(k)}
-                            className="text-[12px] px-2 py-1 rounded-[2px] transition-colors"
-                            style={{ color: RED, border: `1px solid ${RED}40` }}
-                          >
-                            Revoke
-                          </button>
-                        )}
-                      </div>
+                      <div className="flex items-center justify-end gap-2">{keyActions(k)}</div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
 
