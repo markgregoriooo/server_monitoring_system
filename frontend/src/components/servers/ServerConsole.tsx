@@ -701,8 +701,9 @@ type TermState = "idle" | "connecting" | "open" | "closed";
 // PowerShell errors read like the rest of the UI rather than in xterm's defaults.
 const TERM_THEME = {
   background: "#0b0e14",
-  foreground: "#D9D9D9",
-  cursor: "#5794F2",
+  // Plain text is green, like the Quick Actions output; coloured output keeps its colours.
+  foreground: "#73BF69",
+  cursor: "#73BF69",
   cursorAccent: "#0b0e14",
   selectionBackground: "rgba(87,148,242,0.35)",
   black: "#1a1d23",
