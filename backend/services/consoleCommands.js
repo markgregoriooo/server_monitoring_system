@@ -97,8 +97,8 @@ const ft = "Format-Table -AutoSize | Out-String -Width 220";
 //   linux / windows       (param) => command string
 export const ACTIONS = Object.freeze({
   overview: {
-    label: "System overview",
-    description: "Uptime, OS, memory and disks at a glance",
+    label: "Overview",
+    description: "Uptime, memory, disks",
     group: "info",
     linux: () =>
       "echo \"== $(hostname) ==\"; uname -sr; uptime; echo; free -h; echo; " +
@@ -119,7 +119,7 @@ export const ACTIONS = Object.freeze({
   },
   top_processes: {
     label: "Top processes",
-    description: "The 15 processes using the most CPU",
+    description: "Highest CPU use",
     group: "info",
     linux: () => "ps -eo pid,user,%cpu,%mem,etime,comm --sort=-%cpu | head -n 16",
     windows: () =>
@@ -131,7 +131,7 @@ export const ACTIONS = Object.freeze({
   },
   disk: {
     label: "Disk usage",
-    description: "Every mounted volume, size and free space",
+    description: "Space per drive",
     group: "info",
     linux: () => "df -hT -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null || df -h",
     windows: () =>
@@ -144,7 +144,7 @@ export const ACTIONS = Object.freeze({
   },
   network: {
     label: "Network",
-    description: "IP addresses and listening ports",
+    description: "IPs and open ports",
     group: "info",
     linux: () => "ip -brief address 2>/dev/null || ifconfig; echo; (ss -tuln 2>/dev/null || netstat -tuln) | head -n 40",
     windows: () =>
@@ -157,7 +157,7 @@ export const ACTIONS = Object.freeze({
   },
   failed_services: {
     label: "Failed services",
-    description: "Services that should be running but are not",
+    description: "Should run, but stopped",
     group: "info",
     linux: () => "systemctl --failed --no-pager",
     windows: () =>
@@ -169,7 +169,7 @@ export const ACTIONS = Object.freeze({
   },
   running_services: {
     label: "Running services",
-    description: "Every service currently running",
+    description: "All active services",
     group: "info",
     linux: () => "systemctl list-units --type=service --state=running --no-pager --no-legend",
     windows: () =>
@@ -177,7 +177,7 @@ export const ACTIONS = Object.freeze({
   },
   recent_logs: {
     label: "Recent errors",
-    description: "The last 50 warnings and errors from the system log",
+    description: "Last 50 log warnings",
     group: "info",
     linux: () =>
       "journalctl -p warning -n 50 --no-pager 2>/dev/null || tail -n 50 /var/log/syslog 2>/dev/null || tail -n 50 /var/log/messages",
@@ -189,8 +189,8 @@ export const ACTIONS = Object.freeze({
       ),
   },
   agent_status: {
-    label: "Monitoring agent status",
-    description: "Is the CSPC-ICTU agent on this server running?",
+    label: "Agent status",
+    description: "Is the agent running?",
     group: "info",
     linux: () => `systemctl status ${AGENT_UNIT} --no-pager -l | head -n 20`,
     windows: () =>
@@ -201,7 +201,7 @@ export const ACTIONS = Object.freeze({
   },
   service_status: {
     label: "Service status",
-    description: "Show the state of one service",
+    description: "Check one service",
     group: "info",
     param: "service",
     linux: (svc) => `systemctl status ${svc} --no-pager -l | head -n 40`,
@@ -210,7 +210,7 @@ export const ACTIONS = Object.freeze({
   },
   restart_service: {
     label: "Restart service",
-    description: "Restart one service by name",
+    description: "Restart one service",
     group: "control",
     param: "service",
     sudo: true,
@@ -223,8 +223,8 @@ export const ACTIONS = Object.freeze({
       ),
   },
   restart_agent: {
-    label: "Restart monitoring agent",
-    description: "Restart the CSPC-ICTU agent if the server stopped reporting",
+    label: "Restart agent",
+    description: "If it stopped reporting",
     group: "control",
     sudo: true,
     confirm: "Restart the monitoring agent? The server may show Offline for a few seconds.",
@@ -238,8 +238,8 @@ export const ACTIONS = Object.freeze({
       ),
   },
   reboot: {
-    label: "Reboot server",
-    description: "Restart the whole server in 1 minute",
+    label: "Reboot",
+    description: "Restarts in 1 minute",
     group: "control",
     sudo: true,
     confirm:
