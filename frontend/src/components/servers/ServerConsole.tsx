@@ -581,7 +581,7 @@ function OutputPanel({ result, onClear }: { result: ConsoleActionResult & { labe
           First login to this server — its SSH key {result.hostKey.fingerprint} was saved. Future logins must match it.
         </div>
       )}
-      <pre className="m-0 p-4 max-h-[480px] overflow-auto text-[12px] leading-[1.45] font-mono bg-[#0b0e14] text-slate-200 whitespace-pre">
+      <pre className="m-0 p-4 max-h-[480px] overflow-auto text-[12px] leading-[1.45] font-mono bg-[#0b0e14] text-[#73BF69] whitespace-pre">
         {result.output.trim() || "(no output)"}
         {result.truncated && "\n\n… output cut off at 256 KB"}
       </pre>
