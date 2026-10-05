@@ -327,6 +327,19 @@ function niceTicks(min: number, max: number, count = 4): number[] {
   return out;
 }
 
+// Readings and predicted readings (°C, %RH, ppm, %) show ONE decimal, the same as the
+// Environment page: the DHT22 resolves 0.1 °C / 0.1 %RH, so a second decimal on a forecast
+// claims precision the sensor never had. The backend still computes at full precision.
+// Rates (trendPerHour) and statistics (R², MAE) keep their 2 decimals — a +0.04 °C/h trend
+// would otherwise round to a flat 0.0.
+const fmtReading = (v: number | null | undefined): string =>
+  v == null || !Number.isFinite(v) ? "—" : v.toFixed(1);
+// A change between two readings, signed; anything that rounds to zero prints as 0.0.
+const fmtDelta = (d: number): string => {
+  const r = Math.round(d * 10) / 10;
+  return r === 0 ? "0.0" : `${r > 0 ? "+" : ""}${r.toFixed(1)}`;
+};
+
 const fmtEta = (etaDays: number): string =>
   etaDays < 1 ? "< 1 day" : `${etaDays} day${etaDays >= 2 ? "s" : ""}`;
 
@@ -1133,7 +1146,7 @@ export default function Analytics() {
                   <Stat label="Points scanned" value={String(anom.totalPoints)} />
                   <Stat
                     label="Normal range (IQR)"
-                    value={anom.iqr ? `${anom.iqr.lowerFence}–${anom.iqr.upperFence}${anom.unit}` : "—"}
+                    value={anom.iqr ? `${fmtReading(anom.iqr.lowerFence)}–${fmtReading(anom.iqr.upperFence)}${anom.unit}` : "—"}
                   />
                 </div>
                 {anom.anomalies.length === 0 ? (
@@ -1152,12 +1165,12 @@ export default function Analytics() {
                             <Td><span style={{ color: gf.textMuted }}>{fmtTime(a.t)}</span></Td>
                             <Td>
                               <span style={{ color: a.direction === "high" ? RED : gf.accent, fontWeight: 600 }}>
-                                {a.direction === "high" ? "▲" : "▼"} {a.value}{anom.unit}
+                                {a.direction === "high" ? "▲" : "▼"} {fmtReading(a.value)}{anom.unit}
                               </span>
                             </Td>
                             <Td>
                               <span style={{ color: gf.textMuted }}>
-                                {a.expected}{anom.unit}{" "}
+                                {fmtReading(a.expected)}{anom.unit}{" "}
                                 <span style={{ color: gf.textDim }}>@ {fmtHour(a.hour)} {a.dayType}</span>
                               </span>
                             </Td>
@@ -1252,10 +1265,10 @@ export default function Analytics() {
                           <Td><span style={{ color: gf.textDim }}>need more data</span></Td>
                         ) : (
                           <>
-                            <Td><Dim>{r.p50}{r.unit}</Dim></Td>
-                            <Td><Dim>{r.p95}{r.unit}</Dim></Td>
-                            <Td><Dim>{r.p99}{r.unit}</Dim></Td>
-                            <Td><Dim>{r.max}{r.unit}</Dim></Td>
+                            <Td><Dim>{fmtReading(r.p50)}{r.unit}</Dim></Td>
+                            <Td><Dim>{fmtReading(r.p95)}{r.unit}</Dim></Td>
+                            <Td><Dim>{fmtReading(r.p99)}{r.unit}</Dim></Td>
+                            <Td><Dim>{fmtReading(r.max)}{r.unit}</Dim></Td>
                           </>
                         )}
                         {r.status === "ok" && (
@@ -2051,7 +2064,7 @@ function adviceSentence(trend: MetricTrend, deviceName: string | null): string {
   const a = trend.advice;
   if (!a) return "";
   const subj = deviceName ? `${trend.label} on ${deviceName}` : `Server-room ${trend.label.toLowerCase()}`;
-  const thr = `${a.threshold}${trend.unit}`;
+  const thr = `${fmtReading(a.threshold)}${trend.unit}`;
   const tail = `Recommended: ${a.action}.`;
   if (a.already) return `${subj} is already above its ${a.severity} threshold (${thr}). ${tail}`;
   const when = a.etaHours <= 0 ? "imminently" : `in ~${a.etaHours}h`;
@@ -2228,7 +2241,7 @@ function HourlyForecast({
                 <Td><span style={{ color: gf.textMuted }}>{fmtClock(r.t)}</span></Td>
                 <Td>
                   <span style={{ color: r.crosses ? sevColor : gf.textPrimary, fontWeight: r.crosses ? 600 : 400 }}>
-                    {r.v}{unit}
+                    {fmtReading(r.v)}{unit}
                   </span>
                   {r.crosses && advice && (
                     <span className="ml-2"><Badge color={sevColor} label={advice.severity} /></span>
@@ -2239,7 +2252,7 @@ function HourlyForecast({
                     <span style={{ color: gf.textDim }}>—</span>
                   ) : (
                     <span style={{ color: r.delta > 0.05 ? ORANGE : r.delta < -0.05 ? GREEN : gf.textMuted }}>
-                      {r.delta > 0.05 ? "▲" : r.delta < -0.05 ? "▼" : "■"} {r.delta > 0 ? "+" : ""}{r.delta}{unit}
+                      {r.delta > 0.05 ? "▲" : r.delta < -0.05 ? "▼" : "■"} {fmtDelta(r.delta)}{unit}
                     </span>
                   )}
                 </Td>
