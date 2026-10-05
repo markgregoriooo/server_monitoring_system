@@ -479,9 +479,13 @@ function QuickActions({
 // The dashboard's standard raised button (.gf-btn). Every button is the same height
 // (h-full in an equal-row grid) so the grid reads as one even block.
 
-// Icons are neutral (they take the label's colour); only Reboot is red.
+// Icon colour says what kind of action it is: blue reads, orange changes the server,
+// red reboots it.
+const ACCENT = { info: "#5794F2", control: "#FF780A", danger: "#E02F44" } as const;
+
 function accentFor(a: ConsoleAction) {
-  return a.id === "reboot" ? "#E02F44" : "currentColor";
+  if (a.id === "reboot") return ACCENT.danger;
+  return a.group === "control" ? ACCENT.control : ACCENT.info;
 }
 
 // 24x24 stroke icons, one per action; a generic terminal glyph for anything new.
@@ -522,10 +526,10 @@ function ActionButton({
       title={title}
       // .gf-btn: the dashboard's standard raised button (face, sheen, shadow, press-inset).
       // Reboot also takes .gf-btn-danger, which reddens the edge and label on hover.
-      className={`gf-btn ${action.id === "reboot" ? "gf-btn-danger" : ""} text-left flex items-start gap-3 px-3.5 py-3 w-full h-full`}
+      className={`gf-btn ${action.id === "reboot" ? "gf-btn-danger" : ""} text-left flex items-start gap-3 px-3.5 py-3 w-full h-full !rounded-lg`}
       style={running ? { borderColor: "var(--gf-accent)" } : undefined}
     >
-      <span className="flex-shrink-0 mt-0.5 text-slate-600 dark:text-slate-300" style={{ color: c === "currentColor" ? undefined : c }}>
+      <span className="flex-shrink-0 mt-0.5" style={{ color: c }}>
         {running ? (
           <Spinner />
         ) : (
