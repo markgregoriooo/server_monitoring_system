@@ -1003,7 +1003,7 @@ export default function Analytics() {
 
                 <div>
                   <SectionLabel>Noisiest sources</SectionLabel>
-                  <div className="space-y-1.5">
+                  <div className="space-y-2.5">
                     {summary.topDevices.length === 0 ? <Dim>—</Dim> :
                       summary.topDevices.map((d) => (
                         <BarRow
@@ -1013,6 +1013,7 @@ export default function Analytics() {
                           count={d.count}
                           max={Math.max(...summary.topDevices.map((x) => x.count))}
                           color={gf.accent}
+                          stacked
                         />
                       ))}
                   </div>
@@ -2015,10 +2016,29 @@ function DataQualityNotice({ quality }: { quality: MetricTrend["dataQuality"] })
     </div>
   );
 }
-function BarRow({ label, count, max, color, typeLabel }: {
+function BarRow({ label, count, max, color, typeLabel, stacked }: {
   label: string; count: number; max: number; color: string; typeLabel?: string | null;
+  // Device names are long ("Main Building Core Switch") and the fixed 144px label column
+  // cut them to "Main Buildi…". Stacked puts the FULL name on its own line above the bar.
+  stacked?: boolean;
 }) {
   const pct = max > 0 ? (count / max) * 100 : 0;
+  if (stacked) {
+    return (
+      <div className="flex flex-col gap-1 text-[1em]">
+        <div className="flex items-start gap-2">
+          <span className="flex-1 min-w-0 flex items-center gap-1.5 flex-wrap" style={{ color: gf.textMuted }}>
+            <span className="break-words">{label}</span>
+            {typeLabel && <TypeBadge label={typeLabel} />}
+          </span>
+          <span className="shrink-0 text-right" style={{ color: gf.textPrimary }}>{count}</span>
+        </div>
+        <div className="h-2 rounded-full overflow-hidden" style={{ background: gf.hover }}>
+          <div style={{ width: `${pct}%`, height: "100%", background: color }} />
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex items-center gap-2 text-[1em]">
       <span className="w-36 shrink-0 flex items-center gap-1" style={{ color: gf.textMuted }} title={label}>
