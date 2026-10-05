@@ -4,14 +4,14 @@ import type { ReactNode } from "react";
  * Browser chrome around a visual, so a recreated panel looks like a screen of the
  * product. Kept plain: three dots, a URL pill, a hairline.
  *
- * The URL is the real address people will type, so it must change with the
- * deployment: ICTU will publish `datacenter.cspc.edu.ph` (switch at go-live); the
- * system currently runs on `monitoring.cspc-ictu.stream` through a Cloudflare Tunnel
- * (`cloudflare-tunnel-setup.md`). LoginTutorial and DemoReel use this default too.
+ * The URL is the real address people will type: `datacenter.cspc.edu.ph`, the hostname
+ * ICTU publishes for the deployed system (deployment-guide.md §6). The Cloudflare Tunnel
+ * address (`monitoring.cspc-ictu.stream`) is development/defense only and is not shown.
+ * LoginTutorial and DemoReel use this default.
  */
 export default function BrowserFrame({
   children,
-  url = "monitoring.cspc-ictu.stream",
+  url = "datacenter.cspc.edu.ph",
   className = "",
 }: {
   children: ReactNode;
