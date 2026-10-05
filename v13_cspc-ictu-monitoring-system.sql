@@ -501,6 +501,25 @@ CREATE TABLE `server_specs` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `server_ssh_hosts`
+--
+-- Server Console: the SSH host key seen on the first successful login to each server
+-- (trust on first use, like OpenSSH known_hosts). Later logins must present the same
+-- key, so nothing else answering on the IP can collect the admin's password. Holds no
+-- secret; passwords are never stored. See migrations/2026-10-05_server_ssh_hosts.sql
+
+CREATE TABLE `server_ssh_hosts` (
+  `device_id` int(11) NOT NULL,
+  `fingerprint` varchar(100) NOT NULL,
+  `key_type` varchar(40) DEFAULT NULL,
+  `pinned_by` int(11) DEFAULT NULL,
+  `first_seen` timestamp NOT NULL DEFAULT current_timestamp(),
+  `last_seen` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `settings`
 --
 
@@ -804,6 +823,13 @@ ALTER TABLE `server_specs`
   ADD PRIMARY KEY (`server_spec_id`),
   ADD UNIQUE KEY `devices_id_UNIQUE` (`device_id`),
   ADD KEY `idx_server_specs_device` (`device_id`);
+
+--
+-- Indexes for table `server_ssh_hosts`
+--
+ALTER TABLE `server_ssh_hosts`
+  ADD PRIMARY KEY (`device_id`),
+  ADD KEY `fk_server_ssh_hosts_user` (`pinned_by`);
 
 --
 -- Indexes for table `settings`
@@ -1125,6 +1151,13 @@ ALTER TABLE `sensor_backup_batches`
 --
 ALTER TABLE `server_specs`
   ADD CONSTRAINT `fk_server_specs_devices1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+--
+-- Constraints for table `server_ssh_hosts`
+--
+ALTER TABLE `server_ssh_hosts`
+  ADD CONSTRAINT `fk_server_ssh_hosts_device` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  ADD CONSTRAINT `fk_server_ssh_hosts_user` FOREIGN KEY (`pinned_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
 -- Constraints for table `settings`

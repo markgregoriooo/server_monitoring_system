@@ -162,6 +162,55 @@ const handleError = (err: any): ApiResult<never> => {
   };
 };
 
+
+// ── Server Console ──────────────────────────────────────────────────────────
+export type OsFamily = "linux" | "windows";
+
+export interface ConsoleAction {
+  id: string;
+  label: string;
+  description: string;
+  group: "info" | "control";
+  param: "service" | null;
+  confirm: string | null;
+  allowed: boolean;
+}
+
+export interface ConsoleHostKey {
+  fingerprint: string;
+  keyType?: string;
+  firstSeen?: string;
+  lastSeen?: string;
+}
+
+export interface ConsoleInfo {
+  server: { id: number; name: string; ip: string; os: string };
+  family: OsFamily | null;
+  actions: ConsoleAction[];
+  terminalAllowed: boolean;
+  hostKey: ConsoleHostKey | null;
+}
+
+export interface ConsoleActionRequest {
+  action: string;
+  username: string;
+  password: string;
+  port: number;
+  param?: string;
+  os?: OsFamily | undefined;
+}
+
+export interface ConsoleActionResult {
+  ok: boolean;
+  action: string;
+  exitCode: number | null;
+  output: string;
+  truncated: boolean;
+  timedOut: boolean;
+  durationMs: number;
+  hostKey: { fingerprint: string; firstTrust: boolean };
+}
+
 export const api = {
   // Auth: Google sign-in is the only login. Sends the one-time auth code from the "CSPC
   // Mail" button; the backend exchanges it with Google. An active account gets
@@ -335,6 +384,37 @@ export const api = {
       const res = await apiClient.get(`/servers/${id}/history`, {
         params: window ? { ...window } : { range },
       });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // ── Server Console (Quick Actions over SSH; the terminal is Socket.IO) ──────
+  // The password travels in the request body for that one call and is never stored.
+  getServerConsole: async (id: number): Promise<ApiResult<ConsoleInfo>> => {
+    try {
+      const res = await apiClient.get(`/servers/${id}/console`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  runConsoleAction: async (id: number, body: ConsoleActionRequest): Promise<ApiResult<ConsoleActionResult>> => {
+    try {
+      // Longer than the default: a Quick Action may take the full SSH connect plus the
+      // backend's 60s command timeout.
+      const res = await apiClient.post(`/servers/${id}/console/actions`, body, { timeout: 90000 });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  forgetConsoleHostKey: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/servers/${id}/console/host-key`);
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

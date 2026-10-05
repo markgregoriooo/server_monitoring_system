@@ -35,6 +35,7 @@ import socketSessions from "../services/socketSessions.js";
 // import routes
 import authRoutes from "../routes/auth.js";
 import policyRoutes from "../routes/policy.js";
+import serverConsoleRoutes from "../routes/serverConsole.js";
 import serverRoutes from "../routes/servers.js";
 import agentRoutes from "../routes/agents.js";
 import networkRoutes from "../routes/network.js";
@@ -226,6 +227,8 @@ io.use(async (socket, next) => {
     }
     socket.user = decoded;
     socket.isDevice = false;
+    // Same address req.ip would give; the console's audit rows record it.
+    socket.clientIp = peer;
     // Clear the budget: a working dashboard, agent or ESP32 must never accumulate
     // its way into a block on an address shared by everyone behind nginx or the NAT.
     handshakeLimiter.recordSuccess(peer);
@@ -281,6 +284,7 @@ io.on("connection", (socket) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/policy", policyRoutes);
 app.use("/api/servers", serverRoutes);
+app.use("/api/servers", serverConsoleRoutes); // /:id/console — Quick Actions over SSH
 app.use("/api/agents", agentRoutes);
 app.use("/api/network", networkRoutes);
 app.use("/api/ups", upsRoutes);
