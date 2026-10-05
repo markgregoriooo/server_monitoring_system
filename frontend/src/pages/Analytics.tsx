@@ -1275,12 +1275,13 @@ export default function Analytics() {
                         {r.status === "ok" && (
                           <>
                             <Td>
-                              <span style={{ color: gf.textMuted }}>
+                              {/* nowrap: on a phone the narrow column broke "80 / 90" across two lines. */}
+                              <span className="whitespace-nowrap" style={{ color: gf.textMuted }}>
                                 {r.currentWarn ?? "—"} / {r.currentCrit ?? "—"}
                               </span>
                             </Td>
                             <Td>
-                              <span style={{ color: changed ? ORANGE : gf.textMuted, fontWeight: changed ? 600 : 400 }}>
+                              <span className="whitespace-nowrap" style={{ color: changed ? ORANGE : gf.textMuted, fontWeight: changed ? 600 : 400 }}>
                                 {r.suggestedWarn ?? "—"} / {r.suggestedCrit ?? "—"}
                               </span>
                             </Td>
