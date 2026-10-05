@@ -1245,7 +1245,46 @@ export default function Analytics() {
           ) : recs.length === 0 ? (
             <Empty>No data to base recommendations on yet.</Empty>
           ) : (
-            <div className="overflow-x-auto">
+            <div>
+              {/* Phone: one card per metric, nothing to scroll sideways. md and up: the table. */}
+              <div className="md:hidden flex flex-col gap-2">
+                {recs.map((r) => {
+                  const changed =
+                    r.status === "ok" &&
+                    (r.suggestedWarn !== r.currentWarn || r.suggestedCrit !== r.currentCrit);
+                  return (
+                    <div key={r.metric} className="rounded-[2px] p-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold" style={{ color: gf.textPrimary }}>{r.label}</span>
+                        {isAdmin && r.status === "ok" && (
+                          <RecApplyButton changed={changed} busy={applying === r.metric} onClick={() => applyRecommendation(r)} />
+                        )}
+                      </div>
+                      {r.status !== "ok" ? (
+                        <div className="mt-1.5" style={{ color: gf.textDim }}>need more data</div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-2 mt-2.5">
+                          <CardField label="p50"><Dim>{fmtReading(r.p50)}{r.unit}</Dim></CardField>
+                          <CardField label="p95"><Dim>{fmtReading(r.p95)}{r.unit}</Dim></CardField>
+                          <CardField label="p99"><Dim>{fmtReading(r.p99)}{r.unit}</Dim></CardField>
+                          <CardField label="Max"><Dim>{fmtReading(r.max)}{r.unit}</Dim></CardField>
+                          <CardField label="Current warn / crit">
+                            <span className="whitespace-nowrap" style={{ color: gf.textMuted }}>
+                              {r.currentWarn ?? "—"} / {r.currentCrit ?? "—"}
+                            </span>
+                          </CardField>
+                          <CardField label="Suggested warn / crit">
+                            <span className="whitespace-nowrap" style={{ color: changed ? ORANGE : gf.textMuted, fontWeight: changed ? 600 : 400 }}>
+                              {r.suggestedWarn ?? "—"} / {r.suggestedCrit ?? "—"}
+                            </span>
+                          </CardField>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ color: gf.textDim, textAlign: "left" }}>
@@ -1287,24 +1326,7 @@ export default function Analytics() {
                             </Td>
                             {isAdmin && (
                               <Td>
-                                {/* Raised only when applying would change something; this writes to live alert rules. */}
-                                <button
-                                  disabled={!changed || applying === r.metric}
-                                  onClick={() => applyRecommendation(r)}
-                                  className={`px-3 py-1.5 text-[0.9em] rounded-[3px] transition-all disabled:opacity-50 ${changed ? "gf-btn" : ""}`}
-                                  style={{
-                                    color: changed ? gf.textPrimary : gf.textDim,
-                                    fontWeight: changed ? 700 : 500,
-                                    cursor: changed ? "pointer" : "default",
-                                    ...(changed ? {} : {
-                                      background: gf.bg,
-                                      border: `1px solid ${gf.border}`,
-                                      boxShadow: "var(--gf-btn-shadow-active)",
-                                    }),
-                                  }}
-                                >
-                                  {applying === r.metric ? "…" : changed ? "Apply" : "✓ in sync"}
-                                </button>
+                                <RecApplyButton changed={changed} busy={applying === r.metric} onClick={() => applyRecommendation(r)} />
                               </Td>
                             )}
                           </>
@@ -1314,6 +1336,7 @@ export default function Analytics() {
                   })}
                 </tbody>
               </table>
+            </div>
               <p className="mt-3 text-[0.9em]" style={{ color: gf.textDim }}>
                 {isAdmin
                   ? "Apply writes the value into the global Alert Rules (comparison “>”). Per-server overrides stay untouched."
@@ -1935,6 +1958,30 @@ function Panel({ title, subtitle, children, action }: {
 }
 
 // One label/value pair on a mobile card — the card's stand-in for a table column.
+// Threshold recommendation "Apply". Raised only when applying would change something;
+// it writes to the live alert rules.
+function RecApplyButton({ changed, busy, onClick }: { changed: boolean; busy: boolean; onClick: () => void }) {
+  return (
+    <button
+      disabled={!changed || busy}
+      onClick={onClick}
+      className={`px-3 py-1.5 text-[0.9em] rounded-[3px] transition-all disabled:opacity-50 whitespace-nowrap ${changed ? "gf-btn" : ""}`}
+      style={{
+        color: changed ? gf.textPrimary : gf.textDim,
+        fontWeight: changed ? 700 : 500,
+        cursor: changed ? "pointer" : "default",
+        ...(changed ? {} : {
+          background: gf.bg,
+          border: `1px solid ${gf.border}`,
+          boxShadow: "var(--gf-btn-shadow-active)",
+        }),
+      }}
+    >
+      {busy ? "…" : changed ? "Apply" : "✓ in sync"}
+    </button>
+  );
+}
+
 function CardField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0">
