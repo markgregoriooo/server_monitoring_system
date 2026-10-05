@@ -434,26 +434,16 @@ function QuickActions({
                 {g.title}
                 {g.key === "control" && <span className="ml-2 text-[11px] text-[#FF780A]">changes the server</span>}
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {list.map((a) => (
-                  <button
+                  <ActionButton
                     key={a.id}
-                    onClick={() => click(a)}
+                    action={a}
+                    running={running === a.id}
                     disabled={!credsReady || !a.allowed || running !== null}
                     title={!a.allowed ? "Admin only" : !credsReady ? "Enter the username and password first" : a.description}
-                    className={`text-left px-3 py-2 rounded-sm border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                      g.key === "control"
-                        ? "border-[#FF780A]/40 hover:bg-[#FF780A]/10"
-                        : "border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.05]"
-                    }`}
-                  >
-                    <div className="text-[13px] text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                      {running === a.id && <Spinner />}
-                      {a.label}
-                      {!a.allowed && <span className="text-[10px] uppercase text-slate-400">admin</span>}
-                    </div>
-                    <div className="text-[11px] text-slate-500 mt-0.5">{a.description}</div>
-                  </button>
+                    onClick={() => click(a)}
+                  />
                 ))}
               </div>
             </div>
@@ -484,6 +474,100 @@ function QuickActions({
         />
       )}
     </div>
+  );
+}
+
+// ─── Quick Action button ──────────────────────────────────────────────────────
+// A raised "key": a thick bottom edge and a drop shadow give it depth, it lifts on hover
+// and presses down on click (the bottom edge shrinks as it moves). The accent says what
+// kind of action it is — blue reads, orange changes the server, red reboots it.
+
+const ACCENT = { info: "#5794F2", control: "#FF780A", danger: "#E02F44" } as const;
+
+function accentFor(a: ConsoleAction) {
+  if (a.id === "reboot") return ACCENT.danger;
+  return a.group === "control" ? ACCENT.control : ACCENT.info;
+}
+
+// 24x24 stroke icons, one per action; a generic terminal glyph for anything new.
+const ICONS: Record<string, string> = {
+  overview: "M3 4h18v12H3zM8 20h8M12 16v4",
+  top_processes: "M4 20V10M10 20V4M16 20v-7M22 20H2",
+  disk: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3",
+  network: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3",
+  failed_services: "M12 3 2 20h20L12 3zM12 10v4M12 17h.01",
+  running_services: "M5 4l14 8-14 8V4z",
+  recent_logs: "M6 3h9l4 4v14H6zM9 9h6M9 13h6M9 17h4",
+  agent_status: "M3 12h4l3-7 4 14 3-7h4",
+  service_status: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1",
+  restart_service: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
+  restart_agent: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7M9 12h2l1-2 2 4 1-2h1",
+  reboot: "M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0",
+};
+const FALLBACK_ICON = "M4 5h16v14H4zM7 9l3 3-3 3M12 15h5";
+
+function ActionButton({
+  action,
+  running,
+  disabled,
+  title,
+  onClick,
+}: {
+  action: ConsoleAction;
+  running: boolean;
+  disabled: boolean;
+  title: string;
+  onClick: () => void;
+}) {
+  const c = accentFor(action);
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        // The thick bottom edge is the accent, darkened; the shadow sits under it.
+        borderBottomColor: `color-mix(in srgb, ${c} 70%, black)`,
+        boxShadow: running
+          ? `0 0 0 2px ${c}55, 0 6px 14px -6px ${c}88`
+          : `0 6px 14px -8px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06)`,
+        ["--acc" as string]: c,
+      }}
+      className={
+        "group relative text-left flex items-start gap-3 px-3.5 pt-3 pb-3.5 rounded-md " +
+        "border border-b-[5px] border-slate-300 dark:border-white/[0.12] " +
+        "bg-gradient-to-b from-white to-slate-100 dark:from-[#1f232b] dark:to-[#15181e] " +
+        "transition-all duration-100 ease-out " +
+        "hover:-translate-y-0.5 hover:brightness-110 " +
+        "active:translate-y-[3px] active:border-b-2 active:pb-[1.1rem] " +
+        "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:brightness-100 " +
+        "disabled:active:translate-y-0 disabled:active:border-b-[5px] disabled:active:pb-3.5"
+      }
+    >
+      <span
+        className="flex-shrink-0 w-9 h-9 rounded-md grid place-items-center border"
+        style={{ background: `${c}1f`, borderColor: `${c}55`, color: c }}
+      >
+        {running ? (
+          <Spinner />
+        ) : (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d={ICONS[action.id] ?? FALLBACK_ICON} />
+          </svg>
+        )}
+      </span>
+      <span className="min-w-0">
+        <span className="flex items-center gap-2 text-[13.5px] font-semibold text-slate-800 dark:text-slate-100">
+          {action.label}
+          {!action.allowed && (
+            <span className="text-[9px] uppercase tracking-wider px-1 py-px rounded-sm bg-slate-200 dark:bg-white/10 text-slate-500">
+              admin
+            </span>
+          )}
+        </span>
+        <span className="block text-[11.5px] leading-snug text-slate-500 dark:text-slate-400 mt-0.5">{action.description}</span>
+      </span>
+    </button>
   );
 }
 
