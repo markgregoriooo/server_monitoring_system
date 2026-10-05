@@ -92,7 +92,11 @@ router.post("/:id/console/actions", authMiddleware, requireRole("admin", "it_sta
         level: "warning",
         ...clientInfo(req),
       });
-      return res.status(502).json({ error: err.message });
+      // 422, NOT 502. 502 is the textbook code for "an upstream failed", but Cloudflare
+      // (the tunnel in front of the backend) replaces any origin 502/504 with its own
+      // HTML error page, so the explanation never reached the admin — the dashboard only
+      // saw "Cannot connect to server". 422 passes through untouched.
+      return res.status(422).json({ error: err.message });
     }
     conn = session.conn;
 
