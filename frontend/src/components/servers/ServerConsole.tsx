@@ -30,14 +30,21 @@ interface Props {
 const PANEL = "bg-white dark:bg-[#111217] border border-slate-200 dark:border-white/[0.07] rounded-lg";
 const LABEL = "text-[13px] font-medium text-slate-500 dark:text-slate-400";
 const INPUT =
-  "w-full px-2.5 py-1.5 text-[13px] font-mono rounded-sm border bg-white dark:bg-[#0b0e14] " +
+  "w-full h-9 px-3 text-[13px] font-mono rounded-md border bg-white dark:bg-[#0b0e14] " +
   "border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-slate-100 " +
-  "focus:outline-none focus:border-[#5794F2]";
+  "placeholder:text-slate-400 dark:placeholder:text-slate-600 " +
+  "focus:outline-none focus:border-[#5794F2] focus:ring-2 focus:ring-[#5794F2]/25 transition-shadow";
+// Info tile inside the login card (address, host key).
+const TILE =
+  "rounded-md border border-slate-200 dark:border-white/[0.07] bg-slate-50 dark:bg-white/[0.025] " +
+  "p-3 flex flex-col gap-1.5 min-w-0";
+const TILE_LABEL = "text-[10.5px] font-semibold uppercase tracking-[0.08em] text-slate-400 dark:text-slate-500";
 // Buttons use the app's own raised-button classes (index.css): .gf-btn is the neutral
 // raised face with sheen + press-inset, .gf-btn-primary the accent CTA. Same depth and
 // feel as every other button in the dashboard.
 const BTN_PRIMARY = "gf-btn-primary px-3 py-1.5 text-[13px] font-semibold";
 const BTN_GHOST = "gf-btn px-3 py-1.5 text-[13px] font-semibold text-slate-700 dark:text-[var(--gf-text-primary)]";
+const BTN_SMALL = "gf-btn !rounded-md h-7 px-2.5 text-[12px] font-semibold text-slate-700 dark:text-[var(--gf-text-primary)]";
 
 const userKey = (id: number) => `cspc_console_user:${id}`;
 const readUser = (id: number) => {
@@ -64,6 +71,7 @@ export default function ServerConsole({ serverId, serverName, isAdmin }: Props) 
   const [password, setPassword] = useState("");
   const [port, setPort] = useState("22");
   const [osChoice, setOsChoice] = useState<OsFamily>("linux");
+  const [showPw, setShowPw] = useState(false);
 
   const load = useCallback(() => {
     api.getServerConsole(serverId).then((r) => {
@@ -88,27 +96,32 @@ export default function ServerConsole({ serverId, serverName, isAdmin }: Props) 
   return (
     <div className="flex flex-col gap-3">
       {/* ── Login ─────────────────────────────────────────────────────────── */}
-      <div className={`${PANEL} p-4`}>
-        <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
-          <div>
-            <div className={LABEL}>SSH login</div>
-            <AddressLine
-              address={info.address}
-              family={family}
-              isAdmin={isAdmin}
-              serverId={serverId}
-              onChanged={load}
-            />
-            <div className="text-[12px] text-slate-400 mt-0.5">
-              The password is used only for this page and is never saved.
+      <div className={`${PANEL} p-4 flex flex-col gap-4`}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="grid place-items-center w-8 h-8 rounded-md bg-[#5794F2]/[0.12] text-[#5794F2] flex-shrink-0">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 5h16v14H4zM7 9l3 3-3 3M12 15h5" />
+              </svg>
+            </span>
+            <div className="min-w-0">
+              <div className="text-[14px] font-semibold text-slate-900 dark:text-white">SSH login</div>
+              <div className="text-[12px] text-slate-500 truncate">Sign in to {serverName} to run actions or open a terminal</div>
             </div>
           </div>
-          <HostKeyBadge info={info} isAdmin={isAdmin} serverId={serverId} onChanged={load} />
+          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border border-slate-300 dark:border-white/[0.12] text-slate-600 dark:text-slate-300 flex-shrink-0">
+            {family === "windows" ? "Windows" : "Linux"}
+          </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_90px] gap-2.5">
-          <label className="flex flex-col gap-1">
-            <span className="text-[12px] text-slate-500">Username</span>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <AddressTile address={info.address} isAdmin={isAdmin} serverId={serverId} onChanged={load} />
+          <HostKeyTile info={info} isAdmin={isAdmin} serverId={serverId} onChanged={load} />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_96px] gap-3">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[12px] font-medium text-slate-600 dark:text-slate-400">Username</span>
             <input
               className={INPUT}
               value={username}
@@ -119,24 +132,33 @@ export default function ServerConsole({ serverId, serverName, isAdmin }: Props) 
               onBlur={() => username.trim() && saveUser(serverId, username.trim())}
             />
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[12px] text-slate-500">Password</span>
-            <input
-              className={INPUT}
-              type="password"
-              value={password}
-              autoComplete="new-password"
-              onChange={(e) => setPassword(e.target.value)}
-            />
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[12px] font-medium text-slate-600 dark:text-slate-400">Password</span>
+            <div className="relative">
+              <input
+                className={`${INPUT} pr-14`}
+                type={showPw ? "text" : "password"}
+                value={password}
+                autoComplete="new-password"
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPw((v) => !v)}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+              >
+                {showPw ? "Hide" : "Show"}
+              </button>
+            </div>
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[12px] text-slate-500">Port</span>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[12px] font-medium text-slate-600 dark:text-slate-400">Port</span>
             <input className={INPUT} inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))} />
           </label>
         </div>
 
         {!info.family && (
-          <div className="mt-2.5 flex items-center gap-3 text-[12px] text-slate-500">
+          <div className="flex items-center gap-3 text-[12px] text-slate-500">
             The agent has not reported this server's OS. It is:
             {(["linux", "windows"] as OsFamily[]).map((f) => (
               <label key={f} className="flex items-center gap-1 cursor-pointer">
@@ -146,6 +168,14 @@ export default function ServerConsole({ serverId, serverName, isAdmin }: Props) 
             ))}
           </div>
         )}
+
+        <div className="flex items-center gap-2 text-[12px] text-slate-500 dark:text-slate-400">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+            <path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 8h.01" />
+          </svg>
+          The password is used only on this page and is never saved.
+          {credsReady && <span className="ml-auto text-[#73BF69] font-semibold">Ready</span>}
+        </div>
       </div>
 
       {/* ── Tabs ──────────────────────────────────────────────────────────── */}
@@ -206,15 +236,13 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 // Where the console will connect, and whether that is the agent's IP or an admin's
 // override. Admins can change it here: a VirtualBox NAT VM reports 10.0.2.15, which
 // nothing outside the VM can reach, and a server may take SSH on a management network.
-function AddressLine({
+function AddressTile({
   address,
-  family,
   isAdmin,
   serverId,
   onChanged,
 }: {
   address: ConsoleAddress;
-  family: OsFamily;
   isAdmin: boolean;
   serverId: number;
   onChanged: () => void;
@@ -241,58 +269,74 @@ function AddressLine({
     onChanged();
   };
 
-  const os = family === "windows" ? "Windows" : "Linux";
-  if (!editing) {
+  if (editing) {
     return (
-      <div className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
-        <span>
-          {os} · connects to <span className="font-mono text-slate-700 dark:text-slate-200">{address.host}:{address.port}</span>
-        </span>
-        <span className={address.overridden ? "text-[#5794F2]" : "text-slate-400"}>
-          {address.overridden ? `(set by admin — agent reports ${address.agentIp})` : "(reported by the agent)"}
-        </span>
-        {isAdmin && (
-          <button onClick={open} className="text-[11px] text-slate-400 hover:text-[#5794F2] underline">
-            change
+      <div className={TILE}>
+        <span className={TILE_LABEL}>Address</span>
+        <div className="flex gap-2">
+          <input
+            className={`${INPUT} !h-8 flex-1 min-w-0`}
+            value={host}
+            spellCheck={false}
+            placeholder={address.agentIp || "192.168.56.101"}
+            onChange={(e) => setHost(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && save(host, port)}
+            autoFocus
+          />
+          <input
+            className={`${INPUT} !h-8 !w-16`}
+            inputMode="numeric"
+            value={port}
+            placeholder="22"
+            onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
+          />
+        </div>
+        <div className="text-[11px] text-slate-500">Leave blank to use the agent's IP ({address.agentIp}).</div>
+        {err && <div className="text-[12px] text-red-500">{err}</div>}
+        <div className="flex gap-2 justify-end">
+          {address.overridden && (
+            <button className={BTN_SMALL} disabled={busy} onClick={() => save("", "")}>Use agent IP</button>
+          )}
+          <button className={BTN_SMALL} disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+          <button className="gf-btn-primary !rounded-md h-7 px-3 text-[12px] font-semibold" disabled={busy} onClick={() => save(host, port)}>
+            Save
           </button>
-        )}
+        </div>
       </div>
     );
   }
   return (
-    <div className="mt-1.5 flex flex-col gap-1.5">
-      <div className="text-[12px] text-slate-500">
-        SSH address for the console. Leave blank to use the agent's IP ({address.agentIp}).
+    <div className={TILE}>
+      <div className="flex items-center justify-between gap-2">
+        <span className={TILE_LABEL}>Address</span>
+        <span
+          className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-px rounded ${
+            address.overridden
+              ? "bg-[#5794F2]/15 text-[#5794F2]"
+              : "bg-slate-200 dark:bg-white/[0.08] text-slate-500 dark:text-slate-400"
+          }`}
+        >
+          {address.overridden ? "Set by admin" : "From agent"}
+        </span>
       </div>
-      <div className="flex items-center gap-2 flex-wrap">
-        <input
-          className={`${INPUT} w-56`}
-          value={host}
-          spellCheck={false}
-          placeholder={address.agentIp || "192.168.56.101"}
-          onChange={(e) => setHost(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && save(host, port)}
-          autoFocus
-        />
-        <input
-          className={`${INPUT} w-20`}
-          inputMode="numeric"
-          value={port}
-          placeholder="22"
-          onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
-        />
-        <button className={BTN_PRIMARY} disabled={busy} onClick={() => save(host, port)}>Save</button>
-        {address.overridden && (
-          <button className={BTN_GHOST} disabled={busy} onClick={() => save("", "")}>Use agent IP</button>
+      <div className="font-mono text-[14px] font-semibold text-slate-900 dark:text-slate-100 truncate">
+        {address.host}:{address.port}
+      </div>
+      <div className="flex items-center justify-between gap-2 mt-auto">
+        <span className="text-[11px] text-slate-500 truncate">
+          {address.overridden ? `Agent reports ${address.agentIp}` : "Reported by the monitoring agent"}
+        </span>
+        {isAdmin && (
+          <button className={BTN_SMALL} onClick={open}>Change</button>
         )}
-        <button className={BTN_GHOST} disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
       </div>
-      {err && <div className="text-[12px] text-red-500">{err}</div>}
     </div>
   );
 }
 
-function HostKeyBadge({
+// The server's SSH identity key, pinned on the first successful login. Shown shortened;
+// the full value is in the tooltip so it can be compared with `ssh-keygen -lf` by hand.
+function HostKeyTile({
   info,
   isAdmin,
   serverId,
@@ -305,13 +349,6 @@ function HostKeyBadge({
 }) {
   const [busy, setBusy] = useState(false);
   const k = info.hostKey;
-  if (!k) {
-    return (
-      <span className="text-[12px] text-slate-400 font-mono" title="The server's SSH key is saved on the first successful login.">
-        host key: not yet seen
-      </span>
-    );
-  }
   const forget = async () => {
     if (
       !window.confirm(
@@ -325,15 +362,39 @@ function HostKeyBadge({
     setBusy(false);
     onChanged();
   };
+  const short = (fp: string) => (fp.length > 30 ? `${fp.slice(0, 18)}…${fp.slice(-8)}` : fp);
+
   return (
-    <div className="text-right">
-      <div className="text-[12px] font-mono text-slate-500 dark:text-slate-400 break-all" title={`Saved ${k.firstSeen ? fmtDateTime(k.firstSeen) : ""}`}>
-        host key: {k.keyType ? `${k.keyType} ` : ""}{k.fingerprint}
+    <div className={TILE}>
+      <div className="flex items-center justify-between gap-2">
+        <span className={TILE_LABEL}>Host key</span>
+        <span
+          className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-px rounded ${
+            k ? "bg-[#73BF69]/15 text-[#73BF69]" : "bg-slate-200 dark:bg-white/[0.08] text-slate-500 dark:text-slate-400"
+          }`}
+        >
+          {k ? "Saved" : "Not yet seen"}
+        </span>
       </div>
-      {isAdmin && (
-        <button onClick={forget} disabled={busy} className="text-[11px] text-slate-400 hover:text-red-500 underline mt-0.5">
-          clear saved key
-        </button>
+      {k ? (
+        <>
+          <div className="font-mono text-[14px] font-semibold text-slate-900 dark:text-slate-100 truncate" title={k.fingerprint}>
+            {short(k.fingerprint)}
+          </div>
+          <div className="flex items-center justify-between gap-2 mt-auto">
+            <span className="text-[11px] text-slate-500 truncate">
+              {k.keyType ?? "key"}
+              {k.firstSeen ? ` · saved ${fmtDateTime(k.firstSeen)}` : ""}
+            </span>
+            {isAdmin && (
+              <button className={`${BTN_SMALL} gf-btn-danger`} onClick={forget} disabled={busy}>Forget</button>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="text-[12px] text-slate-500 mt-auto">
+          Saved on the first successful login. Later logins must present the same key.
+        </div>
       )}
     </div>
   );
