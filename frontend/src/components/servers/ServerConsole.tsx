@@ -203,6 +203,7 @@ export default function ServerConsole({ serverId, serverName, isAdmin }: Props) 
             serverId={serverId}
             serverName={serverName}
             family={family}
+            address={info.address}
             creds={creds}
             credsReady={credsReady}
             visible={tab === "terminal"}
@@ -696,10 +697,93 @@ function Spinner() {
 
 type TermState = "idle" | "connecting" | "open" | "closed";
 
+// ANSI palette in the dashboard's colours, so `ls --color`, `systemctl status` and
+// PowerShell errors read like the rest of the UI rather than in xterm's defaults.
+const TERM_THEME = {
+  background: "#0b0e14",
+  foreground: "#D9D9D9",
+  cursor: "#5794F2",
+  cursorAccent: "#0b0e14",
+  selectionBackground: "rgba(87,148,242,0.35)",
+  black: "#1a1d23",
+  red: "#F2495C",
+  green: "#73BF69",
+  yellow: "#FADE2A",
+  blue: "#5794F2",
+  magenta: "#B877D9",
+  cyan: "#5DCAA5",
+  white: "#D9D9D9",
+  brightBlack: "#6B7280",
+  brightRed: "#FF7383",
+  brightGreen: "#96D98D",
+  brightYellow: "#FFEE52",
+  brightBlue: "#8AB8FF",
+  brightMagenta: "#CA95E5",
+  brightCyan: "#8FE0C8",
+  brightWhite: "#FFFFFF",
+};
+
+const FONT_KEY = "cspc_console_font";
+const readFont = () => {
+  try {
+    const n = Number(localStorage.getItem(FONT_KEY));
+    return n >= 10 && n <= 22 ? n : 13;
+  } catch {
+    return 13;
+  }
+};
+
+const STATE_PILL: Record<TermState, { label: string; color: string }> = {
+  idle: { label: "Not connected", color: "#6B7280" },
+  connecting: { label: "Connecting", color: "#FF780A" },
+  open: { label: "Connected", color: "#73BF69" },
+  closed: { label: "Disconnected", color: "#6B7280" },
+};
+
+const fmtElapsed = (sec: number) => {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+};
+
+function ToolButton({
+  title,
+  onClick,
+  disabled,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      disabled={disabled}
+      className="grid place-items-center h-7 min-w-[1.75rem] px-1.5 rounded-md text-[12px] font-semibold text-slate-400 hover:text-white hover:bg-white/[0.08] active:bg-white/[0.12] disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+    >
+      {children}
+    </button>
+  );
+}
+
+const Icon = ({ d }: { d: string }) => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d={d} />
+  </svg>
+);
+
 function WebTerminal({
   serverId,
   serverName,
   family,
+  address,
   creds,
   credsReady,
   visible,
@@ -708,6 +792,7 @@ function WebTerminal({
   serverId: number;
   serverName: string;
   family: OsFamily;
+  address: ConsoleAddress;
   creds: Creds;
   credsReady: boolean;
   visible: boolean;
@@ -719,20 +804,42 @@ function WebTerminal({
   const sessionRef = useRef<string | null>(null);
   const [state, setState] = useState<TermState>("idle");
   const [message, setMessage] = useState("");
+  const [fontSize, setFontSize] = useState(readFont);
+  const [full, setFull] = useState(false);
+  const [size, setSize] = useState({ cols: 0, rows: 0 });
+  const [openedAt, setOpenedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const [idleMin, setIdleMin] = useState<number | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const refit = useCallback(() => {
+    const term = termRef.current;
+    try {
+      fitRef.current?.fit();
+    } catch {
+      return; // hidden (display:none) — nothing to measure
+    }
+    if (!term) return;
+    setSize({ cols: term.cols, rows: term.rows });
+    if (sessionRef.current) {
+      socket.emit("console:resize", { sessionId: sessionRef.current, cols: term.cols, rows: term.rows });
+    }
+  }, []);
 
   // One xterm instance for the life of the component.
   useEffect(() => {
     const term = new Terminal({
       cursorBlink: true,
+      cursorStyle: "bar",
       fontFamily: "'JetBrains Mono', monospace",
-      fontSize: 13,
+      fontSize: readFont(),
+      lineHeight: 1.2,
       scrollback: 5000,
-      theme: { background: "#0b0e14", foreground: "#D9D9D9", cursor: "#5794F2", selectionBackground: "rgba(87,148,242,0.35)" },
+      theme: TERM_THEME,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(hostRef.current!);
-    term.writeln("\x1b[90mEnter the SSH login above, then press Connect.\x1b[0m");
     termRef.current = term;
     fitRef.current = fit;
 
@@ -747,22 +854,14 @@ function WebTerminal({
       if (m.sessionId !== sessionRef.current) return;
       sessionRef.current = null;
       setState("closed");
+      setOpenedAt(null);
       setMessage(`Session ended — ${m.reason}.`);
       term.writeln(`\r\n\x1b[90m── session ended: ${m.reason} ──\x1b[0m`);
     };
     socket.on("console:output", onOutput);
     socket.on("console:closed", onClosed);
 
-    const ro = new ResizeObserver(() => {
-      try {
-        fit.fit();
-      } catch {
-        return; // hidden (display:none) — nothing to measure
-      }
-      if (sessionRef.current) {
-        socket.emit("console:resize", { sessionId: sessionRef.current, cols: term.cols, rows: term.rows });
-      }
-    });
+    const ro = new ResizeObserver(() => refit());
     ro.observe(hostRef.current!);
 
     return () => {
@@ -774,32 +873,57 @@ function WebTerminal({
       sessionRef.current = null;
       term.dispose();
     };
-  }, []);
+  }, [refit]);
 
   // Refit when the tab becomes visible (it was measured at 0x0 while hidden).
   useEffect(() => {
     if (!visible) return;
     requestAnimationFrame(() => {
-      try {
-        fitRef.current?.fit();
-      } catch {
-        /* not laid out yet */
-      }
-      termRef.current?.focus();
+      refit();
+      if (sessionRef.current) termRef.current?.focus();
     });
-  }, [visible]);
+  }, [visible, refit]);
+
+  // Font size: apply, remember, refit (the cell size changed).
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontSize = fontSize;
+    try {
+      localStorage.setItem(FONT_KEY, String(fontSize));
+    } catch {
+      /* not remembered — fine */
+    }
+    requestAnimationFrame(refit);
+  }, [fontSize, refit]);
+
+  // Fullscreen: refit to the new box, Esc leaves it.
+  useEffect(() => {
+    requestAnimationFrame(refit);
+    if (!full) return;
+    const onKey = (e: KeyboardEvent) => {
+      // Esc belongs to the shell (vim, less) while a session is open; only leave
+      // fullscreen with it when nothing is connected.
+      if (e.key === "Escape" && !sessionRef.current) setFull(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [full, refit]);
+
+  // Session clock.
+  useEffect(() => {
+    if (!openedAt) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [openedAt]);
 
   const connect = () => {
     const term = termRef.current!;
-    try {
-      fitRef.current?.fit();
-    } catch {
-      /* use the defaults */
-    }
+    refit();
     setState("connecting");
     setMessage("");
     term.reset();
-    term.writeln(`\x1b[90mConnecting to ${serverName} as ${creds.username}…\x1b[0m`);
+    term.writeln(`\x1b[90mConnecting to ${address.host}:${creds.port} as ${creds.username}…\x1b[0m`);
     socket.timeout(30000).emit(
       "console:open",
       { serverId, ...creds, cols: term.cols, rows: term.rows },
@@ -813,11 +937,14 @@ function WebTerminal({
         }
         sessionRef.current = res.sessionId!;
         setState("open");
+        setOpenedAt(Date.now());
+        setNow(Date.now());
+        setIdleMin(res.idleMinutes ?? null);
         if (res.firstTrust) {
           term.writeln(`\x1b[34mFirst login to this server — SSH key ${res.fingerprint} saved.\x1b[0m`);
           onHostKey();
         }
-        setMessage(`Connected. Closes after ${res.idleMinutes} min without typing.`);
+        setMessage("");
         term.focus();
       },
     );
@@ -827,31 +954,136 @@ function WebTerminal({
     if (sessionRef.current) socket.emit("console:close", { sessionId: sessionRef.current });
   };
 
+  const copySelection = async () => {
+    const text = termRef.current?.getSelection() ?? "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard blocked on plain http */
+    }
+  };
+
+  const pill = STATE_PILL[state];
+  const shellName = family === "windows" ? "PowerShell" : "bash";
+  const who = creds.username ? `${creds.username}@${serverName}` : serverName;
+  const showOverlay = state !== "open";
+
   return (
-    <div className={`${PANEL} overflow-hidden`}>
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-slate-200 dark:border-white/[0.07] flex-wrap">
+    <div
+      className={
+        full
+          ? "fixed inset-0 z-50 flex flex-col bg-[#0b0e14]"
+          : "flex flex-col rounded-lg overflow-hidden border border-slate-300 dark:border-white/[0.1] shadow-[0_10px_30px_-12px_rgba(0,0,0,0.6)]"
+      }
+    >
+      {/* ── Title bar ─────────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-3 px-3 h-11 bg-[#15181e] border-b border-white/[0.07] flex-shrink-0">
         <span
-          className="w-1.5 h-1.5 rounded-full"
-          style={{ background: state === "open" ? "#73BF69" : state === "connecting" ? "#FF780A" : "#6B7280" }}
-        />
-        <span className="text-[13px] text-slate-700 dark:text-slate-200">
-          {family === "windows" ? "PowerShell" : "Shell"} — {serverName}
+          className="flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border"
+          style={{ color: pill.color, borderColor: `${pill.color}66`, background: `${pill.color}14` }}
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${state === "connecting" ? "animate-pulse" : ""}`}
+            style={{ background: pill.color }}
+          />
+          {pill.label}
         </span>
-        <span className="text-[12px] text-slate-400 truncate">{message}</span>
+        <span className="text-[13px] font-semibold text-slate-200 font-mono truncate">{who}</span>
+        <span className="hidden sm:inline text-[11px] text-slate-500 flex-shrink-0">{shellName}</span>
+
         <div className="flex-1" />
+
+        <div className="flex items-center gap-0.5">
+          <ToolButton title="Smaller text" onClick={() => setFontSize((f) => Math.max(10, f - 1))} disabled={fontSize <= 10}>
+            A−
+          </ToolButton>
+          <ToolButton title="Larger text" onClick={() => setFontSize((f) => Math.min(22, f + 1))} disabled={fontSize >= 22}>
+            A+
+          </ToolButton>
+          <ToolButton title={copied ? "Copied" : "Copy selection"} onClick={copySelection}>
+            {copied ? <Icon d="M5 13l4 4L19 7" /> : <Icon d="M9 9h11v11H9zM5 15H4V4h11v1" />}
+          </ToolButton>
+          <ToolButton title="Clear screen" onClick={() => termRef.current?.clear()}>
+            <Icon d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+          </ToolButton>
+          <ToolButton title={full ? "Exit full screen" : "Full screen"} onClick={() => setFull((v) => !v)}>
+            {full ? <Icon d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /> : <Icon d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />}
+          </ToolButton>
+        </div>
+
+        <div className="w-px h-5 bg-white/[0.08]" />
+
         {state === "open" ? (
-          <button className={BTN_GHOST} onClick={disconnect}>Disconnect</button>
+          <button className="gf-btn !rounded-md h-7 px-3 text-[12px] font-semibold text-slate-200 gf-btn-danger" onClick={disconnect}>
+            Disconnect
+          </button>
         ) : (
-          <button className={BTN_PRIMARY} onClick={connect} disabled={!credsReady || state === "connecting"}>
+          <button
+            className="gf-btn-primary !rounded-md h-7 px-3 text-[12px] font-semibold"
+            onClick={connect}
+            disabled={!credsReady || state === "connecting"}
+          >
             {state === "connecting" ? "Connecting…" : state === "closed" ? "Reconnect" : "Connect"}
           </button>
         )}
       </div>
-      <div className="bg-[#0b0e14] p-2">
-        <div ref={hostRef} className="h-[460px] w-full" />
+
+      {/* ── Screen ────────────────────────────────────────────────────────── */}
+      <div className={`relative bg-[#0b0e14] px-3 pt-2 pb-1 ${full ? "flex-1 min-h-0" : ""}`}>
+        <div ref={hostRef} className={full ? "h-full w-full" : "h-[460px] w-full"} />
+
+        {showOverlay && (
+          <div className="absolute inset-0 grid place-items-center bg-[#0b0e14]/85 backdrop-blur-[1px]">
+            <div className="flex flex-col items-center text-center gap-3 px-6 max-w-sm">
+              <span className="grid place-items-center w-12 h-12 rounded-xl border border-white/[0.1] bg-white/[0.03] text-[#5794F2]">
+                {state === "connecting" ? (
+                  <span className="inline-block w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 5h16v14H4zM7 9l3 3-3 3M12 15h5" />
+                  </svg>
+                )}
+              </span>
+              <div className="text-[14px] font-semibold text-slate-100">
+                {state === "connecting"
+                  ? `Connecting to ${address.host}…`
+                  : state === "closed"
+                    ? "Session ended"
+                    : `Open a ${shellName} session on ${serverName}`}
+              </div>
+              <div className={`text-[12px] ${message && state !== "connecting" ? "text-[#FF7383]" : "text-slate-400"}`}>
+                {state === "connecting"
+                  ? "Logging in over SSH."
+                  : message ||
+                    (credsReady
+                      ? `Connects to ${address.host}:${creds.port} as ${creds.username}.`
+                      : "Enter the username and password in SSH login above.")}
+              </div>
+              {state !== "connecting" && (
+                <button
+                  className="gf-btn-primary !rounded-md h-8 px-4 text-[13px] font-semibold"
+                  onClick={connect}
+                  disabled={!credsReady}
+                >
+                  {state === "closed" ? "Reconnect" : "Connect"}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
-      <div className="px-4 py-2 text-[11px] text-slate-400 border-t border-slate-200 dark:border-white/[0.07]">
-        Admin only. Opening and closing a terminal is recorded in History; what you type is not.
+
+      {/* ── Status bar ────────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-4 px-3 h-7 bg-[#15181e] border-t border-white/[0.07] text-[11px] font-mono text-slate-500 flex-shrink-0 overflow-hidden">
+        <span className="truncate">SSH {address.host}:{creds.port}</span>
+        {size.cols > 0 && <span className="hidden sm:inline">{size.cols}×{size.rows}</span>}
+        {openedAt && <span className="text-slate-300">session {fmtElapsed(Math.max(0, Math.floor((now - openedAt) / 1000)))}</span>}
+        {openedAt && idleMin && <span className="hidden md:inline">closes after {idleMin} min idle</span>}
+        <div className="flex-1" />
+        <span className="hidden sm:inline truncate">Admin only · sessions logged in History, keystrokes are not</span>
       </div>
     </div>
   );
