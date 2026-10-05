@@ -81,7 +81,10 @@ export async function resolveTarget(id, osOverride) {
 // ─── Input validation ─────────────────────────────────────────────────────────
 
 // user, DOMAIN\user, user@domain — the shapes an SSH login on Linux or Windows takes.
-const USER_RE = /^[A-Za-z0-9._@\\-]{1,64}$/;
+// Windows local accounts may contain spaces ("Mark Gregorio"), so a space is allowed in
+// the middle, never at either end. Safe: the username goes to ssh2 as a protocol field
+// and into audit text, never into a shell.
+const USER_RE = /^[A-Za-z0-9._@\\-](?:[A-Za-z0-9._@\\ -]{0,62}[A-Za-z0-9._@\\-])?$/;
 
 /** Validate the credential half of a request. Returns { username, password, port } or { error }. */
 export function readCredentials(body) {
