@@ -431,7 +431,6 @@ function QuickActions({
             <div key={g.key}>
               <div className={`${LABEL} mb-2`}>
                 {g.title}
-                {g.key === "control" && <span className="ml-2 text-[11px] text-[#FF780A]">changes the server</span>}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 auto-rows-fr gap-3">
                 {list.map((a) => (
