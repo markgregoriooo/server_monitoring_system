@@ -433,7 +433,7 @@ function QuickActions({
                 {g.title}
                 {g.key === "control" && <span className="ml-2 text-[11px] text-[#FF780A]">changes the server</span>}
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 auto-rows-fr gap-3">
                 {list.map((a) => (
                   <ActionButton
                     key={a.id}
@@ -477,14 +477,12 @@ function QuickActions({
 }
 
 // ─── Quick Action button ──────────────────────────────────────────────────────
-// The dashboard's standard raised button (.gf-btn). The icon colour says what kind of
-// action it is — blue reads, orange changes the server, red reboots it.
+// The dashboard's standard raised button (.gf-btn). Every button is the same height
+// (h-full in an equal-row grid) so the grid reads as one even block.
 
-const ACCENT = { info: "#5794F2", control: "#FF780A", danger: "#E02F44" } as const;
-
+// Icons are neutral (they take the label's colour); only Reboot is red.
 function accentFor(a: ConsoleAction) {
-  if (a.id === "reboot") return ACCENT.danger;
-  return a.group === "control" ? ACCENT.control : ACCENT.info;
+  return a.id === "reboot" ? "#E02F44" : "currentColor";
 }
 
 // 24x24 stroke icons, one per action; a generic terminal glyph for anything new.
@@ -525,20 +523,20 @@ function ActionButton({
       title={title}
       // .gf-btn: the dashboard's standard raised button (face, sheen, shadow, press-inset).
       // Reboot also takes .gf-btn-danger, which reddens the edge and label on hover.
-      className={`gf-btn ${action.id === "reboot" ? "gf-btn-danger" : ""} text-left flex items-start gap-2 px-2.5 py-1.5 w-full`}
-      style={running ? { borderColor: c } : undefined}
+      className={`gf-btn ${action.id === "reboot" ? "gf-btn-danger" : ""} text-left flex items-start gap-3 px-3.5 py-3 w-full h-full`}
+      style={running ? { borderColor: "var(--gf-accent)" } : undefined}
     >
-      <span className="flex-shrink-0 mt-px" style={{ color: c }}>
+      <span className="flex-shrink-0 mt-0.5 text-slate-600 dark:text-slate-300" style={{ color: c === "currentColor" ? undefined : c }}>
         {running ? (
           <Spinner />
         ) : (
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d={ICONS[action.id] ?? FALLBACK_ICON} />
           </svg>
         )}
       </span>
       <span className="min-w-0">
-        <span className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-800 dark:text-[var(--gf-text-primary)]">
+        <span className="flex items-center gap-2 text-[13px] font-semibold text-slate-800 dark:text-[var(--gf-text-primary)]">
           {action.label}
           {!action.allowed && (
             <span className="text-[9px] uppercase tracking-wider px-1 py-px rounded-sm bg-slate-200 dark:bg-white/10 text-slate-500">
@@ -546,7 +544,7 @@ function ActionButton({
             </span>
           )}
         </span>
-        <span className="block text-[11px] leading-tight text-slate-500 dark:text-slate-400 mt-0.5">{action.description}</span>
+        <span className="block text-[11.5px] leading-snug text-slate-500 dark:text-slate-400 mt-0.5">{action.description}</span>
       </span>
     </button>
   );
