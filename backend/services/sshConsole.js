@@ -66,7 +66,11 @@ export async function forgetHostKey(deviceId) {
 // ─── Target ───────────────────────────────────────────────────────────────────
 
 /**
- * Who is server `id`, from the database. Returns { id, name, ip, os, family } or null.
+ * Who is server `id`, from the database. Returns
+ *   { id, name, ip, os, family, agentIp, sshHost, sshPort, addressOverridden }
+ * or null. `ip` is what the console CONNECTS to: the admin-set SSH address when there
+ * is one (server_console_settings), else the IP the agent reported. Either way it comes
+ * from the database, never from the request.
  * `osOverride` is honoured ONLY when the agent never reported an OS — otherwise the
  * stored one wins, so a client cannot run the Windows catalog against a Linux box.
  */
@@ -75,7 +79,48 @@ export async function resolveTarget(id, osOverride) {
   if (!server) return null;
   let family = osFamily(server.os);
   if (!family && (osOverride === "linux" || osOverride === "windows")) family = osOverride;
-  return { id: server.id, name: server.name, ip: server.ip, os: server.os, family };
+  const settings = await getConsoleSettings(id).catch((err) => {
+    // Table missing (migration not applied): fall back to the agent's IP, loudly.
+    console.error("[CONSOLE] could not read server_console_settings:", err.message);
+    return null;
+  });
+  return {
+    id: server.id,
+    name: server.name,
+    ip: settings?.sshHost || server.ip,
+    os: server.os,
+    family,
+    agentIp: server.ip,
+    sshHost: settings?.sshHost ?? null,
+    sshPort: settings?.sshPort ?? null,
+    addressOverridden: Boolean(settings?.sshHost),
+  };
+}
+
+// ─── Per-server SSH address (admin override) ──────────────────────────────────
+
+export async function getConsoleSettings(deviceId) {
+  const [[row]] = await db.query(
+    `SELECT ssh_host AS sshHost, ssh_port AS sshPort, updated_at AS updatedAt
+       FROM server_console_settings WHERE device_id = ? LIMIT 1`,
+    [deviceId],
+  );
+  return row ?? null;
+}
+
+/** Set (host given) or clear (host blank) the SSH address. Port null = 22. */
+export async function setConsoleAddress(deviceId, host, port, userId) {
+  if (!host) {
+    await db.query(`DELETE FROM server_console_settings WHERE device_id = ?`, [deviceId]);
+    return;
+  }
+  await db.query(
+    `INSERT INTO server_console_settings (device_id, ssh_host, ssh_port, updated_by, updated_at)
+     VALUES (?, ?, ?, ?, NOW())
+     ON DUPLICATE KEY UPDATE ssh_host = VALUES(ssh_host), ssh_port = VALUES(ssh_port),
+                             updated_by = VALUES(updated_by), updated_at = NOW()`,
+    [deviceId, host, port, userId ?? null],
+  );
 }
 
 // ─── Input validation ─────────────────────────────────────────────────────────
@@ -261,6 +306,8 @@ export default {
   getPinnedHostKey,
   forgetHostKey,
   resolveTarget,
+  getConsoleSettings,
+  setConsoleAddress,
   readCredentials,
   connect,
   runCommand,

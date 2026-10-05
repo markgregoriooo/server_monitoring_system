@@ -655,7 +655,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
 
       {consoleOpened && (
         <div className={view === "console" ? "" : "hidden"}>
-          <ServerConsole serverId={Number(s.id)} serverName={s.name} ip={s.ip} isAdmin={user?.role === "admin"} />
+          <ServerConsole serverId={Number(s.id)} serverName={s.name} isAdmin={user?.role === "admin"} />
         </div>
       )}
 

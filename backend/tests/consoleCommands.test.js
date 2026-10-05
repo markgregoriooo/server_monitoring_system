@@ -9,6 +9,7 @@ import {
   buildCommand,
   sudoWrap,
   powershell,
+  isValidSshHost,
 } from "../services/consoleCommands.js";
 
 test("osFamily reads the agent's platform string", () => {
@@ -103,5 +104,17 @@ test("roles: it_staff gets read-only actions only, admin gets all", () => {
 test("listActions exposes no command text to the browser", () => {
   for (const a of listActions()) {
     assert.deepEqual(Object.keys(a).sort(), ["confirm", "description", "group", "id", "label", "param"]);
+  }
+});
+
+test("SSH address override: IPs and hostnames only", () => {
+  for (const ok of ["192.168.56.101", "10.0.2.15", "0.0.0.0", "srv-core", "srv-core.cspc.edu.ph", "fe80::1", "::1", " 192.168.1.5 "]) {
+    assert.ok(isValidSshHost(ok), ok);
+  }
+  for (const bad of [
+    "", " ", "999.1.1.1", "192.168.1", "1.2.3.4.5", "-host", "host-", "a b", "host;id", "$(id)",
+    "user@host", "host:22", "http://host", "a..b", "1::2::3", "x".repeat(254), null, 42,
+  ]) {
+    assert.ok(!isValidSshHost(bad), JSON.stringify(bad));
   }
 });

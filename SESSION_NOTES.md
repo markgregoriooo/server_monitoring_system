@@ -2728,3 +2728,14 @@ commands ran on WSL Ubuntu. ⚠️ **Not yet tried against a real ICTU server**,
 `sudo -S` path (restart/reboot as a non-root user) has only been checked for shell syntax —
 try "Restart service" on a harmless service once on a real box before relying on it.
 ⚠️ Apply `migrations/2026-10-05_server_ssh_hosts.sql` on any existing database (already in v13).
+
+**Follow-ups the same day (branch `server-console`):**
+- Usernames may contain a space (Windows local accounts, e.g. "Mark Gregorio").
+- SSH login failures answer **422, not 502**: Cloudflare replaces an origin 502 with its own
+  HTML page, so behind the tunnel the reason never reached the admin ("Cannot connect to server").
+- **SSH address override.** The VirtualBox VM `srv-core` reports `10.0.2.15` (NAT — unreachable
+  from the host) while SSH is reachable on its host-only adapter `192.168.56.101`. An admin can
+  now set a per-server SSH host/port in the Console ("change" next to "connects to …"), stored in
+  `server_console_settings` (migration `2026-10-06_…`, in v13) because the agent rewrites
+  `devices.ip_address`. Verified: with the override set, the VM's sshd answered (a deliberately
+  wrong password was rejected by it); the override was then cleared again so the admin sets it.

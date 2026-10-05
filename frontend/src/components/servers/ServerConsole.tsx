@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { api } from "../../api/api";
-import type { ConsoleAction, ConsoleActionResult, ConsoleInfo, OsFamily } from "../../api/api";
+import type { ConsoleAction, ConsoleActionResult, ConsoleAddress, ConsoleInfo, OsFamily } from "../../api/api";
 import { socket } from "../../socket/socket";
 import { fmtDateTime } from "../../utils/format";
 
@@ -24,7 +24,6 @@ import { fmtDateTime } from "../../utils/format";
 interface Props {
   serverId: number;
   serverName: string;
-  ip: string;
   isAdmin: boolean;
 }
 
@@ -57,7 +56,7 @@ const saveUser = (id: number, u: string) => {
   }
 };
 
-export default function ServerConsole({ serverId, serverName, ip, isAdmin }: Props) {
+export default function ServerConsole({ serverId, serverName, isAdmin }: Props) {
   const [info, setInfo] = useState<ConsoleInfo | null>(null);
   const [loadError, setLoadError] = useState("");
   const [tab, setTab] = useState<"actions" | "terminal">("actions");
@@ -71,6 +70,8 @@ export default function ServerConsole({ serverId, serverName, ip, isAdmin }: Pro
     api.getServerConsole(serverId).then((r) => {
       if (r.success && r.data) {
         setInfo(r.data);
+        // Start the port field on the server's saved SSH port (22 unless an admin set one).
+        setPort(String(r.data.address?.port ?? 22));
         setLoadError("");
       } else setLoadError(r.error ?? "Could not load the console.");
     });
@@ -92,8 +93,15 @@ export default function ServerConsole({ serverId, serverName, ip, isAdmin }: Pro
         <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
           <div>
             <div className={LABEL}>SSH login</div>
+            <AddressLine
+              address={info.address}
+              family={family}
+              isAdmin={isAdmin}
+              serverId={serverId}
+              onChanged={load}
+            />
             <div className="text-[12px] text-slate-400 mt-0.5">
-              {family === "windows" ? "Windows" : "Linux"} · {ip} — the password is used only for this page and is never saved.
+              The password is used only for this page and is never saved.
             </div>
           </div>
           <HostKeyBadge info={info} isAdmin={isAdmin} serverId={serverId} onChanged={load} />
@@ -193,6 +201,95 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
     >
       {children}
     </button>
+  );
+}
+
+// Where the console will connect, and whether that is the agent's IP or an admin's
+// override. Admins can change it here: a VirtualBox NAT VM reports 10.0.2.15, which
+// nothing outside the VM can reach, and a server may take SSH on a management network.
+function AddressLine({
+  address,
+  family,
+  isAdmin,
+  serverId,
+  onChanged,
+}: {
+  address: ConsoleAddress;
+  family: OsFamily;
+  isAdmin: boolean;
+  serverId: number;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const open = () => {
+    setHost(address.overridden ? address.host : "");
+    setPort(address.port === 22 ? "" : String(address.port));
+    setErr("");
+    setEditing(true);
+  };
+  const save = async (h: string, p: string) => {
+    setBusy(true);
+    setErr("");
+    const r = await api.setConsoleAddress(serverId, h.trim(), p ? Number(p) : null);
+    setBusy(false);
+    if (!r.success) return setErr(r.error ?? "Could not save.");
+    setEditing(false);
+    onChanged();
+  };
+
+  const os = family === "windows" ? "Windows" : "Linux";
+  if (!editing) {
+    return (
+      <div className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+        <span>
+          {os} · connects to <span className="font-mono text-slate-700 dark:text-slate-200">{address.host}:{address.port}</span>
+        </span>
+        <span className={address.overridden ? "text-[#5794F2]" : "text-slate-400"}>
+          {address.overridden ? `(set by admin — agent reports ${address.agentIp})` : "(reported by the agent)"}
+        </span>
+        {isAdmin && (
+          <button onClick={open} className="text-[11px] text-slate-400 hover:text-[#5794F2] underline">
+            change
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="mt-1.5 flex flex-col gap-1.5">
+      <div className="text-[12px] text-slate-500">
+        SSH address for the console. Leave blank to use the agent's IP ({address.agentIp}).
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <input
+          className={`${INPUT} w-56`}
+          value={host}
+          spellCheck={false}
+          placeholder={address.agentIp || "192.168.56.101"}
+          onChange={(e) => setHost(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && save(host, port)}
+          autoFocus
+        />
+        <input
+          className={`${INPUT} w-20`}
+          inputMode="numeric"
+          value={port}
+          placeholder="22"
+          onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
+        />
+        <button className={BTN_PRIMARY} disabled={busy} onClick={() => save(host, port)}>Save</button>
+        {address.overridden && (
+          <button className={BTN_GHOST} disabled={busy} onClick={() => save("", "")}>Use agent IP</button>
+        )}
+        <button className={BTN_GHOST} disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+      </div>
+      {err && <div className="text-[12px] text-red-500">{err}</div>}
+    </div>
   );
 }
 

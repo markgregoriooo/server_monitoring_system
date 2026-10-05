@@ -478,6 +478,24 @@ CREATE TABLE `sensor_backup_batches` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `server_console_settings`
+--
+-- Server Console: an admin-set SSH address per server, used instead of the agent-reported
+-- IP when SSH is reachable somewhere else (a VirtualBox NAT VM reports 10.0.2.15; a server
+-- with a management network). The agent rewrites devices.ip_address, so the override
+-- cannot live there. No row = use the agent IP. See migrations/2026-10-06_server_console_settings.sql
+
+CREATE TABLE `server_console_settings` (
+  `device_id` int(11) NOT NULL,
+  `ssh_host` varchar(255) DEFAULT NULL,
+  `ssh_port` smallint(5) UNSIGNED DEFAULT NULL,
+  `updated_by` int(11) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `server_specs`
 --
 
@@ -817,6 +835,13 @@ ALTER TABLE `sensor_backup_batches`
   ADD KEY `fk_sensor_backup_batches_devices1_idx` (`device_id`);
 
 --
+-- Indexes for table `server_console_settings`
+--
+ALTER TABLE `server_console_settings`
+  ADD PRIMARY KEY (`device_id`),
+  ADD KEY `fk_server_console_settings_user` (`updated_by`);
+
+--
 -- Indexes for table `server_specs`
 --
 ALTER TABLE `server_specs`
@@ -1145,6 +1170,13 @@ ALTER TABLE `reports`
 --
 ALTER TABLE `sensor_backup_batches`
   ADD CONSTRAINT `fk_sensor_backup_batches_devices1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE NO ACTION;
+
+--
+-- Constraints for table `server_console_settings`
+--
+ALTER TABLE `server_console_settings`
+  ADD CONSTRAINT `fk_server_console_settings_device` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  ADD CONSTRAINT `fk_server_console_settings_user` FOREIGN KEY (`updated_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
 -- Constraints for table `server_specs`

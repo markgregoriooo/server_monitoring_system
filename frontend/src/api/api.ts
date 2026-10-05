@@ -189,6 +189,15 @@ export interface ConsoleInfo {
   actions: ConsoleAction[];
   terminalAllowed: boolean;
   hostKey: ConsoleHostKey | null;
+  /** Where the console connects: an admin-set address, or the IP the agent reported. */
+  address: ConsoleAddress;
+}
+
+export interface ConsoleAddress {
+  host: string;
+  port: number;
+  overridden: boolean;
+  agentIp: string;
 }
 
 export interface ConsoleActionRequest {
@@ -406,6 +415,16 @@ export const api = {
       // Longer than the default: a Quick Action may take the full SSH connect plus the
       // backend's 60s command timeout.
       const res = await apiClient.post(`/servers/${id}/console/actions`, body, { timeout: 90000 });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Admin: point the console at a different SSH address (blank host = back to the agent IP).
+  setConsoleAddress: async (id: number, host: string, port: number | null): Promise<ApiResult<{ address: ConsoleAddress }>> => {
+    try {
+      const res = await apiClient.put(`/servers/${id}/console/address`, { host, port });
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

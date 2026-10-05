@@ -11,6 +11,7 @@ import { logSafe } from "../utils/logSafe.js";
  *
  *   GET    /:id/console              catalog for this server's OS + the pinned host key   admin, it_staff
  *   POST   /:id/console/actions      run one Quick Action                                 admin, it_staff*
+ *   PUT    /:id/console/address      set / clear the SSH address (override the agent IP) admin
  *   DELETE /:id/console/host-key     forget the pinned SSH host key                       admin
  *
  *   * it_staff may run only the read-only ("info") actions — consoleCommands.roleMayRun.
@@ -36,6 +37,13 @@ router.get("/:id/console", authMiddleware, requireRole("admin", "it_staff"), asy
     const hostKey = await sshConsole.getPinnedHostKey(id).catch(() => null);
     res.json({
       server: { id: target.id, name: target.name, ip: target.ip, os: target.os },
+      // Where the console connects, and why: an admin-set address, or the agent's IP.
+      address: {
+        host: target.ip,
+        port: target.sshPort ?? 22,
+        overridden: target.addressOverridden,
+        agentIp: target.agentIp,
+      },
       family: target.family, // null = unknown, the UI asks
       actions: consoleCommands
         .listActions()
@@ -130,6 +138,45 @@ router.post("/:id/console/actions", authMiddleware, requireRole("admin", "it_sta
     next(err);
   } finally {
     conn?.end();
+  }
+});
+
+// Set or clear the address the console connects to. Body: { host, port }; a blank host
+// clears the override and the console goes back to the IP the agent reports. Admin
+// only: this decides which machine admins type their passwords into.
+router.put("/:id/console/address", authMiddleware, requireRole("admin"), async (req, res, next) => {
+  const id = parseId(req);
+  if (id == null) return res.status(400).json({ error: "Invalid server id." });
+  const host = typeof req.body?.host === "string" ? req.body.host.trim() : "";
+  const rawPort = req.body?.port;
+  const port = rawPort == null || rawPort === "" ? null : Number(rawPort);
+  if (host && !consoleCommands.isValidSshHost(host)) {
+    return res.status(400).json({ error: "Enter an IP address (e.g. 192.168.56.101) or a hostname." });
+  }
+  if (port != null && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+    return res.status(400).json({ error: "Port must be 1-65535." });
+  }
+  try {
+    const before = await sshConsole.resolveTarget(id);
+    if (!before) return res.status(404).json({ error: "Server not found." });
+    await sshConsole.setConsoleAddress(id, host || null, port === 22 ? null : port, req.user.id);
+    const after = await sshConsole.resolveTarget(id);
+    await audit({
+      userId: req.user.id,
+      module: "devices",
+      action: "console_set_address",
+      description: host
+        ? `Console: SSH address of "${before.name}" set to ${host}:${port ?? 22} (was ${before.ip}:${before.sshPort ?? 22})`
+        : `Console: SSH address of "${before.name}" reset to the agent's IP ${before.agentIp} (was ${before.ip})`,
+      level: "warning",
+      ...clientInfo(req),
+    });
+    res.json({
+      success: true,
+      address: { host: after.ip, port: after.sshPort ?? 22, overridden: after.addressOverridden, agentIp: after.agentIp },
+    });
+  } catch (err) {
+    next(err);
   }
 });
 

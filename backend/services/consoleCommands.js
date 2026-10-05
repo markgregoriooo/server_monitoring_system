@@ -34,6 +34,26 @@ export function isValidServiceName(name) {
   return typeof name === "string" && SERVICE_RE.test(name);
 }
 
+// ─── SSH address override ─────────────────────────────────────────────────────
+// The console normally connects to the IP the agent reported. An admin can override it
+// per server (server_console_settings) when SSH listens somewhere else — a VM whose
+// default route is VirtualBox NAT (10.0.2.15, unreachable from outside), or a server
+// with a separate management network. Accepted: an IPv4 address, an IPv6 address, or a
+// DNS hostname. Nothing else — this value becomes the target of an SSH connection.
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const IPV6_RE = /^[0-9A-Fa-f:.]{2,45}$/;
+const HOSTNAME_RE = /^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+
+export function isValidSshHost(host) {
+  if (typeof host !== "string") return false;
+  const h = host.trim();
+  if (IPV4_RE.test(h)) return true;
+  if (h.includes(":")) return IPV6_RE.test(h) && (h.match(/::/g) ?? []).length <= 1;
+  // A dotted string of digits that failed IPV4_RE (999.1.1.1) is a typo, not a hostname.
+  if (/^[\d.]+$/.test(h)) return false;
+  return HOSTNAME_RE.test(h);
+}
+
 // ─── Command builders ─────────────────────────────────────────────────────────
 
 const AGENT_UNIT = "cspc-agent";                        // agent/installer/linux/install.sh
@@ -287,4 +307,4 @@ export function sudoWrap(command) {
   return `sudo -S -p '' sh -c '${command.replace(/'/g, "'\\''")}'`;
 }
 
-export default { ACTIONS, osFamily, isValidServiceName, listActions, roleMayRun, buildCommand, sudoWrap, powershell };
+export default { ACTIONS, osFamily, isValidServiceName, isValidSshHost, listActions, roleMayRun, buildCommand, sudoWrap, powershell };
