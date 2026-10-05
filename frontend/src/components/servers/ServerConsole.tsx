@@ -270,6 +270,13 @@ function QuickActions({
   const [result, setResult] = useState<(ConsoleActionResult & { label: string }) | null>(null);
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState<ConsoleAction | null>(null);
+  // The output lands BELOW the buttons, usually off-screen — so bring it into view as
+  // soon as something starts running, and again when the result or error arrives.
+  const outRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (running || result || error) outRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [running, result, error]);
+  const runningLabel = actions.find((a) => a.id === running)?.label;
 
   const run = async (a: ConsoleAction) => {
     setConfirming(null);
@@ -358,9 +365,18 @@ function QuickActions({
         {!credsReady && <div className="text-[12px] text-slate-400">Enter the SSH username and password above to enable the buttons.</div>}
       </div>
 
-      {error && <div className={`${PANEL} p-3 text-[13px] text-red-500 border-red-300 dark:border-red-900/50`}>{error}</div>}
-
-      {result && <OutputPanel result={result} onClear={() => setResult(null)} />}
+      <div ref={outRef} className="flex flex-col gap-3 scroll-mt-4">
+        {running && (
+          <div className={`${PANEL} px-4 py-3 flex items-center gap-2 text-[13px] text-slate-600 dark:text-slate-300`}>
+            <Spinner /> Running "{runningLabel}" on the server… the result will appear here.
+          </div>
+        )}
+        {error && <div className={`${PANEL} p-3 text-[13px] text-red-500 border-red-300 dark:border-red-900/50`}>{error}</div>}
+        {!running && result && <OutputPanel result={result} onClear={() => setResult(null)} />}
+        {!running && !result && !error && (
+          <div className="text-[12px] text-slate-400 px-1">Results appear here.</div>
+        )}
+      </div>
 
       {confirming && (
         <ConfirmDialog
