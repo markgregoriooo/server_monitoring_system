@@ -767,16 +767,21 @@ function GraphPanel({
 }) {
   return (
     <div className="flex flex-col rounded" style={{ background: GF.panel, border: `1px solid ${GF.panelBorder}` }}>
-      <div className="flex items-center justify-between px-4 py-2.5 flex-wrap gap-2"
-        style={{ borderBottom: `1px solid ${GF.divider}` }}>
-        <div className="flex items-center gap-4 flex-wrap">
-          <span className="text-[13px] font-mono tracking-widest uppercase" style={{ color: GF.textMuted }}>{title}</span>
-          {legend}
+      {/* Phone: title + controls on one line, the legend on its own line below it. The old
+         single wrapping row dropped the "Add smoke sensor" button wherever it ran out of room.
+         md and up: the legend sits inline after the title, as before. */}
+      <div className="px-4 py-2.5 flex flex-col gap-2" style={{ borderBottom: `1px solid ${GF.divider}` }}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-4 flex-wrap min-w-0">
+            <span className="text-[13px] font-mono tracking-widest uppercase truncate" style={{ color: GF.textMuted }}>{title}</span>
+            <span className="hidden md:contents">{legend}</span>
+          </div>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {action}
+            <LiveDot />
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          {action}
-          <LiveDot />
-        </div>
+        <div className="flex md:hidden items-center gap-x-4 gap-y-1.5 flex-wrap">{legend}</div>
       </div>
       {children}
     </div>
@@ -1467,13 +1472,16 @@ export default function Environment() {
             user?.role === "admin" && (
               <button
                 onClick={() => setShowAddGas(true)}
-                className="gf-btn flex items-center gap-1.5 h-7 px-3 text-[12px] font-semibold"
+                className="gf-btn flex items-center gap-1.5 h-7 px-3 text-[12px] font-semibold whitespace-nowrap"
                 style={{ color: "var(--gf-text-primary)" }}
+                title="Add smoke sensor"
               >
                 <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
                   <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
                 </svg>
-                Add smoke sensor
+                {/* Short label on a phone so it fits beside the title. */}
+                <span className="hidden sm:inline">Add smoke sensor</span>
+                <span className="sm:hidden">Add</span>
               </button>
             )
           }
