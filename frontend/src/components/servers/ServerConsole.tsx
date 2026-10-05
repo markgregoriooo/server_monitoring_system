@@ -33,12 +33,11 @@ const INPUT =
   "w-full px-2.5 py-1.5 text-[13px] font-mono rounded-sm border bg-white dark:bg-[#0b0e14] " +
   "border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-slate-100 " +
   "focus:outline-none focus:border-[#5794F2]";
-const BTN =
-  "px-3 py-1.5 text-[13px] rounded-sm border transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
-const BTN_PRIMARY = `${BTN} bg-[#5794F2] border-[#5794F2] text-white hover:bg-[#4a83de]`;
-const BTN_GHOST =
-  `${BTN} border-slate-300 dark:border-white/[0.12] text-slate-700 dark:text-slate-200 ` +
-  "hover:bg-slate-100 dark:hover:bg-white/[0.05]";
+// Buttons use the app's own raised-button classes (index.css): .gf-btn is the neutral
+// raised face with sheen + press-inset, .gf-btn-primary the accent CTA. Same depth and
+// feel as every other button in the dashboard.
+const BTN_PRIMARY = "gf-btn-primary px-3 py-1.5 text-[13px] font-semibold";
+const BTN_GHOST = "gf-btn px-3 py-1.5 text-[13px] font-semibold text-slate-700 dark:text-[var(--gf-text-primary)]";
 
 const userKey = (id: number) => `cspc_console_user:${id}`;
 const readUser = (id: number) => {
@@ -329,7 +328,7 @@ function HostKeyBadge({
   return (
     <div className="text-right">
       <div className="text-[12px] font-mono text-slate-500 dark:text-slate-400 break-all" title={`Saved ${k.firstSeen ? fmtDateTime(k.firstSeen) : ""}`}>
-        🔒 {k.keyType ? `${k.keyType} ` : ""}{k.fingerprint}
+        host key: {k.keyType ? `${k.keyType} ` : ""}{k.fingerprint}
       </div>
       {isAdmin && (
         <button onClick={forget} disabled={busy} className="text-[11px] text-slate-400 hover:text-red-500 underline mt-0.5">
@@ -478,9 +477,8 @@ function QuickActions({
 }
 
 // ─── Quick Action button ──────────────────────────────────────────────────────
-// A raised "key": a thick bottom edge and a drop shadow give it depth, it lifts on hover
-// and presses down on click (the bottom edge shrinks as it moves). The accent says what
-// kind of action it is — blue reads, orange changes the server, red reboots it.
+// The dashboard's standard raised button (.gf-btn). The icon colour says what kind of
+// action it is — blue reads, orange changes the server, red reboots it.
 
 const ACCENT = { info: "#5794F2", control: "#FF780A", danger: "#E02F44" } as const;
 
@@ -525,29 +523,12 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      style={{
-        // The thick bottom edge is the accent, darkened; the shadow sits under it.
-        borderBottomColor: `color-mix(in srgb, ${c} 70%, black)`,
-        boxShadow: running
-          ? `0 0 0 2px ${c}55, 0 6px 14px -6px ${c}88`
-          : `0 6px 14px -8px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06)`,
-        ["--acc" as string]: c,
-      }}
-      className={
-        "group relative text-left flex items-start gap-3 px-3.5 pt-3 pb-3.5 rounded-md " +
-        "border border-b-[5px] border-slate-300 dark:border-white/[0.12] " +
-        "bg-gradient-to-b from-white to-slate-100 dark:from-[#1f232b] dark:to-[#15181e] " +
-        "transition-all duration-100 ease-out " +
-        "hover:-translate-y-0.5 hover:brightness-110 " +
-        "active:translate-y-[3px] active:border-b-2 active:pb-[1.1rem] " +
-        "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:brightness-100 " +
-        "disabled:active:translate-y-0 disabled:active:border-b-[5px] disabled:active:pb-3.5"
-      }
+      // .gf-btn: the dashboard's standard raised button (face, sheen, shadow, press-inset).
+      // Reboot also takes .gf-btn-danger, which reddens the edge and label on hover.
+      className={`gf-btn ${action.id === "reboot" ? "gf-btn-danger" : ""} text-left flex items-start gap-3 px-3.5 py-3 w-full`}
+      style={running ? { borderColor: c } : undefined}
     >
-      <span
-        className="flex-shrink-0 w-9 h-9 rounded-md grid place-items-center border"
-        style={{ background: `${c}1f`, borderColor: `${c}55`, color: c }}
-      >
+      <span className="flex-shrink-0 mt-0.5" style={{ color: c }}>
         {running ? (
           <Spinner />
         ) : (
@@ -557,7 +538,7 @@ function ActionButton({
         )}
       </span>
       <span className="min-w-0">
-        <span className="flex items-center gap-2 text-[13.5px] font-semibold text-slate-800 dark:text-slate-100">
+        <span className="flex items-center gap-2 text-[13px] font-semibold text-slate-800 dark:text-[var(--gf-text-primary)]">
           {action.label}
           {!action.allowed && (
             <span className="text-[9px] uppercase tracking-wider px-1 py-px rounded-sm bg-slate-200 dark:bg-white/10 text-slate-500">
@@ -631,7 +612,12 @@ function ConfirmDialog({
         <div className="text-[13px] text-slate-600 dark:text-slate-300 mb-5">{message}</div>
         <div className="flex justify-end gap-2">
           <button className={BTN_GHOST} onClick={onCancel}>Cancel</button>
-          <button className={`${BTN} bg-[#E02F44] border-[#E02F44] text-white hover:bg-[#c42639]`} onClick={onConfirm} autoFocus>
+          <button
+            className="gf-raise px-3 py-1.5 text-[13px] font-semibold rounded-[2px] border border-black/20 text-white"
+            style={{ background: "#E02F44" }}
+            onClick={onConfirm}
+            autoFocus
+          >
             Yes, run it
           </button>
         </div>
