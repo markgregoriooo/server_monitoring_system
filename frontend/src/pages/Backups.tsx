@@ -659,9 +659,6 @@ docker compose up -d backend`}
             </pre>
           </li>
         </ol>
-        <p className="mt-2 text-[12px]" style={{ color: gf.textDim }}>
-          Details: Backup Module Feature guide · backup-storage.md §13
-        </p>
       </details>
 
       {toast && (
