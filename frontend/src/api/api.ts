@@ -1602,6 +1602,15 @@ export const api = {
     }
   },
 
+  deleteBackup: async (id: number): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.delete(`/backups/${id}`);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
   downloadBackup: async (id: number, fileName: string): Promise<ApiResult> => {
     try {
       // Through axios, not a plain link: the request needs the Bearer token. No timeout —

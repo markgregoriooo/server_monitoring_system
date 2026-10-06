@@ -225,6 +225,16 @@ export default function Backups() {
     if (!res.success) showToast(res.error || "Download failed.", false);
   };
 
+  const remove = async (b: SystemBackup) => {
+    if (!window.confirm(`Delete the manual backup ${b.fileName ?? `#${b.id}`}? This cannot be undone.`)) return;
+    setBusy(`del-${b.id}`);
+    const res = await api.deleteBackup(b.id);
+    setBusy(null);
+    if (res.success) showToast("Backup deleted.");
+    else showToast(res.error || "Could not delete the backup.", false);
+    load();
+  };
+
   const saveSchedule = async () => {
     if (!form) return;
     setSaving(true);
@@ -433,8 +443,9 @@ export default function Backups() {
                         <span title={b.verifiedAt ? `Checked ${fmtPH(b.verifiedAt)}` : undefined}>{statusPill(b)}</span>
                       </td>
                       <td className="px-4 py-2.5">
-                        {b.downloadable && (
-                          <div className="flex justify-end gap-1.5">
+                        <div className="flex justify-end gap-1.5">
+                          {b.downloadable && (
+                            <>
                             <button
                               className="gf-btn text-[12px] px-2.5"
                               style={{ height: 26, color: gf.textPrimary }}
@@ -452,8 +463,20 @@ export default function Backups() {
                             >
                               {busy === `dl-${b.id}` ? "…" : "Download"}
                             </button>
-                          </div>
-                        )}
+                            </>
+                          )}
+                          {b.kind === "manual" && b.status !== "running" && (
+                            <button
+                              className="gf-btn gf-btn-danger text-[12px] px-2.5"
+                              style={{ height: 26 }}
+                              onClick={() => remove(b)}
+                              disabled={busy != null}
+                              title="Delete this manual backup"
+                            >
+                              {busy === `del-${b.id}` ? "…" : "Delete"}
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -489,8 +512,10 @@ export default function Backups() {
                       {b.error}
                     </div>
                   )}
-                  {b.downloadable && (
+                  {(b.downloadable || (b.kind === "manual" && b.status !== "running")) && (
                     <div className="flex gap-2 pt-1">
+                      {b.downloadable && (
+                        <>
                       <button
                         className="gf-btn flex-1 text-[12px]"
                         style={{ height: 30, color: gf.textPrimary }}
@@ -507,6 +532,18 @@ export default function Backups() {
                       >
                         {busy === `dl-${b.id}` ? "Downloading…" : "Download"}
                       </button>
+                        </>
+                      )}
+                      {b.kind === "manual" && b.status !== "running" && (
+                        <button
+                          className="gf-btn gf-btn-danger flex-1 text-[12px]"
+                          style={{ height: 30 }}
+                          onClick={() => remove(b)}
+                          disabled={busy != null}
+                        >
+                          {busy === `del-${b.id}` ? "Deleting…" : "Delete"}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

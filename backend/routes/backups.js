@@ -12,6 +12,7 @@ import { audit, clientInfo } from "../services/auditService.js";
  *   POST /verify            verify every archive still on disk
  *   POST /:id/verify        verify one
  *   GET  /:id/download      the ENCRYPTED archive, as stored
+ *   DELETE /:id             a MANUAL backup only (weekly ones age out; the last good one stays)
  *   PUT  /schedule          { day, time, keepWeeks }
  *
  * Gated at router.use, so a route added later inherits the guard. it_staff is excluded
@@ -126,6 +127,26 @@ router.get("/:id/download", async (req, res, next) => {
     });
     res.download(file.abs, file.name);
   } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/:id", async (req, res, next) => {
+  const id = parseId(req);
+  if (id == null) return res.status(400).json({ error: "Invalid backup id." });
+  try {
+    const row = await systemBackupService.remove(id);
+    await audit({
+      userId: req.user.id,
+      module: "backups",
+      action: "backup_delete",
+      description: `Deleted manual backup ${row.fileName}${row.sizeBytes != null ? ` (${mb(row.sizeBytes)})` : ""}`,
+      level: "warning",
+      ...clientInfo(req),
+    });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
   }
 });

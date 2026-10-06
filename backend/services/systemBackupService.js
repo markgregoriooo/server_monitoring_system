@@ -442,6 +442,48 @@ async function verifyAll() {
   return out;
 }
 
+// ─── Delete (manual backups only) ────────────────────────────────────────────
+
+/**
+ * Remove a MANUAL backup — its file and its row. Throws an Error with `status` for the
+ * route to answer with. Weekly backups cannot be deleted by hand: they are the record
+ * the module exists to keep, retention removes them on schedule, and a stolen admin
+ * session must not be able to empty the backup history in a few clicks. The last
+ * good backup can never be deleted, whatever its kind.
+ */
+async function remove(id) {
+  const row = await getRow(id);
+  if (!row) throw Object.assign(new Error("Backup not found."), { status: 404 });
+  if (row.kind !== "manual") {
+    throw Object.assign(
+      new Error(`Weekly backups cannot be deleted. They are removed automatically after ${current.keepWeeks} weeks.`),
+      { status: 409 },
+    );
+  }
+  if (row.status === "running" || running?.id === id) {
+    throw Object.assign(new Error("This backup is still being made."), { status: 409 });
+  }
+  if (row.status === "ok" && !row.purged_at) {
+    const [[{ others }]] = await db.query(
+      `SELECT COUNT(*) AS others FROM system_backups
+        WHERE status = 'ok' AND purged_at IS NULL AND backup_id <> ?`,
+      [id],
+    );
+    if (Number(others) === 0) {
+      throw Object.assign(new Error("This is the only backup left. Make another one before deleting it."), { status: 409 });
+    }
+    const abs = archivePath(row.file_name);
+    if (abs) {
+      await fsp.unlink(abs).catch((err) => {
+        if (err.code !== "ENOENT") throw err;
+      });
+    }
+  }
+  await db.query("DELETE FROM system_backups WHERE backup_id = ?", [id]);
+  broadcast();
+  return toClient(row);
+}
+
 // ─── Reads ───────────────────────────────────────────────────────────────────
 
 const SELECT = `
@@ -652,6 +694,7 @@ export default {
   runBackup,
   verify,
   verifyAll,
+  remove,
   list,
   listBetween,
   status,
