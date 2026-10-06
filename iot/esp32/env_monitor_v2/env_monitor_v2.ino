@@ -143,7 +143,7 @@ bool enabledChannels[MAX_IR_CHANNELS] = { true, true, false, false };
 #define DHTTYPE DHT22
 
 /* =================== RGB LED ================ */
-#define NUM_PIXELS 11
+#define NUM_PIXELS 16
 
 /* "Nothing is reaching the dashboard" blink: a short blue pulse in the steady green,
    not a colour of its own. Suppressed whenever the room has a warning or alarm (see

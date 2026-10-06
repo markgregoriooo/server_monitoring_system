@@ -291,7 +291,7 @@ see `router-ups-monitoring.md`), and a MikroTik poller (**pull**, RouterOS API �
 - **Backend:** Node.js + Express (ESM, `"type": "module"`), Socket.IO, mysql2, @influxdata/influxdb-client, nodemailer (alert/report email over SMTP), net-snmp, node-routeros (MikroTik API), pdfkit (reports), google-auth-library
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS, JetBrains Mono font
 - **Database:** MySQL/MariaDB (users, devices, aircon, agent tokens, logs) + InfluxDB (environment, server-metric, **and** router/UPS time-series)
-- **Hardware:** ESP32, DHT22, MQ-2 ×4 channels (GPIO 34/35/36/39 in `MQ2_PINS[]`; only channels an admin marks wired are read), passive piezo buzzer, WS2812B RGB LED ×11, IR TX ×2 (GPIO 25/33), DS3231 RTC + coin cell, micro SD (SPI, offline buffer)
+- **Hardware:** ESP32, DHT22, MQ-2 ×4 channels (GPIO 34/35/36/39 in `MQ2_PINS[]`; only channels an admin marks wired are read), passive piezo buzzer, WS2812B RGB LED ×16, IR TX ×2 (GPIO 25/33), DS3231 RTC + coin cell, micro SD (SPI, offline buffer)
 - **Deployment:** Docker Compose (`docker-compose.yml`) — see Docker below
 
 ---

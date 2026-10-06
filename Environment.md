@@ -20,7 +20,7 @@ with IR transmitters, so **every physical AC action happens on the ESP32**.
 | MQ-2 #1 | 34 (ADC) | Smoke/gas PPM (sensor 1) |
 | MQ-2 #2 | 35 (ADC) | Smoke/gas PPM (sensor 2) |
 | Piezo buzzer | 26 | Audible alarm (priority-based) |
-| WS2812B RGB ×11 | 27 | Status color |
+| WS2812B RGB ×16 | 27 | Status color |
 | IR TX #1 | 25 | AC channel 1 |
 | IR TX #2 | 33 | AC channel 2 |
 | DS3231 RTC | SDA 21 / SCL 22 | Timestamp source — **fit the coin cell**, see §9 |
