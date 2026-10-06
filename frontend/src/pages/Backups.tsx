@@ -118,11 +118,12 @@ function StatusCard({
   );
 }
 
+// Same box as User Management's StatusBadge: neutral face, the dot carries the colour.
 function Pill({ color, children }: { color: string; children: React.ReactNode }) {
   return (
     <span
-      className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap"
-      style={{ color, background: `${color}14`, border: `1px solid ${color}55` }}
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] text-[12px] font-semibold whitespace-nowrap"
+      style={{ color: gf.textPrimary, background: gf.hover, border: `1px solid ${gf.border}` }}
     >
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />
       {children}
@@ -276,7 +277,6 @@ export default function Backups() {
   const dumpColor = dumpAge == null ? ORANGE : dumpAge > 48 * 3600e3 ? ORANGE : GREEN;
   const off = status.offsite;
   const offColor = !off.enabled ? (gf.textDim as string) : off.severity === "ok" ? GREEN : off.severity === "warning" ? ORANGE : RED;
-  const weekly = backups.filter((b) => b.kind === "weekly");
   const savedSchedule = w.schedule;
   const scheduleChanged =
     form != null &&
@@ -291,12 +291,7 @@ export default function Backups() {
             Backups
           </h1>
           <p className="text-[13px] mt-1 max-w-2xl" style={{ color: gf.textMuted }}>
-            Backups of this monitoring system — its database and collected data. Every{" "}
-            <b style={{ color: gf.textPrimary }}>
-              {DAYS[w.schedule.day]} at {w.schedule.time}
-            </b>{" "}
-            one <b style={{ color: gf.textPrimary }}>encrypted</b> weekly backup is made, verified, and kept for{" "}
-            {w.schedule.keepWeeks} weeks.
+            Encrypted weekly backups of this system's database and data.
           </p>
         </div>
         <div className="flex gap-2 shrink-0">
@@ -336,9 +331,9 @@ export default function Backups() {
           style={{ color: RED, background: `${RED}12`, border: `1px solid ${RED}55` }}
         >
           {!w.encryption.configured &&
-            "No encryption key is configured, so no backup can be made. Set BACKUP_ENC_KEY in backend/.env (64 hex characters) and restart the backend. "}
+            "No encryption key — set BACKUP_ENC_KEY in backend/.env. "}
           {!w.dumpTool.found &&
-            "The database dump tool (mariadb-dump) was not found on the backend. Rebuild the backend image, or set BACKUP_DUMP_BIN."}
+            "Database dump tool not found — rebuild the backend image."}
         </div>
       )}
 
@@ -351,7 +346,6 @@ export default function Backups() {
           lines={[
             w.lastOk && `${fmtPH(w.lastOk.finishedAt)} · ${fmtBytes(w.lastOk.sizeBytes)}`,
             w.nextRunAt && `Next: ${fmtPH(w.nextRunAt)}`,
-            `${w.kept} kept · ${fmtBytes(w.keptBytes)}`,
           ]}
         />
         <StatusCard
@@ -360,8 +354,7 @@ export default function Backups() {
           state={!status.live.enabled ? "Disabled" : status.live.healthy ? "Writing" : "Not writing"}
           lines={[
             status.live.latest && `Last write ${ago(status.live.latest.modifiedAt)}`,
-            `Every reading, kept ${status.live.retentionDays} days`,
-            status.disk && `${fmtBytes(status.disk.freeBytes)} free of ${fmtBytes(status.disk.totalBytes)}`,
+            status.disk && `${fmtBytes(status.disk.freeBytes)} free`,
           ]}
         />
         <StatusCard
@@ -371,35 +364,23 @@ export default function Backups() {
           lines={[
             status.nightlyDump.latest
               ? `${fmtBytes(status.nightlyDump.latest.bytes)} · ${ago(status.nightlyDump.latest.modifiedAt)}`
-              : "The server's 2:15 AM job has not run",
-            "Plain copy for a quick restore",
+              : "Runs nightly at 2:15 AM",
           ]}
         />
         <StatusCard
           title="Offsite (cloud)"
           color={offColor}
-          state={!off.enabled ? "Not watched" : off.lastSyncAt ? (off.severity === "ok" ? "Up to date" : "Stale") : "Never synced"}
-          lines={[
-            off.lastSyncAt && `Last upload ${fmtPH(off.lastSyncAt)}`,
-            off.lastSyncAt && ago(off.lastSyncAt),
-            "Backblaze B2, encrypted",
-            !off.enabled && "Turn on BACKUP_OFFSITE_ENABLED",
-          ]}
+          state={!off.enabled ? "Not set up" : off.lastSyncAt ? (off.severity === "ok" ? "Up to date" : "Stale") : "Never synced"}
+          lines={[off.lastSyncAt && `Last upload ${ago(off.lastSyncAt)}`, "Backblaze B2"]}
         />
       </div>
 
       {/* Backups list */}
       <Panel
-        title={`Backups (${backups.length})`}
-        right={
-          <span className="text-[12px]" style={{ color: gf.textMuted }}>
-            {weekly.filter((b) => b.status === "ok" && !b.purgedAt).length} weekly backups on the drive
-          </span>
-        }
-      >
+        title={`Backups (${backups.length})`}>
         {backups.length === 0 ? (
           <div className="text-[13px] py-6 text-center" style={{ color: gf.textMuted }}>
-            No backups yet. The first weekly backup runs {fmtPH(w.nextRunAt)} — or press <b>Back up now</b>.
+            No backups yet. First one: {fmtPH(w.nextRunAt)}.
           </div>
         ) : (
           <>
@@ -436,7 +417,7 @@ export default function Backups() {
                             {(b.error?.length ?? 0) > 70 ? "…" : ""}
                           </span>
                         ) : b.status === "ok" ? (
-                          `Database ${fmtBytes(b.dbBytes)} + ${b.dataFiles ?? 0} data files`
+                          `DB ${fmtBytes(b.dbBytes)} + ${b.dataFiles ?? 0} files`
                         ) : (
                           "—"
                         )}
@@ -506,7 +487,7 @@ export default function Backups() {
                   </div>
                   {b.status === "ok" && (
                     <div className="text-[12px]" style={{ color: gf.textMuted }}>
-                      {fmtBytes(b.sizeBytes)} · covers {fmtDay(b.coverageFrom)} – {fmtDay(b.coverageTo)} · {b.dataFiles ?? 0} data files
+                      {fmtBytes(b.sizeBytes)} · {fmtDay(b.coverageFrom)} – {fmtDay(b.coverageTo)}
                     </div>
                   )}
                   {b.status === "failed" && (
@@ -607,7 +588,7 @@ export default function Backups() {
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[12px]" style={{ color: gf.textMuted }}>
-                  Older backups are deleted from the drive automatically; the newest good one is always kept.
+                  Older ones are removed automatically.
                 </span>
                 <button
                   className="gf-btn-primary text-[13px] font-semibold px-3 rounded-[3px]"
@@ -622,79 +603,67 @@ export default function Backups() {
           )}
         </Panel>
 
-        {/* Security */}
-        <Panel title="How backups are secured">
-          <ul className="flex flex-col gap-2 text-[12px]" style={{ color: gf.textMuted }}>
-            <li>
-              <b style={{ color: w.encryption.configured ? GREEN : RED }}>
-                {w.encryption.configured ? "Encrypted" : "Not encrypted — no key"}
-              </b>{" "}
-              — AES-256-GCM before it reaches the drive
-              {w.encryption.configured && (
-                <>
-                  {" "}
-                  (key from <code>{w.encryption.source}</code>, id <code>{w.encryption.keyId}</code>)
-                </>
-              )}
-              .
-            </li>
-            <li>
-              <b style={{ color: gf.textPrimary }}>Verified</b> — each archive's SHA-256 is recorded, and Verify re-checks it
-              and test-decrypts the whole file.
-            </li>
-            <li>
-              <b style={{ color: gf.textPrimary }}>Three copies</b> — the live databases, this server's USB backup drive, and
-              Backblaze B2 offsite.
-            </li>
-            <li>
-              <b style={{ color: gf.textPrimary }}>Admins only</b> — this page, every download and every schedule change is
-              recorded in History.
-            </li>
-            <li>
-              <b style={{ color: gf.textPrimary }}>No one-click restore</b> — restoring replaces the live database, so it is done
-              by command (below), never by a button.
-            </li>
-            <li>
-              Database dump tool:{" "}
-              <span style={{ color: w.dumpTool.found ? gf.textPrimary : RED }}>{w.dumpTool.version ?? "not found"}</span>
-            </li>
-          </ul>
+        {/* Security — one line per measure */}
+        <Panel title="Security">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[12px]">
+            {(
+              [
+                [
+                  "Encryption",
+                  w.encryption.configured ? "AES-256-GCM" : "No key — backups off",
+                  w.encryption.configured ? GREEN : RED,
+                  w.encryption.configured ? `Key from ${w.encryption.source}, id ${w.encryption.keyId}` : undefined,
+                ],
+                ["Integrity", "SHA-256 + test decrypt"],
+                ["Copies", "Server · USB drive · Backblaze"],
+                ["Access", "Admins only, logged in History"],
+                ["Restore", "By command only"],
+                [
+                  "Dump tool",
+                  w.dumpTool.found ? "Ready" : "Not found",
+                  w.dumpTool.found ? GREEN : RED,
+                  w.dumpTool.version ?? undefined,
+                ],
+              ] as [string, string, string?, string?][]
+            ).map(([k, v, color, title]) => (
+              <div key={k} className="contents">
+                <dt style={{ color: gf.textMuted }}>{k}</dt>
+                <dd title={title} style={{ color: color ?? gf.textPrimary }}>
+                  {v}
+                </dd>
+              </div>
+            ))}
+          </dl>
         </Panel>
       </div>
 
       {/* Restore guide */}
       <details className="rounded-[2px] px-4 py-3" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
         <summary className="cursor-pointer text-[13px] font-semibold" style={{ color: gf.textPrimary }}>
-          How to restore from a backup
+          How to restore
         </summary>
         <ol className="mt-3 flex flex-col gap-2 text-[12px] list-decimal pl-5" style={{ color: gf.textMuted }}>
           <li>
-            Pick the archive: on the server it is in the backup folder under <code>weekly/</code>, or Download it here, or
-            copy it down from Backblaze.
-          </li>
-          <li>
-            Decrypt it on the server, from the <code>backend</code> folder:
+            Unlock it (in <code>backend/</code>):
             <pre className="mt-1.5 p-2.5 rounded-[2px] overflow-x-auto" style={{ background: gf.bg, color: GREEN }}>
               npm run backup:decrypt -- weekly-2026-W41.tar.gz.enc
             </pre>
-            An archive made with an older key needs <code>--key &lt;old key&gt;</code>.
           </li>
           <li>
-            Unpack it: <code>tar -xzf weekly-2026-W41.tar.gz</code> → <code>manifest.json</code>, <code>database.sql</code>,{" "}
-            <code>data/</code>.
+            Unpack: <code>tar -xzf weekly-2026-W41.tar.gz</code>
           </li>
           <li>
-            <b style={{ color: ORANGE }}>Stop the backend</b>, then load the database (Docker):
+            Load <code>database.sql</code> with the backend <b style={{ color: ORANGE }}>stopped</b>:
             <pre className="mt-1.5 p-2.5 rounded-[2px] overflow-x-auto" style={{ background: gf.bg, color: GREEN }}>
               {`docker compose stop backend
 docker compose exec -T db sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -u root "$MARIADB_DATABASE"' < database.sql
 docker compose up -d backend`}
             </pre>
           </li>
-          <li>
-            The full procedure, including replaying <code>data/</code> into InfluxDB, is in <code>backup-storage.md</code>.
-          </li>
         </ol>
+        <p className="mt-2 text-[12px]" style={{ color: gf.textDim }}>
+          Details: Backup Module Feature guide · backup-storage.md §13
+        </p>
       </details>
 
       {toast && (
