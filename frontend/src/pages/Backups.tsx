@@ -97,7 +97,6 @@ function StatusCard({
       className="relative overflow-hidden rounded-[2px] flex flex-col"
       style={{ background: gf.panel, border: `1px solid ${gf.border}`, minHeight: 118 }}
     >
-      <div className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ background: color }} />
       <div className="flex items-center justify-between gap-2 px-4 pt-3">
         <span className="text-[11px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>
           {title}
