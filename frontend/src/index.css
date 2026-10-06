@@ -373,3 +373,18 @@
   from { width: 0%; }
   to   { width: 100%; }
 }
+
+/* Server Console terminal: keep xterm's scrollbar on screen instead of fading it out
+   until hovered — a touch screen never hovers, and a hidden scrollbar reads as "this
+   cannot scroll". Matches the always-visible scrollbar of the Quick Actions output. */
+.cspc-term .xterm .xterm-scrollable-element > .scrollbar.invisible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.cspc-term .xterm .xterm-scrollable-element > .scrollbar.vertical {
+  width: 10px !important;
+}
+.cspc-term .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 10px !important;
+  border-radius: 5px;
+}

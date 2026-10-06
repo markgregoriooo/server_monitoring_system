@@ -706,6 +706,10 @@ const TERM_THEME = {
   cursor: "#73BF69",
   cursorAccent: "#0b0e14",
   selectionBackground: "rgba(87,148,242,0.35)",
+  // xterm's default slider is near-black, i.e. invisible on this background.
+  scrollbarSliderBackground: "rgba(255,255,255,0.20)",
+  scrollbarSliderHoverBackground: "rgba(255,255,255,0.32)",
+  scrollbarSliderActiveBackground: "rgba(255,255,255,0.45)",
   black: "#1a1d23",
   red: "#F2495C",
   green: "#73BF69",
@@ -817,6 +821,13 @@ function WebTerminal({
   const [now, setNow] = useState(Date.now());
   const [idleMin, setIdleMin] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  const [narrow, setNarrow] = useState(isNarrow);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
 
   const refit = useCallback(() => {
     const term = termRef.current;
@@ -870,7 +881,56 @@ function WebTerminal({
     const ro = new ResizeObserver(() => refit());
     ro.observe(hostRef.current!);
 
+    // Swipe to scroll. xterm.js 6 scrolls on the mouse wheel and its scrollbar but
+    // ignores a finger, so on a phone the scrollback could not be reached at all.
+    const host = hostRef.current!;
+    // A sideways swipe is left alone so the wrapper around the terminal scrolls
+    // left/right natively (phones get a terminal wider than the screen).
+    let lastY: number | null = null;
+    let startX = 0;
+    let startY = 0;
+    let axis: "x" | "y" | null = null;
+    let carry = 0;
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.touches.length === 1 ? e.touches[0] : undefined;
+      lastY = t ? t.clientY : null;
+      startX = t?.clientX ?? 0;
+      startY = t?.clientY ?? 0;
+      axis = null;
+      carry = 0;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const t = e.touches.length === 1 ? e.touches[0] : undefined;
+      if (lastY == null || !t) return;
+      if (!axis) {
+        const dx = Math.abs(t.clientX - startX);
+        const dy = Math.abs(t.clientY - startY);
+        if (dx < 6 && dy < 6) return;
+        axis = dx > dy ? "x" : "y";
+      }
+      if (axis === "x") return;
+      const y = t.clientY;
+      carry += lastY - y;
+      lastY = y;
+      const lineH = host.clientHeight / Math.max(1, term.rows);
+      const lines = Math.trunc(carry / lineH);
+      if (lines) {
+        term.scrollLines(lines);
+        carry -= lines * lineH;
+      }
+      e.preventDefault(); // the swipe scrolls the terminal, not the page behind it
+    };
+    const onTouchEnd = () => {
+      lastY = null;
+    };
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd);
+
     return () => {
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
       ro.disconnect();
       sub.dispose();
       socket.off("console:output", onOutput);
@@ -986,8 +1046,8 @@ function WebTerminal({
       ref={rootRef}
       className={
         full
-          ? "fixed inset-0 z-50 flex flex-col bg-[#0b0e14]"
-          : "flex flex-col rounded-lg overflow-hidden border border-slate-300 dark:border-white/[0.1] shadow-[0_10px_30px_-12px_rgba(0,0,0,0.6)]"
+          ? "cspc-term fixed inset-0 z-50 flex flex-col bg-[#0b0e14]"
+          : "cspc-term flex flex-col rounded-lg overflow-hidden border border-slate-300 dark:border-white/[0.1] shadow-[0_10px_30px_-12px_rgba(0,0,0,0.6)]"
       }
     >
       {/* ── Title bar ─────────────────────────────────────────────────────── */}
@@ -1044,7 +1104,15 @@ function WebTerminal({
 
       {/* ── Screen ────────────────────────────────────────────────────────── */}
       <div className={`relative bg-[#0b0e14] px-3 pt-2 pb-1 ${full ? "flex-1 min-h-0" : ""}`}>
-        <div ref={hostRef} className={full ? "h-full w-full" : "h-[55vh] min-h-[280px] sm:h-[460px] w-full"} />
+        <div className={`overflow-x-auto overflow-y-hidden ${full ? "h-full" : ""}`}>
+          <div
+            ref={hostRef}
+            className={full ? "h-full w-full" : "h-[55vh] min-h-[280px] sm:h-[460px] w-full"}
+            // ~100 columns on a phone (JetBrains Mono is ~0.6em wide), wider than the
+            // screen, so tables and `top` keep their layout and the box scrolls sideways.
+            style={narrow ? { minWidth: Math.ceil(fontSize * 0.62 * 100) } : undefined}
+          />
+        </div>
 
         {showOverlay && (
           <div className="absolute inset-0 grid place-items-center bg-[#0b0e14]/85 backdrop-blur-[1px]">
