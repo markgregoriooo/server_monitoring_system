@@ -750,6 +750,10 @@ const fmtElapsed = (sec: number) => {
   return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 };
 
+// Phone-width layout: the terminal sits below the login card and the tabs, out of
+// sight, so opening it has to bring it into view.
+const isNarrow = () => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
+
 function ToolButton({
   title,
   onClick,
@@ -799,6 +803,7 @@ function WebTerminal({
   visible: boolean;
   onHostKey: () => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -881,6 +886,7 @@ function WebTerminal({
     if (!visible) return;
     requestAnimationFrame(() => {
       refit();
+      if (isNarrow()) rootRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       if (sessionRef.current) termRef.current?.focus();
     });
   }, [visible, refit]);
@@ -921,6 +927,7 @@ function WebTerminal({
   const connect = () => {
     const term = termRef.current!;
     refit();
+    if (isNarrow()) rootRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     setState("connecting");
     setMessage("");
     term.reset();
@@ -947,6 +954,8 @@ function WebTerminal({
         }
         setMessage("");
         term.focus();
+        // The phone keyboard opening on focus can push the screen away again.
+        if (isNarrow()) setTimeout(() => rootRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 300);
       },
     );
   };
@@ -974,6 +983,7 @@ function WebTerminal({
 
   return (
     <div
+      ref={rootRef}
       className={
         full
           ? "fixed inset-0 z-50 flex flex-col bg-[#0b0e14]"
@@ -981,9 +991,9 @@ function WebTerminal({
       }
     >
       {/* ── Title bar ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-3 px-3 h-11 bg-[#15181e] border-b border-white/[0.07] flex-shrink-0">
+      <div className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1.5 px-3 py-2 sm:py-0 sm:h-11 bg-[#15181e] border-b border-white/[0.07] flex-shrink-0">
         <span
-          className="flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border"
+          className="flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border flex-shrink-0"
           style={{ color: pill.color, borderColor: `${pill.color}66`, background: `${pill.color}14` }}
         >
           <span
@@ -992,12 +1002,12 @@ function WebTerminal({
           />
           {pill.label}
         </span>
-        <span className="text-[13px] font-semibold text-slate-200 font-mono truncate">{who}</span>
+        <span className="flex-1 sm:flex-none min-w-0 text-[13px] font-semibold text-slate-200 font-mono truncate">{who}</span>
         <span className="hidden sm:inline text-[11px] text-slate-500 flex-shrink-0">{shellName}</span>
 
-        <div className="flex-1" />
+        <div className="hidden sm:block flex-1" />
 
-        <div className="flex items-center gap-0.5">
+        <div className="order-last sm:order-none w-full sm:w-auto flex items-center justify-end gap-0.5 border-t border-white/[0.06] pt-1.5 sm:border-0 sm:pt-0">
           <ToolButton title="Smaller text" onClick={() => setFontSize((f) => Math.max(10, f - 1))} disabled={fontSize <= 10}>
             A−
           </ToolButton>
@@ -1015,15 +1025,15 @@ function WebTerminal({
           </ToolButton>
         </div>
 
-        <div className="w-px h-5 bg-white/[0.08]" />
+        <div className="hidden sm:block w-px h-5 bg-white/[0.08]" />
 
         {state === "open" ? (
-          <button className="gf-btn !rounded-md h-7 px-3 text-[12px] font-semibold text-slate-200 gf-btn-danger" onClick={disconnect}>
+          <button className="gf-btn !rounded-md h-7 px-3 text-[12px] font-semibold text-slate-200 gf-btn-danger flex-shrink-0" onClick={disconnect}>
             Disconnect
           </button>
         ) : (
           <button
-            className="gf-btn-primary !rounded-md h-7 px-3 text-[12px] font-semibold"
+            className="gf-btn-primary !rounded-md h-7 px-3 text-[12px] font-semibold flex-shrink-0"
             onClick={connect}
             disabled={!credsReady || state === "connecting"}
           >
@@ -1034,7 +1044,7 @@ function WebTerminal({
 
       {/* ── Screen ────────────────────────────────────────────────────────── */}
       <div className={`relative bg-[#0b0e14] px-3 pt-2 pb-1 ${full ? "flex-1 min-h-0" : ""}`}>
-        <div ref={hostRef} className={full ? "h-full w-full" : "h-[460px] w-full"} />
+        <div ref={hostRef} className={full ? "h-full w-full" : "h-[55vh] min-h-[280px] sm:h-[460px] w-full"} />
 
         {showOverlay && (
           <div className="absolute inset-0 grid place-items-center bg-[#0b0e14]/85 backdrop-blur-[1px]">
@@ -1060,18 +1070,9 @@ function WebTerminal({
                   ? "Logging in over SSH."
                   : message ||
                     (credsReady
-                      ? `Connects to ${address.host}:${creds.port} as ${creds.username}.`
+                      ? `Press ${state === "closed" ? "Reconnect" : "Connect"} above to log in to ${address.host}:${creds.port} as ${creds.username}.`
                       : "Enter the username and password in SSH login above.")}
               </div>
-              {state !== "connecting" && (
-                <button
-                  className="gf-btn-primary !rounded-md h-8 px-4 text-[13px] font-semibold"
-                  onClick={connect}
-                  disabled={!credsReady}
-                >
-                  {state === "closed" ? "Reconnect" : "Connect"}
-                </button>
-              )}
             </div>
           </div>
         )}
