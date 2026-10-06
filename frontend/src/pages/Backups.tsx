@@ -403,11 +403,13 @@ export default function Backups() {
           </div>
         ) : (
           <>
-            {/* Desktop table */}
-            <div className="hidden md:block overflow-x-auto -mx-4">
+            {/* Desktop table. Rows outlive their files (a removed week stays as history),
+                so a year of weekly runs is 52+ rows: the list scrolls inside its own box,
+                with the header pinned, instead of pushing the schedule off the page. */}
+            <div className="hidden md:block overflow-auto max-h-[480px] -mx-4">
               <table className="w-full text-[12px]" style={{ color: gf.textPrimary }}>
-                <thead>
-                  <tr style={{ color: gf.textMuted, borderBottom: `1px solid ${gf.divider}` }}>
+                <thead className="sticky top-0 z-[1]" style={{ background: gf.panel }}>
+                  <tr style={{ color: gf.textMuted, boxShadow: `inset 0 -1px 0 ${gf.divider}` }}>
                     {["Week", "Type", "Made (PHT)", "Covers", "Size", "Contents", "Status", ""].map((h) => (
                       <th key={h} className="text-left font-medium px-4 py-2 whitespace-nowrap">
                         {h}
@@ -485,7 +487,7 @@ export default function Backups() {
             </div>
 
             {/* Mobile cards */}
-            <div className="md:hidden flex flex-col gap-2.5">
+            <div className="md:hidden flex flex-col gap-2.5 overflow-y-auto max-h-[70vh] pr-0.5">
               {backups.map((b) => (
                 <div
                   key={b.id}
