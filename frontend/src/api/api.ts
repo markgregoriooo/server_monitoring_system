@@ -220,6 +220,69 @@ export interface ConsoleActionResult {
   hostKey: { fingerprint: string; firstTrust: boolean };
 }
 
+// ─── Backups module (admin) ─────────────────────────────────────────────────
+export interface SystemBackup {
+  id: number;
+  kind: "weekly" | "manual";
+  status: "running" | "ok" | "failed";
+  fileName: string | null;
+  week: string | null;
+  scheduledFor: string | null;
+  coverageFrom: string | null;
+  coverageTo: string | null;
+  sizeBytes: number | null;
+  sha256: string | null;
+  keyId: string | null;
+  dbBytes: number | null;
+  dataFiles: number | null;
+  dataBytes: number | null;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  verifiedAt: string | null;
+  verifyStatus: "ok" | "mismatch" | "missing" | "undecryptable" | null;
+  purgedAt: string | null;
+  createdBy: string | null;
+  downloadable: boolean;
+}
+
+export interface BackupSchedule {
+  day: number; // 0 = Sunday
+  time: string; // "02:00", Philippine time
+  keepWeeks: number;
+}
+
+interface LatestFile {
+  name: string;
+  date: string | null;
+  bytes: number;
+  modifiedAt: string;
+}
+
+export interface BackupStatus {
+  live: { enabled: boolean; healthy: boolean; latest: LatestFile | null; retentionDays: number };
+  nightlyDump: { latest: LatestFile | null };
+  offsite: {
+    enabled: boolean;
+    lastSyncAt: string | null;
+    severity: "ok" | "warning" | "critical" | null;
+    warnHours: number;
+    critHours: number;
+  };
+  weekly: {
+    enabled: boolean;
+    schedule: BackupSchedule;
+    nextRunAt: string | null;
+    running: { id: number; kind: string; startedAt: string } | null;
+    lastOk: SystemBackup | null;
+    kept: number;
+    keptBytes: number;
+    encryption: { configured: boolean; source: string | null; keyId: string | null };
+    dumpTool: { found: boolean; version: string | null };
+  };
+  disk: { freeBytes: number; totalBytes: number } | null;
+}
+
 export const api = {
   // Auth: Google sign-in is the only login. Sends the one-time auth code from the "CSPC
   // Mail" button; the backend exchanges it with Google. An active account gets
@@ -1486,6 +1549,73 @@ export const api = {
     try {
       const res = await apiClient.delete(`/alert-rules/${id}`);
       return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+
+  // ─── Backups (admin) ──────────────────────────────────────────────────────
+  getBackups: async (): Promise<ApiResult<{ status: BackupStatus; backups: SystemBackup[] }>> => {
+    try {
+      const res = await apiClient.get("/backups");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  runBackupNow: async (): Promise<ApiResult> => {
+    try {
+      const res = await apiClient.post("/backups/run");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  verifyBackup: async (id: number): Promise<ApiResult<SystemBackup>> => {
+    try {
+      // Re-hashes and test-decrypts the whole archive, which takes a while on a large one.
+      const res = await apiClient.post(`/backups/${id}/verify`, undefined, { timeout: 300000 });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  verifyAllBackups: async (): Promise<ApiResult<{ ok: number; failed: number }>> => {
+    try {
+      const res = await apiClient.post("/backups/verify", undefined, { timeout: 600000 });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  saveBackupSchedule: async (schedule: BackupSchedule): Promise<ApiResult<{ schedule: BackupSchedule }>> => {
+    try {
+      const res = await apiClient.put("/backups/schedule", schedule);
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  downloadBackup: async (id: number, fileName: string): Promise<ApiResult> => {
+    try {
+      // Through axios, not a plain link: the request needs the Bearer token. No timeout —
+      // an archive can be large on a slow link.
+      const res = await apiClient.get(`/backups/${id}/download`, { responseType: "blob", timeout: 0 });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      return { success: true };
     } catch (err: any) {
       return handleError(err);
     }

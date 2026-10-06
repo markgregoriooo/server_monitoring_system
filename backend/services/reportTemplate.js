@@ -96,6 +96,7 @@ export const TYPE_CODE = {
   alerts: "ALR",
   aircon: "AIR",
   forecast: "FCT",
+  backup: "BAK",
 };
 
 /** Unknown types get a neutral code rather than "UNDEFINED" in a filed document. */

@@ -331,6 +331,30 @@ async function checkOffsite() {
   }
 }
 
+/**
+ * Offsite (cloud) status for the Backups page — the SAME marker and thresholds the
+ * staleness alert uses, so the page and the bell can never disagree. Read-only.
+ * @returns {Promise<{enabled:boolean, lastSyncAt:string|null, severity:"ok"|"warning"|"critical"|null, warnHours:number, critHours:number}>}
+ */
+async function offsiteStatus() {
+  let stampMs = null;
+  try {
+    const t = Date.parse((await fsp.readFile(OFFSITE_MARKER, "utf8")).trim());
+    if (Number.isFinite(t)) stampMs = t;
+  } catch {
+    /* no marker yet: never synced, or the job is not set up */
+  }
+  return {
+    enabled: OFFSITE_ENABLED,
+    lastSyncAt: stampMs == null ? null : new Date(stampMs).toISOString(),
+    severity: OFFSITE_ENABLED
+      ? offsiteSeverity(stampMs, Date.now(), { warnHours: OFFSITE_MAX_AGE_HOURS, critHours: OFFSITE_CRITICAL_HOURS })
+      : null,
+    warnHours: OFFSITE_MAX_AGE_HOURS,
+    critHours: OFFSITE_CRITICAL_HOURS,
+  };
+}
+
 // Call once at startup (server.js). Creates the dir, starts the flush + maintenance
 // timers, and wires a shutdown flush so nothing buffered is lost on a clean stop.
 /** False when the backup directory could not be created — see init(). */
@@ -399,4 +423,17 @@ function init() {
   process.on("exit", flushSync);
 }
 
-export default { init, isHealthy, record, flush, flushSync, purgeOld, updateChecksums, checkOffsite, BACKUP_DIR };
+export default {
+  init,
+  isHealthy,
+  record,
+  flush,
+  flushSync,
+  purgeOld,
+  updateChecksums,
+  checkOffsite,
+  offsiteStatus,
+  BACKUP_DIR,
+  ENABLED,
+  RETENTION_DAYS,
+};

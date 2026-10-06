@@ -34,7 +34,11 @@ FROM node:22-alpine
 # router. iputils-ping accepts it.
 #
 # tzdata: Alpine has no time zone data, so TZ below would otherwise stay UTC.
-RUN apk add --no-cache iputils-ping tzdata
+#
+# mariadb-client: mariadb-dump, for the weekly system backup (Backups page). The backend
+# dumps the `db` service over the compose network with its own DB_* credentials, so it
+# never needs the Docker socket mounted (which would be root on the host).
+RUN apk add --no-cache iputils-ping tzdata mariadb-client
 
 ENV NODE_ENV=production \
     TZ=Asia/Manila \

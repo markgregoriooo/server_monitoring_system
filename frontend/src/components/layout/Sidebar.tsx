@@ -105,6 +105,13 @@ const Icons: Record<string, React.ReactNode> = {
       <path d="M11 7c1.1 0 2 .9 2 2M13 13c0-1.1-.9-2-2-2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
     </svg>
   ),
+  backups: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <ellipse cx="8" cy="3.5" rx="5.5" ry="2" stroke="currentColor" strokeWidth="1.4"/>
+      <path d="M2.5 3.5v4.5c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V3.5" stroke="currentColor" strokeWidth="1.4"/>
+      <path d="M2.5 8v4.5c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V8" stroke="currentColor" strokeWidth="1.4"/>
+    </svg>
+  ),
   "alert-rules": (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <path d="M8 1.5a3.5 3.5 0 0 0-3.5 3.5c0 3-1.5 4-1.5 4h10s-1.5-1-1.5-4A3.5 3.5 0 0 0 8 1.5z"
@@ -176,6 +183,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: "user-management", label: "User Management", path: "/user-management", icon: Icons["user-management"] },
       { id: "alert-rules",     label: "Alert Rules",     path: "/alert-rules",     icon: Icons["alert-rules"] },
+      { id: "backups",         label: "Backups",         path: "/backups",         icon: Icons["backups"] },
     ],
   },
 ];

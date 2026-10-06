@@ -62,6 +62,7 @@ function catMeta(c: string): { label: string; color: string } {
     case "devices": return { label: "Devices", color: "#FF9830" };
     case "reports": return { label: "Reports", color: "#8E9097" };
     case "network": return { label: "Network", color: "#FADE2A" };
+    case "backups": return { label: "Backups", color: "#5DCAA5" };
     default: return { label: c ? c.charAt(0).toUpperCase() + c.slice(1) : "System", color: "#8E9097" };
   }
 }
@@ -96,7 +97,7 @@ const DAYS: { label: string; value: number }[] = [
   { label: "30d", value: 30 },
 ];
 // Must match historyService.CATEGORIES.
-const CATEGORIES = ["all", "auth", "users", "alerts", "environment", "aircon", "devices", "reports", "network"];
+const CATEGORIES = ["all", "auth", "users", "alerts", "environment", "aircon", "devices", "reports", "network", "backups"];
 const SEVERITIES = ["all", "critical", "warning", "info"];
 const PAGE_SIZE = 50;
 

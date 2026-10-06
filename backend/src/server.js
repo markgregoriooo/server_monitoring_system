@@ -26,6 +26,7 @@ import mikrotikPollerService from "../services/mikrotikPollerService.js";
 import reachabilitySweep from "../services/reachabilitySweep.js";
 import upsPowerWatch from "../services/upsPowerWatch.js";
 import backupService from "../services/backupService.js";
+import systemBackupService from "../services/systemBackupService.js";
 import gasSensorService from "../services/gasSensorService.js";
 import reportService from "../services/reportService.js";
 import auditService from "../services/auditService.js";
@@ -52,6 +53,7 @@ import widgetLayoutRoutes from "../routes/widgetLayout.js";
 import historyRoutes from "../routes/history.js";
 import analyticsRoutes from "../routes/analytics.js";
 import gasSensorRoutes from "../routes/gasSensors.js";
+import backupRoutes from "../routes/backups.js";
 import { describeError } from "../utils/httpError.js";
 
 
@@ -266,6 +268,8 @@ esp32Monitor.init(io).catch((e) =>
 
 // On-site backup: every ingested sample is also written to NDJSON files in BACKUP_DIR.
 backupService.init();
+// Weekly encrypted system backup (Backups page). After backupService: it reads BACKUP_DIR.
+systemBackupService.init(io).catch((e) => console.error("[BACKUP] weekly scheduler failed to start:", e?.message ?? e));
 // Gas channel config (wired / label), cached because it is read on every reading.
 gasSensorService.init();
 
@@ -300,6 +304,7 @@ app.use("/api/widget-layout", widgetLayoutRoutes);
 app.use("/api/history", historyRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/gas-sensors", gasSensorRoutes);
+app.use("/api/backups", backupRoutes); // admin only — the Backups page
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" })

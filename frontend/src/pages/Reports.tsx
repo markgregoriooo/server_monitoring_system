@@ -71,6 +71,7 @@ const TYPES: TypeMeta[] = [
   // The one FORWARD-looking report: the period is used as the regression's lookback
   // rather than as the window being summarised. See predictive-analytics.md §18.
   { value: "forecast", label: "Capacity Forecast", desc: "What runs out and when — disk, UPS battery & link projections, with their measured accuracy.", color: "#E8C33C" },
+  { value: "backup", label: "System Backups", desc: "Every weekly & manual backup in the window — size, coverage, integrity checks and offsite status.", color: "#5DCAA5" },
 ];
 
 const RANGES = [
@@ -1492,6 +1493,15 @@ function TypeIcon({ type, size = 15 }: { type: string; size?: number }) {
           <path d="M3 20V4M3 20h18" />
           <path d="M6 15l4-4 3 3 6-6" />
           <path d="M15 8h4v4" />
+        </svg>
+      );
+    // Database cylinder — matches the Backups nav icon.
+    case "backup":
+      return (
+        <svg {...p}>
+          <ellipse cx="12" cy="5" rx="8" ry="3" />
+          <path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+          <path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" />
         </svg>
       );
     default:

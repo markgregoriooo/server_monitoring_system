@@ -26,6 +26,8 @@ import {
   resolveSignatories,
 } from "./reportTemplate.js";
 import brandingService from "./reportBrandingService.js";
+import systemBackupService from "./systemBackupService.js";
+import { DAY_NAMES } from "./backupSchedule.js";
 import { describeError } from "../utils/httpError.js";
 
 // Reports: a row in MySQL `reports` plus a CSV and a PDF on disk (file_path is the
@@ -1261,6 +1263,88 @@ async function buildForecast(start, stop, deviceId) {
   };
 }
 
+// ─── Backup report ────────────────────────────────────────────────────────────
+// Panel RSC #2's FOD item, on paper: every system backup taken in the period, whether
+// it succeeded, how big it was, what it covers, and whether it still verifies. Built
+// from `system_backups`, so a backup that has since aged out of retention still
+// appears — "taken, verified, removed after 12 weeks" is part of the record.
+async function buildBackup(start, stop) {
+  const rows = await systemBackupService.listBetween(start, stop);
+  const st = await systemBackupService.status().catch(() => null);
+  const ok = rows.filter((r) => r.status === "ok");
+  const failed = rows.filter((r) => r.status === "failed");
+  const verified = ok.filter((r) => r.verifyStatus === "ok");
+  const mb = (b) => (b == null ? "—" : `${(b / 1048576).toFixed(1)} MB`);
+  const when = (iso) => (iso ? formatPH(new Date(iso), { seconds: false }) : "—");
+  const verifyText = (r) =>
+    r.status !== "ok"
+      ? "—"
+      : { ok: "Verified", mismatch: "CHECKSUM MISMATCH", missing: "FILE MISSING", undecryptable: "CANNOT DECRYPT" }[r.verifyStatus] ??
+        "Not yet verified";
+  const sched = st?.weekly?.schedule;
+
+  return {
+    charts: ok.length
+      ? [{
+          title: ok.some((r) => r.kind === "manual") ? "Backup size per run (MB) — * = manual backup" : "Backup size per run (MB)",
+          kind: "bar",
+          labels: ok.map((r) => r.week + (r.kind === "manual" ? "*" : "")),
+          series: [{ name: "Archive size", color: "#5794F2", values: ok.map((r) => Number(((r.sizeBytes ?? 0) / 1048576).toFixed(2))) }],
+        }]
+      : [],
+    summary: [
+      { label: "Backups taken", value: rows.length },
+      { label: "Successful", value: ok.length },
+      { label: "Failed", value: failed.length },
+      { label: "Verified intact", value: `${verified.length} of ${ok.length}` },
+      { label: "Total size", value: mb(ok.reduce((a, r) => a + (r.sizeBytes ?? 0), 0)) },
+      {
+        label: "Schedule",
+        value: sched ? `Weekly, ${DAY_NAMES[sched.day]} ${sched.time} PHT · keep ${sched.keepWeeks} weeks` : "—",
+      },
+      {
+        label: "Last offsite (cloud) copy",
+        value: st?.offsite?.lastSyncAt ? formatPH(new Date(st.offsite.lastSyncAt), { seconds: false }) : st?.offsite?.enabled ? "never" : "not configured",
+      },
+    ],
+    tables: [
+      {
+        title: "Backups in this period",
+        columns: ["Week", "Type", "Started (PHT)", "Status", "Size", "Covers", "Data files", "Integrity", "Retention"],
+        rows: rows.map((r) => [
+          r.week ?? "—",
+          r.kind === "weekly" ? "Weekly (scheduled)" : `Manual${r.createdBy ? ` — ${r.createdBy}` : ""}`,
+          when(r.startedAt),
+          r.status === "ok" ? "OK" : r.status === "failed" ? "FAILED" : "Running",
+          mb(r.sizeBytes),
+          r.coverageFrom && r.coverageTo ? `${r.coverageFrom} – ${r.coverageTo}` : "—",
+          r.dataFiles ?? "—",
+          verifyText(r),
+          r.purgedAt ? `Removed ${when(r.purgedAt).slice(0, 10)}` : r.status === "ok" ? "Kept" : "—",
+        ]),
+      },
+      ...(failed.length
+        ? [{
+            title: "Failed backups",
+            columns: ["Started (PHT)", "Type", "Reason"],
+            rows: failed.map((r) => [when(r.startedAt), r.kind, r.error ?? "—"]),
+          }]
+        : []),
+      {
+        title: "How the backups are protected",
+        columns: ["Measure", "Detail"],
+        rows: [
+          ["Encryption", "Each archive is AES-256-GCM encrypted before it is written to the backup drive."],
+          ["Integrity", "SHA-256 of every archive is recorded; Verify re-checks it and test-decrypts the archive."],
+          ["Copies", "Server databases (live) · USB backup drive (on-site) · Backblaze B2, encrypted (off-site)."],
+          ["Access", "Backups page, downloads and schedule changes are admin-only and recorded in History."],
+          ["Restore", "By documented command only (npm run backup:decrypt) — never a one-click button."],
+        ],
+      },
+    ],
+  };
+}
+
 function fmtRow(d) {
   const dt = d instanceof Date ? d : new Date(d);
   return Number.isNaN(dt.getTime()) ? "" : dt.toISOString().replace("T", " ").slice(0, 19);
@@ -1274,6 +1358,7 @@ const BUILDERS = {
   alerts: buildAlerts,
   aircon: buildAircon,
   forecast: buildForecast,
+  backup: buildBackup,
 };
 
 // Fail at startup if the registry and the builders do not match, instead of a
