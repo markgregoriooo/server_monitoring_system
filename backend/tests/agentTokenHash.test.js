@@ -6,19 +6,26 @@ import { fileURLToPath } from "node:url";
 import { hashKey } from "../services/installKeyUtils.js";
 
 // ─── Node ↔ SQL hashing contract ──────────────────────────────────────────
-// The migration fills the lookup column with MySQL's SHA2(x, 256), and the backend
-// looks it up with Node's hashKey(). If the two ever differ, no lookup matches and
+// The backend stores and looks up agent tokens by Node's hashKey(), in a column the
+// schema defines. If the two ever disagree (width, uniqueness), no lookup matches and
 // every agent gets 403. Same idea as contract.test.js checking the Go collector.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const MIGRATION = path.join(__dirname, "..", "..", "migrations", "2026-08-25_agent_token_hash.sql");
-const sql = fs.readFileSync(MIGRATION, "utf8");
+const SCHEMA = path.join(__dirname, "..", "..", "v13_cspc-ictu-monitoring-system.sql");
 
-/** The migration file minus its `--` comment lines, so prose can't satisfy a check. */
-const statements = sql
+/** The schema minus its `--` comment lines, so prose can't satisfy a check. */
+const statements = fs
+  .readFileSync(SCHEMA, "utf8")
   .split("\n")
   .filter((line) => !line.trimStart().startsWith("--"))
   .join("\n");
+
+/** Just the agent_tokens CREATE TABLE, so a column elsewhere can't satisfy a check. */
+const agentTokens = statements.match(/CREATE TABLE `agent_tokens` \(([\s\S]*?)\) ENGINE=/)?.[1] ?? "";
+
+test("the schema defines agent_tokens", () => {
+  assert.ok(agentTokens, "CREATE TABLE `agent_tokens` not found in v13");
+});
 
 test("hashKey returns exactly what MySQL's SHA2(x, 256) returns: 64 lowercase hex chars", () => {
   const h = hashKey("AGT-" + "ab".repeat(24));
@@ -34,41 +41,24 @@ test("hashKey is pinned to a known vector — a library swap cannot quietly chan
   );
 });
 
-test("the migration backfills with SHA2(..., 256) — not 512, not MD5, not PASSWORD()", () => {
-  assert.match(
-    statements,
-    /SHA2\(\s*`?approved_token`?\s*,\s*256\s*\)/i,
-    "the backfill must use SHA2(approved_token, 256) to match Node's sha256 hex",
-  );
-});
-
 test("the hash column is char(64) — the exact width hashKey emits", () => {
   assert.match(
-    statements,
+    agentTokens,
     /`approved_token_hash`\s+char\(64\)/i,
     "a narrower column would silently TRUNCATE the hash and break every lookup",
   );
 });
 
 test("the hash column is uniquely indexed — it is the credential lookup path", () => {
-  assert.match(statements, /UNIQUE\s+INDEX\s+`?uq_agent_tokens_approved_hash`?/i);
+  assert.match(statements, /UNIQUE\s+(?:INDEX|KEY)\s+`?uq_agent_tokens_approved_hash`?\s*\(`approved_token_hash`\)/i);
 });
 
 test("a recoverable cipher column exists — a hash alone cannot re-deliver a token", () => {
   // Re-delivering the token (lost agent.conf, adopt) needs the original value. Without
   // this column the agent just loops on "approved but token missing; retrying".
-  assert.match(statements, /`approved_token_cipher`\s+varchar\(255\)/i);
+  assert.match(agentTokens, /`approved_token_cipher`\s+varchar\(255\)/i);
 });
 
-test("the plaintext column is dropped — the whole point of the change", () => {
-  assert.match(statements, /DROP\s+COLUMN\s+`?approved_token`?\s*;/i);
-});
-
-test("the hash is backfilled BEFORE the plaintext is dropped", () => {
-  // Order matters for agents already approved: hash first and they keep working (they
-  // already have their token); drop first and they all get 403.
-  const backfill = statements.search(/SET\s+`?approved_token_hash`?\s*=\s*SHA2/i);
-  const drop = statements.search(/DROP\s+COLUMN\s+`?approved_token`?/i);
-  assert.ok(backfill > -1 && drop > -1, "both statements must be present");
-  assert.ok(backfill < drop, "the SHA2 backfill must come before the DROP COLUMN");
+test("there is no plaintext token column — the whole point of hashing", () => {
+  assert.doesNotMatch(agentTokens, /`approved_token`\s/, "a readable token column is back");
 });

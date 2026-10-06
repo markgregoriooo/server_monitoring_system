@@ -254,10 +254,9 @@ recoveries are intentionally **not** logged, which keeps the table lean with no 
 > **Fresh install:** `v13_cspc-ictu-monitoring-system.sql` already contains all of this —
 > the migration files are only for upgrading a database that predates them.
 >
-> **Upgrading:** apply `migrations/2026-08-15_agent_install_keys.sql` and
-> `2026-08-15b_install_key_reveal.sql`. `server_specs.metric_interval_sec` (§4) is already
-> in v13 and its migration file no longer exists — if a database predates it, add the
-> column by hand from the v13 definition, because the offline sweep queries it by name and
+> **Upgrading:** these migration files no longer exist (deleted 2026-10-06, still in git
+> history). If a database predates any of this (`agent_install_keys`, its reveal column, or
+> `server_specs.metric_interval_sec` from §4), add it by hand from the v13 definition, because the offline sweep queries it by name and
 > errors on the unknown column.
 >
 > ⚠️ `created_by`/`revoked_by` are **ON DELETE SET NULL**, not CASCADE: deleting the admin

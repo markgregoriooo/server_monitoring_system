@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const read = (...p) => fs.readFileSync(path.join(__dirname, "..", ...p), "utf8");
 
-/** Drop `--` comment lines so the migration's own prose cannot satisfy a check. */
+/** Drop `--` comment lines so the schema's own prose cannot satisfy a check. */
 const sqlCode = (s) =>
   s.split("\n").filter((l) => !l.trimStart().startsWith("--")).join("\n");
 
@@ -22,9 +22,7 @@ const sqlCode = (s) =>
 const jsCode = (s) =>
   s.split("\n").filter((l) => !l.trimStart().startsWith("//")).join("\n");
 
-const migration = sqlCode(
-  read("..", "migrations", "2026-09-18_notification_prefs_default_off.sql"),
-);
+const schema = sqlCode(read("..", "v13_cspc-ictu-monitoring-system.sql"));
 const notificationService = jsCode(read("services", "notificationService.js"));
 const userService = jsCode(read("services", "userService.js"));
 const prefsComponent = jsCode(
@@ -75,22 +73,12 @@ test("registration seeds the row, so the fallback is never what decides", () => 
   );
 });
 
-test("the migration backfills existing users and splits on last_login", () => {
+test("the schema's column default is 0", () => {
+  const table = schema.match(/CREATE TABLE `notification_prefs` \(([\s\S]*?)\) ENGINE=/)?.[1];
+  assert.ok(table, "CREATE TABLE `notification_prefs` not found in v13");
   assert.match(
-    migration,
-    /INSERT INTO\s+`?notification_prefs`?/,
-    "without a backfill, flipping the default silently mutes every existing user — a " +
-      "monitoring system getting quieter with nobody asking is the worse bug",
-  );
-  assert.match(
-    migration,
-    /IF\(\s*u?\.?`?last_login`?\s+IS NULL\s*,\s*0\s*,\s*1\s*\)/,
-    "the split must be last_login: somebody who has signed in keeps the email they have " +
-      "been getting, somebody who never has stops getting mail for an account nobody uses",
-  );
-  assert.match(
-    migration,
-    /`?email_enabled`?\s+tinyint\(4\)\s+NOT NULL\s+DEFAULT\s+0/i,
+    table,
+    /`email_enabled`\s+tinyint\(4\)\s+NOT NULL\s+DEFAULT\s+0/i,
     "the column default must be 0, so a row inserted by hand is silent too",
   );
 });

@@ -736,17 +736,11 @@ signing in with Google, and Google refuses a bare LAN IP (§5.4).
 of the full schema (**25 tables**) and already includes everything the `migrations/`
 folder used to apply.
 
-> **Upgrading a database loaded before 2026-08-09?** One statement is needed (already
-> applied on the development database): the **Capacity Forecast** report type is a new value in
-> the `reports.type` ENUM, and MySQL rejects a value outside the list. A fresh load of
-> the schema above already has it.
->
-> ```bash
-> mysql -u root -p <your-db> < migrations/2026-08-09_report_forecast_type.sql
-> ```
->
-> Skipping it fails only at the moment someone generates a forecast report; everything
-> else keeps working.
+> **Upgrading an existing database?** `migrations/` keeps only the files that a database
+> loaded from v13 before they existed still needs (ICTU's server, installed 2026-10-03):
+> `2026-10-05_server_ssh_hosts.sql`, `2026-10-06_server_console_settings.sql` and
+> `2026-10-06_system_backups.sql`, run once each in that order. The older migrations were
+> deleted on 2026-10-06; they are all in v13 and remain in git history.
 
 > ⚠️ **It does NOT create the database.** A phpMyAdmin export contains tables only — no
 > `CREATE DATABASE`, no `USE`. Create the database yourself first and load into it. The
