@@ -48,6 +48,10 @@ export function registerConsoleEvents(socket) {
 
   /** sessionId → { stream, conn, target, username, openedAt, idleTimer } */
   const sessions = new Map();
+  // Opens still logging in. The cap is checked BEFORE the SSH login, which takes up to
+  // the connect timeout, so without counting these, several opens fired together all
+  // saw an empty map and all got through.
+  let opening = 0;
 
   const close = (sessionId, reason) => {
     const s = sessions.get(sessionId);
@@ -87,98 +91,106 @@ export function registerConsoleEvents(socket) {
     try {
       const denied = await adminCheck(socket);
       if (denied) return reply({ ok: false, error: denied });
-      if (sessions.size >= MAX_SESSIONS_PER_SOCKET) {
+      if (sessions.size + opening >= MAX_SESSIONS_PER_SOCKET) {
         return reply({ ok: false, error: `At most ${MAX_SESSIONS_PER_SOCKET} terminals at once. Close one first.` });
       }
-
-      const id = parseInt(req?.serverId, 10);
-      if (!Number.isInteger(id)) return reply({ ok: false, error: "Invalid server id." });
-      const creds = sshConsole.readCredentials(req);
-      if (creds.error) return reply({ ok: false, error: creds.error });
-
-      const target = await sshConsole.resolveTarget(id, req?.os);
-      if (!target) return reply({ ok: false, error: "Server not found." });
-      if (!target.family) return reply({ ok: false, error: "This server's OS is unknown. Choose Linux or Windows." });
-
-      const meta = {
-        userId: socket.user.id,
-        module: "devices",
-        ip: socket.clientIp ?? null,
-        userAgent: socket.handshake.headers?.["user-agent"] ?? null,
-      };
-
-      let session;
+      opening++;
       try {
-        session = await loginTo(target, creds, socket.user.id);
-      } catch (err) {
-        audit({
-          ...meta,
-          action: "console_login_failed",
-          description: `Console: could not open a terminal on "${target.name}" (${target.ip}) as ${creds.username} — ${err.message}`,
-          level: "warning",
-        });
-        return reply({ ok: false, error: err.message });
+        await openSession(req, reply);
+      } finally {
+        opening--;
       }
-
-      let stream;
-      try {
-        stream = await sshConsole.openShell(session.conn, target.family, {
-          cols: clampDim(req?.cols, 20, 500, 120),
-          rows: clampDim(req?.rows, 5, 200, 32),
-        });
-      } catch (err) {
-        session.conn.end();
-        return reply({ ok: false, error: `Logged in, but the server refused a terminal: ${err.message}` });
-      }
-
-      // The socket may have dropped while we were connecting.
-      if (!socket.connected) {
-        stream.close();
-        session.conn.end();
-        return;
-      }
-
-      const sessionId = crypto.randomUUID();
-      sessions.set(sessionId, {
-        stream,
-        conn: session.conn,
-        target,
-        username: creds.username,
-        openedAt: Date.now(),
-        idleTimer: null,
-      });
-      armIdle(sessionId);
-
-      const decoder = new StringDecoder("utf8");
-      const forward = (chunk) => socket.emit("console:output", { sessionId, data: decoder.write(chunk) });
-      stream.on("data", forward);
-      stream.stderr?.on("data", forward);
-      stream.on("close", () => close(sessionId, "the remote shell exited"));
-      session.conn.on("error", (err) => close(sessionId, `connection error: ${err.message}`));
-      session.conn.on("close", () => close(sessionId, "connection closed"));
-
-      audit({
-        ...meta,
-        action: "console_terminal_opened",
-        description:
-          `Console: opened a terminal on "${target.name}" (${target.ip}) as ${creds.username}` +
-          (session.firstTrust ? ` — first connection, host key ${session.fingerprint} saved` : ""),
-        level: "warning",
-      });
-
-      reply({
-        ok: true,
-        sessionId,
-        family: target.family,
-        fingerprint: session.fingerprint,
-        firstTrust: session.firstTrust,
-        idleMinutes: Math.round(IDLE_MS / 60000),
-      });
     } catch (err) {
       console.error("[CONSOLE] open failed:", err?.stack ?? err);
       reply({ ok: false, error: "The console could not be opened (server error)." });
     }
   });
+
+  async function openSession(req, reply) {
+    const id = parseInt(req?.serverId, 10);
+    if (!Number.isInteger(id)) return reply({ ok: false, error: "Invalid server id." });
+    const creds = sshConsole.readCredentials(req);
+    if (creds.error) return reply({ ok: false, error: creds.error });
+
+    const target = await sshConsole.resolveTarget(id, req?.os);
+    if (!target) return reply({ ok: false, error: "Server not found." });
+    if (!target.family) return reply({ ok: false, error: "This server's OS is unknown. Choose Linux or Windows." });
+
+    const meta = {
+      userId: socket.user.id,
+      module: "devices",
+      ip: socket.clientIp ?? null,
+      userAgent: socket.handshake.headers?.["user-agent"] ?? null,
+    };
+
+    let session;
+    try {
+      session = await loginTo(target, creds, socket.user.id);
+    } catch (err) {
+      audit({
+        ...meta,
+        action: "console_login_failed",
+        description: `Console: could not open a terminal on "${target.name}" (${target.ip}) as ${creds.username} — ${err.message}`,
+        level: "warning",
+      });
+      return reply({ ok: false, error: err.message });
+    }
+
+    let stream;
+    try {
+      stream = await sshConsole.openShell(session.conn, target.family, {
+        cols: clampDim(req?.cols, 20, 500, 120),
+        rows: clampDim(req?.rows, 5, 200, 32),
+      });
+    } catch (err) {
+      session.conn.end();
+      return reply({ ok: false, error: `Logged in, but the server refused a terminal: ${err.message}` });
+    }
+
+    // The socket may have dropped while we were connecting.
+    if (!socket.connected) {
+      stream.close();
+      session.conn.end();
+      return;
+    }
+
+    const sessionId = crypto.randomUUID();
+    sessions.set(sessionId, {
+      stream,
+      conn: session.conn,
+      target,
+      username: creds.username,
+      openedAt: Date.now(),
+      idleTimer: null,
+    });
+    armIdle(sessionId);
+
+    const decoder = new StringDecoder("utf8");
+    const forward = (chunk) => socket.emit("console:output", { sessionId, data: decoder.write(chunk) });
+    stream.on("data", forward);
+    stream.stderr?.on("data", forward);
+    stream.on("close", () => close(sessionId, "the remote shell exited"));
+    session.conn.on("error", (err) => close(sessionId, `connection error: ${err.message}`));
+    session.conn.on("close", () => close(sessionId, "connection closed"));
+
+    audit({
+      ...meta,
+      action: "console_terminal_opened",
+      description:
+        `Console: opened a terminal on "${target.name}" (${target.ip}) as ${creds.username}` +
+        (session.firstTrust ? ` — first connection, host key ${session.fingerprint} saved` : ""),
+      level: "warning",
+    });
+
+    reply({
+      ok: true,
+      sessionId,
+      family: target.family,
+      fingerprint: session.fingerprint,
+      firstTrust: session.firstTrust,
+      idleMinutes: Math.round(IDLE_MS / 60000),
+    });
+  }
 
   socket.on("console:input", (msg) => {
     const s = sessions.get(msg?.sessionId);
