@@ -5,6 +5,7 @@ import airconService            from "../services/airconService.js";
 import alertRulesService        from "../services/alertRulesService.js";
 import esp32Monitor             from "../services/esp32Monitor.js";
 import gasSensorService         from "../services/gasSensorService.js";
+import { registerConsoleEvents } from "./consoleHandler.js";
 
 export const handleConnection = (io, socket) => {
   console.log("Client connected:", socket.id, socket.isDevice ? "[ESP32]" : "[browser]");
@@ -35,6 +36,8 @@ export const handleConnection = (io, socket) => {
     // Browser: join a per-user room so notifications can target this user across
     // all their open tabs (io.to(`user:<id>`).emit("notification", …)).
     socket.join(`user:${socket.user.id}`);
+    // Server Console web terminal (admin-only, checked per open).
+    registerConsoleEvents(socket);
   }
 
   registerEvents(io, socket);

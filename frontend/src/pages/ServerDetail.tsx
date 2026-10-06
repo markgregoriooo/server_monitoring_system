@@ -5,6 +5,8 @@ import Chart from "../chart/ChartConfig";
 import { api } from "../api/api";
 import { socket } from "../socket/socket";
 import { useTheme } from "../context/ThemeContext";
+import { useAuth } from "../context/AuthContext";
+import ServerConsole from "../components/servers/ServerConsole";
 import RangePicker, { DEFAULT_RANGE, rangeSpanSec, presetLabel } from "../components/ui/RangePicker";
 import { withGaps, gapIndices } from "../utils/seriesGaps";
 import { fitCanvas } from "../utils/hidpiCanvas";
@@ -378,6 +380,12 @@ function ChartCard({
 // ─── ServerDetail ─────────────────────────────────────────────────────────────
 export default function ServerDetail({ server: s, onBack }: Props) {
   const { theme } = useTheme();
+  const { user } = useAuth();
+  // Overview = the metrics this page has always shown. Console = control the server
+  // over SSH (components/servers/ServerConsole). The console is mounted on first open
+  // and then kept, hidden, so flipping back to Overview does not drop a live terminal.
+  const [view, setView] = useState<"overview" | "console">("overview");
+  const [consoleOpened, setConsoleOpened] = useState(false);
   const cpuRef  = useRef<HTMLCanvasElement>(null);
   const memRef  = useRef<HTMLCanvasElement>(null);
   const diskRef = useRef<HTMLCanvasElement>(null);
@@ -626,6 +634,32 @@ export default function ServerDetail({ server: s, onBack }: Props) {
         </div>
       </div>
 
+      <div className="flex gap-1 border-b border-slate-200 dark:border-white/[0.07]">
+        {(["overview", "console"] as const).map((v) => (
+          <button
+            key={v}
+            onClick={() => {
+              setView(v);
+              if (v === "console") setConsoleOpened(true);
+            }}
+            className={`px-3 py-2 text-[13px] -mb-px border-b-2 transition-colors ${
+              view === v
+                ? "border-[#5794F2] text-slate-900 dark:text-white"
+                : "border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+            }`}
+          >
+            {v === "overview" ? "Overview" : "Console"}
+          </button>
+        ))}
+      </div>
+
+      {consoleOpened && (
+        <div className={view === "console" ? "" : "hidden"}>
+          <ServerConsole serverId={Number(s.id)} serverName={s.name} isAdmin={user?.role === "admin"} />
+        </div>
+      )}
+
+      <div className={view === "overview" ? "flex flex-col gap-4" : "hidden"}>
       <ActiveAlerts alerts={openAlerts} />
 
       {/* Top row — 2 gauge panels + 2 spark-stat panels (like Grafana top row) */}
@@ -754,6 +788,7 @@ export default function ServerDetail({ server: s, onBack }: Props) {
             ))}
           </div>
         )}
+      </div>
       </div>
 
     </div>

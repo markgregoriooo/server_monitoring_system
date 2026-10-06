@@ -2697,3 +2697,45 @@ although `forecastDiskFull` had already projected it. It now prints one row per 
 partition that is filling and "Volumes projected to fill" counts volumes rather than
 servers. A server with no per-volume history still prints its root row. The Analytics
 page is unchanged: one row per server with the volumes listed beneath. 515/515.
+
+## 2026-10-05 — Server Console (pre-oral panel recommendation)
+
+Panel RSC: *"Integrate a user-friendly interface or shortcuts into the system to seamless
+control without relying on the command prompt."* Today staff open PowerShell and `ssh` into
+a server. Built on branch **`server-console`**: a **Console** tab on ServerDetail with
+
+- **Quick Actions** — buttons, no typing: system overview, top processes, disk, network,
+  failed / running services, recent errors, agent status, service status (info — admin +
+  IT staff); restart a service, restart the monitoring agent, reboot in 1 min (control —
+  admin, confirm dialog). Fixed commands per OS (`services/consoleCommands.js`); the
+  browser sends an action id, never a command.
+- **Web Terminal** — xterm.js ⇄ Socket.IO ⇄ ssh2. Linux login shell; Windows opens
+  PowerShell. Admin only.
+
+Both Linux and Windows. Windows targets need **OpenSSH Server** enabled (one-time, built into
+Server 2019+; the console shows the three commands). Nothing changes on the Go agent.
+
+Security: target = the registered IP only; password typed per page visit, never stored; SSH
+host key pinned on first login (`server_ssh_hosts`) and a changed key refused; failed-login
+throttle (10 / 15 min per user+server); every action + terminal open/close in History
+(keystrokes not recorded — they include sudo passwords).
+
+**Verified:** 526/526 tests (11 new), `tsc --noEmit` clean, build clean. End-to-end against a
+throwaway local `ssh2` server that runs exec through cmd.exe like Windows OpenSSH: wrong
+password rejected, key pinned then a changed key refused, throttle trips at 10, every
+Windows info action ran for real on this laptop, interactive PowerShell worked. Linux info
+commands ran on WSL Ubuntu. ⚠️ **Not yet tried against a real ICTU server**, and the Linux
+`sudo -S` path (restart/reboot as a non-root user) has only been checked for shell syntax —
+try "Restart service" on a harmless service once on a real box before relying on it.
+⚠️ Apply `migrations/2026-10-05_server_ssh_hosts.sql` on any existing database (already in v13).
+
+**Follow-ups the same day (branch `server-console`):**
+- Usernames may contain a space (Windows local accounts, e.g. "Mark Gregorio").
+- SSH login failures answer **422, not 502**: Cloudflare replaces an origin 502 with its own
+  HTML page, so behind the tunnel the reason never reached the admin ("Cannot connect to server").
+- **SSH address override.** The VirtualBox VM `srv-core` reports `10.0.2.15` (NAT — unreachable
+  from the host) while SSH is reachable on its host-only adapter `192.168.56.101`. An admin can
+  now set a per-server SSH host/port in the Console ("change" next to "connects to …"), stored in
+  `server_console_settings` (migration `2026-10-06_…`, in v13) because the agent rewrites
+  `devices.ip_address`. Verified: with the override set, the VM's sshd answered (a deliberately
+  wrong password was rejected by it); the override was then cleared again so the admin sets it.

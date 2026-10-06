@@ -478,6 +478,24 @@ CREATE TABLE `sensor_backup_batches` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `server_console_settings`
+--
+-- Server Console: an admin-set SSH address per server, used instead of the agent-reported
+-- IP when SSH is reachable somewhere else (a VirtualBox NAT VM reports 10.0.2.15; a server
+-- with a management network). The agent rewrites devices.ip_address, so the override
+-- cannot live there. No row = use the agent IP. See migrations/2026-10-06_server_console_settings.sql
+
+CREATE TABLE `server_console_settings` (
+  `device_id` int(11) NOT NULL,
+  `ssh_host` varchar(255) DEFAULT NULL,
+  `ssh_port` smallint(5) UNSIGNED DEFAULT NULL,
+  `updated_by` int(11) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `server_specs`
 --
 
@@ -496,6 +514,25 @@ CREATE TABLE `server_specs` (
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp(),
   `last_seen` timestamp NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `server_ssh_hosts`
+--
+-- Server Console: the SSH host key seen on the first successful login to each server
+-- (trust on first use, like OpenSSH known_hosts). Later logins must present the same
+-- key, so nothing else answering on the IP can collect the admin's password. Holds no
+-- secret; passwords are never stored. See migrations/2026-10-05_server_ssh_hosts.sql
+
+CREATE TABLE `server_ssh_hosts` (
+  `device_id` int(11) NOT NULL,
+  `fingerprint` varchar(100) NOT NULL,
+  `key_type` varchar(40) DEFAULT NULL,
+  `pinned_by` int(11) DEFAULT NULL,
+  `first_seen` timestamp NOT NULL DEFAULT current_timestamp(),
+  `last_seen` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 
 -- --------------------------------------------------------
@@ -798,12 +835,26 @@ ALTER TABLE `sensor_backup_batches`
   ADD KEY `fk_sensor_backup_batches_devices1_idx` (`device_id`);
 
 --
+-- Indexes for table `server_console_settings`
+--
+ALTER TABLE `server_console_settings`
+  ADD PRIMARY KEY (`device_id`),
+  ADD KEY `fk_server_console_settings_user` (`updated_by`);
+
+--
 -- Indexes for table `server_specs`
 --
 ALTER TABLE `server_specs`
   ADD PRIMARY KEY (`server_spec_id`),
   ADD UNIQUE KEY `devices_id_UNIQUE` (`device_id`),
   ADD KEY `idx_server_specs_device` (`device_id`);
+
+--
+-- Indexes for table `server_ssh_hosts`
+--
+ALTER TABLE `server_ssh_hosts`
+  ADD PRIMARY KEY (`device_id`),
+  ADD KEY `fk_server_ssh_hosts_user` (`pinned_by`);
 
 --
 -- Indexes for table `settings`
@@ -1121,10 +1172,24 @@ ALTER TABLE `sensor_backup_batches`
   ADD CONSTRAINT `fk_sensor_backup_batches_devices1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE NO ACTION;
 
 --
+-- Constraints for table `server_console_settings`
+--
+ALTER TABLE `server_console_settings`
+  ADD CONSTRAINT `fk_server_console_settings_device` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  ADD CONSTRAINT `fk_server_console_settings_user` FOREIGN KEY (`updated_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+--
 -- Constraints for table `server_specs`
 --
 ALTER TABLE `server_specs`
   ADD CONSTRAINT `fk_server_specs_devices1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+--
+-- Constraints for table `server_ssh_hosts`
+--
+ALTER TABLE `server_ssh_hosts`
+  ADD CONSTRAINT `fk_server_ssh_hosts_device` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  ADD CONSTRAINT `fk_server_ssh_hosts_user` FOREIGN KEY (`pinned_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
 -- Constraints for table `settings`
