@@ -5,8 +5,8 @@ Develop and test the **Router & UPS (SNMP) monitoring** without real hardware.
 same SNMP OIDs the poller (`backend/services/snmpPollerService.js`) reads, so the backend
 can't tell it's fake. Live throughput graphs, battery %, on-battery alerts — all work.
 
-> **DEV ONLY.** On campus you delete these fake devices and add the real ones
-> (`migrations/2026-06-12_router_ups_devices.sql`). Nothing here ships to production.
+> **DEV ONLY.** On campus you delete these fake devices and add the real ones from the
+> dashboard (**Add router** / **Add UPS**). Nothing here ships to production.
 
 ---
 
@@ -142,8 +142,8 @@ Edit the `.snmprec` files — **no restart needed**, the simulator re-reads per 
 ## Switching to real campus devices later
 
 1. Stop using this — `DELETE FROM devices WHERE location = 'DEV - snmpsim';`
-2. Fill in and run `migrations/2026-06-12_router_ups_devices.sql` with the real
-   IPs / community strings / ports (real devices use port **161**).
+2. Register the real devices from the dashboard (**Add router** / **Add UPS**, admin) with
+   their IPs / community strings / ports (real devices use port **161**).
 3. Everything else (poller, pages, alerts) is identical — only the device rows change.
 
 ---

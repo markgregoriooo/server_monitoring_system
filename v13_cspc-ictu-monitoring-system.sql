@@ -57,7 +57,7 @@ CREATE TABLE `agent_install_keys` (
 -- permanent token. The permanent AGT- token is stored as a hash for lookup
 -- (`approved_token_hash`) plus an encrypted copy (`approved_token_cipher`) so an agent
 -- that loses agent.conf can collect it again. See
--- migrations/2026-08-25_agent_token_hash.sql and audits/api-infra-security-2026-08-25.md A-05.
+-- See audits/api-infra-security-2026-08-25.md A-05.
 
 CREATE TABLE `agent_tokens` (
   `id` int(11) NOT NULL,
@@ -210,8 +210,7 @@ INSERT INTO `alert_rules` (`alert_rule_id`, `device_id`, `interface_name`, `metr
 (6, NULL, NULL, 'disk', 90, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-06-14 06:02:06', NULL),
 -- temperature + humidity follow ASHRAE TC 9.9 (Thermal Guidelines, 5th ed.): warning at the
 -- edge of the recommended envelope (27 °C), critical at the Class A1 allowable limit
--- (32 °C / 80 %RH). Changed from 30/34 °C and 70 %RH on 2026-09-25, see
--- migrations/2026-09-25_ashrae_env_thresholds.sql
+-- (32 °C / 80 %RH). Changed from 30/34 °C and 70 %RH on 2026-09-25.
 (8, NULL, NULL, 'temperature', 32, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:23:05', NULL),
 (9, NULL, NULL, 'gas', 150, '>=', 'warning', 1, '2026-06-14 06:02:06', '2026-07-23 10:20:16', NULL),
 (10, NULL, NULL, 'gas', 300, '>=', 'critical', 1, '2026-06-14 06:02:06', '2026-07-23 10:21:50', NULL),
@@ -232,13 +231,12 @@ INSERT INTO `alert_rules` (`alert_rule_id`, `device_id`, `interface_name`, `metr
 (29, NULL, NULL, 'link_errors', 100, '>=', 'critical', 1, '2026-07-31 07:08:15', '2026-07-31 07:08:15', NULL),
 -- ups_load and router_clients rules (no rule means no alert). router_clients is inactive:
 -- the right number depends on the site, so an admin sets it.
--- See migrations/2026-08-16_missing_alert_rules.sql
 (30, NULL, NULL, 'ups_load', 80, '>=', 'warning', 1, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
 (31, NULL, NULL, 'ups_load', 90, '>=', 'critical', 1, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
 (32, NULL, NULL, 'router_clients', 200, '>=', 'warning', 0, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
 (33, NULL, NULL, 'router_clients', 300, '>=', 'critical', 0, '2026-08-16 00:00:00', '2026-08-16 00:00:00', NULL),
 -- ICMP link quality (deviceAlerts.checkRouter): what SNMP cannot report, and the only
--- numeric metrics a ping-only router has. See migrations/2026-08-22_icmp_alert_rules.sql
+-- numeric metrics a ping-only router has.
 -- router_loss is active: 0% loss is healthy everywhere.
 -- With PING_COUNT=3 loss can only be 0/33/67/100, so both bands trip on the first lost
 -- echo. Raise PING_COUNT to 10 for 10% steps.
@@ -330,7 +328,6 @@ CREATE TABLE `device_network` (
 -- MQ2_PINS[channel-1], like aircon_state.ir_channel. The ESP32 reports its pins; this
 -- table records which have a sensor wired and where it is. The limit of four is the
 -- hardware (ADC2 is unusable with WiFi on, GPIO 32/33 are for IR), not the schema.
--- See migrations/2026-09-17_gas_sensors.sql
 
 CREATE TABLE `gas_sensors` (
   `channel` tinyint(3) UNSIGNED NOT NULL,
@@ -426,7 +423,6 @@ CREATE TABLE `notification_prefs` (
   -- Alert email is opt-in (default 0): email is the only channel that reaches someone who
   -- has never signed in or seen the Privacy Notice. Matches
   -- notificationService.PREF_DEFAULTS, which registerGoogleUser uses to create the row.
-  -- See migrations/2026-09-18_notification_prefs_default_off.sql
   `email_enabled` tinyint(4) NOT NULL DEFAULT 0,
   `popup_enabled` tinyint(4) NOT NULL DEFAULT 1,
   `min_email_severity` enum('info','warning','critical') NOT NULL DEFAULT 'critical',
@@ -449,7 +445,7 @@ CREATE TABLE `reports` (
   `device_id` int(11) DEFAULT NULL,
   -- Second scope column. device_id is a foreign key to devices, so no id can mean "the
   -- server room" (ESP32 alerts have device_id NULL). NULL here means campus-wide, as
-  -- before. The two are never both set. See migrations/2026-09-18_report_room_scope.sql
+  -- before. The two are never both set.
   `scope_kind` varchar(16) DEFAULT NULL COMMENT 'NULL = campus-wide, ''room'' = room-level alerts only (device_id IS NULL)',
   `status` enum('pending','generated','failed') DEFAULT NULL,
   `file_path` varchar(255) DEFAULT NULL,
@@ -556,7 +552,7 @@ CREATE TABLE `settings` (
 --
 -- Report template defaults. `folio` (long bond) is ICTU's default page size; blank logo
 -- file names mean "use the logos in backend/assets/branding".
--- See migrations/2026-08-28_report_template.sql and reports-client-questionnaire.md.
+-- See reports-client-questionnaire.md.
 
 INSERT INTO `settings` (`setting_key`, `setting_value`, `description`) VALUES
 ('report.paper_size', 'folio', 'Default page size for generated PDF reports: a4 | letter | folio (long bond).'),
@@ -778,7 +774,6 @@ ALTER TABLE `alert_rules`
   -- are not combined (getRoomThresholds takes the first it finds). The app checks this too
   -- (alertRuleValidation.duplicateSeverityError); this also covers rows edited in SQL.
   -- Built on the scope_* columns (see the note on the table above).
-  -- See migrations/2026-08-26_alert_rule_scope_uniqueness.sql
   ADD UNIQUE KEY `uq_alert_rules_scope_severity` (`scope_device`,`scope_iface`,`metric_name`,`severity`);
 
 --

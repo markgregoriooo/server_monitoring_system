@@ -320,9 +320,8 @@ can't share one number:
 | Router · *All ports* | Link errors | `>= 10` warning, `>= 100` critical |
 | Router | Router CPU / memory | `>= 85` warning, `>= 95` critical |
 
-Run `migrations/2026-07-31_link_errors_alert_rule.sql` and
-`migrations/2026-07-31_alert_rules_interface.sql` first if you haven't — alerting is rules-only, so
-without them these metrics stay silent.
+These rules ship pre-seeded in `v13_cspc-ictu-monitoring-system.sql`. Alerting is rules-only, so
+if one has been deleted on the Alert Rules page, that metric stays silent.
 
 ---
 

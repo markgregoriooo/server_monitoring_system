@@ -155,8 +155,8 @@ server-infrastructure-monitoring-system-webSystem/
 │
 ├── agent/                       ← standalone Go monitoring agent (see agent/README.md)
 ├── iot/esp32/env_monitor_v2/env_monitor_v2.ino    ← active firmware
-├── migrations/2026-06-09_google_auth.sql
-├── V10cspc-ictu-monitoring-system-schema.sql ← current full MySQL schema
+├── migrations/                  ← only the upgrades an existing install still needs
+├── v13_cspc-ictu-monitoring-system.sql ← current full MySQL schema (fresh installs)
 │
 └── docs: CLAUDE.md, README.md, Environment.md, server-metrics.md,
          google-oauth.md, agent/README.md, SESSION_NOTES.md
@@ -177,15 +177,16 @@ server-infrastructure-monitoring-system-webSystem/
 
 ### 1. Database
 
-Create the MySQL schema and apply the Google-auth migration:
+Create the database and load the full schema (a fresh install needs no migrations):
 
 ```bash
-mysql -u root -p < V10cspc-ictu-monitoring-system-schema.sql
-mysql -u root -p server_monitoring_system < migrations/2026-06-09_google_auth.sql
+mysql -u root -p -e 'CREATE DATABASE `cspc-ictu-monitoring-system`'
+mysql -u root -p cspc-ictu-monitoring-system < v13_cspc-ictu-monitoring-system.sql
 ```
 
-> Edit the admin-email placeholder in the migration's bootstrap `UPDATE` **before** running
-> it — that statement flips your first admin account to `active` so you can log in.
+> v13 seeds **no admin**, so the first Google sign-in lands `pending` with nobody to approve
+> it. Promote that account by hand (`deployment-guide.md` §4.3). Under Docker,
+> `FIRST_ADMIN_EMAIL` in the root `.env` does this for you.
 
 Provision an InfluxDB org + bucket and an API token with write/read on that bucket.
 

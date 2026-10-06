@@ -85,7 +85,7 @@ async function main() {
     console.log(
       C.dim(
         `  → ${alerting} port(s) would alert; ` +
-          `${empty} down but never connected (see migration 2026-08-09_link_alert_gate.sql)`,
+          `${empty} down but never connected (never carried a link, so not alerted)`,
       ),
     );
   }

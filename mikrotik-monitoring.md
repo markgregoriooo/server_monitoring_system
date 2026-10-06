@@ -130,8 +130,7 @@ Just **one** row in the existing `devices` table for the MikroTik:
 
 - `device_type = 'mikrotik'` — ⚠️ **correction:** `devices.device_type` is an **ENUM**
   (`'aircon','server','ups','router','esp32'`) that does **not** include `'mikrotik'` yet, so the
-  migration must **ALTER** the ENUM to add the value (done in
-  `migrations/2026-06-20_mikrotik_device.sql`). *(Alternative: reuse `'router'` and tell MikroTik
+  migration must **ALTER** the ENUM to add the value (done; now part of v13). *(Alternative: reuse `'router'` and tell MikroTik
   apart by "has a `mikrotik_devices` row" — but adding the ENUM value is cleaner and matches the
   dedicated table that already exists.)*
 - `location` = e.g. "CSPC-ICTU Server Room" (where the router physically is). The **buildings**
@@ -218,7 +217,7 @@ backend/routes/mikrotik.js                ← GET /api/mikrotik (the device + it
                                             PUT /api/mikrotik (set/update connection, admin),
                                             POST /api/mikrotik/test (probe creds), ports CRUD,
                                             /history, /logs   (reuses networkHistoryHandler)
-migrations/2026-06-20_mikrotik_device.sql
+v13 schema: devices.device_type ENUM +'mikrotik', mikrotik_devices.use_tls
 ```
 Wire-up in `src/server.js`: mount `/api/mikrotik`, and drive `mikrotikPollerService.poll()` on a
 `setInterval` (like the SNMP poller / offline sweep), guarded by `MIKROTIK_POLL_INTERVAL_MS`.
@@ -353,9 +352,8 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
 - [x] **Phase 0 — Decisions.** Branch base **B** (stacked on `router-ups-monitoring`). RouterOS API
       via `node-routeros` (works v6 + v7). `devices.device_type` is an **ENUM** → migration adds
       `'mikrotik'`. `mikrotik_devices` + `network_interfaces` already exist in V10.
-- [x] **Phase 1 — Schema + crypto.** `migrations/2026-06-20_mikrotik_device.sql` (ENUM `+'mikrotik'`,
-      `use_tls`, drops `firmware_version`, seed template) + `mikrotikCrypto.js` (AES-256-GCM) +
-      `MIKROTIK_ENC_KEY`. ⚠️ **Run the migration before adding a router.**
+- [x] **Phase 1 — Schema + crypto.** Schema change (ENUM `+'mikrotik'`, `use_tls`, drops
+      `firmware_version`; now in v13) + `mikrotikCrypto.js` (AES-256-GCM) + `MIKROTIK_ENC_KEY`.
 - [x] **Phase 2 — Collector.** `mikrotikClient.js` (RouterOS API, lazy-loads `node-routeros`) +
       `mikrotikPollerService` → shared `writeNetworkSample()` → `networkMetrics`/`networkStatus`,
       on a 30s `setInterval`. ⏳ live test against the dev MikroTik not yet run.
@@ -374,15 +372,13 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
       `alertRulesService.nextBand`) and raise real alerts through `notificationService.raiseAlert`
       (bell + toast + email + the Alerts page), auto-resolving on recovery (`alertsService`). Boolean
       events (interface down, UPS on-battery, and device offline/unreachable via checkReachability) raise directly, like server 'offline'. Global default
-      thresholds are seeded by `migrations/2026-06-30_router_ups_alert_rules.sql` (⚠️ run it, or
-      rules-only means silent), and the **Alert Rules** admin page now lists these metrics.
+      thresholds are seeded in v13 (rules-only: a deleted rule means silence), and the **Alert Rules** admin page now lists these metrics.
       Per-device overrides are now selectable: the Alert Rules scope dropdown lists servers, routers /
       MikroTik and UPS in grouped sections, and the metric list narrows to that device class.
-      Interface **error rate** (`link_errors`) was added on 2026-07-31 — seeded by
-      `migrations/2026-07-31_link_errors_alert_rule.sql`, measured as the per-poll DELTA so a
+      Interface **error rate** (`link_errors`) was added on 2026-07-31 — seeded in v13, measured as the per-poll DELTA so a
       long-running router isn't permanently in alarm over old errors.
-      **Interface-down was re-gated on 2026-08-09** (`services/linkAlertPolicy.js`, migration
-      `2026-08-09_link_alert_gate.sql`). Previously ANY port reporting no carrier alerted, and the
+      **Interface-down was re-gated on 2026-08-09** (`services/linkAlertPolicy.js`; the
+      `monitor_link` / `ever_up` columns are in v13). Previously ANY port reporting no carrier alerted, and the
       noise was hidden by an in-memory "skip the first sighting" baseline — so which ports could
       alert was decided by what the cables happened to be doing the second the backend last
       booted, and was silently re-rolled on every restart. On the campus router that read as one
@@ -412,14 +408,14 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
 | `backend/services/mikrotikClient.js` | RouterOS API/REST wrapper — **new** |
 | `backend/services/mikrotikCrypto.js` | AES-256-GCM for `api_password` — **new** |
 | `backend/routes/mikrotik.js` | `/api/mikrotik` connection + ports + history/logs (admin gates) — **new** |
-| `migrations/2026-06-20_mikrotik_device.sql` | ENUM `+'mikrotik'` + `use_tls` + seed template (`mikrotik_devices` / `network_interfaces` already in V10) — **new** |
+| `v13_cspc-ictu-monitoring-system.sql` | ENUM `+'mikrotik'` + `use_tls` (was a migration, now folded in) |
 | `backend/handlers/networkMetricsHandler.js` | `writeNetworkSample()` — **REUSED** (from router-ups) |
 | `backend/handlers/networkHistoryHandler.js` | Flux history — **REUSED** (from router-ups) |
 | `network_interfaces` table | port → label mapping (edited from the Ports panel) — **REUSED** (from router-ups) |
 | `backend/services/snmpPollerService.js` | the structure this poller mirrors — **reference** |
 | `frontend/src/pages/MikrotikMonitoring.tsx` | fleet **list** page (View / Configure / Remove per row) — **new** |
 | `frontend/src/pages/MikrotikDetail.tsx` | per-router **detail** page (in-page swap, mirrors ServerMetrics ↔ ServerDetail) — **new** |
-| `migrations/2026-07-31_link_errors_alert_rule.sql` | seeds the `link_errors` thresholds — **new** (⚠️ run it, or error alerting is silent) |
+| `alert_rules` seed in v13 | the `link_errors` thresholds — **new** |
 | `frontend/src/pages/NetworkMonitoring.tsx` | the SNMP router page; shares the collector + events — **reference** |
 | `frontend/src/api/api.ts` | MikroTik connection/history calls — **edit** |
 | `frontend/src/components/layout/Sidebar.tsx` | nav item + offline badge — **edit** |
@@ -498,7 +494,7 @@ Browser: `MikrotikMonitoring.tsx` fetches `GET /api/mikrotik` once, then live-up
 
 ### 13.4 Operational flow (how an admin uses it)
 
-1. **Once:** run `migrations/2026-06-20_mikrotik_device.sql`, set `MIKROTIK_ENC_KEY` in `backend/.env`, restart the backend.
+1. **Once:** set `MIKROTIK_ENC_KEY` in `backend/.env`, restart the backend.
 2. **Router:** enable the API + create a read-only user (`mikrotik-dev-setup.md`).
 3. Dashboard → **MikroTik** → **+ Add MikroTik** → name / IP / port / username / password → **Add**.
 4. **Configure** edits creds later; **Test connection** verifies. The poller then streams every ~30s.
@@ -528,7 +524,7 @@ Closed on 2026-07-31:
   supports.
 - ~~Per-port client counts~~ — leases grouped by DHCP server → interface, with a total-only fallback.
 - ~~Interface error alerting~~ — new `link_errors` metric on the per-poll error DELTA (not the
-  lifetime counter), seeded by `migrations/2026-07-31_link_errors_alert_rule.sql`.
+  lifetime counter), seeded in v13.
 - ~~Test connection required saving first~~ — `POST /api/mikrotik/test` (no id) plus body
   credentials on `/:id/test`, so a login is verified before anything is persisted.
 - ~~API-SSL unusable~~ — TLS options now tolerate RouterOS's self-signed certificate by default;

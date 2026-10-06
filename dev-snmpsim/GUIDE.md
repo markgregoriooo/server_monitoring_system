@@ -170,8 +170,8 @@ After you finish testing, change the numbers back to their healthy values (`3`, 
 ## When you finally get to campus (switch to real devices)
 
 1. Remove the fakes: `DELETE FROM devices WHERE location = 'DEV - snmpsim';`
-2. Fill in the real device details (IP, SNMP community, port **161**) in
-   `migrations/2026-06-12_router_ups_devices.sql` and run it once.
+2. Register the real devices from the dashboard (**Add router** / **Add UPS**, admin) with
+   their IP, SNMP community and port **161**. **Test connection** checks them first.
 3. **Nothing else changes** — the poller, dashboard pages, and alerts are identical. Only the
    device rows in the database are different.
 

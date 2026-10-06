@@ -32,7 +32,7 @@ manuscript narrative that accompanies them.
 > constituent functions.
 
 The Server Room sentence carries two flows that did not exist before the MQ-2 sensors became
-managed data (`migrations/2026-09-17_gas_sensors.sql`): the room now **reports** which ADC pin
+managed data (the `gas_sensors` table): the room now **reports** which ADC pin
 each gas channel sits on, and **receives** which channels are wired and what each is called.
 It is the only monitored source whose return flow is a configuration rather than a poll, which
 is why it gets a sentence of its own rather than being folded into the list.

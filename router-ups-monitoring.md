@@ -21,9 +21,8 @@ Branch: `router-ups-monitoring`.
 > read routes, and the two dashboard pages are built (`node --check` / `tsc` clean; see §8 /
 > SESSION_NOTES SESSION 10). **Devices can now be registered from the dashboard** — the Network
 > and UPS pages have an admin-only **"Add router" / "Add UPS"** button (`POST /api/network`,
-> `POST /api/ups`) plus a per-device **Remove** (`DELETE`), so hand-writing the
-> `migrations/2026-06-12_router_ups_devices.sql` seed is no longer required (the SQL template
-> stays as an alternative / for bulk seeding). The poller picks up a newly added device on its
+> `POST /api/ups`) plus a per-device **Remove** (`DELETE`); the old hand-written SQL seed
+> template has been deleted. The poller picks up a newly added device on its
 > next cycle (≤ `SNMP_POLL_INTERVAL_MS`, ~60s) with **no restart**. What's left is a live
 > end-to-end test against a real SNMP target. MikroTik router monitoring (data source **B**) is
 > explicitly **out of scope here** and handled separately.
@@ -291,7 +290,6 @@ SNMP_POLL_INTERVAL_MS=60000   # default poll cadence for the router/UPS poller
 | `backend/routes/ups.js` | `GET /api/ups`, `/:id/history`, `/:id/logs`; **`POST /api/ups` + `DELETE /:id` (admin — add/remove a UPS from the dashboard)** | ✅ built |
 | `frontend/src/pages/NetworkMonitoring.tsx` | router list + per-interface throughput/status (Grafana `--gf-*` tokens) | ✅ built |
 | `frontend/src/pages/UpsMonitoring.tsx` | UPS battery %, runtime, load, on-battery banner | ✅ built |
-| `migrations/2026-06-12_router_ups_devices.sql` | register `router`/`ups` devices + `device_network` / `ups_details` / `network_interfaces` | ⏳ template — needs §10 device facts |
 
 ---
 
@@ -301,8 +299,7 @@ Registration is now a **dashboard action** (admin-only): the Network and UPS pag
 **"Add router" / "Add UPS"** button that writes the same `devices` / `device_network` /
 `ups_details` rows the old SQL migration did. No backend restart is needed — the poller loads
 its device list every cycle and starts polling a new device on the **next tick**
-(≤ `SNMP_POLL_INTERVAL_MS`, ~60s). The `migrations/2026-06-12_router_ups_devices.sql` template
-remains only as a **bulk-seed alternative**.
+(≤ `SNMP_POLL_INTERVAL_MS`, ~60s).
 
 ### Step 0 — prepare the device (both classes, do this first)
 
@@ -389,14 +386,14 @@ intact** (it's tagged by the stable `device_id`; see §5).
    `ups_runtime`/`ups_load`) are evaluated against the configurable `alert_rules`
    (alertRulesService, hysteresis-aware) and raise REAL alerts via `notificationService.raiseAlert`
    (bell/email/Alerts page), auto-resolving on recovery; boolean events (interface down, UPS
-   on-battery, device offline) raise directly like server 'offline'. Global defaults are seeded by
-   `migrations/2026-06-30_router_ups_alert_rules.sql`, tunable from the **Alert Rules** admin page.
+   on-battery, device offline) raise directly like server 'offline'. Global defaults are seeded in
+   v13, tunable from the **Alert Rules** admin page.
    This replaced the earlier hardcoded per-condition checks in `snmpPollerService`.
 
 > 📋 **Collecting these from the client:** Q1/Q2 (UPS SNMP cards), Q6-equivalent (managed routers),
 > Q9 (firewall/UDP 161), plus per-device IP/model/community, are gathered via
 > **`router-ups-client-questionnaire.md`** (and a Word `.docx` version) — a plain-language form for
-> the CSPC-ICTU team. Their answers fill in `migrations/2026-06-12_router_ups_devices.sql`.
+> the CSPC-ICTU team. Their answers are what an admin types into **Add router** / **Add UPS**.
 
 ---
 
@@ -411,9 +408,8 @@ intact** (it's tagged by the stable `device_id`; see §5).
 - **Device registration:** now done from the **dashboard** — admin-only **"Add router" / "Add UPS"**
   on the Network/UPS pages (name, IP, SNMP port, read-only community; UPS also brand/model/capacity/
   serial/comm-type), plus per-device **Remove**. The poller loads devices every cycle, so an added
-  device starts polling within ~60s with no restart. The `migrations/2026-06-12_router_ups_devices.sql`
-  template remains as an alternative (e.g. bulk seeding), still gated on the §10 device facts (Q1 UPS
-  SNMP cards, Q6 managed routers, Q9 firewall).
+  device starts polling within ~60s with no restart. What to enter still depends on the §10 device
+  facts (Q1 UPS SNMP cards, Q6 managed routers, Q9 firewall).
 - **✅ ICMP-ping fallback — BUILT** (`services/pingOutput.js` + `services/icmpPing.js`). A router
   now needs only an IP; a blank community registers it for ICMP instead of being refused. ICMP
   also runs alongside every SNMP router poll, filling `latency_ms` / `packet_loss_pct` — fields
@@ -438,7 +434,7 @@ intact** (it's tagged by the stable `device_id`; see §5).
   simulates a router **and** a UPS answering the exact OIDs the poller reads, so the whole
   pipeline can be exercised on a dev box with no campus hardware.
 - **✅ Alert rules for latency / packet loss — BUILT** (`router_latency` / `router_loss`,
-  migration `2026-08-22_icmp_alert_rules.sql`). Evaluated in `deviceAlerts.checkRouter` against
+  seeded in v13). Evaluated in `deviceAlerts.checkRouter` against
   the configurable `alert_rules` like every other numeric metric, and editable on the Alert
   Rules page. `router_loss` ships **active** (5% warning / 20% critical — loss is not
   site-specific, 0% is healthy everywhere); `router_latency` ships **inactive** with 100/300 ms

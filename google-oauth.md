@@ -145,15 +145,16 @@ it lives only in `backend/.env` and never reaches the browser.
 
 ---
 
-## 5. Database migration
+## 5. Database
 
-Run **`migrations/2026-06-09_google_auth.sql`** once against the monitoring database. It:
-- makes `users.hash_password` **NULLable** (Google users have no in-app password),
-- expands `users.status` to `ENUM('pending','active','inactive','rejected')` default `pending`,
-- adds `users.google_sub` (the Google account id) + `users.auth_provider`,
-- **bootstraps the first admin** — an `UPDATE ... WHERE role='admin' LIMIT 1` that flips your
-  existing admin `active` and sets its email. **Edit the email placeholder to your exact,
-  lowercase CSPC Google address before running**, or the email won't match at sign-in.
+The `users` table in `v13_cspc-ictu-monitoring-system.sql` already has the Google shape:
+- `users.hash_password` is **NULLable** (Google users have no in-app password),
+- `users.status` is `ENUM('pending','active','inactive','rejected')` default `pending`,
+- `users.google_sub` (the Google account id) + `users.auth_provider`.
+
+v13 seeds **no admin**. Under Docker, `FIRST_ADMIN_EMAIL` in the root `.env` creates one on
+the first start; otherwise promote the first sign-in by hand (`deployment-guide.md` §4.3).
+Use your exact, lowercase CSPC Google address, or it won't match at sign-in.
 
 Multiple admins are supported — the approval dialog can assign `admin`, and a promoted user
 can approve others, so you are never locked into a single admin.
@@ -290,9 +291,9 @@ Common errors:
 - **Open — blocks on-prem go-live:** Google permits only `localhost` or **HTTPS** origins, so
   the dashboard needs a real hostname + certificate before anyone on the campus LAN can sign in
   (§3, §10). Nothing in this repo solves that yet.
-- **Open — fresh installs:** the schema seeds no admin row, so the first Google sign-in lands
-  `pending` with nobody able to approve it. Bootstrap instructions currently live only in
-  `migrations/2026-06-09_google_auth.sql`.
+- **Solved — fresh installs:** the schema seeds no admin row, so the first Google sign-in lands
+  `pending` with nobody able to approve it. `FIRST_ADMIN_EMAIL` (Docker) or the manual
+  promote in `deployment-guide.md` §4.3 handles it.
 - **Open — session length:** the JWT is 1 h with a proactive client-side logout and no refresh,
   so an always-on wall dashboard drops to the login screen hourly and cannot self-recover.
 - **Open — approval loop:** `userPending` is socket-only, so a registration submitted while no
@@ -370,8 +371,8 @@ diagram open beside you.
 
 ### D. Keep open as reference
 
-- **`migrations/2026-06-09_google_auth.sql`** — the DB shape the code assumes (`status` enum,
-  `google_sub`, `auth_provider`, nullable `hash_password`).
+- **The `users` table in `v13_cspc-ictu-monitoring-system.sql`** — the DB shape the code assumes
+  (`status` enum, `google_sub`, `auth_provider`, nullable `hash_password`).
 - The **§2 table** above — re-check it whenever the code branches on `status`.
 
 > If you only open one file, make it **`googleAuthService.js`** — the whole feature's decision

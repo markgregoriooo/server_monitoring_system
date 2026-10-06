@@ -37,7 +37,7 @@ sitting at critical from re-alerting every poll.
 > its owner had signed in, before they could reach the toggle that turns it off, and before
 > they had been shown the Privacy Notice. The bell, the toast and the OS popup need a
 > signed-in browser and so are unaffected; email is the one channel that reaches someone who
-> has never used the system. `migrations/2026-09-18_notification_prefs_default_off.sql`
+> has never used the system. A one-off migration (2026-09-18, now in git history)
 > backfilled an explicit row for every existing user, `email_enabled = 1` for anyone who had
 > signed in at least once, so the change muted nobody who was relying on the old default.
 
@@ -170,16 +170,18 @@ their alerts carry `device_id = NULL` and can only be global rules.
 
 ---
 
-## 7. Migrations (all applied)
+## 7. Database
+
+Everything this feature needs is in `v13_cspc-ictu-monitoring-system.sql`; the migration
+files that built it up have been deleted (they remain in git history). What they added:
 
 ```
-2026-06-13_notifications.sql          defaults, `emailed` column, notification_prefs
-2026-06-13_alerts_nullable_device.sql device_id NULL → room-level environment alerts
-2026-06-14_alert_rules.sql            device_id nullable + seeds 12 global rules
-2026-06-14_alerts_rule_fk_setnull.sql deleting a rule no longer cascades away its alert history
-2026-06-14_alert_rules_updated_by.sql who last edited a rule
-2026-06-14_alerts_resolved_by.sql     applied but DORMANT (see §6)
-2026-06-15_aircon_ir_config.sql       AC auto-cooling boundaries
+alerts                 `emailed` column; device_id NULL = room-level environment alert;
+                       deleting a rule sets alert_rule_id NULL instead of deleting history;
+                       resolved_by (DORMANT, see §6)
+alert_rules            device_id nullable, updated_by, seeded global rules
+notification_prefs     per-user email/popup settings (email defaults OFF)
+aircon_ir_config       AC auto-cooling boundaries
 ```
 
 ---
@@ -248,8 +250,7 @@ to them. Their only signal was retrying the sign-in and noticing the message had
 
 ### Why it bypasses the opt-in
 
-`notification_prefs.email_enabled` defaults to **off** (§8, and
-`migrations/2026-09-18_notification_prefs_default_off.sql`) because alert email is an
+`notification_prefs.email_enabled` defaults to **off** (§8) because alert email is an
 ongoing stream of operational data the person never asked for. An approval email is the
 opposite case: a single reply to an action they started by registering. Routing it through
 that flag would let a default meant to protect someone from alerts suppress the one message

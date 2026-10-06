@@ -24,7 +24,7 @@ The `reports.type` migration for the Capacity Forecast report **has been applied
 > because a rack switch answers in under 1 ms and an ISP CPE in 20–40 ms and both are
 > healthy: one percentile across the fleet mixes two populations and lands on a number
 > that fits neither. Scoped, it is exactly the right tool, and it closes the loop on the
-> `router_latency` rule shipping **inactive** (migration `2026-08-22_icmp_alert_rules.sql`).
+> `router_latency` rule shipping **inactive** (seeded in v13).
 > Instead of "watch the link for a few days and pick 2–3× its normal", the p95/p99 of what
 > that link actually does is computed and an admin applies it in one click.
 >

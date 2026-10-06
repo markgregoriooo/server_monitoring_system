@@ -17,7 +17,7 @@ import {
 // Shared with the SNMP poller so both write network_segment the same way.
 import { networkSegment } from "./snmpUtils.js";
 import { logDevice, getDeviceLogs } from "./deviceLogs.js";
-// Same hash as the install keys (SHA-256; see migrations/2026-08-25_agent_token_hash.sql).
+// Same hash as the install keys (SHA-256; the approved_token_hash column in v13).
 import { hashKey } from "./installKeyUtils.js";
 // AES-256-GCM, only for the token copy that must be readable again (see approve()).
 import secretCrypto from "./secretCrypto.js";
@@ -332,7 +332,7 @@ async function reject(deviceId) {
 // Used by agentAuthMiddleware. Returns the device identity for a valid,
 // approved token, or null. Best-effort bumps last_used_at without blocking.
 async function validateToken(token) {
-  // Lookup by hash. Needs migrations/2026-08-25_agent_token_hash.sql applied.
+  // Lookup by hash (approved_token_hash, unique-indexed in v13).
   const [[row]] = await db.query(
     `SELECT t.device_id, d.device_name, d.display_name, d.ip_address, d.location, s.os
        FROM agent_tokens t

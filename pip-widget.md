@@ -146,10 +146,10 @@ right there so the user sees the result before popping it out.
 
 Best practice for a per-user layout: the **server is the source of truth** (so it follows the
 user across machines), with a **localStorage cache** for instant first paint. This mirrors
-the existing `notification_prefs` design exactly (`migrations/2026-06-13_notifications.sql`,
+the existing `notification_prefs` design exactly (the `notification_prefs` table,
 `notificationService.getPrefs/savePrefs`, `GET/PUT /api/notifications/prefs`).
 
-**New table** (`migrations/2026-06-1X_widget_prefs.sql`) — one row per user, missing row =
+**New table** (`widget_prefs`, now in v13) — one row per user, missing row =
 default layout supplied by the backend:
 
 ```sql
@@ -319,7 +319,7 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
       Acceptance: values tick live, match Dashboard. ✅
       (Note: `useLiveSummary` shipped as a context provider, not a bare hook, so all tiles
       share ONE subscription regardless of count.)
-- [x] **Phase 3 — Persistence.** Migration (`2026-06-17_widget_prefs.sql`) +
+- [x] **Phase 3 — Persistence.** `widget_prefs` table (in v13) +
       `widgetPrefsService` + `routes/widgetLayout.js` (mounted `/api/widget-layout`) +
       `useWidgetLayout` (localStorage cache + GET/PUT reconcile). Acceptance: a saved layout
       survives reload and another device. ✅ **Run the migration in phpMyAdmin** before the
@@ -409,9 +409,8 @@ The widget consumes these via the same hooks the Dashboard uses — ideally lift
         `LiveSummaryProvider` + `WidgetLayoutProvider`; it stays synchronous up to `pip.open`,
         since `requestWindow` must be the first await or the user gesture is spent. ✅
 
-> **Feature complete.** Remaining manual step: run `migrations/2026-06-17_widget_prefs.sql`
-> in phpMyAdmin so layouts persist server-side (cross-device). Until then it works off the
-> localStorage cache. Verify the pop-out in Chrome/Edge (see below).
+> **Feature complete.** The `widget_prefs` table ships in v13, so layouts persist
+> server-side (cross-device). Verify the pop-out in Chrome/Edge (see below).
 
 ---
 
