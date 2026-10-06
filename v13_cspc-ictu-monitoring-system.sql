@@ -443,7 +443,7 @@ CREATE TABLE `reports` (
   `report_id` int(11) NOT NULL,
   `generated_by` int(11) NOT NULL,
   `title` varchar(100) DEFAULT NULL,
-  `type` enum('environment','server','alerts','aircon','network','ups','forecast') DEFAULT NULL,
+  `type` enum('environment','server','alerts','aircon','network','ups','forecast','backup') DEFAULT NULL,
   `paper_size` enum('a4','letter','folio') NOT NULL DEFAULT 'folio' COMMENT 'Page size the PDF was rendered at; folio = long bond, 8.5x13in',
   `reference_no` varchar(40) DEFAULT NULL COMMENT 'Assigned at build time, e.g. ICTU-SRV-2026-001. NULL until generated.',
   `device_id` int(11) DEFAULT NULL,
@@ -589,6 +589,39 @@ CREATE TABLE `suggestions` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `system_backups`
+--
+-- Backups module: one row per backup run of THIS system (weekly job + "Back up now").
+-- Each successful run is one encrypted archive in <BACKUP_DIR>/weekly/. Rows outlive
+-- their files (`purged_at`) so the history stays. See migrations/2026-10-06_system_backups.sql
+
+CREATE TABLE `system_backups` (
+  `backup_id` int(11) NOT NULL,
+  `kind` enum('weekly','manual') NOT NULL,
+  `status` enum('running','ok','failed') NOT NULL DEFAULT 'running',
+  `file_name` varchar(120) DEFAULT NULL,
+  `week_label` varchar(10) DEFAULT NULL,
+  `scheduled_for` datetime DEFAULT NULL,
+  `coverage_from` date DEFAULT NULL,
+  `coverage_to` date DEFAULT NULL,
+  `size_bytes` bigint(20) UNSIGNED DEFAULT NULL,
+  `sha256` char(64) DEFAULT NULL,
+  `key_id` char(12) DEFAULT NULL,
+  `db_bytes` bigint(20) UNSIGNED DEFAULT NULL,
+  `data_files` int(11) DEFAULT NULL,
+  `data_bytes` bigint(20) UNSIGNED DEFAULT NULL,
+  `error` text DEFAULT NULL,
+  `started_at` datetime NOT NULL,
+  `finished_at` datetime DEFAULT NULL,
+  `verified_at` datetime DEFAULT NULL,
+  `verify_status` enum('ok','mismatch','missing','undecryptable') DEFAULT NULL,
+  `purged_at` datetime DEFAULT NULL,
+  `created_by` int(11) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `system_logs`
 --
 
@@ -598,7 +631,7 @@ CREATE TABLE `system_logs` (
   `action` varchar(255) NOT NULL,
   `description` text NOT NULL,
   `ip_address` varchar(255) DEFAULT NULL,
-  `module` enum('auth','aircon','users','alerts','reports','devices','network') DEFAULT NULL,
+  `module` enum('auth','aircon','users','alerts','reports','devices','network','backups') DEFAULT NULL,
   `user_agent` varchar(255) DEFAULT NULL,
   `log_level` enum('info','warning','error') DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
@@ -872,6 +905,15 @@ ALTER TABLE `suggestions`
   ADD KEY `fk_suggestions_users1_idx` (`dismissed_by`);
 
 --
+-- Indexes for table `system_backups`
+--
+ALTER TABLE `system_backups`
+  ADD PRIMARY KEY (`backup_id`),
+  ADD KEY `idx_system_backups_started` (`started_at`),
+  ADD KEY `idx_system_backups_slot` (`kind`,`scheduled_for`),
+  ADD KEY `fk_system_backups_user` (`created_by`);
+
+--
 -- Indexes for table `system_logs`
 --
 ALTER TABLE `system_logs`
@@ -1021,6 +1063,12 @@ ALTER TABLE `settings`
 --
 ALTER TABLE `suggestions`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT for table `system_backups`
+--
+ALTER TABLE `system_backups`
+  MODIFY `backup_id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
 -- AUTO_INCREMENT for table `system_logs`
@@ -1203,6 +1251,12 @@ ALTER TABLE `settings`
 ALTER TABLE `suggestions`
   ADD CONSTRAINT `fk_suggestions_devices1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE NO ACTION ON UPDATE NO ACTION,
   ADD CONSTRAINT `fk_suggestions_users1` FOREIGN KEY (`dismissed_by`) REFERENCES `users` (`user_id`) ON DELETE NO ACTION ON UPDATE NO ACTION;
+
+--
+-- Constraints for table `system_backups`
+--
+ALTER TABLE `system_backups`
+  ADD CONSTRAINT `fk_system_backups_user` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
 -- Constraints for table `system_logs`

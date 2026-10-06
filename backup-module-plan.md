@@ -1,6 +1,6 @@
 # Backup Module — Plan (panel RSC #2)
 
-Status: **NOT STARTED** — planning note written 2026-10-06, work begins next session.
+Status: **BUILT** on branch `backup-module` (2026-10-06) — see `backup-storage.md` §13. Decisions: Sunday 02:00 PHT, keep 12 weeks, report included.
 
 ## The recommendation (verbatim)
 

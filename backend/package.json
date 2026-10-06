@@ -12,7 +12,8 @@
     "analytics:check": "node scripts/analyticsCheck.js",
     "link:check": "node scripts/linkCheck.js",
     "probe": "node scripts/probeDevice.js",
-    "rekey": "node scripts/rekeySecrets.js"
+    "rekey": "node scripts/rekeySecrets.js",
+    "backup:decrypt": "node scripts/backupDecrypt.js"
   },
   "dependencies": {
     "@influxdata/influxdb-client": "^1.35.0",
@@ -29,7 +30,8 @@
     "nodemailer": "^9.0.4",
     "pdfkit": "^0.19.1",
     "socket.io": "^4.7.2",
-    "ssh2": "^1.17.0"
+    "ssh2": "^1.17.0",
+    "tar-stream": "^3.2.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

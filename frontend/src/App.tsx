@@ -37,6 +37,7 @@ import Environment from "./pages/Environment";
 import AirConditioner from "./pages/AirConditioner";
 import History from "./pages/History";
 import Reports from "./pages/Reports";
+import Backups from "./pages/Backups";
 import Settings from "./pages/Settings";
 import UserManagement from "./pages/UserManagement";
 import AlertRules from "./pages/AlertRules";
@@ -57,6 +58,7 @@ const pageTitles: Record<string, string> = {
   "/settings": "Settings",
   "/user-management": "User Management",
   "/alert-rules": "Alert Rules",
+  "/backups": "Backups",
   "/alerts": "Alerts",
   "/analytics": "Predictive Analytics",
 };
@@ -264,6 +266,12 @@ function AppShell() {
             <Route path="/alert-rules" element={
               <ProtectedRoute>
                 <AlertRules />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/backups" element={
+              <ProtectedRoute>
+                <Backups />
               </ProtectedRoute>
             } />
 

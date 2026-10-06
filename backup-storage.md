@@ -322,7 +322,59 @@ InfluxDB, loaded into pandas/Excel, or diffed against the live DB with no schema
 
 ---
 
-## 13. Gotchas / known limits
+## 13. Weekly system backup (Backups page)
+
+Added for the pre-oral panel's RSC #2 (*"Integrate a backup server module to manage and
+secure system backups — FOD: present the system weekly backup"*). Sections 1-12 are the
+**live** copy; this is a **weekly, self-contained, encrypted** archive of the whole system,
+managed from the dashboard (**Administration → Backups**, admin only).
+
+| | |
+|---|---|
+| **When** | Every **Sunday 02:00 PHT** by default; day, time and weeks-to-keep are set on the Backups page. A run missed because the backend was down is made on the next start (filed under the week it was due for). Up to 3 attempts per week, an hour apart, if one fails. |
+| **What** | One file, `<BACKUP_DIR>/weekly/weekly-2026-W41.tar.gz.enc`, holding `manifest.json` (contents + SHA-256 of each file), `database.sql` (a full dump taken **by the backend** at that moment) and `data/*.ndjson` (the seven whole days before the run). **Back up now** makes a `manual-….tar.gz.enc` the same way. |
+| **Encrypted** | AES-256-GCM with `BACKUP_ENC_KEY` (falls back to `SECRET_ENC_KEY`, then `MIKROTIK_ENC_KEY`). Without a key the backend **refuses** to back up rather than write the database in the clear. |
+| **Verified** | The archive is test-decrypted before it is accepted, its SHA-256 is recorded, and **Verify** re-checks both later. A mismatch raises a critical `backup_integrity` alert. |
+| **Kept** | `keepWeeks` weeks (default 12). Older archives are deleted; their rows stay (`purged_at`) so the history and the report still show them. The newest good archive is never deleted. |
+| **Offsite** | Nothing new — the nightly `rclone copy` already uploads everything under `BACKUP_DIR`, `weekly/` included (`*.tmp` work files are excluded). |
+| **Audited** | Run, verify, download and schedule changes go to History under **Backups**. |
+| **Report** | Reports → **System Backups**: every backup in a period, with size, coverage and integrity, on the ICTU letterhead (`ICTU-BAK-…`). |
+
+The database dump needs `mariadb-dump`/`mysqldump` on the backend. The Docker image
+installs `mariadb-client`; on Windows the XAMPP copy is found automatically; elsewhere set
+`BACKUP_DUMP_BIN`.
+
+### Restoring a weekly backup
+
+Restoring **replaces the live database**, so it is a command, never a button.
+
+```bash
+# 1. Decrypt (from backend/, on the server — it reads the key from backend/.env)
+npm run backup:decrypt -- /mnt/backup/datacenter/weekly/weekly-2026-W41.tar.gz.enc
+#    an archive made before a key change:  ... --key <the old 64-hex key>
+
+# 2. Unpack
+tar -xzf /mnt/backup/datacenter/weekly/weekly-2026-W41.tar.gz
+#    → manifest.json  database.sql  data/
+
+# 3. Load the database (Docker) — stop the backend first so nothing writes meanwhile
+cd <project folder>
+docker compose stop backend
+docker compose exec -T db sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -u root "$MARIADB_DATABASE"' < database.sql
+docker compose up -d backend
+```
+
+`data/*.ndjson` is the same format as §12 and can be replayed into InfluxDB the same way.
+Check a file against the manifest with `sha256sum data/<file>` before relying on it.
+
+> ⚠️ **The key is not in the backup.** An archive is useless without the key that made it.
+> Keep `backend/.env` (or at least `BACKUP_ENC_KEY`) with the offline copies listed in the
+> Cloud Backup Setup Guide, and keep an OLD key until the last archive made with it has
+> aged out — `npm run rekey` does not re-encrypt archives.
+
+---
+
+## 14. Gotchas / known limits
 
 - **Backend must be on the UPS.** The backup only survives an outage if the backend (and
   its card) stay powered — that is the linchpin of the whole design (§2, §8).

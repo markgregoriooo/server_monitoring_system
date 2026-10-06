@@ -30,6 +30,7 @@ export const roleConfig: Record<Role, RoleConfig> = {
       "settings",
       "user-management",
       "alert-rules",
+      "backups",
     ],
   },
   it_staff: {

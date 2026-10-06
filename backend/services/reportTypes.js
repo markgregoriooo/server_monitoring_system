@@ -31,6 +31,9 @@ export const REPORT_TYPE_META = {
     // (disk, battery, link) — so every forecastable type is offered.
     scope: ["server", "router", "mikrotik", "ups"],
   },
+  // The Backups module on paper (panel RSC #2): every system backup in the period.
+  // It describes the monitoring system itself, not a device.
+  backup: { label: "System Backups", scope: null },
 };
 
 /** Every valid report type. */

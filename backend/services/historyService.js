@@ -24,7 +24,7 @@ function clampInt(v, min, max, dflt) {
 
 // system_logs.module values + our two synthetic alert categories.
 const CATEGORIES = new Set([
-  "auth", "users", "alerts", "environment", "aircon", "devices", "reports", "network", "system",
+  "auth", "users", "alerts", "environment", "aircon", "devices", "reports", "network", "backups", "system",
 ]);
 const SEVERITIES = new Set(["critical", "warning", "info"]);
 const ACTOR_TYPES = new Set(["admin", "staff", "system"]);
