@@ -304,8 +304,8 @@ export default function Backups() {
             {busy === "verify-all" ? "Verifying…" : "Verify all"}
           </button>
           <button
-            className="gf-btn-primary text-[13px] font-semibold px-3 rounded-[3px]"
-            style={{ height: 32 }}
+            className="gf-btn text-[13px] font-semibold px-3"
+            style={{ height: 32, color: gf.accentText }}
             onClick={runNow}
             disabled={busy != null || Boolean(running) || !w.encryption.configured}
             title={!w.encryption.configured ? "No encryption key configured" : undefined}
