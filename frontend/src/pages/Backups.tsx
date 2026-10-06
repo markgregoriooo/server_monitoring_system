@@ -101,7 +101,6 @@ function StatusCard({
         <span className="text-[11px] tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>
           {title}
         </span>
-        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
       </div>
       <div className="px-4 pt-1.5 text-[17px] font-bold" style={{ color }}>
         {state}
