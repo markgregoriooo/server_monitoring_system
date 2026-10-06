@@ -343,7 +343,7 @@ backups and the reports.** Never run it on the production server.
 Data lives in named volumes (`db-data`, `influx-data`, `backend-backups`, `backend-reports`,
 `backend-branding`), so it survives `down`, rebuilds and upgrades.
 
-**Backups:** set `BACKUP_HOST_DIR=/mnt/backup/backups` in the root `.env` so the on-site
+**Backups:** set `BACKUP_HOST_DIR=/mnt/backup/datacenter` in the root `.env` so the on-site
 backup lands on the USB/SD drive rather than in `backend-backups` on the main disk. That is
 also what lets the nightly database dump and the Backblaze upload find it — both scripts
 switch to their Docker mode when it is set. Full steps:
@@ -1767,7 +1767,7 @@ to rotating NDJSON files under `BACKUP_DIR` — an independent copy that survive
 Add the relational half with the nightly MySQL dump. Env vars in `backend/.env`:
 
 ```dotenv
-BACKUP_DIR=/mnt/backup/backups     # a mounted USB stick / micro-SD — NOT the same disk as the DB
+BACKUP_DIR=/mnt/backup/datacenter     # a mounted USB stick / micro-SD — NOT the same disk as the DB
 BACKUP_RETENTION_DAYS=30           # local files older than this are purged daily
 ```
 
@@ -1775,7 +1775,7 @@ Schedule the DB dump a few minutes **before** the offsite sync (Linux cron shown
 Task Scheduler in `ops/db-backup/README.md`):
 
 ```cron
-15 2 * * *  BACKUP_DIR=/mnt/backup/backups /opt/cspc/ops/db-backup/dump-mysql.sh
+15 2 * * *  BACKUP_DIR=/mnt/backup/datacenter /opt/cspc/ops/db-backup/dump-mysql.sh
 ```
 
 The dump lands in `BACKUP_DIR` as `mysql-YYYY-MM-DD.sql.gz`, so the offsite job **and** the
@@ -1796,7 +1796,7 @@ client-side** (data *and* filenames) before it leaves campus. It uses `rclone co
 3. **Schedule** the sync just after the dump:
 
 ```cron
-30 2 * * *  BACKUP_DIR=/mnt/backup/backups /opt/cspc/ops/offsite-backup/sync-offsite.sh
+30 2 * * *  BACKUP_DIR=/mnt/backup/datacenter /opt/cspc/ops/offsite-backup/sync-offsite.sh
 ```
 
 4. **Backend offsite-health alert** — each successful sync stamps

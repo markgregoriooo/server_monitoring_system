@@ -27,8 +27,8 @@ The password is passed via `MYSQL_PWD` (kept off the process command line).
 ## Test it
 ```bash
 # Linux
-BACKUP_DIR=/mnt/backup/backups ./dump-mysql.sh
-ls -lh /mnt/backup/backups/mysql-*.sql.gz
+BACKUP_DIR=/mnt/backup/datacenter ./dump-mysql.sh
+ls -lh /mnt/backup/datacenter/mysql-*.sql.gz
 ```
 ```powershell
 # Windows
@@ -39,8 +39,8 @@ Get-ChildItem E:\backups\mysql-*.sql.gz
 ## Schedule it (a few minutes BEFORE the offsite sync)
 **Linux (cron)** — dump 02:15, offsite 02:30:
 ```cron
-15 2 * * *  BACKUP_DIR=/mnt/backup/backups /opt/monitoring/ops/db-backup/dump-mysql.sh
-30 2 * * *  BACKUP_DIR=/mnt/backup/backups /opt/monitoring/ops/offsite-backup/sync-offsite.sh
+15 2 * * *  BACKUP_DIR=/mnt/backup/datacenter /opt/monitoring/ops/db-backup/dump-mysql.sh
+30 2 * * *  BACKUP_DIR=/mnt/backup/datacenter /opt/monitoring/ops/offsite-backup/sync-offsite.sh
 ```
 **Windows (Task Scheduler)** — dump 02:15:
 ```powershell

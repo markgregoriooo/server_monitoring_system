@@ -70,14 +70,14 @@ Real config path:
 rclone --config /etc/rclone/rclone.conf ls b2crypt:cspc-monitoring-backup/offsite
 
 # one manual run of the sync
-BACKUP_DIR=/mnt/backup/backups ./sync-offsite.sh
+BACKUP_DIR=/mnt/backup/datacenter ./sync-offsite.sh
 ```
 Then confirm the files appear in the B2 bucket (they'll show **encrypted names** — expected).
 
 ### 5. Schedule it
 **Linux (cron)** — nightly at 02:30:
 ```cron
-30 2 * * *  BACKUP_DIR=/mnt/backup/backups /opt/monitoring/ops/offsite-backup/sync-offsite.sh
+30 2 * * *  BACKUP_DIR=/mnt/backup/datacenter /opt/monitoring/ops/offsite-backup/sync-offsite.sh
 ```
 **Windows (Task Scheduler)** — daily 02:30:
 ```powershell

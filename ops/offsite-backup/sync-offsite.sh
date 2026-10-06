@@ -46,7 +46,7 @@ BACKUP_HOST_DIR="$(ENV_FILE="$COMPOSE_ENV" getenv BACKUP_HOST_DIR)"
 if [ -n "$BACKUP_HOST_DIR" ] && [ -f "$ROOT_DIR/docker-compose.yml" ]; then
   BACKUP_DIR="${BACKUP_DIR:-$BACKUP_HOST_DIR}"
 fi
-BACKUP_DIR="${BACKUP_DIR:-$(getenv BACKUP_DIR)}"; : "${BACKUP_DIR:=/mnt/backup/backups}"
+BACKUP_DIR="${BACKUP_DIR:-$(getenv BACKUP_DIR)}"; : "${BACKUP_DIR:=/mnt/backup/datacenter}"
 : "${RCLONE_REMOTE:=b2crypt:cspc-monitoring-backup/offsite}"  # crypt remote:bucket[/path]
 : "${RCLONE_CONFIG:=/etc/rclone/rclone.conf}"             # where the (secret) rclone.conf lives
 MARKER="${BACKUP_OFFSITE_MARKER:-$BACKUP_DIR/.last_offsite_sync}"

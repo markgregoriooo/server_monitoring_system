@@ -132,7 +132,7 @@ services:
       # Named volumes, so the data survives `docker compose down` and rebuilds.
       #
       # backups can be a host folder instead: set BACKUP_HOST_DIR in the root .env (e.g.
-      # /mnt/backup/backups, the USB drive). Production should: a named volume is on the same
+      # /mnt/backup/datacenter, the USB drive). Production should: a named volume is on the same
       # disk as the database, and the nightly dump and Backblaze upload
       # (ops/backup-setup-linux.md) need a real path. The folder must be writable by uid 1000
       # (the image's `node` user).

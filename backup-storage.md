@@ -269,7 +269,7 @@ BACKUP_DIR=E:/backups
 ```
 ```ini
 # Linux
-BACKUP_DIR=/mnt/backup/backups
+BACKUP_DIR=/mnt/backup/datacenter
 ```
 > Use forward slashes even on Windows — Node accepts them and it avoids backslash-escaping
 > confusion in `.env`. Point at a **subfolder** on the drive, not the drive root.
@@ -283,7 +283,7 @@ BACKUP_DIR=/mnt/backup/backups
 Within ~a minute of live data the folder fills with `env-*.ndjson`, `server-*.ndjson`,
 `network-*.ndjson`, `ups-*.ndjson` (one file per stream per day).
 
-**Verify:** `dir E:\backups` (Windows) or `ls -la /mnt/backup/backups` (Linux) — the
+**Verify:** `dir E:\backups` (Windows) or `ls -la /mnt/backup/datacenter` (Linux) — the
 `.ndjson` files should be growing.
 
 ### Setup gotchas

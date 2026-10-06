@@ -16,8 +16,8 @@ laptop backs up the laptop.
 ## What you end up with
 
 ```
-   ALL DAY   backend writes sensor readings ─────►  /mnt/backup/backups
-   2:15 AM   dump-mysql.sh saves the database ────►  /mnt/backup/backups
+   ALL DAY   backend writes sensor readings ─────►  /mnt/backup/datacenter
+   2:15 AM   dump-mysql.sh saves the database ────►  /mnt/backup/datacenter
    2:30 AM   sync-offsite.sh uploads everything ──►  ☁  Backblaze (encrypted)
 ```
 
@@ -63,7 +63,7 @@ numbered steps with these substitutions:
 
 | Step | Under Docker, do this instead |
 |---|---|
-| 1, 2 | Same. For **Step 2's `chown`** use uid 1000, the container's user: `sudo chown -R 1000:1000 /mnt/backup/backups`. (A FAT32/exFAT stick has no owners — mount it with `uid=1000,gid=1000` in `/etc/fstab` instead.) |
+| 1, 2 | Same. For **Step 2's `chown`** use uid 1000, the container's user: `sudo chown -R 1000:1000 /mnt/backup/datacenter`. (A FAT32/exFAT stick has no owners — mount it with `uid=1000,gid=1000` in `/etc/fstab` instead.) |
 | 3 | See **Step 3 (Docker)** below. |
 | 4 | **Skip.** The dump runs `mariadb-dump` inside the `db` container. No client tools are needed on the host. |
 | 5 | Same commands, run with `sudo` (the script calls `docker`). |
@@ -82,7 +82,7 @@ nano .env
 ```
 
 ```ini
-BACKUP_HOST_DIR=/mnt/backup/backups
+BACKUP_HOST_DIR=/mnt/backup/datacenter
 ```
 
 Recreate the backend so it picks up the new mount:
@@ -91,7 +91,7 @@ Recreate the backend so it picks up the new mount:
 docker compose up -d backend
 docker compose logs backend | grep BACKUP
 # expect: [BACKUP] on-site backup → /app/backups (...)   ← the path INSIDE the container
-ls -lh /mnt/backup/backups/                               # files appear here within ~10 s
+ls -lh /mnt/backup/datacenter/                               # files appear here within ~10 s
 ```
 
 If the log says `NOT RUNNING — cannot write to /app/backups`, the folder is not owned by
@@ -100,7 +100,7 @@ uid 1000. Fix the `chown` from Step 2 and run `up -d backend` again.
 > **Already running on the Docker volume?** Moving to the drive does not bring the old
 > files with it. Copy them over once, **before** the `up -d` above:
 > ```bash
-> docker run --rm -v cspc_backend-backups:/from -v /mnt/backup/backups:/to alpine cp -a /from/. /to/
+> docker run --rm -v cspc_backend-backups:/from -v /mnt/backup/datacenter:/to alpine cp -a /from/. /to/
 > ```
 > (`docker volume ls` shows the real volume name — it is prefixed with the project folder's name.)
 
@@ -155,7 +155,7 @@ Test it:
 sudo umount /mnt/backup && sudo mount -a && df -h /mnt/backup
 ```
 
-> ⚠️ **The quiet failure to avoid.** If the drive is *not* mounted, `/mnt/backup/backups`
+> ⚠️ **The quiet failure to avoid.** If the drive is *not* mounted, `/mnt/backup/datacenter`
 > still exists as an ordinary empty folder on the root disk. Backups keep writing, with no
 > error — straight onto the disk you were trying to protect against. `df -h /mnt/backup`
 > should name the USB device, not `/dev/sda1`.
@@ -163,8 +163,8 @@ sudo umount /mnt/backup && sudo mount -a && df -h /mnt/backup
 Let the backend write to it:
 
 ```bash
-sudo mkdir -p /mnt/backup/backups
-sudo chown -R $USER:$USER /mnt/backup/backups
+sudo mkdir -p /mnt/backup/datacenter
+sudo chown -R $USER:$USER /mnt/backup/datacenter
 ```
 
 ---
@@ -176,19 +176,19 @@ sudo nano /opt/cspc/backend/.env
 ```
 
 ```ini
-BACKUP_DIR=/mnt/backup/backups
+BACKUP_DIR=/mnt/backup/datacenter
 ```
 
 Restart the backend, then confirm:
 
 ```bash
-# expect: [BACKUP] on-site backup → /mnt/backup/backups (flush 5000ms, retain 30d)
+# expect: [BACKUP] on-site backup → /mnt/backup/datacenter (flush 5000ms, retain 30d)
 ```
 
 After ~10 seconds, files should appear:
 
 ```bash
-ls -lh /mnt/backup/backups/
+ls -lh /mnt/backup/datacenter/
 ```
 
 ---
@@ -220,8 +220,8 @@ chmod +x /opt/cspc/ops/db-backup/dump-mysql.sh
 Check it worked:
 
 ```bash
-ls -lh /mnt/backup/backups/mysql-*.sql.gz
-tail -5 /mnt/backup/backups/db-backup.log
+ls -lh /mnt/backup/datacenter/mysql-*.sql.gz
+tail -5 /mnt/backup/datacenter/db-backup.log
 ```
 
 You want a `.sql.gz` file of a few hundred KB and an `OK` line in the log.
@@ -313,8 +313,8 @@ chmod +x /opt/cspc/ops/offsite-backup/sync-offsite.sh
 Check all three:
 
 ```bash
-tail -5 /mnt/backup/backups/offsite-sync.log      # expect "offsite sync OK"
-ls -l  /mnt/backup/backups/.last_offsite_sync     # the success marker
+tail -5 /mnt/backup/datacenter/offsite-sync.log      # expect "offsite sync OK"
+ls -l  /mnt/backup/datacenter/.last_offsite_sync     # the success marker
 ```
 
 And look at the Backblaze bucket in your browser — files should be there with
@@ -382,7 +382,7 @@ to keep it bell-only.
 ## Step 12 — Check it the next morning
 
 ```bash
-tail -20 /mnt/backup/backups/offsite-sync.log
+tail -20 /mnt/backup/datacenter/offsite-sync.log
 ```
 
 | What you see | Meaning |
@@ -400,15 +400,15 @@ tail -20 /mnt/backup/backups/offsite-sync.log
 | Works by hand, nothing at 2 AM | cron's PATH | Add/extend the `PATH=` line (Step 10) |
 | `mysqldump: not found` | Client tools missing | Step 4, or set `MYSQLDUMP` in `.env` |
 | Backups on the wrong disk | Drive not mounted | `df -h /mnt/backup` should name the USB device |
-| `Permission denied` writing | Folder owned by root | `sudo chown -R $USER:$USER /mnt/backup/backups` |
+| `Permission denied` writing | Folder owned by root | `sudo chown -R $USER:$USER /mnt/backup/datacenter` |
 | Upload "succeeds" but bucket is empty | Wrong `BACKUP_DIR` | Check `.env`; rclone exits 0 on an empty folder |
 | Dashboard warns despite uploads working | Marker unreadable | Check `.last_offsite_sync` exists and the backend can read it |
 
 Read the logs in this order — they are all in the backup folder:
 
 ```bash
-tail -20 /mnt/backup/backups/db-backup.log
-tail -20 /mnt/backup/backups/offsite-sync.log
+tail -20 /mnt/backup/datacenter/db-backup.log
+tail -20 /mnt/backup/datacenter/offsite-sync.log
 ```
 
 ---

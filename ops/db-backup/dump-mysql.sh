@@ -28,7 +28,7 @@ ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/../../backend/.env}"
 # Mirrors what dotenv does on the backend side, so a value read here is the value the
 # backend is using: an inline `# comment` is not part of it, surrounding quotes are not
 # either, and trailing spaces are trimmed. The .env template ships lines written as
-#   BACKUP_DIR=/mnt/backup/backups   # Linux mount path
+#   BACKUP_DIR=/mnt/backup/datacenter   # Linux mount path
 # and without the strip the path would come back with the comment glued to it.
 getenv() {
   [ -f "$ENV_FILE" ] || return 0
@@ -94,7 +94,7 @@ DB_PASSWORD="${DB_PASSWORD:-$(getenv DB_PASSWORD)}"
 # job does not have to repeat a path that is already configured once. Without this the
 # dump landed in the built-in default while the backend wrote its NDJSON somewhere else
 # — two backup folders, one of them the wrong one, and nothing to say so.
-BACKUP_DIR="${BACKUP_DIR:-$(getenv BACKUP_DIR)}"; : "${BACKUP_DIR:=/mnt/backup/backups}"
+BACKUP_DIR="${BACKUP_DIR:-$(getenv BACKUP_DIR)}"; : "${BACKUP_DIR:=/mnt/backup/datacenter}"
 LOG="${DB_BACKUP_LOG:-$BACKUP_DIR/db-backup.log}"
 
 # Which mysqldump to run. A bare name resolves on PATH, which is right on a server with
