@@ -378,7 +378,7 @@ function ServerCard({ s, isAdmin, onView, onRename, onDelete, onMaintenance }: {
           <GhostButton onClick={onView}>View</GhostButton>
           {isAdmin && <GhostButton onClick={onRename}>Rename</GhostButton>}
           {isAdmin && (
-            <GhostButton onClick={onMaintenance}>
+            <GhostButton onClick={onMaintenance} fitLabels={["Maintain", "Resume"]}>
               {s.status === "Maintenance" ? "Resume" : "Maintain"}
             </GhostButton>
           )}
@@ -918,7 +918,7 @@ export default function ServerMetrics() {
                             <GhostButton onClick={(e) => { e.stopPropagation(); openDetail(s.id); }}>View</GhostButton>
                             {isAdmin && <GhostButton onClick={(e) => { e.stopPropagation(); setRenameTarget(s); }}>Rename</GhostButton>}
                             {isAdmin && (
-                              <GhostButton onClick={(e) => {
+                              <GhostButton fitLabels={["Maintain", "Resume"]} onClick={(e) => {
                                 e.stopPropagation();
                                 handleMaintenance(s.id, s.name, s.status === "Maintenance");
                               }}>

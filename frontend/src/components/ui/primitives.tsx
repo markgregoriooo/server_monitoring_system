@@ -12,21 +12,33 @@ import { GF as gf, STATUS } from "../../theme/gf";
 
 const { red: RED } = STATUS;
 
-/** A borderless text button. `danger` turns it red. */
+/**
+ * A borderless text button. `danger` turns it red. `fitLabels` sizes the button to the
+ * longest of those labels, so a button that swaps its text (Maintain / Resume) keeps one
+ * width and the buttons beside it stay lined up from row to row.
+ */
 export function GhostButton({
   children,
   onClick,
   danger,
+  fitLabels,
 }: {
   children: React.ReactNode;
   onClick: (e: React.MouseEvent) => void;
   danger?: boolean;
+  fitLabels?: string[];
 }) {
+  // JetBrains Mono is monospace, so a label is exactly its length in `ch`.
+  // + 20px padding (px-2.5) + 2px border.
+  const longest = fitLabels ? Math.max(...fitLabels.map((l) => l.length)) : 0;
   return (
     <button
       onClick={onClick}
-      className="gf-btn text-[13px] font-medium px-2.5 py-1"
-      style={{ color: danger ? RED : gf.textMuted }}
+      className="gf-btn text-[13px] font-medium px-2.5 py-1 text-center"
+      style={{
+        color: danger ? RED : gf.textMuted,
+        ...(longest ? { minWidth: `calc(${longest}ch + 22px)` } : {}),
+      }}
     >
       {children}
     </button>
