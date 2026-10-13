@@ -18,10 +18,14 @@ func defaultGateway() string {
 	return gatewayProcNet()
 }
 
+// gatewayWindows picks the default route Windows itself prefers: lowest
+// RouteMetric + InterfaceMetric. Sorting on RouteMetric alone ties at 0 on most
+// machines, and the tie went to whichever route listed first — e.g. a
+// disconnected Wi-Fi's stale gateway over the live Ethernet one.
 func gatewayWindows() string {
 	out, err := exec.Command("powershell", "-NoProfile", "-Command",
 		"(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | "+
-			"Sort-Object RouteMetric | Select-Object -First 1).NextHop").Output()
+			"Sort-Object { $_.RouteMetric + $_.InterfaceMetric } | Select-Object -First 1).NextHop").Output()
 	if err != nil {
 		return ""
 	}

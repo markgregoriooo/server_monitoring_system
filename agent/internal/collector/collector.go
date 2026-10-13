@@ -183,12 +183,29 @@ func CollectHostInfo(agentVersion string) (HostInfo, error) {
 	return h, nil
 }
 
-// primaryNIC returns the IPv4 address and MAC of the first up, non-loopback
-// interface that has an IPv4 address.
+// primaryNIC returns the IPv4 address and MAC of the interface that carries the
+// default route — the one the OS would send off-network traffic from. "First up
+// interface" is wrong on any host running WSL, Hyper-V, Docker or VirtualBox:
+// their virtual adapters enumerate first, so the agent reported 172.x / 192.168.56.x
+// addresses nothing else on the network can reach. Falls back to the first up,
+// non-loopback IPv4 interface when there is no default route (isolated host).
 func primaryNIC() (ip, mac string) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", ""
+	}
+	if routed := defaultRouteIP(); routed != nil {
+		for _, iface := range ifaces {
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.Equal(routed) {
+					return routed.String(), iface.HardwareAddr.String()
+				}
+			}
+		}
 	}
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
@@ -208,6 +225,22 @@ func primaryNIC() (ip, mac string) {
 		}
 	}
 	return "", ""
+}
+
+// defaultRouteIP asks the OS which local IPv4 address it would use to reach an
+// off-network address. A UDP "dial" only consults the routing table — no packet
+// is sent — so this works offline-from-the-internet as long as a default route
+// exists. Returns nil when there is none.
+func defaultRouteIP() net.IP {
+	conn, err := net.Dial("udp4", "192.0.2.1:9") // TEST-NET-1, never routed to a real host
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	if a, ok := conn.LocalAddr().(*net.UDPAddr); ok && a.IP.To4() != nil && !a.IP.IsLoopback() {
+		return a.IP.To4()
+	}
+	return nil
 }
 
 func bytesToMB(b uint64) float64 { return float64(b) / 1024 / 1024 }
