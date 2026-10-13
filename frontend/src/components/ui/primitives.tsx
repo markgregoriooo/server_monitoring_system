@@ -3,7 +3,7 @@ import { GF as gf, STATUS } from "../../theme/gf";
 
 /**
  * Small building blocks shared by the monitoring pages (GhostButton, Stat, StatPanel,
- * Field, Meta, PortChip, Th), which used to be copied across pages.
+ * Field, Meta, PortChip, Th, PortCell), which used to be copied across pages.
  * See audits/code-duplication-report-2026-08-25.md (R-09).
  *
  * `Panel` is not here: its copies differ in real ways (`subtitle`, `action`,
@@ -155,5 +155,15 @@ export function Th({
     >
       {children}
     </th>
+  );
+}
+
+// One labelled figure in the phone-width port cards (MikrotikDetail + NetworkDetail).
+export function PortCell({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div className="flex flex-col min-w-0">
+      <span className="text-[10px] uppercase tracking-wider" style={{ color: gf.textDim }}>{label}</span>
+      <span className="text-[13px] tabular-nums truncate" style={{ color }}>{value}</span>
+    </div>
   );
 }

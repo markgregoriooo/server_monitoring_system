@@ -120,18 +120,26 @@ function withUtilization(deviceId, ifaces) {
     const rx = i.rxBytes ?? 0n;
     const tx = i.txBytes ?? 0n;
     let utilizationPct = null;
+    let rxBps = null;
+    let txBps = null;
     const key = `${deviceId}:${i.name}`;
     const prev = prevIface.get(key);
     if (prev) {
-      utilizationPct = computeUtilizationPct({
-        dRxBytes: counterDelta(rx, prev.rx), // discards a wrap/reboot
-        dTxBytes: counterDelta(tx, prev.tx),
-        dtSec: (now - prev.t) / 1000,
-        speedMbps: i.speedMbps,
-      });
+      const dRxBytes = counterDelta(rx, prev.rx); // discards a wrap/reboot
+      const dTxBytes = counterDelta(tx, prev.tx);
+      const dtSec = (now - prev.t) / 1000;
+      utilizationPct = computeUtilizationPct({ dRxBytes, dTxBytes, dtSec, speedMbps: i.speedMbps });
+      // Per-port bytes/sec, worked out HERE rather than in the browser. The page used to
+      // diff two `networkMetrics` broadcasts itself, so Tx/Rx stayed blank for up to two
+      // polls (~60s) after every page load, and a refresh threw the first one away again.
+      // Cached in `latest`, so GET /api/mikrotik returns them on load.
+      if (dtSec > 0) {
+        rxBps = dRxBytes / dtSec;
+        txBps = dTxBytes / dtSec;
+      }
     }
     prevIface.set(key, { rx, tx, t: now });
-    return { ...i, utilizationPct };
+    return { ...i, utilizationPct, rxBps, txBps };
   });
 }
 
@@ -289,6 +297,8 @@ async function pollDevice(io, d) {
       // instead of "down". See services/linkAlertPolicy.js.
       adminUp: i.adminUp !== false,
       utilizationPct: i.utilizationPct ?? null,
+      rxBps: i.rxBps ?? null,
+      txBps: i.txBps ?? null,
       rxBytes: i.rxBytes != null ? String(i.rxBytes) : null,
       txBytes: i.txBytes != null ? String(i.txBytes) : null,
       rxErrors: i.rxErrors ?? 0,

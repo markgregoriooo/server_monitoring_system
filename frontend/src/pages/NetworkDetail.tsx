@@ -8,7 +8,7 @@ import { withGaps } from "../utils/seriesGaps";
 import { formatBps } from "../utils/format";
 import { GF as gf, STATUS } from "../theme/gf";
 import { formatUptime, fmtDateTime, formatSpeed } from "../utils/format";
-import { Stat, Th } from "../components/ui/primitives";
+import { Stat, Th, PortCell } from "../components/ui/primitives";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── Router detail view (throughput, ports, log) ────────────────────────
@@ -28,11 +28,9 @@ export interface NetIface {
   speedMbps?: number | null;
   rxErrors?: number | null;
   txErrors?: number | null;
+  rxBps?: number | null; // bytes/sec since the previous poll, worked out by the poller
+  txBps?: number | null;
 }
-// Per-port throughput worked out here from the byte counters between two polls. The API
-// only gives totals, so otherwise a port would only show a utilization %, which reads 0%
-// when the link speed is unknown.
-export interface PortRate { rxBps: number; txBps: number }
 export interface NetDevice {
   id: string;
   name: string;
@@ -96,8 +94,10 @@ function ThroughputChart({ history }: { history: HistPoint[] }) {
       data: {
         labels: gapped.labels,
         datasets: [
-          { label: "In (Rx)", data: gapped.series[0]!, borderColor: BLUE, backgroundColor: BLUE + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
-          { label: "Out (Tx)", data: gapped.series[1]!, borderColor: GREEN, backgroundColor: GREEN + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
+          // In and Out are near-equal on a whole-router total (a router forwards what it receives),
+          // so Out is dashed and drawn on top (`order`); a solid In on top hid it completely.
+          { label: "In (Rx)", data: gapped.series[0]!, borderColor: BLUE, backgroundColor: BLUE + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3, order: 1 },
+          { label: "Out (Tx)", data: gapped.series[1]!, borderColor: GREEN, backgroundColor: GREEN + "22", borderWidth: 2, borderDash: [6, 4], pointRadius: 0, fill: true, tension: 0.3, order: 0 },
         ],
       },
       options: {
@@ -107,7 +107,7 @@ function ThroughputChart({ history }: { history: HistPoint[] }) {
         interaction: { mode: "index", intersect: false },
         plugins: {
           legend: { display: true, labels: { color: "#8E9297", boxWidth: 10, boxHeight: 10, font: { size: 10 } } },
-          tooltip: { callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${formatBps(ctx.parsed.y)}` } },
+          tooltip: { itemSort: (a: any, b: any) => a.datasetIndex - b.datasetIndex, callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${formatBps(ctx.parsed.y)}` } },
         },
         scales: {
           x: { ticks: { color: "#6B7280", maxTicksLimit: 6, font: { size: 9 } }, grid: { color: "rgba(127,127,127,0.10)" } },
@@ -249,7 +249,7 @@ function Panel({ title, right, children, noPad }: { title: string; right?: React
 // empty bar looks like a loading placeholder, and it matches the WinBox view operators
 // know. Colours use --gf-* tokens and status colours.
 
-function PortRow({ i, rate, errDelta }: { i: NetIface; rate?: PortRate | undefined; errDelta?: number | undefined }) {
+function PortRow({ i, errDelta }: { i: NetIface; errDelta?: number | undefined }) {
   const hasUtil = i.utilizationPct != null && Number.isFinite(i.utilizationPct);
   const util = Math.round(i.utilizationPct ?? 0);
   const speed = formatSpeed(i.speedMbps);
@@ -267,10 +267,10 @@ function PortRow({ i, rate, errDelta }: { i: NetIface; rate?: PortRate | undefin
       <td className={`${td} truncate`} style={{ ...dim, maxWidth: 180 }}>{i.locationLabel || "—"}</td>
       <td className={`${td} text-right`} style={dim}>{speed ?? "—"}</td>
       <td className={`${td} text-right`} style={{ color: down ? gf.textDim : GREEN }}>
-        {down ? "—" : formatBps(rate?.txBps ?? null)}
+        {down ? "—" : formatBps(i.txBps ?? null)}
       </td>
       <td className={`${td} text-right`} style={{ color: down ? gf.textDim : BLUE }}>
-        {down ? "—" : formatBps(rate?.rxBps ?? null)}
+        {down ? "—" : formatBps(i.rxBps ?? null)}
       </td>
       {/* Errors since the last poll, not the lifetime total: new errors point to a bad cable,
          dying SFP or duplex mismatch. */}
@@ -281,6 +281,38 @@ function PortRow({ i, rate, errDelta }: { i: NetIface; rate?: PortRate | undefin
         {down ? "down" : hasUtil ? `${util}%` : "—"}
       </td>
     </tr>
+  );
+}
+
+// Phone layout of the same row (see PortCard in MikrotikDetail): below `sm` each port is a
+// card, so the panel never scrolls sideways.
+function PortCard({ i, errDelta }: { i: NetIface; errDelta?: number | undefined }) {
+  const hasUtil = i.utilizationPct != null && Number.isFinite(i.utilizationPct);
+  const util = Math.round(i.utilizationPct ?? 0);
+  const down = !i.linkUp;
+  return (
+    <div className="px-3 py-2.5" style={{ borderTop: `1px solid ${gf.divider}` }}>
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="w-4 shrink-0 text-center text-[13px] font-bold" style={{ color: down ? gf.textDim : GREEN }}>
+          {down ? "" : "R"}
+        </span>
+        <span className="flex-1 min-w-0 text-[13px] font-medium truncate"
+          style={{ color: down ? gf.textMuted : gf.textPrimary }}>{i.name}</span>
+        <span className="shrink-0 text-[13px] font-bold tabular-nums"
+          style={{ color: down ? RED : hasUtil ? loadColor(util) : gf.textDim }}>
+          {down ? "down" : hasUtil ? `${util}%` : "—"}
+        </span>
+      </div>
+      {i.locationLabel && (
+        <div className="pl-6 text-[12px] truncate" style={{ color: gf.textDim }}>{i.locationLabel}</div>
+      )}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 pl-6 mt-1.5">
+        <PortCell label="Tx" value={down ? "—" : formatBps(i.txBps ?? null)} color={down ? gf.textDim : GREEN} />
+        <PortCell label="Rx" value={down ? "—" : formatBps(i.rxBps ?? null)} color={down ? gf.textDim : BLUE} />
+        <PortCell label="Speed" value={formatSpeed(i.speedMbps) ?? "—"} color={gf.textDim} />
+        <PortCell label="Errors" value={errDelta ? `+${errDelta}` : "0"} color={errDelta ? ORANGE : gf.textDim} />
+      </div>
+    </div>
   );
 }
 
@@ -307,7 +339,6 @@ export default function NetworkDetail({
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
   // "" = all ports summed (device total); otherwise a single port name.
   const [chartPort, setChartPort] = useState("");
-  const [rates, setRates] = useState<Record<string, PortRate>>({});
   const [errDeltas, setErrDeltas] = useState<Record<string, number>>({});
   // Port-label editing (network_interfaces.location_label). `draft` holds in-progress
   // edits keyed by port name; only populated while the editor is open.
@@ -315,14 +346,9 @@ export default function NetworkDetail({
   const [labelDraft, setLabelDraft] = useState<Record<string, string>>({});
   const [savingLabels, setSavingLabels] = useState(false);
   const [labelError, setLabelError] = useState("");
-  // Previous cumulative counters per port, to derive per-port bytes/sec on the next
-  // poll. BigInt because these are Counter64 values beyond Number's safe range.
-  const prevCounters = useRef<Record<string, { rx: bigint; tx: bigint; err: number; t: number }>>({});
-
-  const toBig = (v: string | null | undefined): bigint | null => {
-    if (v == null) return null;
-    try { return BigInt(v); } catch { return null; }
-  };
+  // Previous error totals per port, to show the errors since the last poll. (Tx/Rx
+  // arrive ready-made as `rxBps`/`txBps`, worked out by the poller.)
+  const prevErrors = useRef<Record<string, number>>({});
 
   // Keep the open device in sync when the parent list refreshes.
   useEffect(() => { setD(device); }, [device]);
@@ -341,30 +367,16 @@ export default function NetworkDetail({
         interfaces: data.device.interfaces ?? prev.interfaces,
       }));
 
-      // Per-port throughput and error change since the last poll. A negative change (counter
-      // wrap or reboot) is dropped, as the poller does.
+      // Per-port error change since the last poll. A drop (counter reset on reboot) counts
+      // as no new errors.
       const now = Date.now();
-      const nextRates: Record<string, PortRate> = {};
       const nextErrs: Record<string, number> = {};
       for (const iface of (data.device.interfaces ?? []) as NetIface[]) {
-        const rx = toBig(iface.rxBytes);
-        const tx = toBig(iface.txBytes);
         const err = Number(iface.rxErrors ?? 0) + Number(iface.txErrors ?? 0);
-        if (rx == null || tx == null) continue;
-        const prev = prevCounters.current[iface.name];
-        if (prev) {
-          const dt = (now - prev.t) / 1000;
-          if (dt > 0) {
-            nextRates[iface.name] = {
-              rxBps: rx >= prev.rx ? Number(rx - prev.rx) / dt : 0,
-              txBps: tx >= prev.tx ? Number(tx - prev.tx) / dt : 0,
-            };
-          }
-          nextErrs[iface.name] = err >= prev.err ? err - prev.err : 0;
-        }
-        prevCounters.current[iface.name] = { rx, tx, err, t: now };
+        const prev = prevErrors.current[iface.name];
+        if (prev != null) nextErrs[iface.name] = err >= prev ? err - prev : 0;
+        prevErrors.current[iface.name] = err;
       }
-      if (Object.keys(nextRates).length) setRates((p) => ({ ...p, ...nextRates }));
       if (Object.keys(nextErrs).length) setErrDeltas((p) => ({ ...p, ...nextErrs }));
 
       setLastUpdate(now);
@@ -694,15 +706,16 @@ export default function NetworkDetail({
               Name each port by what it connects to. Leave blank to show the raw interface name.
             </div>
             {ifaces.map((i) => (
-              <div key={i.name} className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
+              // Wraps on a phone: the name on one line, the label input at full width below.
+              <div key={i.name} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1.5 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: i.linkUp ? GREEN : RED }} />
-                <span className="w-28 shrink-0 text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>{i.name}</span>
+                <span className="flex-1 sm:flex-none min-w-0 sm:w-28 sm:shrink-0 text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>{i.name}</span>
                 <input name="labelDraft"
                   value={labelDraft[i.name] ?? ""}
                   maxLength={100}
                   onChange={(e) => setLabelDraft((p) => ({ ...p, [i.name]: e.target.value }))}
                   placeholder="e.g. ISP uplink, Admin building"
-                  className="flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
+                  className="basis-full sm:basis-auto flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
                   style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
                 />
               </div>
@@ -710,7 +723,11 @@ export default function NetworkDetail({
             {labelError && <div className="px-3 py-2 text-[12px]" style={{ color: RED }}>{labelError}</div>}
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <div className="sm:hidden">
+            {ifaces.map((i) => <PortCard key={i.name} i={i} errDelta={errDeltas[i.name]} />)}
+          </div>
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full" style={{ borderCollapse: "collapse" }}>
               <thead>
                 <tr>
@@ -725,10 +742,11 @@ export default function NetworkDetail({
                 </tr>
               </thead>
               <tbody>
-                {ifaces.map((i) => <PortRow key={i.name} i={i} rate={rates[i.name]} errDelta={errDeltas[i.name]} />)}
+                {ifaces.map((i) => <PortRow key={i.name} i={i} errDelta={errDeltas[i.name]} />)}
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Panel>
 

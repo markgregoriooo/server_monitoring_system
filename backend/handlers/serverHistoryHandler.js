@@ -15,8 +15,13 @@ export function serverHistoryHandler(req, res) {
   const { rangeExpr, every } = resolved;
 
   // CPU/mem/disk % are averaged per window. The network fields are cumulative byte
-  // counters, so they use `last`; the frontend diffs consecutive values to get the
-  // average throughput.
+  // counters: per window, the bytes the raw samples added ÷ the seconds they cover
+  // (time-weighted, on their real timestamps) — returned as bytes/sec.
+  // ⚠️ Not `last` per window and a diff in the browser, which is what this used to do:
+  // that divides one sample interval's bytes by the WINDOW spacing, so an agent whose
+  // interval does not divide the window swung the chart up and down, and the join
+  // between history (window time) and the first live point (sample time) spiked.
+  // Same fix as networkHistoryHandler.
   const flux = `
     base = from(bucket: "${bucket}")
       |> range(${rangeExpr})
@@ -29,14 +34,29 @@ export function serverHistoryHandler(req, res) {
           r._field == "mem_percent" or
           r._field == "disk_percent")
       |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)
+      // Same group key as \`rates\` below, so the pivot merges both into ONE row per time.
+      |> keep(columns: ["_time", "_field", "_value"])
+      |> group(columns: ["_field"])
 
-    counters = base
+    rates = base
       |> filter(fn: (r) =>
           r._field == "net_bytes_sent" or
           r._field == "net_bytes_recv")
-      |> aggregateWindow(every: ${every}, fn: last, createEmpty: false)
+      |> elapsed(unit: 1s)
+      |> difference(nonNegative: true)
+      |> filter(fn: (r) => exists r._value and r.elapsed > 0)
+      |> window(every: ${every})
+      |> reduce(
+          fn: (r, accumulator) => ({
+            bytes: accumulator.bytes + float(v: r._value),
+            secs: accumulator.secs + float(v: r.elapsed),
+          }),
+          identity: { bytes: 0.0, secs: 0.0 },
+        )
+      |> map(fn: (r) => ({ _time: r._stop, _field: r._field, _value: r.bytes / r.secs }))
+      |> group(columns: ["_field"])
 
-    union(tables: [gauges, counters])
+    union(tables: [gauges, rates])
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
       |> sort(columns: ["_time"], desc: false)
   `;
@@ -50,8 +70,9 @@ export function serverHistoryHandler(req, res) {
         cpu_percent: d.cpu_percent ?? null,
         mem_percent: d.mem_percent ?? null,
         disk_percent: d.disk_percent ?? null,
-        net_bytes_sent: d.net_bytes_sent ?? null,
-        net_bytes_recv: d.net_bytes_recv ?? null,
+        // bytes/sec (see the query): the derivative keeps the field names.
+        net_sent_bps: d.net_bytes_sent ?? null,
+        net_recv_bps: d.net_bytes_recv ?? null,
       });
     },
     error(error) {

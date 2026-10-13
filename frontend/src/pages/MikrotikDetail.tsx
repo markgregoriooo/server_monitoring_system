@@ -8,7 +8,7 @@ import { withGaps } from "../utils/seriesGaps";
 import { formatBps } from "../utils/format";
 import { GF as gf, STATUS } from "../theme/gf";
 import { formatUptime, fmtDateTime, formatSpeed, fmtAxisTime, MULTI_DAY_SEC } from "../utils/format";
-import { Stat, Th } from "../components/ui/primitives";
+import { Stat, Th, PortCell } from "../components/ui/primitives";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── MikroTik detail view (throughput, ports, log) ──────────────────────
@@ -29,6 +29,8 @@ export interface MkIface {
   txErrors?: number | null;
   speedMbps?: number | null;
   clients?: number | null; // DHCP clients on this port; null = not attributable
+  rxBps?: number | null; // bytes/sec since the previous poll, worked out by the poller
+  txBps?: number | null;
 }
 // Per-port alerting state from network_interfaces — fetched only when the port editor
 // opens, since it isn't part of the live poll payload.
@@ -47,10 +49,6 @@ function portAlertState(i: MkIface, gate?: PortGate): { text: string; alerting: 
   return { text: "Down — alerting", alerting: true };
 }
 
-// Per-port throughput worked out here from the byte counters between two polls. The API
-// only gives totals, so otherwise a port would only show a utilization %, which reads 0%
-// when the link speed is unknown.
-export interface PortRate { rxBps: number; txBps: number }
 export interface MkDevice {
   id: string;
   name: string;
@@ -116,8 +114,10 @@ function ThroughputChart({ history, spanSec }: { history: HistPoint[]; spanSec: 
       data: {
         labels: gapped.labels,
         datasets: [
-          { label: "In (Rx)", data: gapped.series[0]!, borderColor: BLUE, backgroundColor: BLUE + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
-          { label: "Out (Tx)", data: gapped.series[1]!, borderColor: GREEN, backgroundColor: GREEN + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
+          // In and Out are near-equal on a whole-router total (a router forwards what it receives),
+          // so Out is dashed and drawn on top (`order`); a solid In on top hid it completely.
+          { label: "In (Rx)", data: gapped.series[0]!, borderColor: BLUE, backgroundColor: BLUE + "22", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3, order: 1 },
+          { label: "Out (Tx)", data: gapped.series[1]!, borderColor: GREEN, backgroundColor: GREEN + "22", borderWidth: 2, borderDash: [6, 4], pointRadius: 0, fill: true, tension: 0.3, order: 0 },
         ],
       },
       options: {
@@ -127,7 +127,7 @@ function ThroughputChart({ history, spanSec }: { history: HistPoint[]; spanSec: 
         interaction: { mode: "index", intersect: false },
         plugins: {
           legend: { display: true, labels: { color: "#8E9297", boxWidth: 10, boxHeight: 10, font: { size: 10 } } },
-          tooltip: { callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${formatBps(ctx.parsed.y)}` } },
+          tooltip: { itemSort: (a: any, b: any) => a.datasetIndex - b.datasetIndex, callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${formatBps(ctx.parsed.y)}` } },
         },
         scales: {
           x: { ticks: { color: "#6B7280", maxTicksLimit: 6, font: { size: 9 } }, grid: { color: "rgba(127,127,127,0.10)" } },
@@ -267,7 +267,7 @@ function Panel({ title, right, children, noPad }: { title: string; right?: React
 // columns, right-aligned figures). Colours use --gf-* tokens and status colours, so it
 // works in light and dark mode.
 
-function PortRow({ i, rate }: { i: MkIface; rate?: PortRate | undefined }) {
+function PortRow({ i }: { i: MkIface }) {
   const hasUtil = i.utilizationPct != null && Number.isFinite(i.utilizationPct);
   const util = Math.round(i.utilizationPct ?? 0);
   const speed = formatSpeed(i.speedMbps);
@@ -290,10 +290,10 @@ function PortRow({ i, rate }: { i: MkIface; rate?: PortRate | undefined }) {
       <td className={`${td} truncate`} style={{ ...dim, maxWidth: 160 }}>{i.locationLabel || "—"}</td>
       <td className={`${td} text-right`} style={dim}>{speed ?? "—"}</td>
       <td className={`${td} text-right`} style={{ color: down ? gf.textDim : GREEN }}>
-        {down ? "—" : formatBps(rate?.txBps ?? null)}
+        {down ? "—" : formatBps(i.txBps ?? null)}
       </td>
       <td className={`${td} text-right`} style={{ color: down ? gf.textDim : BLUE }}>
-        {down ? "—" : formatBps(rate?.rxBps ?? null)}
+        {down ? "—" : formatBps(i.rxBps ?? null)}
       </td>
       <td className={`${td} text-right`} style={{ color: errors > 0 ? ORANGE : gf.textDim }}>
         {errors > 0 ? errors : "0"}
@@ -305,6 +305,44 @@ function PortRow({ i, rate }: { i: MkIface; rate?: PortRate | undefined }) {
         {down ? "down" : hasUtil ? `${util}%` : "—"}
       </td>
     </tr>
+  );
+}
+
+// Phone layout of the same row. Nine columns do not fit a phone, and a table that scrolls
+// sideways inside a page that scrolls down is easy to drag by accident, so below `sm`
+// each port is a small card instead and nothing on the panel moves sideways.
+function PortCard({ i }: { i: MkIface }) {
+  const hasUtil = i.utilizationPct != null && Number.isFinite(i.utilizationPct);
+  const util = Math.round(i.utilizationPct ?? 0);
+  const errors = (i.rxErrors ?? 0) + (i.txErrors ?? 0);
+  const down = !i.linkUp;
+  const disabled = i.adminUp === false;
+  return (
+    <div className="px-3 py-2.5" style={{ borderTop: `1px solid ${gf.divider}` }}>
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="w-4 shrink-0 text-center text-[13px] font-bold"
+          style={{ color: disabled || down ? gf.textDim : GREEN }}
+          title={disabled ? "Disabled in RouterOS" : down ? "No link" : "Running"}>
+          {disabled ? "X" : down ? "" : "R"}
+        </span>
+        <span className="flex-1 min-w-0 text-[13px] font-medium truncate"
+          style={{ color: down ? gf.textMuted : gf.textPrimary }}>{i.name}</span>
+        <span className="shrink-0 text-[13px] font-bold tabular-nums"
+          style={{ color: down ? RED : hasUtil ? loadColor(util) : gf.textDim }}>
+          {down ? "down" : hasUtil ? `${util}%` : "—"}
+        </span>
+      </div>
+      {i.locationLabel && (
+        <div className="pl-6 text-[12px] truncate" style={{ color: gf.textDim }}>{i.locationLabel}</div>
+      )}
+      <div className="grid grid-cols-3 gap-x-3 gap-y-1.5 pl-6 mt-1.5">
+        <PortCell label="Tx" value={down ? "—" : formatBps(i.txBps ?? null)} color={down ? gf.textDim : GREEN} />
+        <PortCell label="Rx" value={down ? "—" : formatBps(i.rxBps ?? null)} color={down ? gf.textDim : BLUE} />
+        <PortCell label="Speed" value={formatSpeed(i.speedMbps) ?? "—"} color={gf.textDim} />
+        <PortCell label="Errors" value={errors > 0 ? String(errors) : "0"} color={errors > 0 ? ORANGE : gf.textDim} />
+        <PortCell label="Leases" value={i.clients != null ? String(i.clients) : "—"} color={gf.textDim} />
+      </div>
+    </div>
   );
 }
 
@@ -332,22 +370,12 @@ export default function MikrotikDetail({
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
   // "" = all ports summed (device total); otherwise a single port name.
   const [chartPort, setChartPort] = useState("");
-  const [rates, setRates] = useState<Record<string, PortRate>>({});
   // Port-label editing (network_interfaces.location_label). `draft` holds the in-progress
   // edits keyed by port name; it is only populated while the editor is open.
   const [editLabels, setEditLabels] = useState(false);
   const [labelDraft, setLabelDraft] = useState<Record<string, string>>({});
   const [gateDraft, setGateDraft] = useState<Record<string, PortGate>>({});
   const [savingLabels, setSavingLabels] = useState(false);
-  // Previous cumulative counters per port, to derive per-port bytes/sec on the next
-  // poll. BigInt because these are Counter64 values that can exceed Number's safe range.
-  const prevCounters = useRef<Record<string, { rx: bigint; tx: bigint; t: number }>>({});
-
-  const toBig = (v: string | null | undefined): bigint | null => {
-    if (v == null) return null;
-    try { return BigInt(v); } catch { return null; }
-  };
-
   // Keep the open device in sync when the parent list refreshes (e.g. after Save).
   useEffect(() => { setD(device); }, [device]);
 
@@ -366,29 +394,8 @@ export default function MikrotikDetail({
         connectedClients: data.device.connectedClients ?? prev.connectedClients,
         interfaces: data.device.interfaces ?? prev.interfaces,
       }));
-      // Per-port throughput from the counter change since the last poll. A negative change
-      // (counter wrap or reboot) is dropped, as the pollers do.
-      const now = Date.now();
-      const next: Record<string, PortRate> = {};
-      for (const iface of (data.device.interfaces ?? []) as MkIface[]) {
-        const rx = toBig(iface.rxBytes);
-        const tx = toBig(iface.txBytes);
-        if (rx == null || tx == null) continue;
-        const prev = prevCounters.current[iface.name];
-        if (prev) {
-          const dt = (now - prev.t) / 1000;
-          if (dt > 0) {
-            next[iface.name] = {
-              rxBps: rx >= prev.rx ? Number(rx - prev.rx) / dt : 0,
-              txBps: tx >= prev.tx ? Number(tx - prev.tx) / dt : 0,
-            };
-          }
-        }
-        prevCounters.current[iface.name] = { rx, tx, t: now };
-      }
-      if (Object.keys(next).length) setRates((prevRates) => ({ ...prevRates, ...next }));
-
-      setLastUpdate(now);
+      // Per-port Tx/Rx arrive ready-made (`rxBps`/`txBps`, worked out by the poller).
+      setLastUpdate(Date.now());
       setPoll((n) => n + 1);
     };
     const onStatus = (data: { id: number | string; status: string }) => {
@@ -692,19 +699,22 @@ export default function MikrotikDetail({
               const state = portAlertState(i, gate);
               const muted = gate ? !gate.monitored : false;
               return (
-                <div key={i.name} className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
+                // One row on a wide screen. On a phone it wraps into two lines (name,
+                // status and the Alerts box, then the label input at full width): the
+                // fixed-width name and status columns alone are wider than a phone.
+                <div key={i.name} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1.5 px-3 py-2" style={{ borderBottom: `1px solid ${gf.divider}` }}>
                   <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: i.linkUp ? GREEN : RED }} />
-                  <span className="w-28 shrink-0 text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>{i.name}</span>
+                  <span className="flex-1 sm:flex-none min-w-0 sm:w-28 sm:shrink-0 text-[14px] font-medium truncate" style={{ color: gf.textPrimary }}>{i.name}</span>
                   <input name="labelDraft"
                     value={labelDraft[i.name] ?? ""}
                     maxLength={100}
                     onChange={(e) => setLabelDraft((p) => ({ ...p, [i.name]: e.target.value }))}
                     placeholder="e.g. ISP uplink, Admin building"
-                    className="flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
+                    className="order-last sm:order-none basis-full sm:basis-auto flex-1 min-w-0 px-2 py-1 text-[14px] rounded-[2px] outline-none"
                     style={{ background: gf.bg, border: `1px solid ${gf.border}`, color: gf.textPrimary }}
                   />
                   {/* Why this port is or is not alerting, e.g. quiet because nothing was ever plugged in. */}
-                  <span className="w-40 shrink-0 text-[11px] text-right truncate"
+                  <span className="max-w-[45%] sm:max-w-none sm:w-40 shrink-0 text-[11px] text-right truncate"
                     title={state.text}
                     style={{ color: state.alerting ? RED : gf.textDim }}>
                     {state.text}
@@ -730,7 +740,11 @@ export default function MikrotikDetail({
             })}
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <div className="sm:hidden">
+            {ifaces.map((i) => <PortCard key={i.name} i={i} />)}
+          </div>
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full" style={{ borderCollapse: "collapse" }}>
               <thead>
                 <tr>
@@ -746,10 +760,11 @@ export default function MikrotikDetail({
                 </tr>
               </thead>
               <tbody>
-                {ifaces.map((i) => <PortRow key={i.name} i={i} rate={rates[i.name]} />)}
+                {ifaces.map((i) => <PortRow key={i.name} i={i} />)}
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Panel>
 

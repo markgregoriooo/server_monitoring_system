@@ -38,8 +38,8 @@ interface Point {
   cpu: number | null;
   mem: number | null;
   disk: number | null;
-  netSent: number | null;
-  netRecv: number | null;
+  netSentBps: number | null; // bytes/sec, from the backend
+  netRecvBps: number | null;
 }
 
 export default function ServerFocus({
@@ -80,8 +80,8 @@ export default function ServerFocus({
           cpu: p.cpu_percent ?? null,
           mem: p.mem_percent ?? null,
           disk: p.disk_percent ?? null,
-          netSent: p.net_bytes_sent ?? null,
-          netRecv: p.net_bytes_recv ?? null,
+          netSentBps: p.net_sent_bps ?? null,
+          netRecvBps: p.net_recv_bps ?? null,
         })),
       );
     });
@@ -98,8 +98,8 @@ export default function ServerFocus({
           cpu: sv.cpuPercent ?? null,
           mem: sv.memPercent ?? null,
           disk: sv.diskPercent ?? null,
-          netSent: sv.netBytesSent ?? null,
-          netRecv: sv.netBytesRecv ?? null,
+          netSentBps: sv.netSentBps ?? null,
+          netRecvBps: sv.netRecvBps ?? null,
         },
       ]);
     };

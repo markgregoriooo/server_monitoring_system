@@ -90,6 +90,8 @@ function mapNet(r: any): NetDevice {
       txErrors: i.txErrors ?? null,
       rxBytes: i.rxBytes ?? null,
       txBytes: i.txBytes ?? null,
+      rxBps: i.rxBps ?? null,
+      txBps: i.txBps ?? null,
     })),
     monitored: r.monitored ?? true,
     mode: r.mode ?? "snmp",

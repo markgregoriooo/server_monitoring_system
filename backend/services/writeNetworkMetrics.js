@@ -122,6 +122,10 @@ export async function writeNetworkSample(io, device, sample) {
           rxErrors: i.rxErrors ?? 0,
           txErrors: i.txErrors ?? 0,
           speedMbps: i.speedMbps ?? null, // negotiated link speed (ifHighSpeed)
+          // Per-port bytes/sec since the previous poll, worked out by both pollers (null on a
+          // port's first poll, when there is nothing to compare against yet).
+          rxBps: i.rxBps ?? null,
+          txBps: i.txBps ?? null,
           rxBytes: i.rxBytes != null ? String(i.rxBytes) : null,
           txBytes: i.txBytes != null ? String(i.txBytes) : null,
           // Per-port DHCP client count; null when the topology can't attribute it.

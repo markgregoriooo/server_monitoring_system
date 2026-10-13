@@ -25,9 +25,17 @@ export function networkHistoryHandler(req, res) {
     ? `|> filter(fn: (r) => r.interface_name == ${JSON.stringify(iface)})`
     : "";
 
-  // network_traffic stores cumulative byte counters per interface: align each
-  // interface to the windows (last), take the non-negative derivative (bytes/sec),
-  // then sum across interfaces per window.
+  // network_traffic stores cumulative byte counters per interface. Per interface, each
+  // sample's byte delta and the seconds since the previous sample are taken from the RAW
+  // samples; per window the rate is bytes ÷ seconds (time-weighted); then the interfaces
+  // are summed per window.
+  // ⚠️ Not `last` per window then derivative, which is what this used to do: that divides
+  // one poll's bytes by the WINDOW spacing instead of the poll spacing, so with 20s
+  // windows over a 30s poll the -1h chart swung between 150% and 75% of the true rate,
+  // and with ordinary poll jitter the newest row came out as exactly 0 about one query
+  // in five — which the Dashboard shows as the current "0 b/s". And not a plain mean of
+  // per-sample rates either: samples arrive unevenly, and a mean that ignores how long
+  // each one covers read ~6% high on real agent data. Same query as serverHistoryHandler.
   const throughputFlux = `
     from(bucket: "${bucket}")
       |> range(${rangeExpr})
@@ -35,10 +43,21 @@ export function networkHistoryHandler(req, res) {
       |> filter(fn: (r) => r.device_id == "${deviceId}")
       ${ifaceFilter}
       |> filter(fn: (r) => r._field == "rx_bytes" or r._field == "tx_bytes")
-      |> aggregateWindow(every: ${every}, fn: last, createEmpty: false)
-      |> derivative(unit: 1s, nonNegative: true)
+      |> elapsed(unit: 1s)
+      |> difference(nonNegative: true)
+      |> filter(fn: (r) => exists r._value and r.elapsed > 0)
+      |> window(every: ${every})
+      |> reduce(
+          fn: (r, accumulator) => ({
+            bytes: accumulator.bytes + float(v: r._value),
+            secs: accumulator.secs + float(v: r.elapsed),
+          }),
+          identity: { bytes: 0.0, secs: 0.0 },
+        )
+      |> map(fn: (r) => ({ _time: r._stop, _field: r._field, _value: r.bytes / r.secs }))
+      |> group(columns: ["_time", "_field"])
+      |> sum()
       |> group(columns: ["_field"])
-      |> aggregateWindow(every: ${every}, fn: sum, createEmpty: false)
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
       |> sort(columns: ["_time"], desc: false)
   `;

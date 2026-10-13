@@ -73,6 +73,25 @@ function backupPayload(device, data, volumes) {
 }
 
 // POST /api/servers/metrics — agentAuthMiddleware has set req.device.
+// Last live counters per server, for the throughput in the `serverMetrics` broadcast.
+// Worked out here rather than in each browser, so a page shows it from its first live
+// point instead of after two. Memory only: after a restart the first post has no rate.
+const prevNet = new Map(); // device_id -> { sent, recv, t }
+const NET_RATE_MAX_GAP_MS = 10 * 60 * 1000; // older than this = an outage, not a rate
+
+function netRates(deviceId, sent, recv, t) {
+  const prev = prevNet.get(deviceId);
+  prevNet.set(deviceId, { sent, recv, t });
+  if (!prev || typeof sent !== "number" || typeof recv !== "number") return { sentBps: null, recvBps: null };
+  const dt = (t - prev.t) / 1000;
+  if (!(dt > 0) || t - prev.t > NET_RATE_MAX_GAP_MS) return { sentBps: null, recvBps: null };
+  // A drop means the counter reset (reboot, agent restart): no rate, not a negative one.
+  return {
+    sentBps: sent >= prev.sent ? (sent - prev.sent) / dt : null,
+    recvBps: recv >= prev.recv ? (recv - prev.recv) / dt : null,
+  };
+}
+
 export async function serverMetricsHandler(req, res) {
   const data = req.body;
   const device = req.device;
@@ -197,6 +216,11 @@ export async function serverMetricsHandler(req, res) {
         diskTotalGB: data.disk_total_gb,
         netBytesSent: data.net_bytes_sent,
         netBytesRecv: data.net_bytes_recv,
+        // bytes/sec since this server's previous post; null on the first one.
+        ...(() => {
+          const r = netRates(device.device_id, data.net_bytes_sent, data.net_bytes_recv, timestamp.getTime());
+          return { netSentBps: r.sentBps, netRecvBps: r.recvBps };
+        })(),
         uptimeSeconds: data.uptime_seconds,
         uptimeLabel,
         processCount: data.process_count,

@@ -17,7 +17,7 @@ const GAUGE_W = 180;
 const GAUGE_H = 110;
 import type { RangeValue } from "../components/ui/RangePicker";
 import type { Volume } from "../types/server";
-import { fmtAxisTime as fmtTime, fmtDateTime, rateMBs, MULTI_DAY_SEC } from "../utils/format";
+import { fmtAxisTime as fmtTime, fmtDateTime, MULTI_DAY_SEC } from "../utils/format";
 
 interface Server {
   id: string;
@@ -63,8 +63,8 @@ interface HistoryPoint {
   cpu: number | null;
   mem: number | null;
   disk: number | null;
-  netSent: number | null;  // cumulative bytes
-  netRecv: number | null;  // cumulative bytes
+  netSentBps: number | null;  // bytes/sec, worked out by the backend
+  netRecvBps: number | null;
 }
 
 // Windows longer than a day show the date on the axis. Based on the window's span, so a
@@ -416,8 +416,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           cpu: p.cpu_percent ?? null,
           mem: p.mem_percent ?? null,
           disk: p.disk_percent ?? null,
-          netSent: p.net_bytes_sent ?? null,
-          netRecv: p.net_bytes_recv ?? null,
+          netSentBps: p.net_sent_bps ?? null,
+          netRecvBps: p.net_recv_bps ?? null,
         })),
       );
     });
@@ -431,8 +431,8 @@ export default function ServerDetail({ server: s, onBack }: Props) {
           cpu: data.server.cpuPercent ?? null,
           mem: data.server.memPercent ?? null,
           disk: data.server.diskPercent ?? null,
-          netSent: data.server.netBytesSent ?? null,
-          netRecv: data.server.netBytesRecv ?? null,
+          netSentBps: data.server.netSentBps ?? null,
+          netRecvBps: data.server.netRecvBps ?? null,
         },
       ]);
     };
@@ -481,19 +481,18 @@ export default function ServerDetail({ server: s, onBack }: Props) {
   const spanSec  = rangeSpanSec(range);
   const times    = history.map((p) => Date.parse(p.time));
 
-  // Throughput between two cumulative counters. Across a gap, the difference is the
-  // average over the whole outage, plotted as one point when service returns, which looks
-  // like a spike. So the first sample after a gap is dropped. `gapPoints` uses the same
-  // rule as the line breaks.
+  // Throughput arrives as bytes/sec from the backend (history and live alike), worked out
+  // on the real sample times. The first point after a gap is still dropped: its rate is
+  // the average over the whole outage, which would plot as a spike. `gapPoints` uses the
+  // same rule as the line breaks.
   const gapPoints = gapIndices(times);
-  const rateAt = (i: number, field: "netRecv" | "netSent") => {
+  const rateAt = (i: number, field: "netRecvBps" | "netSentBps") => {
     if (gapPoints.has(i)) return null; // spans an outage — not a rate for this instant
-    const p = history[i]!;
-    const prev = history[i - 1];
-    return prev ? rateMBs(p[field], prev[field], p.time, prev.time) : 0;
+    const v = history[i]![field];
+    return v == null ? null : +(v / 1024 / 1024).toFixed(2); // MB/s, as before
   };
-  const rawNetIn  = history.map((_, i) => rateAt(i, "netRecv"));
-  const rawNetOut = history.map((_, i) => rateAt(i, "netSent"));
+  const rawNetIn  = history.map((_, i) => rateAt(i, "netRecvBps"));
+  const rawNetOut = history.map((_, i) => rateAt(i, "netSentBps"));
 
   // Break every series where the agent stopped reporting. `?? null`, not `?? 0`: a
   // missing reading is not 0% CPU.
