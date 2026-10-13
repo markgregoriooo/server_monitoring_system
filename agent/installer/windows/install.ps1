@@ -17,6 +17,7 @@
   Task gives the same "runs unattended at boot, restarts on failure" behaviour
   without bundling one. Swap to NSSM here if your environment standardises on it.
 #>
+#Requires -RunAsAdministrator
 param(
   [Parameter(Mandatory = $true)][string]$ApiUrl,
   [Parameter(Mandatory = $true)][string]$InstallKey,
