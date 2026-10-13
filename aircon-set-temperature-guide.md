@@ -154,8 +154,7 @@ A bad capture is silent — the firmware transmits it happily and the AC ignores
   count means ambient IR corrupted the frame — recapture, don't "fix" it by hand.
 - **Header ≈ `9000, 4500`** as the first two values.
 - **Structural check (optional):** all seven existing frames satisfy the same invariant —
-  bits 61–63 are the complement of bits 53–55. `ir_analyze.py` in the repo root is the
-  helper used to work that out; run your new frame through it if you want extra confidence.
+  bits 61–63 are the complement of bits 53–55. A new frame that breaks it is a bad capture.
 
 ### B5. Add the array
 
