@@ -9,6 +9,9 @@ import { api } from "../api/api";
 import { useAuth } from "../context/AuthContext";
 import { useGasSensors } from "../hooks/useGasSensors";
 import AddGasSensorModal from "../components/environment/AddGasSensorModal";
+import {
+  useEnvMaintenance, EnvMaintenanceBanner, EnvMaintenanceButton, EnvMaintenanceModal,
+} from "../components/environment/EnvMaintenance";
 import RangePicker, { DEFAULT_RANGE } from "../components/ui/RangePicker";
 import type { RangeValue } from "../components/ui/RangePicker";
 import { useRoomThresholds } from "../hooks/useRoomThresholds";
@@ -906,6 +909,16 @@ export default function Environment() {
   // Lives out here, not inside the button, because the button renders in the toolbar and
   // its result renders below it — see useGasRecalibration for why they are apart.
   const recal = useGasRecalibration();
+  // Maintenance window: pauses the room alerts and auto-cooling (admin opens/ends it).
+  const maint = useEnvMaintenance();
+  const [maintModal, setMaintModal] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const resumeMaintenance = async () => {
+    setResuming(true);
+    const r = await api.endEnvMaintenance();
+    setResuming(false);
+    if (r.success && r.data) maint.setStatus(r.data);
+  };
   const { user } = useAuth();
   // Sensor names, live: an admin renaming one on the card below must move this page's legend
   // and tooltip at the same instant, not on the next reload.
@@ -1325,6 +1338,11 @@ export default function Environment() {
       <div className="flex items-center justify-end px-4 py-2.5 gap-3 flex-nowrap overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
         style={{ background: GF.header, borderBottom: `1px solid ${GF.panelBorder}` }}>
         {recal.isAdmin && (
+          <div className="shrink-0">
+            <EnvMaintenanceButton active={maint.status.active} onClick={() => setMaintModal(true)} />
+          </div>
+        )}
+        {recal.isAdmin && (
           <div className="shrink-0"><RecalibrateGasButton busy={recal.busy} run={recal.run} /></div>
         )}
         {/* The same shared range picker as the other pages, default style. No refresh button:
@@ -1335,10 +1353,27 @@ export default function Environment() {
       {/* Calibration result — full width, directly under the button that caused it. */}
       {recal.isAdmin && recal.result && <GasCalibrationNotice result={recal.result} />}
 
+      {/* Maintenance window — room alerts and auto-cooling paused. Admins get Extend/Resume. */}
+      <EnvMaintenanceBanner
+        className="mx-4 mt-3"
+        status={maint.status}
+        busy={resuming}
+        onExtend={recal.isAdmin ? () => setMaintModal(true) : undefined}
+        onResume={recal.isAdmin ? resumeMaintenance : undefined}
+      />
+      {maintModal && (
+        <EnvMaintenanceModal
+          extending={maint.status.active}
+          initialNote={maint.status.note}
+          onClose={() => setMaintModal(false)}
+          onDone={(st) => { maint.setStatus(st); setMaintModal(false); }}
+        />
+      )}
+
       {/* ── Sensor-offline banner ──────────────────────────────────────────────
          Everything below shows the last reading received. When the ESP32 stops reporting,
          this banner is what tells a dead sensor apart from a calm room. */}
-      {sensorOnline === false && (
+      {sensorOnline === false && !maint.status.active && (
         <div
           className="mx-4 mt-3 flex items-start gap-3 px-4 py-3"
           style={{

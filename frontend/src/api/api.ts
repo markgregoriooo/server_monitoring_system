@@ -22,6 +22,16 @@ interface LoginResponse {
   user: LoginUser;
 }
 
+/** GET /api/environment/maintenance and the `envMaintenance` socket event. */
+export interface EnvMaintenanceStatus {
+  active: boolean;
+  id?: number;
+  startedAt?: string;
+  endsAt?: string;
+  note?: string | null;
+  startedBy?: string | null;
+}
+
 export interface ApiResult<T = any> {
   success: boolean;
   data?: T;
@@ -730,6 +740,35 @@ export const api = {
   calibrateGasSensor: async (): Promise<ApiResult> => {
     try {
       const res = await apiClient.post("/environment/calibrate-gas");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  // Environment node maintenance window (room alerts + auto-cooling paused). Read: both
+  // roles. Start/extend and end: admin. See backend/services/envMaintenanceService.js.
+  getEnvMaintenance: async (): Promise<ApiResult<EnvMaintenanceStatus>> => {
+    try {
+      const res = await apiClient.get("/environment/maintenance");
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  startEnvMaintenance: async (minutes: number, note: string): Promise<ApiResult<EnvMaintenanceStatus>> => {
+    try {
+      const res = await apiClient.post("/environment/maintenance", { minutes, note });
+      return { success: true, data: res.data };
+    } catch (err: any) {
+      return handleError(err);
+    }
+  },
+
+  endEnvMaintenance: async (): Promise<ApiResult<EnvMaintenanceStatus>> => {
+    try {
+      const res = await apiClient.delete("/environment/maintenance");
       return { success: true, data: res.data };
     } catch (err: any) {
       return handleError(err);

@@ -5,6 +5,9 @@ import esp32Monitor from "../services/esp32Monitor.js";
 import alertRulesService from "../services/alertRulesService.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import { isDeviceConnected } from "../sockets/deviceRoom.js";
+import envMaintenance from "../services/envMaintenanceService.js";
+import { parseStartRequest } from "../services/envMaintenanceRules.js";
+import { clientInfo } from "../services/auditService.js";
 
 const router = express.Router();
 
@@ -54,6 +57,50 @@ router.get(
   requireRole("admin", "it_staff"),
   asyncHandler(async (_req, res) => {
     res.json({ thresholds: await alertRulesService.getRoomThresholds() });
+  }),
+);
+
+// ── Maintenance windows for the environment node ───────────────────────────────
+// While one is open the room alerts are held back and auto-cooling is paused (see
+// services/envMaintenanceService.js). Reading the state is both roles — everyone must
+// be able to see that the alarms are off. Opening, extending and ending is admin only.
+
+// GET /api/environment/maintenance → { active, startedAt, endsAt, note, startedBy }
+router.get(
+  "/maintenance",
+  authMiddleware,
+  requireRole("admin", "it_staff"),
+  (_req, res) => {
+    res.json(envMaintenance.getStatus());
+  },
+);
+
+// POST /api/environment/maintenance { minutes, note? } → open a window, or extend the
+// open one to `minutes` from now. minutes ∈ 30 | 60 | 120 | 240.
+router.post(
+  "/maintenance",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    const parsed = parseStartRequest(req.body);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+    const status = await envMaintenance.start({
+      minutes: parsed.minutes,
+      note: parsed.note,
+      userId: req.user.id,
+      ...clientInfo(req),
+    });
+    res.json(status);
+  }),
+);
+
+// DELETE /api/environment/maintenance → end the open window now (Resume).
+router.delete(
+  "/maintenance",
+  authMiddleware,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    res.json(await envMaintenance.end({ userId: req.user.id, ...clientInfo(req) }));
   }),
 );
 
