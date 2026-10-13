@@ -416,7 +416,9 @@ function AirconCard({
   return (
     <Panel title={header} right={actions} noPad>
       {/* Compact stats row */}
-      <div className="grid grid-cols-5 gap-px" style={{ background: GF.divider, borderBottom: `1px solid ${GF.divider}` }}>
+      {/* Three per row on a phone (five ~65px cells cannot fit "SET TEMP"); Uptime takes
+          the last two columns so no empty cell is left showing the divider colour. */}
+      <div className="grid grid-cols-3 sm:grid-cols-5 gap-px" style={{ background: GF.divider, borderBottom: `1px solid ${GF.divider}` }}>
         {[
           // Matches the pill: with the ESP32 gone this is a remembered value, not an
           // observed one.
@@ -426,7 +428,7 @@ function AirconCard({
           ["Set Temp", `${ac.setTemp}°C`],
           ["Uptime", ac.uptime],
         ].map(([label, value]) => (
-          <div key={label} className="flex flex-col px-3 py-2.5 gap-0.5" style={{ background: GF.panel }}>
+          <div key={label} className={`flex flex-col px-3 py-2.5 gap-0.5 min-w-0 ${label === "Uptime" ? "col-span-2 sm:col-span-1" : ""}`} style={{ background: GF.panel }}>
             <span className="text-[10px] tracking-widest uppercase" style={{ color: GF.textDim }}>{label}</span>
             <span className="text-[13px] font-bold" style={{ color: GF.textPrimary }}>{value}</span>
           </div>

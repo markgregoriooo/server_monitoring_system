@@ -45,7 +45,7 @@ function Row({ a, b }: { a: string; b: string }) {
 function Table({ head, children }: { head: [string, string]; children: React.ReactNode }) {
   return (
     <div className="overflow-x-auto my-4">
-      <table className="w-full border-collapse min-w-[420px]">
+      <table className="w-full border-collapse sm:min-w-[420px]">
         <thead>
           <tr>
             <th
