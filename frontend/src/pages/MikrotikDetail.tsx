@@ -12,7 +12,7 @@ import { Stat, Th } from "../components/ui/primitives";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── MikroTik detail view (throughput, ports, log) ──────────────────────
-// Opened from MikrotikMonitoring via "View" and replaces the list in place (Back
+// Opened from the Network page via "View" and replaces the list in place (Back
 // button), like ServerMetrics ↔ ServerDetail. Ports/CPU/mem update live from
 // `networkMetrics`; throughput history is fetched per range. Types are defined here so
 // the list can import them without a circular import.

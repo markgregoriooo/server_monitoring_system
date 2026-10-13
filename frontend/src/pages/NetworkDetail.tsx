@@ -13,7 +13,7 @@ const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
 // ─── Router detail view (throughput, ports, log) ────────────────────────
 // Opened from NetworkMonitoring via "View" and replaces the list in place (Back
-// button), like ServerMetrics ↔ ServerDetail and MikrotikMonitoring ↔ MikrotikDetail.
+// button), like ServerMetrics ↔ ServerDetail and NetworkMonitoring ↔ MikrotikDetail.
 // Ports and uptime update live from `networkMetrics`; throughput history is fetched per
 // range. Types are defined here so the list can import them without a circular import.
 // Laid out like MikrotikDetail so both pages feel the same.
