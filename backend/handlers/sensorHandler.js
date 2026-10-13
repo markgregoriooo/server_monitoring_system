@@ -1,4 +1,5 @@
 import { writeClient, Point } from "../config/influx.js";
+import envMaintenance from "../services/envMaintenanceService.js";
 import notificationService from "../services/notificationService.js";
 import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
@@ -237,5 +238,9 @@ export async function sensorHandler(socket, data) {
   }
 
   // ---- Environment alert (temp / humidity / gas / smoke escalation) ----
+  // Not while the node is in maintenance: an opened box or a sensor being cleaned reads
+  // nonsense. The bands are left as they were, so the first reading after the window
+  // that is still out of range raises its alert as an ordinary escalation.
+  if (envMaintenance.isActive()) return;
   await maybeRaiseEnvAlert(data);
 }

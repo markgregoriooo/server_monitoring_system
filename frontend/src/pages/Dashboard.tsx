@@ -6,6 +6,7 @@ import "../chart/ChartConfig";
 import { Line } from "react-chartjs-2";
 import ServerFocus from "../components/dashboard/ServerFocus";
 import NetworkFocus from "../components/dashboard/NetworkFocus";
+import { useEnvMaintenance, EnvMaintenanceBanner } from "../components/environment/EnvMaintenance";
 import UpsFocus from "../components/dashboard/UpsFocus";
 import RangePicker, { DEFAULT_RANGE, rangeSpanSec } from "../components/ui/RangePicker";
 import { withGaps } from "../utils/seriesGaps";
@@ -491,6 +492,9 @@ export default function Dashboard() {
   // Is the ESP32 reporting? Without this the sensor tiles would keep showing the last
   // reading as "LIVE", and a dead sensor would look like a calm room.
   const [sensorOnline, setSensorOnline] = useState<boolean | null>(null);
+  // Environment node maintenance: shown here too, because the Dashboard is where people
+  // look, and while it is on the room has no smoke or heat alarm.
+  const { status: envMaint } = useEnvMaintenance();
   const [sensorLastSeen, setSensorLastSeen] = useState<string | null>(null);
   // Routers and UPS (SNMP poller), so their incidents show on the dashboard. The initial
   // GET and the socket payload carry more than id and status; everything is optional
@@ -1061,6 +1065,9 @@ export default function Dashboard() {
           <RangePicker value={focusRange} onChange={setFocusRange} />
         </div>
       </div>
+
+      {/* Read-only here; Extend/Resume live on the Environment page. */}
+      <EnvMaintenanceBanner status={envMaint} />
 
       {/* ── Row 1: Stat panels ── */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">

@@ -27,6 +27,7 @@ import {
 } from "./reportTemplate.js";
 import brandingService from "./reportBrandingService.js";
 import systemBackupService from "./systemBackupService.js";
+import envMaintenance from "./envMaintenanceService.js";
 import { DAY_NAMES } from "./backupSchedule.js";
 import { describeError } from "../utils/httpError.js";
 
@@ -305,9 +306,27 @@ async function buildEnvironment(start, stop) {
   const peakTemp = days.reduce((m, d) => (d.maxTemp != null && d.maxTemp > m ? d.maxTemp : m), -Infinity);
   const peakGas = days.reduce((m, d) => (d.maxGas != null && d.maxGas > m ? d.maxGas : m), -Infinity);
 
+  // Maintenance windows in the period. While one was open the room alerts were held back
+  // and the readings may be wrong (box open, sensor out), so the report has to say so —
+  // otherwise a quiet stretch reads as a calm room. Best-effort: a missing table (migration
+  // not applied) leaves the section out rather than failing the report.
+  let maint = [];
+  try {
+    maint = await envMaintenance.listInPeriod(start, stop);
+  } catch (err) {
+    console.error("[REPORT] maintenance windows unavailable:", err.message);
+  }
+  const maintMinutes = maint.reduce((n, w) => n + w.minutes, 0);
+
   return {
     summary: [
       { label: "Days covered", value: days.length },
+      ...(maint.length
+        ? [{
+            label: "Maintenance",
+            value: `${maint.length} window${maint.length === 1 ? "" : "s"} · ${formatDuration(maintMinutes * 60)} without room alerts`,
+          }]
+        : []),
       { label: "Avg temperature", value: overallAvg != null ? `${overallAvg} °C` : "—" },
       { label: "Peak temperature", value: Number.isFinite(peakTemp) ? `${peakTemp} °C` : "—" },
       {
@@ -364,6 +383,21 @@ async function buildEnvironment(start, stop) {
             title: "Smoke sensors monitored",
             columns: ["Sensor", "Location", "Peak ppm", "Avg ppm"],
             rows: sensors.map((s2) => [`MQ2-${s2.channel}`, s2.label, s2.peak, s2.avg]),
+          }]
+        : []),
+      ...(maint.length
+        ? [{
+            title: "Maintenance windows (room alerts and auto-cooling paused)",
+            columns: ["Started", "Ended", "Duration", "Work", "By"],
+            rows: maint.map((w) => [
+              formatPH(w.clippedFrom),
+              w.ended_at == null && w.clippedTo.getTime() >= Date.now() - 60000
+                ? "still open"
+                : `${formatPH(w.clippedTo)}${w.end_reason === "expired" ? " (on schedule)" : ""}`,
+              formatDuration(w.minutes * 60),
+              w.note ?? "—",
+              w.started_by_name ?? "—",
+            ]),
           }]
         : []),
     ],

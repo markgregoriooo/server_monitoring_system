@@ -1,6 +1,7 @@
 import { queryClient, bucket } from "../config/influx.js";
 import notificationService from "./notificationService.js";
 import alertsService from "./alertsService.js";
+import envMaintenance from "./envMaintenanceService.js";
 import { describeError } from "../utils/httpError.js";
 
 // ─── ESP32 liveness ─────────────────────────
@@ -58,6 +59,9 @@ async function setOnline(next) {
 
   try {
     if (next === false && prev === true) {
+      // Unplugged for maintenance: expected, not an incident. If it is still silent when
+      // the window closes, afterMaintenance() raises the alert then.
+      if (envMaintenance.isActive()) return;
       await raiseOfflineAlert(lastSeen ? new Date(lastSeen).toISOString() : null);
     } else if (next === true && prev === false) {
       // Recovered: close the open offline incident (no-op when none is open).
@@ -141,7 +145,7 @@ export async function seed() {
 
   // Stale but previously reporting = a genuine, ongoing outage that started before this
   // process did. Record it, so "offline" in the UI always has a matching alert.
-  if (!online && seen != null) {
+  if (!online && seen != null && !envMaintenance.isActive()) {
     try {
       await raiseOfflineAlert(new Date(seen).toISOString());
     } catch (err) {
@@ -150,8 +154,18 @@ export async function seed() {
   }
 }
 
+// A maintenance window just closed. The offline alert was held back while it was open,
+// so if the box is still not reporting, that is now an outage and is raised. raiseAlert
+// de-dups an alert that is already open.
+async function afterMaintenance() {
+  if (online === true) return;
+  if (lastSeen == null) return; // never reported on this install: nothing to call an outage
+  await raiseOfflineAlert(new Date(lastSeen).toISOString());
+}
+
 export function init(io) {
   _io = io;
+  envMaintenance.onEnded(afterMaintenance);
   return seed();
 }
 

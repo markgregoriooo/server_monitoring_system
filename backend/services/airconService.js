@@ -1,4 +1,5 @@
 import db from "../config/mysql.js";
+import envMaintenance from "./envMaintenanceService.js";
 
 // ─── ESP32 channel map (in-memory, refreshed on every device connect) ─────────
 // Shape: [{ channel: 1, gpio: 25 }, { channel: 2, gpio: 33 }, ...]
@@ -88,8 +89,13 @@ async function getChannelConfig() {
     WHERE d.device_type = 'aircon'
     ORDER BY s.ir_channel
   `);
+  // During environment-node maintenance every channel is reported OFF, which is how
+  // auto-cooling is paused: the firmware's handleIR only fires enabled channels, and its
+  // manual irCommand ignores this list, so Turn On/Off keeps working. Units keep their
+  // real is_on in the database; the true list is re-sent when the window closes.
+  const paused = envMaintenance.isActive();
   return {
-    channels: rows.map(r => ({ channel: r.ir_channel, enabled: Boolean(r.enabled) })),
+    channels: rows.map(r => ({ channel: r.ir_channel, enabled: paused ? false : Boolean(r.enabled) })),
   };
 }
 

@@ -322,6 +322,27 @@ CREATE TABLE `device_network` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `environment_maintenance`
+--
+-- Maintenance windows for the ESP32 environment node. While one is open the room-level
+-- alerts are not raised and auto-cooling is paused; every window has a fixed end so
+-- the room is never left without an alarm by a forgotten Resume.
+-- See migrations/2026-10-13_environment_maintenance.sql
+
+CREATE TABLE `environment_maintenance` (
+  `id` int(11) NOT NULL,
+  `started_at` datetime NOT NULL,
+  `ends_at` datetime NOT NULL,
+  `ended_at` datetime DEFAULT NULL,
+  `end_reason` enum('resumed','expired') DEFAULT NULL,
+  `note` varchar(200) DEFAULT NULL,
+  `started_by` int(11) DEFAULT NULL,
+  `ended_by` int(11) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `gas_sensors`
 --
 -- One row per MQ-2 channel. `channel` is 1-based and maps to the firmware's
@@ -808,6 +829,15 @@ ALTER TABLE `device_network`
   ADD KEY `fk_device_network_devices1_idx` (`device_id`);
 
 --
+-- Indexes for table `environment_maintenance`
+--
+ALTER TABLE `environment_maintenance`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_environment_maintenance_open` (`ended_at`),
+  ADD KEY `fk_environment_maintenance_started_by` (`started_by`),
+  ADD KEY `fk_environment_maintenance_ended_by` (`ended_by`);
+
+--
 -- Indexes for table `gas_sensors`
 --
 ALTER TABLE `gas_sensors`
@@ -1012,6 +1042,12 @@ ALTER TABLE `device_network`
   MODIFY `network_id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
+-- AUTO_INCREMENT for table `environment_maintenance`
+--
+ALTER TABLE `environment_maintenance`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
 -- AUTO_INCREMENT for table `ir_commands`
 --
 ALTER TABLE `ir_commands`
@@ -1170,6 +1206,13 @@ ALTER TABLE `device_metrics_config`
 --
 ALTER TABLE `device_network`
   ADD CONSTRAINT `fk_device_network_devices1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`device_id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+--
+-- Constraints for table `environment_maintenance`
+--
+ALTER TABLE `environment_maintenance`
+  ADD CONSTRAINT `fk_environment_maintenance_started_by` FOREIGN KEY (`started_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  ADD CONSTRAINT `fk_environment_maintenance_ended_by` FOREIGN KEY (`ended_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 --
 -- Constraints for table `gas_sensors`

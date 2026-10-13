@@ -1153,7 +1153,38 @@ export default function Analytics() {
                 {anom.anomalies.length === 0 ? (
                   <Empty>No anomalies — every reading is normal for its hour of day.</Empty>
                 ) : (
-                  <div className="overflow-x-auto">
+                  <div>
+                    {/* Mobile: cards, as in the forecast panels. Five columns with a long
+                        "Expected" header only fit a phone by scrolling sideways. */}
+                    <div className="md:hidden flex flex-col gap-2">
+                      {anom.anomalies.slice(0, 12).map((a, i) => (
+                        <div key={i} className="rounded-[2px] p-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span style={{ color: gf.textMuted }}>{fmtTime(a.t)}</span>
+                            {a.iqrOutlier && <Badge color={ORANGE} label="IQR" />}
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-3 gap-y-2 mt-2.5">
+                            <CardField label="Reading">
+                              <span style={{ color: a.direction === "high" ? RED : gf.accent, fontWeight: 600 }}>
+                                {a.direction === "high" ? "▲" : "▼"} {fmtReading(a.value)}{anom.unit}
+                              </span>
+                            </CardField>
+                            <CardField label="z-score">
+                              <span style={{ color: gf.textPrimary }}>{a.z > 0 ? "+" : ""}{a.z}σ</span>
+                            </CardField>
+                            <div className="col-span-2">
+                              <CardField label="Expected (same hour & day type)">
+                                <span style={{ color: gf.textMuted }}>
+                                  {fmtReading(a.expected)}{anom.unit}{" "}
+                                  <span style={{ color: gf.textDim }}>@ {fmtHour(a.hour)} {a.dayType}</span>
+                                </span>
+                              </CardField>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-[1em]" style={{ borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ color: gf.textDim, textAlign: "left" }}>
@@ -1181,6 +1212,7 @@ export default function Analytics() {
                         ))}
                       </tbody>
                     </table>
+                    </div>
                     {anom.anomalyCount > 12 && (
                       <p className="mt-2 text-[0.9em]" style={{ color: gf.textDim }}>+ {anom.anomalyCount - 12} more</p>
                     )}
@@ -2089,7 +2121,7 @@ function BarRow({ label, count, max, color, typeLabel, stacked }: {
   }
   return (
     <div className="flex items-center gap-2 text-[1em]">
-      <span className="w-36 shrink-0 flex items-center gap-1" style={{ color: gf.textMuted }} title={label}>
+      <span className="w-24 sm:w-36 shrink-0 flex items-center gap-1" style={{ color: gf.textMuted }} title={label}>
         <span className="truncate">{label}</span>
         {typeLabel && <TypeBadge label={typeLabel} />}
       </span>

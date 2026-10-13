@@ -55,6 +55,15 @@ export function mapMk(r: any): MkDevice {
       utilizationPct: i.utilizationPct ?? null,
       rxBytes: i.rxBytes ?? null,
       txBytes: i.txBytes ?? null,
+      // Everything the port table shows must be carried here. This map once stopped at the
+      // counters, and the Network page hands its rows to MikrotikDetail on every poll, so
+      // Speed and Leases always read "—" and Errors always 0, whatever the router said.
+      rxErrors: i.rxErrors ?? null,
+      txErrors: i.txErrors ?? null,
+      speedMbps: i.speedMbps ?? null,
+      clients: i.clients ?? null,
+      rxBps: i.rxBps ?? null,
+      txBps: i.txBps ?? null,
     })),
     monitored: r.monitored ?? true,
   };

@@ -142,15 +142,22 @@ export async function collectRouter(deviceId, conn, labels = {}) {
       // utilization_pct from the change since the last cycle, using the busier direction
       // (full-duplex), not rx + tx. See snmpUtils.computeUtilizationPct.
       let utilizationPct = null;
+      let rxBps = null;
+      let txBps = null;
       const key = `${deviceId}:${idx}`;
       const prev = prevIface.get(key);
       if (prev) {
-        utilizationPct = computeUtilizationPct({
-          dRxBytes: counterDelta(rxBytes, prev.rxBytes),
-          dTxBytes: counterDelta(txBytes, prev.txBytes),
-          dtSec: (now - prev.t) / 1000,
-          speedMbps,
-        });
+        const dRxBytes = counterDelta(rxBytes, prev.rxBytes);
+        const dTxBytes = counterDelta(txBytes, prev.txBytes);
+        const dtSec = (now - prev.t) / 1000;
+        utilizationPct = computeUtilizationPct({ dRxBytes, dTxBytes, dtSec, speedMbps });
+        // Per-port bytes/sec, worked out here and cached in `latest` so the page has Tx/Rx
+        // the moment it loads. The browser used to diff two broadcasts itself, which left
+        // the columns blank for up to two polls (~2 min at 60s) after every page load.
+        if (dtSec > 0) {
+          rxBps = dRxBytes / dtSec;
+          txBps = dTxBytes / dtSec;
+        }
       }
       prevIface.set(key, { rxBytes, txBytes, t: now });
 
@@ -167,6 +174,8 @@ export async function collectRouter(deviceId, conn, labels = {}) {
         linkUp,
         adminUp,
         utilizationPct,
+        rxBps,
+        txBps,
       });
     }
 
@@ -480,6 +489,8 @@ async function pollRouter(io, d) {
       linkUp: Boolean(i.linkUp),
       adminUp: i.adminUp !== false,
       utilizationPct: i.utilizationPct ?? null,
+      rxBps: i.rxBps ?? null,
+      txBps: i.txBps ?? null,
       speedMbps: i.speedMbps ?? null,
       // Cumulative error counters — the UI shows the delta between polls, which is
       // what indicates a failing cable/SFP now (a lifetime total says nothing).

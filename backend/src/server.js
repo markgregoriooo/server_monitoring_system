@@ -21,6 +21,7 @@ import alertRulesService from "../services/alertRulesService.js";
 import alertsService from "../services/alertsService.js";
 import analyticsAlerts from "../services/analyticsAlerts.js";
 import esp32Monitor from "../services/esp32Monitor.js";
+import envMaintenance from "../services/envMaintenanceService.js";
 import snmpPollerService from "../services/snmpPollerService.js";
 import mikrotikPollerService from "../services/mikrotikPollerService.js";
 import reachabilitySweep from "../services/reachabilitySweep.js";
@@ -262,9 +263,12 @@ reportService.init(io); // so a background report build can push reportUpdated w
 
 // ESP32 liveness. Seeds from the newest InfluxDB reading so a restart doesn't forget
 // whether the sensor was alive (and so a box with no hardware attached stays quiet).
-esp32Monitor.init(io).catch((e) =>
-  console.error("[ESP32] liveness init failed:", e.message),
-);
+// Maintenance is loaded FIRST: the liveness seed decides whether to raise an offline
+// alert, and must not raise one for a box that is in an open maintenance window.
+envMaintenance
+  .init(io)
+  .then(() => esp32Monitor.init(io))
+  .catch((e) => console.error("[ESP32] liveness init failed:", e.message));
 
 // On-site backup: every ingested sample is also written to NDJSON files in BACKUP_DIR.
 backupService.init();
