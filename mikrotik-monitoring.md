@@ -394,6 +394,15 @@ up/down + total uplink throughput — feeding off the `networkMetrics` stream vi
       column now distinguishes WinBox's `X` (disabled) from a blank (no link).
 - [ ] **Phase 6 — Polish.** ~~PiP `network.summary` tile~~ ✅ (see §13.6); live test on the dev
       MikroTik then campus still outstanding.
+- [x] **Merged into the Network page (2026-10-13).** ICTU's network admin asked for one Network
+      page — "they are all network". The **MikroTik** sidebar entry and `MikrotikMonitoring.tsx`
+      are gone: MikroTiks are rows in `NetworkMonitoring.tsx` beside the SNMP and ping routers,
+      with a **Type** column (SNMP / Ping / MikroTik API) and one **Add device** button that asks
+      which kind first. The row pieces and the Add / Configure modals live in
+      `components/network/MikrotikParts.tsx`; **View** still opens `MikrotikDetail.tsx`. DHCP
+      leases moved from a list column into the row drawer. `/mikrotik` redirects to `/network`
+      keeping `?device=`, so old alert links still open the right router. Polling, API and
+      alerts are unchanged.
 
 > **Removed:** the `MIKROTIK_MOCK` synthetic-data mode (built during scaffolding, dropped at request
 > — live RouterOS only). `node-routeros` is now a required backend dependency.

@@ -5,18 +5,25 @@ import { socket } from "../socket/socket";
 import { useAuth } from "../context/AuthContext";
 import NetworkDetail from "./NetworkDetail";
 import type { NetDevice } from "./NetworkDetail";
+import MikrotikDetail from "./MikrotikDetail";
+import type { MkDevice } from "./MikrotikDetail";
 import { GF as gf, STATUS } from "../theme/gf";
 import { formatUptime } from "../utils/format";
 import { GhostButton, StatPanel, Field, Meta } from "../components/ui/primitives";
 import { useProbe, ProbeResultPanel, probePassed } from "../components/devices/DeviceProbe";
+import {
+  mapMk, mergeMkLive, MkStatus, MkDrawerRow, MkPortsCell, AddMikrotikModal, ConnectionModal,
+} from "../components/network/MikrotikParts";
 import type { DeviceFirstPoll } from "../api/api";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
-// ─── Router list page ─────────────────────────────────────────────────────────
-// The UI says "router", not "router/switch". A managed switch works the same way (SNMP
-// IF-MIB), but CSPC has none to register; see router-ups-monitoring.md.
-// One row per router with "View", which opens NetworkDetail in place, like
-// MikrotikMonitoring ↔ MikrotikDetail. Types are in NetworkDetail.tsx.
+// ─── Network page ─────────────────────────────────────────────────────────────
+// Every network device in one list, however it is monitored: SNMP routers/switches,
+// ping-only devices, and MikroTiks over the RouterOS API. MikroTiks had their own page
+// and sidebar entry until ICTU's network admin asked for one Network page. Monitoring is
+// unchanged — only the listing is shared; the MikroTik row pieces are in
+// components/network/MikrotikParts.tsx. "View" opens NetworkDetail or MikrotikDetail in
+// place. Types are in those two files.
 
 // ─── Grafana tokens (match ServerMetrics.tsx) ─────────────────────────────────
 
@@ -253,6 +260,44 @@ function PortsCell({ d }: { d: NetDevice }) {
   );
 }
 
+// ─── Merged list ──────────────────────────────────────────────────────────────
+// One row per device, whichever way it is monitored. The two kinds keep their own state
+// (different shapes, different endpoints) and are only merged for display. Device ids
+// come from the one `devices` table, so an id never names two rows.
+
+type Row = { kind: "router"; d: NetDevice } | { kind: "mikrotik"; d: MkDevice };
+
+// How a row is monitored — the one thing the separate pages used to say by being separate.
+function TypeBadge({ row }: { row: Row }) {
+  const label = row.kind === "mikrotik" ? "MikroTik API" : row.d.mode === "ping" ? "Ping" : "SNMP";
+  return (
+    <span
+      className="inline-block px-1 py-px rounded-[2px] text-[10px] tracking-wide uppercase whitespace-nowrap"
+      style={{ background: gf.hover, border: `1px solid ${gf.divider}`, color: gf.textMuted }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function RouterStatus({ d }: { d: NetDevice }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
+      <span className="text-[13px]" style={{ color: gf.textMuted }}>{d.status}</span>
+    </span>
+  );
+}
+
+// CPU / memory only exist for a MikroTik (the RouterOS API reports them; IF-MIB does not).
+function LoadCell({ v }: { v: number | null | undefined }) {
+  return (
+    <span className="text-[13px] tabular-nums" style={{ color: v != null ? loadColor(Math.round(v)) : gf.textDim }}>
+      {v != null ? `${Math.round(v)}%` : "—"}
+    </span>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function NetworkMonitoring() {
@@ -260,16 +305,21 @@ export default function NetworkMonitoring() {
   const isAdmin = user?.role === "admin";
 
   const [devices, setDevices] = useState<NetDevice[]>([]);
-  // Drill-down target held by ID (not a snapshot) so the open detail page keeps
-  // getting the list-level live updates. Same pattern as MikrotikMonitoring.
+  const [mkDevices, setMkDevices] = useState<MkDevice[]>([]);
+  // Drill-down target held by ID (not a snapshot) so the open detail page keeps getting
+  // the list-level live updates.
   const [detailId, setDetailId] = useState<string | null>(null);
 
-  // Add-router modal + inline remove-confirm + toast (admin only).
+  // "Add device" asks what kind first, then opens that kind's own form.
+  const [chooserOpen, setChooserOpen] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
+  const [mkAdding, setMkAdding] = useState(false);
+  const [configFor, setConfigFor] = useState<MkDevice | null>(null);
   const [form, setForm] = useState<NetForm>(EMPTY_NET_FORM);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
   // Which row's drawer is open (one at a time), same as ServerMetrics.
   const [openId, setOpenId] = useState<string | null>(null);
   const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
@@ -278,17 +328,18 @@ export default function NetworkMonitoring() {
   const probe = useProbe();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Deep link from a notification: /network?device=<id> opens that router once the list
-  // loads, then removes the parameter (so Back returns to the list). Same as ServerMetrics;
-  // see routeFor.
+  // Deep link from a notification: /network?device=<id> opens that device once the lists
+  // load, then removes the parameter (so Back returns to the list). Old /mikrotik?device=
+  // links are redirected here with the parameter kept (App.tsx).
   useEffect(() => {
     const deviceParam = searchParams.get("device");
     if (!deviceParam) return;
-    if (!devices.some((d) => d.id === String(deviceParam))) return;
-    setDetailId(String(deviceParam));
+    const id = String(deviceParam);
+    if (!devices.some((d) => d.id === id) && !mkDevices.some((d) => d.id === id)) return;
+    setDetailId(id);
     searchParams.delete("device");
     setSearchParams(searchParams, { replace: true });
-  }, [devices, searchParams, setSearchParams]);
+  }, [devices, mkDevices, searchParams, setSearchParams]);
   // A warning stays up longer than a confirmation: it asks the reader to go and do
   // something, and 3 seconds is not enough to read a reason and an address.
   const showToast = (msg: string, tone: "ok" | "warn" = "ok") => {
@@ -296,11 +347,16 @@ export default function NetworkMonitoring() {
     setTimeout(() => setToast(null), tone === "warn" ? 9000 : 3000);
   };
 
-  const openAdd = () => {
+  const openRouterForm = () => {
+    setChooserOpen(false);
     setForm(EMPTY_NET_FORM);
     setFormError("");
     probe.reset();
     setFormOpen(true);
+  };
+  const openMikrotikForm = () => {
+    setChooserOpen(false);
+    setMkAdding(true);
   };
 
   // Any edit to a field the probe depends on invalidates the probe. A green tick
@@ -350,36 +406,63 @@ export default function NetworkMonitoring() {
     }
   };
 
-  const remove = async (id: string) => {
+  // Decommission. Each kind has its own endpoint; both cascade server-side.
+  const remove = async (row: Row) => {
+    const id = row.d.id;
+    setRemoving(id);
+    const res = row.kind === "mikrotik"
+      ? await api.deleteMikrotik(Number(id))
+      : await api.deleteNetworkDevice(Number(id));
+    setRemoving(null);
     setConfirmId(null);
-    const res = await api.deleteNetworkDevice(Number(id));
     if (res.success) {
       setDevices((prev) => prev.filter((d) => d.id !== id));
+      setMkDevices((prev) => prev.filter((d) => d.id !== id));
       setDetailId((prev) => (prev === id ? null : prev));
-      showToast("Router removed.");
+      showToast(`${row.d.name} removed.`);
     } else {
-      showToast(res.error || "Could not remove router.", "warn");
+      showToast(res.error || `Could not remove ${row.d.name}.`, "warn");
     }
   };
 
-  // Escape closes the add modal.
+  // Escape closes whichever add dialog is open.
   useEffect(() => {
-    if (!formOpen) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFormOpen(false);
+    if (!formOpen && !chooserOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setFormOpen(false);
+      setChooserOpen(false);
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [formOpen]);
+  }, [formOpen, chooserOpen]);
 
-  const load = () =>
+  const loadRouters = () =>
     api.getNetworkDevices().then((r) => {
       if (r.success && r.data) setDevices((r.data.devices ?? []).map(mapNet));
     });
+  const loadMikrotiks = () =>
+    api.getMikrotikDevices().then((r) => {
+      if (r.success && r.data) setMkDevices((r.data.devices ?? []).map(mapMk));
+    });
 
   useEffect(() => {
-    load();
+    loadRouters();
+    loadMikrotiks();
+    // One event for both kinds; `type` says which list it belongs to.
     const onMetrics = (data: { device: any }) => {
-      if (!data?.device || data.device.type === "mikrotik") return; // MikroTik has its own page
+      if (!data?.device) return;
       const id = String(data.device.id);
+      if (data.device.type === "mikrotik") {
+        setMkDevices((prev) => {
+          const idx = prev.findIndex((d) => d.id === id);
+          if (idx === -1) return [...prev, mergeMkLive(undefined, data.device)];
+          const next = [...prev];
+          next[idx] = mergeMkLive(next[idx], data.device);
+          return next;
+        });
+        return;
+      }
       setDevices((prev) => {
         const idx = prev.findIndex((d) => d.id === id);
         if (idx === -1) return [...prev, mergeNetLive(undefined, data.device)];
@@ -388,41 +471,55 @@ export default function NetworkMonitoring() {
         return next;
       });
     };
+    // Status and removal carry only an id; it matches at most one row across both lists.
     const onStatus = (data: { id: number | string; status: string }) => {
       const id = String(data?.id);
-      setDevices((prev) =>
-        prev.map((d) =>
-          d.id !== id
-            ? d
-            : data.status === "Offline"
-              ? { ...d, status: "Offline", reachable: false, interfaces: [] }
-              : { ...d, status: data.status },
-        ),
-      );
+      const apply = <T extends { id: string; status: string }>(d: T): T =>
+        d.id !== id
+          ? d
+          : data.status === "Offline"
+            ? { ...d, status: "Offline", reachable: false, interfaces: [] }
+            : { ...d, status: data.status };
+      setDevices((prev) => prev.map(apply));
+      setMkDevices((prev) => prev.map(apply));
     };
     const onRemoved = (data: { id: number | string }) => {
       const id = String(data?.id);
       setDevices((prev) => prev.filter((d) => d.id !== id));
+      setMkDevices((prev) => prev.filter((d) => d.id !== id));
       setDetailId((prev) => (prev === id ? null : prev));
     };
     // How the new device's first poll went, sent only to the admin who added it, so a wrong
-    // community shows up on screen instead of only in the server log.
+    // community or RouterOS login shows up on screen instead of only in the server log.
     const onFirstPoll = (d: DeviceFirstPoll) => {
-      if (d?.kind !== "router") return; // UPS and MikroTik have their own pages
-      if (d.ok) {
-        showToast(
-          d.mode === "ping"
-            ? `${d.name} is answering ping — monitored for up/down, latency and loss.`
-            : `${d.name} answered SNMP — now polling.`,
-        );
-      } else {
-        showToast(
-          `${d.name} did not answer its first poll${d.reason ? ` — ${d.reason}` : ""}. ` +
-            `Check the IP, the community and that UDP 161 is open to the backend. ` +
-            `It stays registered and keeps retrying.`,
-          "warn",
-        );
+      if (d?.kind === "router") {
+        if (d.ok) {
+          showToast(
+            d.mode === "ping"
+              ? `${d.name} is answering ping — monitored for up/down, latency and loss.`
+              : `${d.name} answered SNMP — now polling.`,
+          );
+        } else {
+          showToast(
+            `${d.name} did not answer its first poll${d.reason ? ` — ${d.reason}` : ""}. ` +
+              `Check the IP, the community and that UDP 161 is open to the backend. ` +
+              `It stays registered and keeps retrying.`,
+            "warn",
+          );
+        }
+      } else if (d?.kind === "mikrotik") {
+        if (d.ok) {
+          showToast(`${d.name} logged in over the RouterOS API — now polling.`);
+        } else {
+          showToast(
+            `${d.name} could not be polled${d.reason ? ` — ${d.reason}` : ""}. ` +
+              `Check the username, the password, the API port and that the api service is ` +
+              `enabled on the router. It stays registered and keeps retrying.`,
+            "warn",
+          );
+        }
       }
+      // UPS has its own page.
     };
 
     socket.on("networkMetrics", onMetrics);
@@ -437,20 +534,92 @@ export default function NetworkMonitoring() {
     };
   }, []);
 
-  const total = devices.length;
-  const online = devices.filter((d) => d.status === "Online").length;
-  const allIfaces = devices.flatMap((d) => d.interfaces);
+  const rows: Row[] = [
+    ...devices.map((d): Row => ({ kind: "router", d })),
+    ...mkDevices.map((d): Row => ({ kind: "mikrotik", d })),
+  ].sort((a, b) => a.d.name.localeCompare(b.d.name));
+
+  const total = rows.length;
+  const online = rows.filter((r) => r.d.status === "Online").length;
+  // A MikroTik with no RouterOS login has never been polled: it is waiting on an admin,
+  // not down, so it is not counted as a device down (its row says so instead).
+  const down = rows.filter((r) => r.d.status !== "Online" && !(r.kind === "mikrotik" && !r.d.monitored)).length;
+  const allIfaces: { linkUp: boolean; utilizationPct: number | null }[] = rows.flatMap((r) => r.d.interfaces);
   const ifacesUp = allIfaces.filter((i) => i.linkUp).length;
   const upUtil = allIfaces.filter((i) => i.linkUp && i.utilizationPct != null).map((i) => i.utilizationPct as number);
   const peakUtil = upUtil.length ? Math.round(Math.max(...upUtil)) : 0;
   const onlineColor = total === 0 ? gf.textMuted : online === total ? GREEN : online === 0 ? RED : ORANGE;
 
+  const toastEl = toast && (
+    /* Two tones — see showToast. The warning one wraps, because it carries a reason and a
+       next step, not just a confirmation. */
+    <div
+      className="fixed top-5 right-5 z-[100] flex items-start gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl max-w-sm"
+      style={{
+        color: toast.tone === "warn" ? ORANGE : GREEN,
+        background: toast.tone === "warn" ? `${ORANGE}14` : `${GREEN}14`,
+        borderColor: toast.tone === "warn" ? `${ORANGE}40` : `${GREEN}40`,
+        fontFamily: "'JetBrains Mono', monospace",
+      }}
+    >
+      <span className="shrink-0">{toast.tone === "warn" ? "!" : "✓"}</span>
+      <span className="leading-relaxed">{toast.msg}</span>
+    </div>
+  );
+
+  const connectionModal = configFor && (
+    <ConnectionModal
+      device={configFor}
+      onClose={() => setConfigFor(null)}
+      onSaved={(msg) => {
+        setConfigFor(null);
+        showToast(msg);
+        loadMikrotiks();
+      }}
+    />
+  );
+
   // Detail view in place (Back returns to the list). Looked up by id each render so it
   // keeps getting live updates from the list's state.
-  const detail = detailId ? devices.find((x) => x.id === detailId) ?? null : null;
-  if (detail) {
-    return <NetworkDetail device={detail} isAdmin={isAdmin} onBack={() => setDetailId(null)} />;
+  if (detailId) {
+    const mk = mkDevices.find((x) => x.id === detailId);
+    if (mk) {
+      return (
+        <>
+          <MikrotikDetail
+            device={mk}
+            isAdmin={isAdmin}
+            onBack={() => setDetailId(null)}
+            onConfigure={isAdmin ? () => setConfigFor(mk) : undefined}
+          />
+          {connectionModal}
+          {toastEl}
+        </>
+      );
+    }
+    const net = devices.find((x) => x.id === detailId);
+    if (net) return <NetworkDetail device={net} isAdmin={isAdmin} onBack={() => setDetailId(null)} />;
   }
+
+  // Row actions, shared by the mobile cards and the table.
+  const actions = (row: Row) =>
+    confirmId === row.d.id ? (
+      <>
+        <span className="text-[12px]" style={{ color: RED }}>Remove?</span>
+        <button onClick={() => void remove(row)} disabled={removing === row.d.id} className="gf-btn px-2 py-1 text-[12px] font-medium" style={{ color: RED }}>
+          {removing === row.d.id ? "Removing…" : "Yes"}
+        </button>
+        <button onClick={() => setConfirmId(null)} className="gf-btn px-2 py-1 text-[12px]" style={{ color: gf.textMuted }}>No</button>
+      </>
+    ) : (
+      <>
+        <GhostButton onClick={() => setDetailId(row.d.id)}>View</GhostButton>
+        {isAdmin && row.kind === "mikrotik" && <GhostButton onClick={() => setConfigFor(row.d)}>Configure</GhostButton>}
+        {isAdmin && <GhostButton danger onClick={() => setConfirmId(row.d.id)}>Remove</GhostButton>}
+      </>
+    );
+
+  const COLUMNS = ["Device", "Type", "IP Address", "Location", "Status", "CPU", "Memory", "Ports", "Uptime", ""];
 
   return (
     <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
@@ -463,12 +632,12 @@ export default function NetworkMonitoring() {
         <div className="flex items-center gap-2.5 shrink-0">
           {isAdmin && (
             <button
-              onClick={openAdd}
+              onClick={() => setChooserOpen(true)}
               className="gf-btn inline-flex items-center gap-1.5 text-[13px] font-medium"
               style={{ height: 28, padding: "0 10px", color: "var(--gf-text-primary)" }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-              Add router
+              Add device
             </button>
           )}
           <span className="flex items-center gap-1.5 text-[12px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
@@ -477,14 +646,14 @@ export default function NetworkMonitoring() {
         </div>
       </div>
 
-      {/* Stat row */}
+      {/* Stat row — across every device, however it is monitored */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <StatPanel label="Routers" value={`${online}/${total}`} color={onlineColor} sub="online" />
+        <StatPanel label="Devices" value={`${online}/${total}`} color={onlineColor} sub="online" />
         <StatPanel label="Ports Up" value={`${ifacesUp}/${allIfaces.length}`} color={allIfaces.length > 0 && ifacesUp === allIfaces.length ? GREEN : ifacesUp === 0 ? RED : ORANGE} sub="links up" />
         {/* Busiest link, not the mean: one saturated uplink IS the incident, and
             averaging it against idle ports hides exactly what needs attention. */}
         <StatPanel label="Peak Util" value={String(peakUtil)} unit="%" color={loadColor(peakUtil)} sub={upUtil.length > 1 ? `busiest of ${upUtil.length}` : "of link speed"} />
-        <StatPanel label="Devices Down" value={String(total - online)} color={total - online === 0 ? GREEN : RED} sub="unreachable" />
+        <StatPanel label="Devices Down" value={String(down)} color={down === 0 ? GREEN : RED} sub="unreachable" />
       </div>
 
       {total === 0 ? (
@@ -495,43 +664,52 @@ export default function NetworkMonitoring() {
               <rect x="2" y="15" width="20" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
               <path d="M12 9v6M7 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
-            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No routers monitored yet</p>
+            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No network devices monitored yet</p>
             <p className="text-[13px] mt-1 max-w-md" style={{ color: gf.textDim }}>
               {isAdmin
-                ? "Click “Add router” to register a managed router (with SNMP enabled) — it starts polling within a minute."
-                : "A managed router (with SNMP enabled) must be registered by an admin to see live interface metrics here."}
+                ? "Click “Add device” to register a router or switch (SNMP, or ping only) or a MikroTik (RouterOS API)."
+                : "A router, switch or MikroTik must be registered by an admin to see live metrics here."}
             </p>
             {isAdmin && (
-              <button onClick={openAdd} className="gf-btn mt-4 text-[13px] font-semibold px-3 py-1.5" style={{ color: "var(--gf-text-primary)" }}>
-                + Add router
+              <button onClick={() => setChooserOpen(true)} className="gf-btn mt-4 text-[13px] font-semibold px-3 py-1.5" style={{ color: "var(--gf-text-primary)" }}>
+                + Add device
               </button>
             )}
           </div>
         </Panel>
       ) : (
-        /* A full-width list with expandable rows, like the Server Metrics page, so you can scan
-           routers and open only the one you want. */
+        /* A full-width list with expandable rows, like the Server Metrics page. */
         <Panel
-          title="Routers"
+          title="Devices"
           noPad
           right={<span className="text-[12px]" style={{ color: gf.textDim }}>{online}/{total} online</span>}
         >
-          {/* Mobile: one card per router (a table can't shrink to a phone) */}
+          {/* Mobile: one card per device (a table can't shrink to a phone) */}
           <div className="md:hidden flex flex-col gap-2 p-2.5">
-            {devices.map((d) => (
-              <div key={d.id} className="rounded-[2px] p-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
-                <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-                  <span className="text-[14px] font-medium truncate flex-1" style={{ color: gf.textPrimary }}>{d.name}</span>
-                  <PortsCell d={d} />
+            {rows.map((row) => {
+              const d = row.d;
+              const pending = row.kind === "mikrotik" && !row.d.monitored;
+              const dot = pending ? ORANGE : statusColor(d.status);
+              return (
+                <div key={d.id} className="rounded-[2px] p-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
+                  <div className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dot, boxShadow: `0 0 5px ${dot}` }} />
+                    <span className="text-[14px] font-medium truncate flex-1" style={{ color: gf.textPrimary }}>{d.name}</span>
+                    {row.kind === "mikrotik" ? <MkPortsCell d={row.d} /> : <PortsCell d={row.d} />}
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <TypeBadge row={row} />
+                    <span className="text-[12px] font-mono truncate" style={{ color: gf.textDim }}>{d.ip} · ↑ {formatUptime(d.uptimeSeconds)}</span>
+                  </div>
+                  {pending && (
+                    <div className="text-[12px] mt-1" style={{ color: ORANGE }}>
+                      API not configured — set the read-only RouterOS login.
+                    </div>
+                  )}
+                  <div className="flex gap-2 mt-2 flex-wrap items-center">{actions(row)}</div>
                 </div>
-                <div className="text-[12px] font-mono mt-0.5 truncate" style={{ color: gf.textDim }}>{d.ip} · ↑ {formatUptime(d.uptimeSeconds)}</div>
-                <div className="flex gap-2 mt-2">
-                  <GhostButton onClick={() => setDetailId(d.id)}>View</GhostButton>
-                  {isAdmin && <GhostButton danger onClick={() => setConfirmId(d.id)}>Remove</GhostButton>}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Desktop: table + drawer */}
@@ -539,7 +717,7 @@ export default function NetworkMonitoring() {
             <table className="w-full border-collapse">
               <thead>
                 <tr style={{ borderBottom: `1px solid ${gf.divider}` }}>
-                  {["Router", "IP Address", "Location", "Status", "Ports", "Uptime", ""].map((h) => (
+                  {COLUMNS.map((h) => (
                     <th key={h} className="text-left px-3 py-2 text-[11px] tracking-widest uppercase font-medium whitespace-nowrap" style={{ color: gf.textDim }}>
                       {h}
                     </th>
@@ -547,56 +725,86 @@ export default function NetworkMonitoring() {
                 </tr>
               </thead>
               <tbody>
-                {devices.map((d, i) => (
-                  <Fragment key={d.id}>
-                    <tr
-                      onClick={() => toggleDrawer(d.id)}
-                      className="cursor-pointer transition-colors"
-                      style={{ borderBottom: `1px solid ${gf.divider}`, background: openId === d.id ? gf.hover : i % 2 ? gf.hover : "transparent" }}
-                    >
-                      <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: gf.textPrimary }}>
-                        <div className="text-[14px] font-medium">
-                          {d.name}
-                          <span className="ml-1.5 text-[12px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === d.id ? "rotate(180deg)" : "none" }}>▾</span>
-                        </div>
-                        {d.sysName && d.sysName !== d.name && (
-                          <div className="text-[12px] font-mono font-normal" style={{ color: gf.textDim }}>{d.sysName}</div>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{d.ip}</td>
-                      <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{d.location}</td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: `0 0 5px ${statusColor(d.status)}` }} />
-                          <span className="text-[13px]" style={{ color: gf.textMuted }}>{d.status}</span>
-                        </span>
-                      </td>
-                      <td className="px-3 py-2.5 whitespace-nowrap"><PortsCell d={d} /></td>
-                      <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{formatUptime(d.uptimeSeconds)}</td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                          {confirmId === d.id ? (
-                            <>
-                              <span className="text-[12px]" style={{ color: RED }}>Remove?</span>
-                              <button onClick={() => remove(d.id)} className="gf-btn px-2 py-1 text-[12px] font-medium" style={{ color: RED }}>Yes</button>
-                              <button onClick={() => setConfirmId(null)} className="gf-btn px-2 py-1 text-[12px]" style={{ color: gf.textMuted }}>No</button>
-                            </>
-                          ) : (
-                            <>
-                              <GhostButton onClick={() => setDetailId(d.id)}>View</GhostButton>
-                              {isAdmin && <GhostButton danger onClick={() => setConfirmId(d.id)}>Remove</GhostButton>}
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                    <NetDrawerRow d={d} isOpen={openId === d.id} colSpan={7} />
-                  </Fragment>
-                ))}
+                {rows.map((row, i) => {
+                  const d = row.d;
+                  const sub = row.kind === "mikrotik" ? row.d.boardModel : row.d.sysName !== d.name ? row.d.sysName : null;
+                  return (
+                    <Fragment key={d.id}>
+                      <tr
+                        onClick={() => toggleDrawer(d.id)}
+                        className="cursor-pointer transition-colors"
+                        style={{ borderBottom: `1px solid ${gf.divider}`, background: openId === d.id ? gf.hover : i % 2 ? gf.hover : "transparent" }}
+                      >
+                        <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: gf.textPrimary }}>
+                          <div className="text-[14px] font-medium">
+                            {d.name}
+                            <span className="ml-1.5 text-[12px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === d.id ? "rotate(180deg)" : "none" }}>▾</span>
+                          </div>
+                          {sub && <div className="text-[12px] font-normal" style={{ color: gf.textDim }}>{sub}</div>}
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap"><TypeBadge row={row} /></td>
+                        <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{d.ip}</td>
+                        <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{d.location}</td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          {row.kind === "mikrotik" ? <MkStatus d={row.d} /> : <RouterStatus d={row.d} />}
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap"><LoadCell v={row.kind === "mikrotik" ? row.d.cpuPercent : null} /></td>
+                        <td className="px-3 py-2.5 whitespace-nowrap"><LoadCell v={row.kind === "mikrotik" ? row.d.memPercent : null} /></td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          {row.kind === "mikrotik" ? <MkPortsCell d={row.d} /> : <PortsCell d={row.d} />}
+                        </td>
+                        <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{formatUptime(d.uptimeSeconds)}</td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                            {actions(row)}
+                          </div>
+                        </td>
+                      </tr>
+                      {row.kind === "mikrotik"
+                        ? <MkDrawerRow d={row.d} isOpen={openId === d.id} colSpan={COLUMNS.length} />
+                        : <NetDrawerRow d={row.d} isOpen={openId === d.id} colSpan={COLUMNS.length} />}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </Panel>
+      )}
+
+      {/* Add device: pick the kind, then that kind's own form (admin) */}
+      {chooserOpen && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setChooserOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
+            <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}` }}>
+              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add device</span>
+              <button onClick={() => setChooserOpen(false)} className="grid place-items-center w-7 h-7 rounded-md" style={{ color: gf.textMuted }} title="Close (Esc)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="p-4 flex flex-col gap-2.5">
+              {[
+                { title: "Router or switch", sub: "SNMP v2c (ports and traffic), or ping only — any brand.", onClick: openRouterForm },
+                { title: "MikroTik", sub: "RouterOS API — ports, traffic, CPU, memory and DHCP leases.", onClick: openMikrotikForm },
+              ].map((o) => (
+                <button
+                  key={o.title}
+                  onClick={o.onClick}
+                  className="text-left px-3 py-2.5 rounded-[2px] transition-colors"
+                  style={{ background: gf.bg, border: `1px solid ${gf.border}` }}
+                  onMouseEnter={(e) => (e.currentTarget.style.borderColor = BLUE)}
+                  onMouseLeave={(e) => (e.currentTarget.style.borderColor = gf.border)}
+                >
+                  <div className="text-[14px] font-medium" style={{ color: gf.textPrimary }}>{o.title}</div>
+                  <div className="text-[12px] mt-0.5" style={{ color: gf.textDim }}>{o.sub}</div>
+                </button>
+              ))}
+              <p className="text-[11px] mt-1" style={{ color: gf.textDim }}>
+                A MikroTik with SNMP enabled can also be added as a router or switch — pick one, not both, or it is polled twice.
+              </p>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Add-router modal (admin) */}
@@ -604,7 +812,7 @@ export default function NetworkMonitoring() {
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setFormOpen(false)}>
           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-[2px] overflow-hidden" style={{ background: gf.panel, border: `1px solid ${gf.border}` }}>
             <div className="flex items-center justify-between px-4" style={{ height: 44, borderBottom: `1px solid ${gf.divider}`, background: gf.panel }}>
-              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router</span>
+              <span className="text-[14px] font-semibold tracking-wide" style={{ color: gf.textPrimary }}>Add router or switch</span>
               <button onClick={() => setFormOpen(false)} className="grid place-items-center w-7 h-7 rounded-md" style={{ color: gf.textMuted }} title="Close (Esc)">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
               </button>
@@ -674,22 +882,20 @@ export default function NetworkMonitoring() {
         </div>
       )}
 
-      {/* Toast. Two tones — see showToast. The warning one is wider and wraps, because
-          it carries a reason and a next step, not just a confirmation. */}
-      {toast && (
-        <div
-          className="fixed top-5 right-5 z-[100] flex items-start gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl max-w-sm"
-          style={{
-            color: toast.tone === "warn" ? ORANGE : GREEN,
-            background: toast.tone === "warn" ? `${ORANGE}14` : `${GREEN}14`,
-            borderColor: toast.tone === "warn" ? `${ORANGE}40` : `${GREEN}40`,
-            fontFamily: "'JetBrains Mono', monospace",
+      {mkAdding && (
+        <AddMikrotikModal
+          usedNames={mkDevices.map((d) => d.name)}
+          onClose={() => setMkAdding(false)}
+          onAdded={(msg) => {
+            setMkAdding(false);
+            showToast(msg);
+            loadMikrotiks();
           }}
-        >
-          <span className="shrink-0">{toast.tone === "warn" ? "!" : "✓"}</span>
-          <span className="leading-relaxed">{toast.msg}</span>
-        </div>
+        />
       )}
+
+      {connectionModal}
+      {toastEl}
     </div>
   );
 }

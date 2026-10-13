@@ -1,22 +1,17 @@
-import { Fragment, useState, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
-import { api } from "../api/api";
-import { socket } from "../socket/socket";
-import { useAuth } from "../context/AuthContext";
-import MikrotikDetail from "./MikrotikDetail";
-import type { MkDevice } from "./MikrotikDetail";
-import { GF as gf, STATUS } from "../theme/gf";
-import { formatUptime } from "../utils/format";
-import { GhostButton, StatPanel, Meta } from "../components/ui/primitives";
-import type { DeviceFirstPoll } from "../api/api";
+import { useState } from "react";
+import { api } from "../../api/api";
+import type { MkDevice } from "../../pages/MikrotikDetail";
+import { GF as gf, STATUS } from "../../theme/gf";
+import { formatUptime } from "../../utils/format";
+import { Meta } from "../ui/primitives";
 const { green: GREEN, orange: ORANGE, red: RED, blue: BLUE } = STATUS;
 
-// ─── MikroTik list page ───────────────────────────────────────────────────────
-// One row per router with "View", which opens MikrotikDetail in place (like ServerMetrics
-// ↔ ServerDetail). Types and the per-device charts/ports are in MikrotikDetail.tsx.
-
-// ─── Grafana tokens (match NetworkMonitoring.tsx) ─────────────────────────────
-
+// ─── MikroTik pieces of the Network page ──────────────────────────────────────
+// MikroTiks used to have their own page and sidebar entry. ICTU's network admin asked
+// for one Network page ("they are all network"), so NetworkMonitoring now lists them
+// beside the SNMP / ping routers and uses these for the MikroTik rows: mapping, live
+// merge, status, drawer, and the Add / RouterOS-connection modals. Monitoring itself is
+// unchanged — still the RouterOS API poller, still /api/mikrotik.
 
 
 function loadColor(v: number) {
@@ -31,7 +26,7 @@ function statusColor(s: string) {
 }
 // ─── Mapping ──────────────────────────────────────────────────────────────────
 
-function mapMk(r: any): MkDevice {
+export function mapMk(r: any): MkDevice {
   return {
     id: String(r.id),
     name: r.name ?? "—",
@@ -67,7 +62,7 @@ function mapMk(r: any): MkDevice {
 // Merge one live `networkMetrics` payload into the current row. All fields are optional:
 // a poll carries metrics, an add or config save carries identity and settings. Missing
 // fields keep their value.
-function mergeMkLive(prev: MkDevice | undefined, p: any): MkDevice {
+export function mergeMkLive(prev: MkDevice | undefined, p: any): MkDevice {
   const base = prev ?? mapMk({ ...p, monitored: p.monitored ?? false });
   return {
     ...base,
@@ -96,40 +91,11 @@ function mergeMkLive(prev: MkDevice | undefined, p: any): MkDevice {
   };
 }
 
-// ─── Panel / StatPanel ────────────────────────────────────────────────────────
-
-function Panel({
-  title, right, children, noPad,
-}: {
-  title?: string;
-  right?: React.ReactNode;
-  children: React.ReactNode;
-  noPad?: boolean;
-}) {
-  return (
-    <div
-      className="flex flex-col rounded-lg overflow-hidden"
-      style={{ background: gf.panel, border: `1px solid ${gf.border}` }}
-    >
-      {title !== undefined && (
-        <div className="flex items-center justify-between px-3 shrink-0" style={{ height: 32, borderBottom: `1px solid ${gf.divider}` }}>
-          <span className="text-[13px] font-medium tracking-widest uppercase truncate" style={{ color: gf.textMuted }}>{title}</span>
-          {right && <div className="flex items-center gap-2">{right}</div>}
-        </div>
-      )}
-      <div className="flex-1 min-h-0" style={{ padding: noPad ? 0 : 12 }}>{children}</div>
-    </div>
-  );
-}
-
-// ─── Ghost button (matches ServerMetrics / NetworkMonitoring "View") ──────────
-
-// One labelled value in a drawer's summary strip, so each value says what it is.
 // ─── Status, including "API not configured" ──────────────────────────
 // A MikroTik with no RouterOS login has never been polled, so `status` is "Offline",
 // but it is not down: an admin needs to add the login. So the row shows "API not
 // configured" where the status is.
-function MkStatus({ d }: { d: MkDevice }) {
+export function MkStatus({ d }: { d: MkDevice }) {
   if (!d.monitored) {
     return (
       <span
@@ -153,7 +119,7 @@ function MkStatus({ d }: { d: MkDevice }) {
 // ─── Drawer row (expands under a table row) ───────────────────────────────────
 // Same pattern as ServerMetrics' ServerDrawerRow: the row has the summary, the drawer
 // the ports and identity.
-function MkDrawerRow({ d, isOpen, colSpan }: { d: MkDevice; isOpen: boolean; colSpan: number }) {
+export function MkDrawerRow({ d, isOpen, colSpan }: { d: MkDevice; isOpen: boolean; colSpan: number }) {
   const up = d.interfaces.filter((i) => i.linkUp).length;
   return (
     <tr>
@@ -171,6 +137,9 @@ function MkDrawerRow({ d, isOpen, colSpan }: { d: MkDevice; isOpen: boolean; col
               <Meta label="API port" value={`${d.apiPort ?? "—"}${d.useTls ? " · TLS" : ""}`} />
               {d.apiUsername && <Meta label="API user" value={d.apiUsername} mono />}
               <Meta label="Uptime" value={formatUptime(d.uptimeSeconds)} />
+              {/* Was a table column on the MikroTik page; the merged table has no room for a
+                  column only MikroTiks fill, so it lives here. */}
+              {d.connectedClients != null && <Meta label="DHCP leases" value={String(d.connectedClients)} />}
             </div>
             {!d.monitored ? (
               /* The row already carries the flag (see MkStatus). This is the expanded
@@ -203,7 +172,7 @@ function MkDrawerRow({ d, isOpen, colSpan }: { d: MkDevice; isOpen: boolean; col
 }
 
 // Compact ports figure for the table cell — chips live in the drawer.
-function PortsCell({ d }: { d: MkDevice }) {
+export function MkPortsCell({ d }: { d: MkDevice }) {
   const up = d.interfaces.filter((i) => i.linkUp).length;
   const total = d.interfaces.length;
   const color = total === 0 ? gf.textDim : up === total ? GREEN : up === 0 ? RED : ORANGE;
@@ -287,7 +256,7 @@ function PasswordField({
 
 // ─── Admin: add a new MikroTik ────────────────────────────────────────────────
 
-function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdded: (msg: string) => void; usedNames: string[] }) {
+export function AddMikrotikModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdded: (msg: string) => void; usedNames: string[] }) {
   // Empty fields with placeholders, not pre-filled values that have to be deleted each
   // time. Location may be empty: createDevice uses "Server Room" by default.
   const [name, setName] = useState("");
@@ -457,7 +426,7 @@ function AddModal({ onClose, onAdded, usedNames }: { onClose: () => void; onAdde
 
 // ─── Admin: RouterOS connection modal ─────────────────────────────────────────
 
-function ConnectionModal({
+export function ConnectionModal({
   device, onClose, onSaved,
 }: {
   device: MkDevice;
@@ -567,364 +536,6 @@ function ConnectionModal({
           <p className="text-[11px]" style={{ color: gf.textDim }}>Test uses what's typed above — no need to save first. Leave the password blank to test the stored one.</p>
         </div>
       </div>
-    </div>
-  );
-}
-
-// ─── Main ─────────────────────────────────────────────────────────────────────
-
-export default function MikrotikMonitoring() {
-  const [devices, setDevices] = useState<MkDevice[]>([]);
-  const [detailId, setDetailId] = useState<string | null>(null);
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
-  const [configFor, setConfigFor] = useState<MkDevice | null>(null);
-  const [adding, setAdding] = useState(false);
-  // Toasts have a tone, so a registration whose first login failed is not shown in green.
-  // Same as the Network and UPS pages.
-  const [toast, setToast] = useState<{ msg: string; tone: "ok" | "warn" } | null>(null);
-  const showToast = (msg: string, tone: "ok" | "warn" = "ok") => {
-    setToast({ msg, tone });
-    setTimeout(() => setToast(null), tone === "warn" ? 9000 : 3000);
-  };
-  const [confirmId, setConfirmId] = useState<string | null>(null);
-  const [removing, setRemoving] = useState<string | null>(null);
-  // Which row's drawer is open (one at a time), same as ServerMetrics.
-  const [openId, setOpenId] = useState<string | null>(null);
-  const toggleDrawer = (id: string) => setOpenId((prev) => (prev === id ? null : id));
-  const [searchParams, setSearchParams] = useSearchParams();
-
-  // Deep link from a notification: /mikrotik?device=<id> opens that router once the list
-  // loads, then removes the parameter (so Back returns to the list). Same as ServerMetrics;
-  // see routeFor.
-  useEffect(() => {
-    const deviceParam = searchParams.get("device");
-    if (!deviceParam) return;
-    if (!devices.some((d) => d.id === String(deviceParam))) return;
-    setDetailId(String(deviceParam));
-    searchParams.delete("device");
-    setSearchParams(searchParams, { replace: true });
-  }, [devices, searchParams, setSearchParams]);
-
-  // Decommission. Cascades server-side to mikrotik_devices / network_interfaces /
-  // device_logs / alerts, so it's gated behind the inline Yes/No confirm.
-  const remove = async (id: string) => {
-    setRemoving(id);
-    const r = await api.deleteMikrotik(Number(id));
-    setRemoving(null);
-    setConfirmId(null);
-    if (!r.success) {
-      alert(r.error ?? "Failed to remove MikroTik.");
-      return;
-    }
-    setDevices((prev) => prev.filter((x) => x.id !== id));
-    setDetailId((cur) => (cur === id ? null : cur));
-    showToast("MikroTik removed");
-  };
-
-  const load = () =>
-    api.getMikrotikDevices().then((r) => {
-      if (r.success && r.data) setDevices((r.data.devices ?? []).map(mapMk));
-    });
-
-  useEffect(() => {
-    load();
-    const onMetrics = (data: { device: any }) => {
-      if (!data?.device || data.device.type !== "mikrotik") return; // shared event — only ours
-      const id = String(data.device.id);
-      setDevices((prev) => {
-        const idx = prev.findIndex((d) => d.id === id);
-        if (idx === -1) return [...prev, mergeMkLive(undefined, data.device)];
-        const next = [...prev];
-        next[idx] = mergeMkLive(next[idx], data.device);
-        return next;
-      });
-    };
-    const onStatus = (data: { id: number | string; status: string }) => {
-      const id = String(data?.id);
-      setDevices((prev) =>
-        prev.map((d) =>
-          d.id !== id
-            ? d
-            : data.status === "Offline"
-              ? { ...d, status: "Offline", reachable: false, interfaces: [] }
-              : { ...d, status: data.status },
-        ),
-      );
-    };
-    // Another admin removed it — drop it here too, and bail out of its detail view.
-    const onRemoved = (data: { id: number | string }) => {
-      const id = String(data?.id);
-      setDevices((prev) => prev.filter((d) => d.id !== id));
-      setDetailId((cur) => (cur === id ? null : cur));
-    };
-    // How the new MikroTik's first API login went, sent only to the admin who added it.
-    // With a username and password involved, "no data yet" and "wrong credentials" look the
-    // same until a login is tried.
-    const onFirstPoll = (d: DeviceFirstPoll) => {
-      if (d?.kind !== "mikrotik") return; // routers and UPS have their own pages
-      if (d.ok) {
-        showToast(`${d.name} logged in over the RouterOS API — now polling.`);
-      } else {
-        showToast(
-          `${d.name} could not be polled${d.reason ? ` — ${d.reason}` : ""}. ` +
-            `Check the username, the password, the API port and that the api service is ` +
-            `enabled on the router. It stays registered and keeps retrying.`,
-          "warn",
-        );
-      }
-    };
-
-    socket.on("networkMetrics", onMetrics);
-    socket.on("networkStatus", onStatus);
-    socket.on("networkRemoved", onRemoved);
-    socket.on("deviceFirstPoll", onFirstPoll);
-    return () => {
-      socket.off("networkMetrics", onMetrics);
-      socket.off("networkStatus", onStatus);
-      socket.off("networkRemoved", onRemoved);
-      socket.off("deviceFirstPoll", onFirstPoll);
-    };
-  }, []);
-
-  const total = devices.length;
-  const online = devices.filter((d) => d.status === "Online").length;
-  const allIfaces = devices.flatMap((d) => d.interfaces);
-  const portsUp = allIfaces.filter((i) => i.linkUp).length;
-  // The worst across the fleet, not the average, which would hide one router at 98%.
-  // Devices that have not reported are left out.
-  const cpuVals = devices.filter((d) => d.cpuPercent != null).map((d) => d.cpuPercent as number);
-  const memVals = devices.filter((d) => d.memPercent != null).map((d) => d.memPercent as number);
-  const worstCpu = cpuVals.length ? Math.round(Math.max(...cpuVals)) : 0;
-  const worstMem = memVals.length ? Math.round(Math.max(...memVals)) : 0;
-  const reporting = Math.max(cpuVals.length, memVals.length);
-  const aggSub = reporting > 1 ? `worst of ${reporting}` : "router load";
-
-  // Detail view in place (Back returns to the list). Looked up by id each render so it
-  // keeps getting live updates from the list's state.
-  const detail = detailId ? devices.find((d) => d.id === detailId) ?? null : null;
-  if (detail) {
-    return (
-      <>
-        <MikrotikDetail
-          device={detail}
-          isAdmin={isAdmin}
-          onBack={() => setDetailId(null)}
-          onConfigure={isAdmin ? () => setConfigFor(detail) : undefined}
-        />
-        {configFor && (
-          <ConnectionModal
-            device={configFor}
-            onClose={() => setConfigFor(null)}
-            onSaved={(msg) => {
-              setConfigFor(null);
-              showToast(msg);
-              load();
-            }}
-          />
-        )}
-        {toast && (
-          <div className="fixed top-5 right-5 z-[80] flex items-start gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl max-w-sm"
-            style={{ color: toast.tone === "warn" ? ORANGE : GREEN, background: (toast.tone === "warn" ? ORANGE : GREEN) + "14", borderColor: (toast.tone === "warn" ? ORANGE : GREEN) + "40" }}>
-            <span className="shrink-0">{toast.tone === "warn" ? "!" : "✓"}</span>
-            <span className="leading-relaxed">{toast.msg}</span>
-          </div>
-        )}
-      </>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-2.5" style={{ background: gf.bg, minHeight: "100%", padding: 12 }}>
-      {/* Toolbar */}
-      <div className="flex items-center justify-between gap-3 px-0.5">
-        <div className="flex items-baseline gap-2 min-w-0">
-          <h1 className="text-[15px] font-semibold truncate" style={{ color: gf.textPrimary }}>MikroTik Network</h1>
-          <span className="text-[13px] hidden sm:inline" style={{ color: gf.textDim }}>
-            per-port traffic · {portsUp}/{allIfaces.length} ports up
-          </span>
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          {isAdmin && (
-            <button
-              onClick={() => setAdding(true)}
-              className="gf-btn inline-flex items-center gap-1.5 text-[13px] font-medium"
-              style={{ height: 28, padding: "0 10px", color: "var(--gf-text-primary)" }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-              Add MikroTik
-            </button>
-          )}
-          <span className="flex items-center gap-1.5 text-[12px] tracking-widest uppercase" style={{ color: gf.textMuted }}>
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: online > 0 ? GREEN : RED, boxShadow: `0 0 6px ${online > 0 ? GREEN : RED}` }} /> Live
-          </span>
-        </div>
-      </div>
-
-      {/* Stat row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <StatPanel label="Routers" value={`${online}/${total}`} color={total > 0 && online === total ? GREEN : online === 0 ? RED : ORANGE} sub="online" />
-        <StatPanel label="Ports Up" value={`${portsUp}/${allIfaces.length}`} color={allIfaces.length > 0 && portsUp === allIfaces.length ? GREEN : portsUp === 0 ? RED : ORANGE} sub="links up" />
-        <StatPanel label="CPU" value={String(worstCpu)} unit="%" color={loadColor(worstCpu)} sub={aggSub} />
-        <StatPanel label="Memory" value={String(worstMem)} unit="%" color={loadColor(worstMem)} sub={reporting > 1 ? `worst of ${reporting}` : "router RAM"} />
-      </div>
-
-      {total === 0 ? (
-        <Panel title="MikroTik">
-          <div className="flex flex-col items-center justify-center text-center py-12 px-4">
-            <svg width="38" height="38" viewBox="0 0 24 24" fill="none" style={{ color: gf.textDim }}>
-              <rect x="2" y="4" width="20" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-              <rect x="2" y="14" width="20" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M6 7h.01M6 17h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
-            <p className="text-[15px] mt-3" style={{ color: gf.textMuted }}>No MikroTik registered yet</p>
-            <p className="text-[13px] mt-1 max-w-md" style={{ color: gf.textDim }}>
-              Add your router below and set its read-only RouterOS login.
-            </p>
-            {isAdmin && (
-              <button onClick={() => setAdding(true)} className="gf-btn mt-4 text-[14px] px-3 py-1.5 font-medium" style={{ color: "var(--gf-text-primary)" }}>
-                + Add MikroTik
-              </button>
-            )}
-          </div>
-        </Panel>
-      ) : (
-        /* Wide list + expandable drawer, matching the Server Metrics front page. */
-        <Panel
-          title="MikroTik routers"
-          noPad
-          right={<span className="text-[12px]" style={{ color: gf.textDim }}>{online}/{total} online</span>}
-        >
-          {/* Mobile: one card per router */}
-          <div className="md:hidden flex flex-col gap-2 p-2.5">
-            {devices.map((d) => (
-              <div key={d.id} className="rounded-[2px] p-2.5" style={{ background: gf.bg, border: `1px solid ${gf.border}` }}>
-                <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: d.monitored ? statusColor(d.status) : ORANGE, boxShadow: `0 0 5px ${d.monitored ? statusColor(d.status) : ORANGE}` }} />
-                  <span className="text-[14px] font-medium truncate flex-1" style={{ color: gf.textPrimary }}>{d.name}</span>
-                  <PortsCell d={d} />
-                </div>
-                <div className="text-[12px] font-mono mt-0.5 truncate" style={{ color: gf.textDim }}>{d.ip} · ↑ {formatUptime(d.uptimeSeconds)}</div>
-                {!d.monitored && (
-                  <div className="text-[12px] mt-1" style={{ color: ORANGE }}>
-                    API not configured — set the read-only RouterOS login.
-                  </div>
-                )}
-                <div className="flex gap-2 mt-2 flex-wrap">
-                  <GhostButton onClick={() => setDetailId(d.id)}>View</GhostButton>
-                  {isAdmin && <GhostButton onClick={() => setConfigFor(d)}>Configure</GhostButton>}
-                  {isAdmin && <GhostButton danger onClick={() => setConfirmId(d.id)}>Remove</GhostButton>}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Desktop: table + drawer */}
-          <div className="hidden md:block overflow-x-auto">
-            <table className="w-full border-collapse">
-              <thead>
-                <tr style={{ borderBottom: `1px solid ${gf.divider}` }}>
-                  {["Router", "IP Address", "Status", "CPU", "Memory", "Ports", "Leases", "Uptime", ""].map((h) => (
-                    <th key={h} className="text-left px-3 py-2 text-[11px] tracking-widest uppercase font-medium whitespace-nowrap" style={{ color: gf.textDim }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {devices.map((d, i) => (
-                  <Fragment key={d.id}>
-                    <tr
-                      onClick={() => toggleDrawer(d.id)}
-                      className="cursor-pointer transition-colors"
-                      style={{ borderBottom: `1px solid ${gf.divider}`, background: openId === d.id ? gf.hover : i % 2 ? gf.hover : "transparent" }}
-                    >
-                      <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: gf.textPrimary }}>
-                        <div className="text-[14px] font-medium">
-                          {d.name}
-                          <span className="ml-1.5 text-[12px] inline-block transition-transform" style={{ color: gf.textDim, transform: openId === d.id ? "rotate(180deg)" : "none" }}>▾</span>
-                        </div>
-                        {d.boardModel && <div className="text-[12px] font-normal" style={{ color: gf.textDim }}>{d.boardModel}</div>}
-                      </td>
-                      <td className="px-3 py-2.5 text-[13px] font-mono whitespace-nowrap" style={{ color: gf.textMuted }}>{d.ip}</td>
-                      <td className="px-3 py-2.5 whitespace-nowrap"><MkStatus d={d} /></td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
-                        <span className="text-[13px] tabular-nums" style={{ color: d.cpuPercent != null ? loadColor(Math.round(d.cpuPercent)) : gf.textDim }}>
-                          {d.cpuPercent != null ? `${Math.round(d.cpuPercent)}%` : "—"}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
-                        <span className="text-[13px] tabular-nums" style={{ color: d.memPercent != null ? loadColor(Math.round(d.memPercent)) : gf.textDim }}>
-                          {d.memPercent != null ? `${Math.round(d.memPercent)}%` : "—"}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2.5 whitespace-nowrap"><PortsCell d={d} /></td>
-                      <td className="px-3 py-2.5 text-[13px] tabular-nums whitespace-nowrap" style={{ color: gf.textMuted }}>
-                        {d.connectedClients != null ? d.connectedClients : "—"}
-                      </td>
-                      <td className="px-3 py-2.5 text-[13px] whitespace-nowrap" style={{ color: gf.textMuted }}>{formatUptime(d.uptimeSeconds)}</td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                          {confirmId === d.id ? (
-                            <>
-                              <span className="text-[12px]" style={{ color: RED }}>Remove?</span>
-                              <button onClick={() => void remove(d.id)} disabled={removing === d.id} className="gf-btn px-2 py-1 text-[12px] font-medium" style={{ color: RED }}>
-                                {removing === d.id ? "Removing…" : "Yes"}
-                              </button>
-                              <button onClick={() => setConfirmId(null)} className="gf-btn px-2 py-1 text-[12px]" style={{ color: gf.textMuted }}>No</button>
-                            </>
-                          ) : (
-                            <>
-                              <GhostButton onClick={() => setDetailId(d.id)}>View</GhostButton>
-                              {isAdmin && <GhostButton onClick={() => setConfigFor(d)}>Configure</GhostButton>}
-                              {isAdmin && <GhostButton danger onClick={() => setConfirmId(d.id)}>Remove</GhostButton>}
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                    <MkDrawerRow d={d} isOpen={openId === d.id} colSpan={9} />
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-      )}
-
-      {adding && (
-        <AddModal
-          usedNames={devices.map((d) => d.name)}
-          onClose={() => setAdding(false)}
-          onAdded={(msg) => {
-            setAdding(false);
-            showToast(msg);
-            load();
-          }}
-        />
-      )}
-
-      {configFor && (
-        <ConnectionModal
-          device={configFor}
-          onClose={() => setConfigFor(null)}
-          onSaved={(msg) => {
-            setConfigFor(null);
-            showToast(msg);
-            load();
-          }}
-        />
-      )}
-
-      {toast && (
-        <div
-          className="fixed top-5 right-5 z-[80] flex items-start gap-2 px-4 py-3 rounded-[2px] border text-xs shadow-xl max-w-sm"
-          style={{ color: toast.tone === "warn" ? ORANGE : GREEN, background: (toast.tone === "warn" ? ORANGE : GREEN) + "14", borderColor: (toast.tone === "warn" ? ORANGE : GREEN) + "40" }}
-        >
-          <span className="shrink-0">{toast.tone === "warn" ? "!" : "✓"}</span>
-          <span className="leading-relaxed">{toast.msg}</span>
-        </div>
-      )}
     </div>
   );
 }

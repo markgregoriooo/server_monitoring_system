@@ -371,7 +371,7 @@ function ServerCard({ s, isAdmin, onView, onRename, onDelete, onMaintenance }: {
       </div>
       {/* flex-wrap, and the button group is not shrink-0: an admin's four buttons (~290px) do
          not fit a phone card (~315px) next to the uptime, so they wrap to their own line.
-         Same as MikrotikMonitoring.tsx. */}
+         Same as the Network page. */}
       <div className="flex items-center justify-between gap-2 mt-3 pt-2.5 flex-wrap" style={{ borderTop: `1px solid ${gf.divider}` }}>
         <span className="text-[13px] truncate" style={{ color: gf.textMuted }}>↑ {s.uptime}</span>
         <div className="flex flex-wrap gap-2">

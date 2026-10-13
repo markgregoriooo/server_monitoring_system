@@ -31,7 +31,6 @@ import IdleLogoutModal from "./components/session/IdleLogoutModal";
 import Dashboard from "./pages/Dashboard";
 import ServerMetrics from "./pages/ServerMetrics";
 import NetworkMonitoring from "./pages/NetworkMonitoring";
-import MikrotikMonitoring from "./pages/MikrotikMonitoring";
 import UpsMonitoring from "./pages/UpsMonitoring";
 import Environment from "./pages/Environment";
 import AirConditioner from "./pages/AirConditioner";
@@ -49,7 +48,6 @@ const pageTitles: Record<string, string> = {
   "/": "Server Infrastructure Monitoring System",
   "/server-metrics": "Server Metrics",
   "/network": "Network Monitoring",
-  "/mikrotik": "MikroTik Network",
   "/ups": "UPS Monitoring",
   "/environment": "Environment Monitoring",
   "/air-conditioner": "Air Conditioner Control",
@@ -80,6 +78,13 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
   }
 
   return children;
+}
+
+// /mikrotik → /network, keeping the query string (a notification deep link carries
+// ?device=<id>, and MikroTik ids are ordinary device ids, so /network can open it).
+function MikrotikRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={{ pathname: "/network", search }} replace />;
 }
 
 function AppShell() {
@@ -203,11 +208,9 @@ function AppShell() {
               </ProtectedRoute>
             } />
 
-            <Route path="/mikrotik" element={
-              <ProtectedRoute>
-                <MikrotikMonitoring />
-              </ProtectedRoute>
-            } />
+            {/* MikroTiks are listed on the Network page now. Bookmarks and older alert links
+                still land somewhere, and ?device= is kept so they open the right router. */}
+            <Route path="/mikrotik" element={<MikrotikRedirect />} />
 
             <Route path="/ups" element={
               <ProtectedRoute>

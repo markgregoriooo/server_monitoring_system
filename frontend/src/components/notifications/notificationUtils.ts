@@ -21,7 +21,7 @@ export function deviceLabel(n: Pick<AppNotification, "deviceName" | "deviceHostn
 const PAGE_FOR_DEVICE_TYPE: Record<string, string> = {
   server: "/server-metrics",
   router: "/network",
-  mikrotik: "/mikrotik",
+  mikrotik: "/network", // listed with the other routers; /network?device= opens it
   ups: "/ups",
 };
 
@@ -51,7 +51,7 @@ export function routeFor(n: AppNotification): string {
 
   // Fallback when device_type is missing: guess the page from the type prefix
   // (`link_util:ether3` has a port suffix, hence startsWith). A MikroTik lands on
-  // /network here.
+  // /network here, which is now its page anyway.
   if (n.type.startsWith("ups_")) return "/ups";
   if (n.type.startsWith("router_") || n.type.startsWith("link_")) return "/network";
   return "/";
