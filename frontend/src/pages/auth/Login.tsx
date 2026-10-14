@@ -710,7 +710,7 @@ export default function Login() {
           </Reveal>
 
           <div className="md:hidden flex flex-col gap-2">
-            <Chip title="ESP32" sub="DHT11 + MQ-2 + IR — push over Socket.IO" />
+            <Chip title="ESP32" sub="DHT22 + MQ-2 + IR — push over Socket.IO" />
             <Chip title="CSPC agents" sub="one per server — push over HTTP" />
             <Chip title="Pollers" sub="SNMP + RouterOS API + ICMP — pull" />
             <DownArrow />
