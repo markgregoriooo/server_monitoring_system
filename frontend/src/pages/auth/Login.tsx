@@ -711,7 +711,7 @@ export default function Login() {
 
           <div className="md:hidden flex flex-col gap-2">
             <Chip title="ESP32" sub="DHT11 + MQ-2 + IR — push over Socket.IO" />
-            <Chip title="Go agents" sub="one per server — push over HTTP" />
+            <Chip title="CSPC agents" sub="one per server — push over HTTP" />
             <Chip title="Pollers" sub="SNMP + RouterOS API + ICMP — pull" />
             <DownArrow />
             <Chip title="Node.js + Express" sub="validate · alert · broadcast" />

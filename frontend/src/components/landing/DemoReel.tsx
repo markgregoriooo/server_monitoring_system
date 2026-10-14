@@ -43,7 +43,7 @@ const GAS_PATH = GAS.map((v, i) => {
 const FACTS: { k: string; v: string }[] = [
   {
     k: "Every 3 seconds",
-    v: "Both MQ-2 sensors are read continuously. Nothing waits for a poll to come round.",
+    v: "Every MQ-2 sensor is read continuously. Nothing waits for a poll to come round.",
   },
   {
     k: "The device decides first",
@@ -60,7 +60,7 @@ const CHAIN: { id: string; label: string; sub: string; tone: string }[] = [
   { id: "led", label: "LED", sub: "turns red", tone: RED },
   { id: "buzzer", label: "BUZZER", sub: "sounds", tone: RED },
   { id: "toast", label: "DASHBOARD", sub: "alert raised", tone: ORANGE },
-  { id: "email", label: "EMAIL", sub: "sent on duty", tone: ACCENT },
+  { id: "email", label: "EMAIL", sub: "sent on critical", tone: ACCENT },
 ];
 
 function AlertChainLoop() {

@@ -31,7 +31,7 @@ interface Box {
 // ICMP" needs ~139px at 10.5px monospace. Connectors start at x=166.
 const BOXES: Box[] = [
   { x: 6, y: 18, w: 160, h: 52, title: "ESP32", sub: "DHT22 · MQ-2 · IR", tone: GREEN },
-  { x: 6, y: 92, w: 160, h: 52, title: "Go agents", sub: "one per server", tone: GREEN },
+  { x: 6, y: 92, w: 160, h: 52, title: "CSPC agents", sub: "one per server", tone: GREEN },
   // ICMP is not a separate ingest path (it runs in the poller), but it is named because
   // it monitors equipment we have no credentials for.
   { x: 6, y: 166, w: 160, h: 52, title: "Pollers", sub: "SNMP · RouterOS · ICMP", tone: GREEN },
