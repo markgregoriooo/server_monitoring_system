@@ -181,7 +181,7 @@ const ENV_HUM  = "#38BDF8";
 // The focus panels colour their own values through focusShared.loadColor.
 
 // Body height of every panel in the two-column stack below the tiles (Environment,
-// Active Alerts, Servers, Network, MikroTik, UPS), so the page reads as one grid.
+// Active Alerts, Servers, Network, UPS, Air Conditioner Units), so the page reads as one grid.
 // Explicit because CSS grid only equalises items within a row. Fits a picker, status
 // line, chart and legend; the Active Alerts list scrolls past about six incidents.
 const PANEL_H = 300;
@@ -757,15 +757,21 @@ export default function Dashboard() {
   const focusServer = servers.find((s) => String(s.id) === focusId) ?? null;
 
   // The network and UPS panels work the same way, and all three share one range so an
-  // incident can be read across them. Network is split into SNMP routers and MikroTik,
-  // since they report different metrics.
-  const routers = netDevices.filter((d) => d.type !== "mikrotik");
-  const mikrotiks = netDevices.filter((d) => d.type === "mikrotik");
+  // incident can be read across them. Network is ONE panel for SNMP, ping-only and MikroTik
+  // devices, like the Network page ("they are all network"). NetworkFocus already adapts to
+  // each kind (MikroTik CPU/mem, ping latency/loss), so the picker only names the kind,
+  // with the same labels as the Network page's Type column.
+  const netPickList = netDevices.map((d) => ({
+    id: d.id,
+    name: `${d.name ?? `Device ${d.id}`} · ${
+      d.type === "mikrotik" ? "MikroTik API" : d.mode === "ping" ? "Ping" : "SNMP"
+    }`,
+  }));
 
   // Same treatment as the server panel: remembered across reloads, and still falls back
-  // to the first device when the remembered one no longer exists.
-  const [routerFocusId, setRouterFocusId] = usePersistedFocus(`${FOCUS_KEY}.router`, routers);
-  const [mtFocusId, setMtFocusId] = usePersistedFocus(`${FOCUS_KEY}.mikrotik`, mikrotiks);
+  // to the first device when the remembered one no longer exists. The key stays `.router`,
+  // so whoever had a router focused before the merge keeps it.
+  const [netFocusId, setNetFocusId] = usePersistedFocus(`${FOCUS_KEY}.router`, netDevices);
   const [upsFocusId, setUpsFocusId] = usePersistedFocus(`${FOCUS_KEY}.ups`, upsDevices);
 
   // The environment chart follows the shared range too. Requested in its own effect so
@@ -791,8 +797,7 @@ export default function Dashboard() {
   const envSpanRef = useRef(rangeSpanSec(DEFAULT_RANGE));
   envSpanRef.current = rangeSpanSec(focusRange);
 
-  const focusRouter = routers.find((d) => String(d.id) === routerFocusId) ?? null;
-  const focusMt = mikrotiks.find((d) => String(d.id) === mtFocusId) ?? null;
+  const focusNet = netDevices.find((d) => String(d.id) === netFocusId) ?? null;
   const focusUps = upsDevices.find((d) => String(d.id) === upsFocusId) ?? null;
 
   // ESP32 liveness: current state over REST, then changes over the socket, like
@@ -1254,10 +1259,10 @@ export default function Dashboard() {
         </Panel>
       </div>
 
-      {/* ── Rows 3-4: the four device types, as one 2x2 grid ──
-         Servers | Network        (row 3)
-         MikroTik | UPS Power     (row 4)
-         All the same shape (pick a device, read its chart) and size (PANEL_H). */}
+      {/* ── Rows 3-4: the device panels, as one 2x2 grid ──
+         Servers | Network (SNMP, ping-only and MikroTik)   (row 3)
+         UPS Power | Air Conditioner Units                  (row 4)
+         All the same size (PANEL_H). */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {/* Same shape as the other three. The full server list is on the Server Metrics page. */}
         <Panel
@@ -1287,43 +1292,27 @@ export default function Dashboard() {
           )}
         </Panel>
 
-        {/* SNMP routers only; MikroTik has its own panel since it reports different metrics. */}
+        {/* Every network device: SNMP, ping-only and MikroTik (the picker names the kind). */}
         <Panel title="Network" noPad bodyStyle={PANEL_BODY} right={
           <span className="text-[12px]" style={{ color: gf.textMuted }}>
-            {routers.length ? `${routers.filter((d) => d.status === "Online").length}/${routers.length} online` : "none registered"}
+            {netDevices.length ? `${netOnline}/${netDevices.length} online` : "none registered"}
           </span>
         }>
-          {routers.length === 0 ? (
+          {netDevices.length === 0 ? (
             <div style={{ padding: 12 }}>
-              <EmptyRow>No SNMP routers registered yet.</EmptyRow>
+              <EmptyRow>No network devices registered yet.</EmptyRow>
             </div>
           ) : (
             <>
-              <DevicePicker devices={routers} value={routerFocusId} onChange={setRouterFocusId} label="Router" />
-              <NetworkFocus device={focusRouter} range={focusRange} isDark={isDark} />
+              <DevicePicker devices={netPickList} value={netFocusId} onChange={setNetFocusId} label="Device" />
+              <NetworkFocus device={focusNet} range={focusRange} isDark={isDark} />
             </>
           )}
         </Panel>
       </div>
 
-      {/* ── Row 4: MikroTik + UPS ── */}
+      {/* ── Row 4: UPS + Air conditioner units ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <Panel title="MikroTik" noPad bodyStyle={PANEL_BODY} right={
-          <span className="text-[12px]" style={{ color: gf.textMuted }}>
-            {mikrotiks.length ? `${mikrotiks.filter((d) => d.status === "Online").length}/${mikrotiks.length} online` : "none registered"}
-          </span>
-        }>
-          {mikrotiks.length === 0 ? (
-            <div style={{ padding: 12 }}>
-              <EmptyRow>No MikroTik registered yet.</EmptyRow>
-            </div>
-          ) : (
-            <>
-              <DevicePicker devices={mikrotiks} value={mtFocusId} onChange={setMtFocusId} label="MikroTik" />
-              <NetworkFocus device={focusMt} range={focusRange} isDark={isDark} />
-            </>
-          )}
-        </Panel>
 
         <Panel title="UPS Power" noPad bodyStyle={PANEL_BODY} right={
           <span className="text-[12px]" style={{ color: upsOnBattery > 0 ? RED : gf.textMuted }}>
@@ -1341,19 +1330,22 @@ export default function Dashboard() {
             </>
           )}
         </Panel>
-      </div>
 
-      {/* ── Row 5: Air conditioner units ──
-         Full width, below the grid; their cards size to the number of units. */}
-      <div className="grid grid-cols-1 gap-3">
-        <Panel title="Air Conditioner Units" noPad bodyStyle={{ padding: 12 }}>
+        {/* Beside UPS since the MikroTik panel merged into Network. Same height as the rest
+           of the grid; at half width two cards share a row, so four units take two rows,
+           and anything beyond that scrolls inside the panel. */}
+        <Panel
+          title="Air Conditioner Units"
+          noPad
+          bodyStyle={{ height: PANEL_H, padding: 12, overflowY: "auto" }}
+        >
           {aircons.length === 0 ? (
             <div className="text-[12px] text-center py-4" style={{ color: gf.textDim }}>
               No AC units registered
             </div>
           ) : (
-            // auto-fit (not auto-fill or a fixed 4 columns): unused tracks collapse, so two units
-            // share the row and four fill four columns, with no breakpoint to maintain.
+            // auto-fit (not auto-fill or a fixed column count): unused tracks collapse, so the
+            // cards fill whatever width the panel has, with no breakpoint to maintain.
             <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
               {aircons.map((ac) => (
                 <div
