@@ -194,12 +194,11 @@ io.use(async (socket, next) => {
     return next(new Error(message));
   };
   // Device key sources, in order: the auth payload, the x-device-key header (the ESP32,
-  // which has no auth payload), and the query string. The query string ends up in
-  // access logs and is deprecated; remove it once every ESP32 has been reflashed.
+  // which has no auth payload). Never the query string: a URL is written verbatim into
+  // proxy and access logs, so a key sent there leaks the secret into every log line.
   const deviceKey =
     socket.handshake.auth?.deviceKey ??
-    socket.handshake.headers?.["x-device-key"] ??
-    socket.handshake.query?.deviceKey;
+    socket.handshake.headers?.["x-device-key"];
 
   // ESP32 authentication with the shared secret, compared in constant time. The
   // handshake limiter makes guessing expensive; this makes it give nothing away.

@@ -336,7 +336,7 @@ pushes use `io.to("devices").emit(...)`, so the backend never tracks the volatil
 | `airconAutoUpdate` | server → browsers | Auto IR zone change |
 
 Auth: browsers send JWT in `handshake.auth.token`; ESP32 sends `DEVICE_SECRET` in
-`handshake.query.deviceKey`. `socket.isDevice` gates every device-only handler.
+the `X-Device-Key` header. `socket.isDevice` gates every device-only handler.
 
 ---
 

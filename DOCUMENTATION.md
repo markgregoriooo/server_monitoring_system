@@ -442,7 +442,7 @@ Global rate limit: 500 requests / 15 min / IP (the agent metrics path is exempt)
 ## 10. Socket.IO Events
 
 Browsers send the JWT in `handshake.auth.token`; the ESP32 sends its device key in
-`handshake.auth.deviceKey` (or `.query.deviceKey` legacy EIO3). `socket.isDevice`
+the `X-Device-Key` header (or `handshake.auth.deviceKey`). `socket.isDevice`
 distinguishes them.
 
 ### ESP32 → Server (device only)

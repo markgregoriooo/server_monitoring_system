@@ -2223,7 +2223,7 @@ void setup() {
 
   /* Socket.IO: the device key is sent as an HTTP header on the WebSocket upgrade, not in
      the URL, since URLs end up in proxy and access logs. (This client speaks EIO3, which
-     has no `auth` payload.) The backend reads auth → x-device-key → query, in that order;
+     has no `auth` payload.) The backend reads auth → x-device-key and ignores the query;
      see backend/src/server.js. `static` because setExtraHeaders keeps the buffer. */
   static char deviceKeyHeader[128];
   snprintf(deviceKeyHeader, sizeof(deviceKeyHeader), "X-Device-Key: %s", deviceSecret);
