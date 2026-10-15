@@ -183,7 +183,48 @@ async function fluxTimeSeries(measurement, fieldFilter, start, stop, scope,
       |> filter(fn: (r) => ${fieldFilter})
       |> group(columns: ["${by}"])
       |> aggregateWindow(every: ${everySec}s, fn: ${fn}, createEmpty: false)`);
+  return seriesFromRows(rows, by, spanMs);
+}
 
+/**
+ * Total throughput over the period, in Mb/s, summed across every port in scope — the
+ * report version of the Total Throughput chart on the network detail pages, built with
+ * the same query as networkHistoryHandler: per port, bytes ÷ seconds over the RAW
+ * samples in each window (time-weighted), then the ports summed per window. A plain
+ * mean of the cumulative counters would be meaningless, and `last` per window then
+ * derivative divides one poll's bytes by the window spacing.
+ *
+ * @returns {Promise<{labels: string[], byField: Map<string, (number|null)[]>}>}
+ */
+async function fluxThroughputSeries(start, stop, scope, { points = 30 } = {}) {
+  const spanMs = stop.getTime() - start.getTime();
+  const everySec = Math.max(60, Math.round(spanMs / points / 1000));
+  const rows = await fluxRows(`
+    from(bucket: "${bucket}")
+      |> range(start: ${start.toISOString()}, stop: ${stop.toISOString()})
+      |> filter(fn: (r) => r._measurement == "network_traffic")
+      ${scope}
+      |> filter(fn: (r) => r._field == "rx_bytes" or r._field == "tx_bytes")
+      |> elapsed(unit: 1s)
+      |> difference(nonNegative: true)
+      |> filter(fn: (r) => exists r._value and r.elapsed > 0)
+      |> window(every: ${everySec}s)
+      |> reduce(
+          fn: (r, accumulator) => ({
+            bytes: accumulator.bytes + float(v: r._value),
+            secs: accumulator.secs + float(v: r.elapsed),
+          }),
+          identity: { bytes: 0.0, secs: 0.0 },
+        )
+      |> map(fn: (r) => ({ _time: r._stop, _field: r._field, _value: r.bytes / r.secs * 8.0 / 1000000.0 }))
+      |> group(columns: ["_time", "_field"])
+      |> sum()
+      |> group(columns: ["_field"])`);
+  return seriesFromRows(rows, "_field", spanMs);
+}
+
+/** Lines Flux rows up on one x axis: one column per distinct timestamp, one array per series. */
+function seriesFromRows(rows, by, spanMs) {
   // One column per distinct timestamp, so every field lines up on the same x axis even
   // when one of them stopped reporting partway through.
   const times = [...new Set(rows.map((r) => r._time))].sort();
@@ -617,7 +658,7 @@ async function buildServer(start, stop, deviceId) {
   // ── Server Availability ──
   tables.push({
     title: "Server Availability",
-    columns: ["Server", "Uptime", "Downtime", "Availability %", "Incidents"],
+    columns: ["Server", "Time online (period)", "Time offline (period)", "Availability %", "Incidents"],
     rows: rows.map((r) => {
       const a = availOf.get(r.device_id);
       return [
@@ -722,7 +763,7 @@ async function buildNetwork(start, stop, deviceId) {
       |> map(fn: (r) => ({ r with _value: if r._value then 1.0 else 0.0 }))
       |> mean()`;
 
-  const [means, maxes, ctrs, utils, links, trend] = await Promise.all([
+  const [means, maxes, ctrs, utils, links, trend, throughput] = await Promise.all([
     fluxRows(gauges("mean")),
     fluxRows(gauges("max")),
     fluxRows(counters),
@@ -735,6 +776,7 @@ async function buildNetwork(start, stop, deviceId) {
       `r._field == "latency_ms" or r._field == "packet_loss_pct"`,
       start, stop, scope,
     ),
+    fluxThroughputSeries(start, stop, scope),
   ]);
 
   // Device facts + offline events from MySQL. `scoped` narrows both to one device
@@ -742,12 +784,15 @@ async function buildNetwork(start, stop, deviceId) {
   const scoped = deviceId != null;
   // `ping_only` marks a router monitored by ICMP alone (no SNMP community, e.g. ISP
   // equipment). It never has CPU, memory, clients or interfaces, so those columns
-  // are not shown as blanks for it.
+  // are not shown as blanks for it. Only an SNMP `router` can be ping-only: a MikroTik
+  // never has a community (it is polled over the RouterOS API), and reading that as
+  // "ping-only" dropped its ports, traffic, CPU and memory from every MikroTik report.
   const [devices] = await db.query(
     `SELECT d.device_id,
             COALESCE(NULLIF(d.display_name, ''), d.device_name) AS device_name,
             d.device_type, d.location,
-            (n.snmp_community IS NULL OR n.snmp_community = '') AS ping_only
+            (d.device_type = 'router'
+              AND (n.snmp_community IS NULL OR n.snmp_community = '')) AS ping_only
        FROM devices d
        LEFT JOIN device_network n ON n.device_id = d.device_id
       WHERE d.device_type IN ('router', 'mikrotik')${scoped ? " AND d.device_id = ?" : ""}`,
@@ -908,6 +953,20 @@ async function buildNetwork(start, stop, deviceId) {
   // Two charts, not one: milliseconds and percent cannot share an axis without one of
   // them becoming a flat line along the bottom.
   const charts = [];
+  // Throughput first: for a router with interfaces it is what the report is about.
+  // Colours match the dashboard's In/Out lines.
+  const rxRate = throughput.byField.get("rx_bytes");
+  const txRate = throughput.byField.get("tx_bytes");
+  if (!icmpOnly && (rxRate?.length || txRate?.length)) {
+    charts.push({
+      title: "Total throughput, all ports (Mb/s)",
+      kind: "line", labels: throughput.labels,
+      series: [
+        { name: "In", color: "#5794F2", values: rxRate ?? [] },
+        { name: "Out", color: "#73BF69", values: txRate ?? [] },
+      ].filter((x) => x.values.length),
+    });
+  }
   const latency = trend.byField.get("latency_ms");
   const loss = trend.byField.get("packet_loss_pct");
   if (latency?.length) {
