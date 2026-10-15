@@ -23,6 +23,26 @@ export const SYS_OID = {
   sysDescr: "1.3.6.1.2.1.1.1.0", // OctetString — vendor/model description
   sysUpTime: "1.3.6.1.2.1.1.3.0", // TimeTicks — hundredths of a second since boot
   sysName: "1.3.6.1.2.1.1.5.0", // OctetString — admin-assigned name
+  sysObjectID: "1.3.6.1.2.1.1.2.0", // OID — vendor + model; picks the CPU/memory reader
+};
+
+// CPU and memory. Not standardized across vendors, so the poller tries the vendor's
+// own MIB (chosen from sysObjectID) and then HOST-RESOURCES-MIB (RFC 2790), which many
+// switches and every Linux-based device implement. Columns unless the name says scalar.
+export const LOAD_OID = {
+  hrProcessorLoad: "1.3.6.1.2.1.25.3.3.1.2", // % per CPU core
+  hrStorageType: "1.3.6.1.2.1.25.2.3.1.2", // OID — RAM rows are hrStorageRam
+  hrStorageAllocationUnits: "1.3.6.1.2.1.25.2.3.1.4", // bytes per unit
+  hrStorageSize: "1.3.6.1.2.1.25.2.3.1.5", // units
+  hrStorageUsed: "1.3.6.1.2.1.25.2.3.1.6", // units
+  ciscoCpu5min: "1.3.6.1.4.1.9.9.109.1.1.1.1.8", // CISCO-PROCESS-MIB cpmCPUTotal5minRev, %
+  ciscoMemUsed: "1.3.6.1.4.1.9.9.48.1.1.1.5", // CISCO-MEMORY-POOL-MIB ciscoMemoryPoolUsed, bytes
+  ciscoMemFree: "1.3.6.1.4.1.9.9.48.1.1.1.6", // ciscoMemoryPoolFree, bytes
+  huaweiCpu: "1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5", // HUAWEI-ENTITY-EXTENT-MIB hwEntityCpuUsage, % per board
+  huaweiMem: "1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7", // hwEntityMemUsage, % per board
+  juniperCpu: "1.3.6.1.4.1.2636.3.1.13.1.8", // JUNIPER-MIB jnxOperatingCPU, % per component
+  juniperMem: "1.3.6.1.4.1.2636.3.1.13.1.11", // jnxOperatingBuffer, % per component
+  hpCpu: "1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0", // scalar — HP ProCurve hpSwitchCpuStat, %
 };
 
 // IF-MIB per-interface status and counters. Column base OIDs: add ".<ifIndex>" for
@@ -159,6 +179,7 @@ export default {
   IF_OID,
   IF_OPER_STATUS,
   IF_ADMIN_STATUS,
+  LOAD_OID,
   UPS_OID,
   UPS_OUTPUT_SOURCE,
   upsOutputState,

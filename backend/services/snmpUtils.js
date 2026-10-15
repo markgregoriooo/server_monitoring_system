@@ -153,3 +153,76 @@ export function upsPowerKey(state, batteryStatus) {
   const s = state === "avr" ? "normal" : (state ?? "unknown");
   return `${s}|${batteryStatus ?? "?"}`;
 }
+
+// ─── Router / switch CPU and memory ────────────────────────────────────────────
+// IF-MIB is the same on every brand; CPU and memory are not. snmpPollerService asks
+// the vendor's own MIB first (picked from sysObjectID) and falls back to the standard
+// HOST-RESOURCES-MIB. These turn the raw values into one percent each; null means
+// "this device did not say", shown as "—" rather than 0.
+
+// Enterprise numbers under 1.3.6.1.4.1 that have a vendor reader.
+export const VENDOR = { cisco: 9, hp: 11, huawei: 2011, juniper: 2636 };
+
+// sysObjectID "1.3.6.1.4.1.9.1.1208" → 9. null when it is not an enterprise OID.
+export function enterpriseOf(sysObjectID) {
+  const m = /^\.?1\.3\.6\.1\.4\.1\.(\d+)/.exec(String(sysObjectID ?? ""));
+  return m ? Number(m[1]) : null;
+}
+
+const pct = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? Math.round(n * 10) / 10 : null;
+};
+
+// Rows of a walked column → the numbers in it, in index order.
+const valuesOf = (col) => Object.values(col ?? {}).map(Number).filter(Number.isFinite);
+
+// hrProcessorLoad has one row per CPU core; the device's CPU is their average.
+export function averagePercent(col) {
+  const v = valuesOf(col).filter((n) => n >= 0 && n <= 100);
+  return v.length ? pct(v.reduce((a, b) => a + b, 0) / v.length) : null;
+}
+
+// Huawei and Juniper report one row per board or slot, and boards without a CPU read
+// 0. The busiest one is the figure that matters.
+export function maxPercent(col) {
+  const v = valuesOf(col).filter((n) => n >= 0 && n <= 100);
+  return v.length ? pct(Math.max(...v)) : null;
+}
+
+// hrStorageRam (HOST-RESOURCES-MIB hrStorageTypes.2).
+export const HR_STORAGE_RAM = "1.3.6.1.2.1.25.2.1.2";
+
+// Memory % from hrStorageTable: the rows typed as RAM, used ÷ size. Units cancel out
+// within a row, but are applied anyway so rows with different units sum correctly.
+export function hrMemoryPercent({ types, units, sizes, used }) {
+  let total = 0;
+  let inUse = 0;
+  for (const [idx, type] of Object.entries(types ?? {})) {
+    if (String(type).replace(/^\./, "") !== HR_STORAGE_RAM) continue;
+    const u = Number(units?.[idx]) || 1;
+    const size = Number(sizes?.[idx]);
+    const usedN = Number(used?.[idx]);
+    if (!(size > 0) || !Number.isFinite(usedN)) continue;
+    total += size * u;
+    inUse += usedN * u;
+  }
+  return total > 0 ? pct((inUse / total) * 100) : null;
+}
+
+// CISCO-MEMORY-POOL-MIB: used and free per pool. Pool 1 is the processor pool, which
+// is the one a Cisco "show memory" headline refers to; all pools when it is missing.
+export function ciscoMemoryPercent(used, free) {
+  const one = (u, f) => {
+    const a = Number(u);
+    const b = Number(f);
+    return Number.isFinite(a) && Number.isFinite(b) && a + b > 0 ? pct((a / (a + b)) * 100) : null;
+  };
+  if (used?.["1"] != null && free?.["1"] != null) return one(used["1"], free["1"]);
+  const u = valuesOf(used).reduce((a, b) => a + b, 0);
+  const f = valuesOf(free).reduce((a, b) => a + b, 0);
+  return one(u, f);
+}
+
+// One value that is already a percent (e.g. HP's hpSwitchCpuStat scalar).
+export const percentOrNull = pct;

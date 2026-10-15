@@ -122,7 +122,7 @@ interface NetDevice {
   name?: string;
   type?: string;              // "router" | "mikrotik"
   status: string;
-  cpuPercent?: number | null;    // MikroTik only — SNMP leaves these null
+  cpuPercent?: number | null;    // null when the device does not report it (SNMP: vendor MIB or HOST-RESOURCES-MIB)
   memPercent?: number | null;
   connectedClients?: number | null;
   interfaces?: NetIface[];

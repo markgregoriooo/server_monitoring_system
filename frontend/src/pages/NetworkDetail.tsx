@@ -364,6 +364,8 @@ export default function NetworkDetail({
         descr: data.device.descr ?? prev.descr,
         sysName: data.device.sysName ?? prev.sysName,
         uptimeSeconds: data.device.uptimeSeconds ?? prev.uptimeSeconds,
+        cpuPercent: "cpuPercent" in data.device ? data.device.cpuPercent : prev.cpuPercent,
+        memPercent: "memPercent" in data.device ? data.device.memPercent : prev.memPercent,
         interfaces: data.device.interfaces ?? prev.interfaces,
       }));
 
@@ -571,6 +573,21 @@ export default function NetworkDetail({
           </>
         ) : (
           <>
+            {/* From the vendor MIB or HOST-RESOURCES-MIB. "N/A" when the device reports neither. */}
+            <Stat
+              label="CPU"
+              value={d.cpuPercent != null ? String(Math.round(d.cpuPercent)) : "N/A"}
+              {...(d.cpuPercent != null ? { unit: "%" } : {})}
+              color={d.cpuPercent != null ? loadColor(d.cpuPercent) : gf.textMuted}
+              sub={d.cpuPercent != null ? "device load" : "not reported"}
+            />
+            <Stat
+              label="Memory"
+              value={d.memPercent != null ? String(Math.round(d.memPercent)) : "N/A"}
+              {...(d.memPercent != null ? { unit: "%" } : {})}
+              color={d.memPercent != null ? loadColor(d.memPercent) : gf.textMuted}
+              sub={d.memPercent != null ? "device RAM" : "not reported"}
+            />
             <Stat label="Ports Up" value={`${portsUp}/${ifaces.length}`} color={ifaces.length > 0 && portsUp === ifaces.length ? GREEN : portsUp === 0 ? RED : ORANGE} sub="links online" />
             <Stat label="Peak Util" value={String(worstUtil)} unit="%" color={loadColor(worstUtil)} sub={upUtil.length > 1 ? `busiest of ${upUtil.length}` : "of link speed"} />
             <Stat label="Errors" value={String(totalErrs)} color={totalErrs > 0 ? ORANGE : GREEN} sub="since last poll" />

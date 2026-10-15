@@ -5,6 +5,7 @@ import client, {
   IF_OID,
   IF_OPER_STATUS,
   IF_ADMIN_STATUS,
+  LOAD_OID,
   UPS_OID,
   isOnBattery,
   isOnBypass,
@@ -25,6 +26,13 @@ import {
   networkSegment,
   computeUtilizationPct,
   counterDelta,
+  VENDOR,
+  enterpriseOf,
+  averagePercent,
+  maxPercent,
+  hrMemoryPercent,
+  ciscoMemoryPercent,
+  percentOrNull,
 } from "./snmpUtils.js";
 import { describeError } from "../utils/httpError.js";
 import { writeCommunity, readCommunity } from "./communityCrypto.js";
@@ -114,7 +122,9 @@ const connFor = (d) => {
 export async function collectRouter(deviceId, conn, labels = {}) {
   const session = client.openSession(conn);
   try {
-    const sys = await client.get(session, [SYS_OID.sysDescr, SYS_OID.sysUpTime, SYS_OID.sysName]);
+    const sys = await client.get(session, [
+      SYS_OID.sysDescr, SYS_OID.sysUpTime, SYS_OID.sysName, SYS_OID.sysObjectID,
+    ]);
 
     // Walk the IF-MIB columns we need (sequential — one UDP session).
     const names = await client.walkColumn(session, IF_OID.ifName);
@@ -179,13 +189,15 @@ export async function collectRouter(deviceId, conn, labels = {}) {
       });
     }
 
+    const load = await collectLoad(session, sys[SYS_OID.sysObjectID]);
+
     return {
       reachable: true,
       descr: sys[SYS_OID.sysDescr] ?? null,
       sysName: sys[SYS_OID.sysName] ?? null,
       uptimeSeconds: sys[SYS_OID.sysUpTime] != null ? Number(sys[SYS_OID.sysUpTime]) / 100 : null, // TimeTicks → s
-      cpuPercent: null, // vendor MIB — not standardized; left for a per-vendor follow-up
-      memPercent: null,
+      cpuPercent: load.cpuPercent,
+      memPercent: load.memPercent,
       latencyMs: null, // ICMP — separate module (see loadDevices note)
       packetLossPct: null,
       connectedClients: null,
@@ -194,6 +206,53 @@ export async function collectRouter(deviceId, conn, labels = {}) {
   } finally {
     client.closeSession(session);
   }
+}
+
+// CPU and memory of a router or switch, whatever the brand. The vendor's own MIB is
+// asked first (it is what the device's CLI reports), then HOST-RESOURCES-MIB. Each
+// figure falls back on its own, so a Cisco without the memory-pool MIB can still get
+// memory from HOST-RESOURCES. Never throws: the device already answered the system
+// group, so a missing MIB is "not supported", never "unreachable", and must not fail
+// the poll that carries its ports. null = the device does not report it ("—").
+async function collectLoad(session, sysObjectID) {
+  const walk = (oid) => client.walkColumn(session, oid).catch(() => ({}));
+  const getOne = async (oid) => (await client.get(session, [oid]).catch(() => ({})))[oid];
+  let cpuPercent = null;
+  let memPercent = null;
+
+  switch (enterpriseOf(sysObjectID)) {
+    case VENDOR.cisco:
+      cpuPercent = averagePercent(await walk(LOAD_OID.ciscoCpu5min));
+      memPercent = ciscoMemoryPercent(await walk(LOAD_OID.ciscoMemUsed), await walk(LOAD_OID.ciscoMemFree));
+      break;
+    case VENDOR.huawei:
+      cpuPercent = maxPercent(await walk(LOAD_OID.huaweiCpu));
+      memPercent = maxPercent(await walk(LOAD_OID.huaweiMem));
+      break;
+    case VENDOR.juniper:
+      cpuPercent = maxPercent(await walk(LOAD_OID.juniperCpu));
+      memPercent = maxPercent(await walk(LOAD_OID.juniperMem));
+      break;
+    case VENDOR.hp:
+      cpuPercent = percentOrNull(await getOne(LOAD_OID.hpCpu));
+      break;
+    default:
+      break;
+  }
+
+  if (cpuPercent == null) cpuPercent = averagePercent(await walk(LOAD_OID.hrProcessorLoad));
+  if (memPercent == null) {
+    const types = await walk(LOAD_OID.hrStorageType);
+    if (Object.keys(types).length) {
+      memPercent = hrMemoryPercent({
+        types,
+        units: await walk(LOAD_OID.hrStorageAllocationUnits),
+        sizes: await walk(LOAD_OID.hrStorageSize),
+        used: await walk(LOAD_OID.hrStorageUsed),
+      });
+    }
+  }
+  return { cpuPercent, memPercent };
 }
 
 // Poll one UPS and return a shaped UPS sample. Voltage/load are per-line table

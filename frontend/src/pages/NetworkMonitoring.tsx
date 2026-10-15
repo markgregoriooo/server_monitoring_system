@@ -97,6 +97,8 @@ function mapNet(r: any): NetDevice {
     mode: r.mode ?? "snmp",
     latencyMs: r.latencyMs ?? null,
     packetLossPct: r.packetLossPct ?? null,
+    cpuPercent: r.cpuPercent ?? null,
+    memPercent: r.memPercent ?? null,
   };
 }
 function mergeNetLive(prev: NetDevice | undefined, p: any): NetDevice {
@@ -112,6 +114,8 @@ function mergeNetLive(prev: NetDevice | undefined, p: any): NetDevice {
     // latency is exactly the total-loss case, i.e. the one worth showing.
     latencyMs: "latencyMs" in p ? p.latencyMs : base.latencyMs,
     packetLossPct: "packetLossPct" in p ? p.packetLossPct : base.packetLossPct,
+    cpuPercent: "cpuPercent" in p ? p.cpuPercent : base.cpuPercent,
+    memPercent: "memPercent" in p ? p.memPercent : base.memPercent,
     mode: p.mode ?? base.mode,
     interfaces: p.interfaces ? mapNet(p).interfaces : base.interfaces,
   };
@@ -292,10 +296,16 @@ function RouterStatus({ d }: { d: NetDevice }) {
 }
 
 // CPU / memory only exist for a MikroTik (the RouterOS API reports them; IF-MIB does not).
+// "N/A", not "—": the device does not report this (no vendor or HOST-RESOURCES MIB, or
+// ping-only), which is different from a reading that is missing.
 function LoadCell({ v }: { v: number | null | undefined }) {
   return (
-    <span className="text-[13px] tabular-nums" style={{ color: v != null ? loadColor(Math.round(v)) : gf.textDim }}>
-      {v != null ? `${Math.round(v)}%` : "—"}
+    <span
+      className="text-[13px] tabular-nums"
+      style={{ color: v != null ? loadColor(Math.round(v)) : gf.textDim }}
+      title={v != null ? undefined : "Not reported by this device"}
+    >
+      {v != null ? `${Math.round(v)}%` : "N/A"}
     </span>
   );
 }
@@ -750,8 +760,8 @@ export default function NetworkMonitoring() {
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           {row.kind === "mikrotik" ? <MkStatus d={row.d} /> : <RouterStatus d={row.d} />}
                         </td>
-                        <td className="px-3 py-2.5 whitespace-nowrap"><LoadCell v={row.kind === "mikrotik" ? row.d.cpuPercent : null} /></td>
-                        <td className="px-3 py-2.5 whitespace-nowrap"><LoadCell v={row.kind === "mikrotik" ? row.d.memPercent : null} /></td>
+                        <td className="px-3 py-2.5 whitespace-nowrap"><LoadCell v={row.d.cpuPercent ?? null} /></td>
+                        <td className="px-3 py-2.5 whitespace-nowrap"><LoadCell v={row.d.memPercent ?? null} /></td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           {row.kind === "mikrotik" ? <MkPortsCell d={row.d} /> : <PortsCell d={row.d} />}
                         </td>

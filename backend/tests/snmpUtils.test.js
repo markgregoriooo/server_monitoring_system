@@ -9,6 +9,13 @@ import {
   networkSegment,
   computeUtilizationPct,
   counterDelta,
+  VENDOR,
+  enterpriseOf,
+  averagePercent,
+  maxPercent,
+  hrMemoryPercent,
+  HR_STORAGE_RAM,
+  ciscoMemoryPercent,
   UPS_OUTPUT_SOURCE,
   upsOutputState,
   isOnBattery,
@@ -240,4 +247,40 @@ test("upsPowerKey ignores AVR flicker, which raises no alert", () => {
 test("upsPowerKey is stable for missing values", () => {
   assert.equal(upsPowerKey(null, null), "unknown|?");
   assert.equal(upsPowerKey(undefined, undefined), upsPowerKey(null, null));
+});
+
+// ─── Router / switch CPU and memory ────────────────────────────────────────────
+
+test("enterpriseOf reads the vendor from sysObjectID", () => {
+  assert.equal(enterpriseOf("1.3.6.1.4.1.9.1.1208"), VENDOR.cisco);
+  assert.equal(enterpriseOf(".1.3.6.1.4.1.2011.2.23.96"), VENDOR.huawei);
+  assert.equal(enterpriseOf("1.3.6.1.4.1.14988.1"), 14988); // MikroTik: no vendor reader → HOST-RESOURCES
+  assert.equal(enterpriseOf(null), null);
+  assert.equal(enterpriseOf("1.3.6.1.2.1.1"), null);
+});
+
+test("averagePercent averages per-core load and ignores junk", () => {
+  assert.equal(averagePercent({ 1: 10, 2: 30 }), 20);
+  assert.equal(averagePercent({ 1: 10, 2: 300 }), 10); // out of range is not a percent
+  assert.equal(averagePercent({}), null); // device does not implement it → "—", not 0
+});
+
+test("maxPercent takes the busiest board; boards without a CPU read 0", () => {
+  assert.equal(maxPercent({ 16842753: 0, 16842754: 23, 16842755: 0 }), 23);
+  assert.equal(maxPercent({}), null);
+});
+
+test("hrMemoryPercent uses only the RAM rows", () => {
+  const types = { 1: HR_STORAGE_RAM, 2: "1.3.6.1.2.1.25.2.1.4" /* fixed disk */, 3: "." + HR_STORAGE_RAM };
+  const units = { 1: 1024, 2: 4096, 3: 1024 };
+  const sizes = { 1: 1000, 2: 100000, 3: 1000 };
+  const used = { 1: 250, 2: 99000, 3: 750 };
+  assert.equal(hrMemoryPercent({ types, units, sizes, used }), 50); // (250+750)/(1000+1000); the 99% disk is ignored
+  assert.equal(hrMemoryPercent({ types: { 2: "1.3.6.1.2.1.25.2.1.4" }, units, sizes, used }), null);
+});
+
+test("ciscoMemoryPercent prefers the processor pool", () => {
+  assert.equal(ciscoMemoryPercent({ 1: 300, 2: 900 }, { 1: 700, 2: 100 }), 30);
+  assert.equal(ciscoMemoryPercent({ 5: 50 }, { 5: 150 }), 25); // no pool 1 → all pools
+  assert.equal(ciscoMemoryPercent({}, {}), null);
 });
