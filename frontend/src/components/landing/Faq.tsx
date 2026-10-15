@@ -5,8 +5,7 @@ import { SplitHeading, SectionRail } from "./ScrollFx";
 
 /**
  * Frequently asked questions. Every answer matches the code, with the real numbers
- * (retention, domains, severity default, buffering), including the awkward ones like
- * "Can I use it off campus?". The role breakdown lives here too.
+ * (retention, domains, severity default, buffering). The role breakdown lives here too.
  */
 
 const CHEVRON_SIZE = 12;
@@ -44,14 +43,15 @@ const QUESTIONS: QA[] = [
     q: "What can each role do?",
     a: (
       <>
-        <strong>IT Staff</strong> get every monitoring page — servers, network, MikroTik, UPS,
-        environment and air conditioning — plus acknowledging and resolving alerts, predictive
-        analytics, history and generated reports.
+        <strong>IT Staff</strong> get every monitoring page — servers, network, UPS, environment
+        and air conditioning — plus acknowledging and resolving alerts, predictive analytics,
+        history, generated reports, and the read-only Quick Actions on a server's console.
         <br />
         <br />
-        <strong>Admin</strong> get all of that, plus the two pages that change how the system
-        itself behaves: <em>User Management</em>, which approves or rejects sign-in requests, and{" "}
-        <em>Alert Rules</em>, which sets the thresholds every alert is measured against.
+        <strong>Admin</strong> get all of that, plus what changes how the system itself behaves:{" "}
+        <em>User Management</em>, which approves or rejects sign-in requests; <em>Alert Rules</em>,
+        which sets the thresholds every alert is measured against; <em>Backups</em>, the weekly
+        encrypted system backups; and the console's control actions and web terminal.
       </>
     ),
   },
@@ -90,13 +90,16 @@ const QUESTIONS: QA[] = [
     q: "Can I open the dashboard from outside campus?",
     a: (
       <>
-        Not as things stand. The backend has to sit on the same network as the equipment it watches
-        — the SNMP and MikroTik pollers dial into device addresses, and the sensor node holds a
-        socket open to a host on its own LAN. The dashboard is served from that same machine.
+        Yes. The dashboard is published over HTTPS at the same address you are reading this on, so
+        it opens from any network — home, mobile data, another campus. The address is public; the
+        access is not: you still sign in with a CSPC Google account that an administrator has
+        approved.
         <br />
         <br />
-        Reaching it from outside is a matter of campus network policy — a VPN, or publishing the
-        hostname — rather than something this system decides on its own.
+        What stays on campus is the monitoring itself. The backend sits on the same network as the
+        equipment it watches, so if the campus internet link goes down, readings, alerts and the
+        sensor node's alarm carry on — the dashboard is just reachable from inside campus only
+        until the link is back.
       </>
     ),
   },
